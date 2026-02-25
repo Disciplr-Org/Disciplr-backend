@@ -45,6 +45,51 @@ API runs at **http://localhost:3000**. Frontend dev server can proxy `/api` to t
 | `npm run start`| Run compiled `dist/index.js`  |
 | `npm run lint` | Run ESLint on `src`           |
 
+## Abuse detection instrumentation
+
+The backend now includes abuse-oriented security instrumentation middleware.
+
+- `GET /api/health/security` returns a snapshot of:
+  - failed login attempts seen by auth/login paths (`401` or `403`)
+  - rate limit triggers (`429`)
+  - suspicious pattern alerts by category
+  - top active source IPs in current windows
+- Structured JSON logs are emitted to stdout for:
+  - `security.failed_login_attempt`
+  - `security.rate_limit_triggered`
+  - `security.suspicious_pattern`
+
+### Thresholds (env-configurable)
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `SECURITY_RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit lookback window |
+| `SECURITY_RATE_LIMIT_MAX_REQUESTS` | `120` | Max requests per IP in rate-limit window |
+| `SECURITY_SUSPICIOUS_WINDOW_MS` | `300000` | Lookback window for suspicious pattern checks |
+| `SECURITY_SUSPICIOUS_404_THRESHOLD` | `20` | 404 count threshold for endpoint scan detection |
+| `SECURITY_SUSPICIOUS_DISTINCT_PATH_THRESHOLD` | `12` | Distinct 404 path threshold for endpoint scan detection |
+| `SECURITY_SUSPICIOUS_BAD_REQUEST_THRESHOLD` | `30` | 400 count threshold for repeated bad request detection |
+| `SECURITY_SUSPICIOUS_HIGH_VOLUME_THRESHOLD` | `300` | Total request threshold for high-volume bursts |
+| `SECURITY_FAILED_LOGIN_WINDOW_MS` | `900000` | Lookback window for failed login burst checks |
+| `SECURITY_FAILED_LOGIN_BURST_THRESHOLD` | `5` | Failed login threshold per IP before alert |
+| `SECURITY_ALERT_COOLDOWN_MS` | `300000` | Minimum time between repeated alerts per IP/pattern |
+
+### Alert wiring guidance
+
+No dedicated monitoring stack is wired in this repo yet. If your environment has one (Datadog, CloudWatch, Grafana Loki, ELK), create alerts on these log events:
+
+- `security.rate_limit_triggered`: alert on sustained frequency or concentration from single IP.
+- `security.suspicious_pattern` where `pattern` is:
+  - `endpoint_scan`
+  - `high_volume`
+  - `repeated_bad_requests`
+  - `failed_login_burst`
+
+Recommended initial alert policy:
+
+- Warning: any `security.suspicious_pattern` event.
+- Critical: `security.rate_limit_triggered` over 20 times in 5 minutes from one IP.
+
 ### Example: create a vault
 
 ```bash
