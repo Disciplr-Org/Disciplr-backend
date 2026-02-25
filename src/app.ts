@@ -7,6 +7,7 @@ import { analyticsRouter } from './routes/analytics.js'
 import { apiKeysRouter } from './routes/apiKeys.js'
 import { healthRouter } from './routes/health.js'
 import { vaultsRouter } from './routes/vaults.js'
+import { notificationsRouter } from './routes/notifications.js'
 
 export const app = express()
 
@@ -20,3 +21,4 @@ app.use('/api/analytics', analyticsRouter)
 app.use('/api/api-keys', apiKeysRouter)
 app.use('/api/auth', authRouter)
 app.use('/api/admin', adminRouter)
+app.use('/api/notifications', notificationsRouter)
