@@ -3,7 +3,7 @@ import { Router } from 'express'
 export const vaultsRouter = Router()
 
 // In-memory placeholder; replace with DB (e.g. PostgreSQL) later
-const vaults: Array<{
+export const vaults: Array<{
   id: string
   creator: string
   amount: string
