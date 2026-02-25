@@ -33,16 +33,25 @@ function maskIp(ip: string): string {
     return 'x.x.x.x'
 }
 
-function sanitizeBody(body: any): any {
-    if (!body || typeof body !== 'object') return body
+function sanitizeBody(body: unknown): unknown {
+    if (Array.isArray(body)) {
+        return body.map((item) => sanitizeBody(item))
+    }
 
-    const sensitiveFields = ['creator', 'successDestination', 'failureDestination']
-    const sanitized = { ...body }
+    if (!body || typeof body !== 'object') {
+        return body
+    }
 
-    for (const field of sensitiveFields) {
-        if (sanitized[field]) {
-            sanitized[field] = '***MASKED***'
+    const sensitiveFields = new Set(['creator', 'successDestination', 'failureDestination', 'evidence', 'data'])
+    const sanitized: Record<string, unknown> = {}
+
+    for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+        if (sensitiveFields.has(key)) {
+            sanitized[key] = '***MASKED***'
+            continue
         }
+
+        sanitized[key] = sanitizeBody(value)
     }
 
     return sanitized
