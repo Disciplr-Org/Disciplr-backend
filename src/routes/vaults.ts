@@ -1,4 +1,6 @@
-import { Router } from 'express'
+import { Router, Request, Response } from 'express'
+import { queryParser } from '../middleware/queryParser.js'
+import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
 
 export const vaultsRouter = Router()
 
@@ -30,7 +32,8 @@ type DomainEvent = {
   payload: Record<string, string>
 }
 
-type Vault = {
+// In-memory placeholder; replace with DB (e.g. PostgreSQL) later
+export interface Vault {
   id: string
   creator: string
   amount: string
@@ -45,17 +48,39 @@ type Vault = {
   domainEvents: DomainEvent[]
 }
 
-// In-memory placeholder; replace with DB (e.g. PostgreSQL) later
-const vaults: Vault[] = []
+export let vaults: Array<Vault> = []
+
+export const setVaults = (newVaults: Array<Vault>) => {
+  vaults = newVaults
+}
 
 const makeId = (prefix: string): string =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 
-vaultsRouter.get('/', (_req, res) => {
-  res.json({ vaults })
-})
+vaultsRouter.get(
+  '/',
+  queryParser({
+    allowedSortFields: ['createdAt', 'amount', 'endTimestamp', 'status'],
+    allowedFilterFields: ['status', 'creator'],
+  }),
+  (req: Request, res: Response) => {
+    let result = [...vaults]
 
-vaultsRouter.post('/', (req, res) => {
+    if (req.filters) {
+      result = applyFilters(result, req.filters)
+    }
+
+    if (req.sort) {
+      result = applySort(result, req.sort)
+    }
+
+    const paginatedResult = paginateArray(result, req.pagination!)
+
+    res.json(paginatedResult)
+  }
+)
+
+vaultsRouter.post('/', (req: Request, res: Response) => {
   const {
     creator,
     amount,
@@ -118,7 +143,7 @@ vaultsRouter.post('/', (req, res) => {
   res.status(201).json(vault)
 })
 
-vaultsRouter.get('/:id', (req, res) => {
+vaultsRouter.get('/:id', (req: Request, res: Response) => {
   const vault = vaults.find((v) => v.id === req.params.id)
   if (!vault) {
     res.status(404).json({ error: 'Vault not found' })
@@ -128,7 +153,7 @@ vaultsRouter.get('/:id', (req, res) => {
   res.json(vault)
 })
 
-vaultsRouter.post('/:id/milestones/:mid/validate', (req, res) => {
+vaultsRouter.post('/:id/milestones/:mid/validate', (req: Request, res: Response) => {
   const vault = vaults.find((v) => v.id === req.params.id)
   if (!vault) {
     res.status(404).json({ error: 'Vault not found' })
@@ -196,7 +221,7 @@ vaultsRouter.post('/:id/milestones/:mid/validate', (req, res) => {
   }
   vault.domainEvents.push(milestoneValidatedEvent)
 
-  if (vault.milestones.every((m) => m.status === 'validated')) {
+  if (vault.milestones.length > 0 && vault.milestones.every((m) => m.status === 'validated')) {
     vault.status = 'completed'
     vault.domainEvents.push({
       id: makeId('domevt'),
