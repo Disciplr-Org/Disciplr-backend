@@ -1,11 +1,14 @@
-import { Router } from 'express'
+import { Router, Request, Response } from 'express'
+import { queryParser } from '../middleware/queryParser.js'
+import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 
 export const vaultsRouter = Router()
 
 export type VaultStatus = 'active' | 'completed' | 'failed' | 'cancelled'
 
-type Vault = {
+// In-memory placeholder; replace with DB (e.g. PostgreSQL) later
+export interface Vault {
   id: string
   creator: string
   amount: string
@@ -18,7 +21,11 @@ type Vault = {
 }
 
 // In-memory placeholder; replace with DB (e.g. PostgreSQL) later
-const vaults: Vault[] = []
+export let vaults: Array<Vault> = []
+
+export const setVaults = (newVaults: Array<Vault>) => {
+  vaults = newVaults
+}
 
 const makeId = (prefix: string): string =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
@@ -46,11 +53,30 @@ export const cancelVaultById = (id: string):
   return { vault, previousStatus }
 }
 
-vaultsRouter.get('/', (_req, res) => {
-  res.json({ vaults })
-})
+vaultsRouter.get(
+  '/',
+  queryParser({
+    allowedSortFields: ['createdAt', 'amount', 'endTimestamp', 'status'],
+    allowedFilterFields: ['status', 'creator'],
+  }),
+  (req: Request, res: Response) => {
+    let result = [...vaults]
 
-vaultsRouter.post('/', (req, res) => {
+    if (req.filters) {
+      result = applyFilters(result, req.filters)
+    }
+
+    if (req.sort) {
+      result = applySort(result, req.sort)
+    }
+
+    const paginatedResult = paginateArray(result, req.pagination!)
+
+    res.json(paginatedResult)
+  }
+)
+
+vaultsRouter.post('/', (req: Request, res: Response) => {
   const {
     creator,
     amount,
@@ -98,7 +124,7 @@ vaultsRouter.post('/', (req, res) => {
   res.status(201).json(vault)
 })
 
-vaultsRouter.get('/:id', (req, res) => {
+vaultsRouter.get('/:id', (req: Request, res: Response) => {
   const vault = getVaultById(req.params.id)
   if (!vault) {
     res.status(404).json({ error: 'Vault not found' })
@@ -108,7 +134,7 @@ vaultsRouter.get('/:id', (req, res) => {
   res.json(vault)
 })
 
-vaultsRouter.post('/:id/cancel', (req, res) => {
+vaultsRouter.post('/:id/cancel', (req: Request, res: Response) => {
   const actorUserId = req.header('x-user-id')
   const actorRole = req.header('x-user-role') ?? 'user'
   const reason = typeof req.body?.reason === 'string' ? req.body.reason : null
