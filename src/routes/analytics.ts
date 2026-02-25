@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
+import { authenticateApiKey } from '../middleware/apiKeyAuth.js'
 
 export const analyticsRouter = Router()
 
@@ -35,10 +36,6 @@ analyticsRouter.get(
     res.json(paginatedResult)
   }
 )
-import { Router } from 'express'
-import { authenticateApiKey } from '../middleware/apiKeyAuth.js'
-
-export const analyticsRouter = Router()
 
 analyticsRouter.get('/overview', authenticateApiKey(['read:analytics']), (_req, res) => {
   res.json({
