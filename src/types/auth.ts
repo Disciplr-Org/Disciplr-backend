@@ -26,6 +26,7 @@ export interface ApiKeyRecord {
 export interface JWTPayload {
   userId: string
   role: UserRole
+  email?: string
 }
 
 declare global {
