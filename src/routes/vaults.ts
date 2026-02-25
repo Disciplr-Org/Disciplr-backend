@@ -5,7 +5,7 @@ import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
 export const vaultsRouter = Router()
 
 // In-memory placeholder; replace with DB (e.g. PostgreSQL) later
-const vaults: Array<{
+export interface Vault {
   id: string
   creator: string
   amount: string
@@ -15,7 +15,14 @@ const vaults: Array<{
   failureDestination: string
   status: 'active' | 'completed' | 'failed' | 'cancelled'
   createdAt: string
-}> = []
+}
+
+// In-memory placeholder; replace with DB (e.g. PostgreSQL) later
+export let vaults: Array<Vault> = []
+
+export const setVaults = (newVaults: Array<Vault>) => {
+  vaults = newVaults
+}
 
 vaultsRouter.get(
   '/',

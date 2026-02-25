@@ -1,6 +1,6 @@
 # disciplr-backend
 
-API and milestone engine for [Disciplr](https://github.com/your-org/Disciplr): programmable time-locked capital vaults on Stellar.
+API and milestone engine for Disciplr: programmable time-locked capital vaults on Stellar.
 
 ## What it does
 
@@ -18,55 +18,54 @@ API and milestone engine for [Disciplr](https://github.com/your-org/Disciplr): p
 All list endpoints support consistent query parameters for pagination (`page`, `pageSize`), sorting (`sortBy`, `sortOrder`), and filtering (endpoint-specific fields). See [API Patterns Documentation](docs/API_PATTERNS.md) for details.
 
 Data is stored in memory for now. Production would use PostgreSQL, a Horizon listener for on-chain events, and a proper milestone/verification engine.
+- `GET /api/health`: service status and timestamp
+- `GET /api/vaults`: list all vaults (currently in-memory placeholder)
+- `POST /api/vaults`: create a vault
+- `GET /api/vaults/:id`: get a vault by id
 
 ## Tech stack
 
-- **Node.js** + **TypeScript**
-- **Express** for HTTP API
-- **Helmet** and **CORS** for security and cross-origin
+- Node.js + TypeScript
+- Express
+- Helmet + CORS
+- PostgreSQL migrations via Knex
 
 ## Local setup
 
-### Prerequisites
+Prerequisites:
 
 - Node.js 18+
-- npm or yarn
+- npm
 
-### Install and run
+Install and run:
 
 ```bash
-# From repo root
-cd disciplr-backend
 npm install
 npm run dev
 ```
 
-API runs at **http://localhost:3000**. Frontend dev server can proxy `/api` to this port.
+API runs at `http://localhost:3000`.
 
-### Scripts
+## Scripts
 
-| Command        | Description                    |
-|----------------|--------------------------------|
-| `npm run dev`  | Run with tsx watch (hot reload)|
-| `npm run build`| Compile TypeScript to `dist/`  |
-| `npm run start`| Run compiled `dist/index.js`  |
-| `npm run lint` | Run ESLint on `src`           |
+| Command | Description |
+|---|---|
+| `npm run dev` | Run with tsx watch |
+| `npm run build` | Compile TypeScript to `dist/` |
+| `npm run start` | Run compiled `dist/index.js` |
+| `npm run lint` | Run ESLint on `src` |
+| `npm run migrate:make <name>` | Create migration file in `db/migrations` |
+| `npm run migrate:latest` | Apply all pending migrations |
+| `npm run migrate:rollback` | Roll back the latest migration batch |
+| `npm run migrate:status` | Show migration status |
 
-### Example: create a vault
+## Database migrations
 
-```bash
-curl -X POST http://localhost:3000/api/vaults \
-  -H "Content-Type: application/json" \
-  -d '{
-    "creator": "G...",
-    "amount": "1000",
-    "endTimestamp": "2025-12-31T23:59:59Z",
-    "successDestination": "G...",
-    "failureDestination": "G..."
-  }'
-```
+Migration tooling is standardized with Knex and PostgreSQL.
 
-## Project layout
+- Config: `knexfile.cjs`
+- Baseline migration: `db/migrations/20260225190000_initial_baseline.cjs`
+- Full process (authoring, rollout, rollback, CI/CD): `docs/database-migrations.md`
 
 ```
 disciplr-backend/
@@ -91,15 +90,13 @@ disciplr-backend/
 ├── tsconfig.json
 └── README.md
 ```
+Required env var:
 
-## Merging into a remote
+- `DATABASE_URL` (PostgreSQL connection string)
 
-This directory is a separate git repo. To push to your own remote:
+Quick start:
 
 ```bash
-cd disciplr-backend
-git remote add origin <your-disciplr-backend-repo-url>
-git push -u origin main
+npm run migrate:latest
+npm run migrate:status
 ```
-
-Replace `<your-disciplr-backend-repo-url>` with your actual repository URL.
