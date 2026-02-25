@@ -1,56 +1,33 @@
 import { Router, Request, Response } from 'express'
 import { queryParser } from '../middleware/queryParser.js'
-import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
+import { applySort, paginateArray } from '../utils/pagination.js'
+import { createVault, listVaults, getVaultById } from '../services/vault.js'
 
 export const vaultsRouter = Router()
-
-// In-memory placeholder; replace with DB (e.g. PostgreSQL) later
-export interface Vault {
-  id: string
-  creator: string
-  amount: string
-  startTimestamp: string
-  endTimestamp: string
-  successDestination: string
-  failureDestination: string
-  status: 'active' | 'completed' | 'failed' | 'cancelled'
-  createdAt: string
-}
-
-// In-memory placeholder; replace with DB (e.g. PostgreSQL) later
-export let vaults: Array<Vault> = []
-
-export const setVaults = (newVaults: Array<Vault>) => {
-  vaults = newVaults
-}
 
 vaultsRouter.get(
   '/',
   queryParser({
-    allowedSortFields: ['createdAt', 'amount', 'endTimestamp', 'status'],
+    allowedSortFields: ['created_at', 'amount', 'end_timestamp', 'status'],
     allowedFilterFields: ['status', 'creator'],
   }),
-  (req: Request, res: Response) => {
+  async (req: Request, res: Response) => {
+    const filters = req.filters || {}
+    const vaults = await listVaults(filters)
+
+    // applySort and paginateArray are used for local processing if needed, 
+    // but listVaults now handles basic filtering/sorting.
     let result = [...vaults]
-
-    // Apply filters
-    if (req.filters) {
-      result = applyFilters(result, req.filters)
-    }
-
-    // Apply sorting
     if (req.sort) {
       result = applySort(result, req.sort)
     }
 
-    // Apply pagination
     const paginatedResult = paginateArray(result, req.pagination!)
-
     res.json(paginatedResult)
   }
 )
 
-vaultsRouter.post('/', (req: Request, res: Response) => {
+vaultsRouter.post('/', async (req: Request, res: Response) => {
   const {
     creator,
     amount,
@@ -68,23 +45,23 @@ vaultsRouter.post('/', (req: Request, res: Response) => {
 
   const id = `vault-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
   const startTimestamp = new Date().toISOString()
-  const vault = {
+  
+  const vault = await createVault({
     id,
     creator,
     amount,
-    startTimestamp,
-    endTimestamp,
-    successDestination,
-    failureDestination,
-    status: 'active' as const,
-    createdAt: startTimestamp,
-  }
-  vaults.push(vault)
+    start_timestamp: startTimestamp,
+    end_timestamp: endTimestamp,
+    success_destination: successDestination,
+    failure_destination: failureDestination,
+    status: 'active',
+  })
+
   res.status(201).json(vault)
 })
 
-vaultsRouter.get('/:id', (req: Request, res: Response) => {
-  const vault = vaults.find((v) => v.id === req.params.id)
+vaultsRouter.get('/:id', async (req: Request, res: Response) => {
+  const vault = await getVaultById(req.params.id)
   if (!vault) {
     res.status(404).json({ error: 'Vault not found' })
     return
