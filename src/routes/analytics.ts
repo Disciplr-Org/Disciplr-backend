@@ -1,3 +1,7 @@
+import { Router } from 'express'
+import { authenticateApiKey } from '../middleware/apiKeyAuth.js'
+
+export const analyticsRouter = Router()
 import { Router, Request, Response } from 'express'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'

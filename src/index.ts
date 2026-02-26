@@ -14,6 +14,9 @@ import { healthRateLimiter, vaultsRateLimiter } from './middleware/rateLimiter.j
 import { createExportRouter } from './routes/exports.js'
 import { transactionsRouter } from './routes/transactions.js'
 import { privacyRouter } from './routes/privacy.js'
+import { milestonesRouter } from './routes/milestones.js'
+import { privacyLogger } from './middleware/privacy-logger.js'
+import { startExpirationChecker } from './services/expirationScheduler.js'
 import { orgVaultsRouter } from './routes/orgVaults.js'
 import { orgAnalyticsRouter } from './routes/orgAnalytics.js'
 import { privacyLogger } from './middleware/privacy-logger.js'
@@ -46,6 +49,7 @@ app.use(privacyLogger)
 app.use('/api/health', createHealthRouter(jobSystem))
 app.use('/api/jobs', createJobsRouter(jobSystem))
 app.use('/api/vaults', vaultsRouter)
+app.use('/api/vaults/:vaultId/milestones', milestonesRouter)
 app.use('/api/health', healthRateLimiter, healthRouter)
 app.use('/api/vaults', vaultsRateLimiter, vaultsRouter)
 app.use('/api/auth', authRouter)
@@ -59,6 +63,7 @@ app.use('/api/admin', adminRouter)
 
 const server = app.listen(PORT, () => {
   console.log(`Disciplr API listening on http://localhost:${PORT}`)
+  startExpirationChecker()
 })
 
 let shuttingDown = false

@@ -5,6 +5,7 @@ import { analyticsRouter } from './routes/analytics.js'
 import { apiKeysRouter } from './routes/apiKeys.js'
 import { healthRouter } from './routes/health.js'
 import { vaultsRouter } from './routes/vaults.js'
+import { milestonesRouter } from './routes/milestones.js'
 import { orgVaultsRouter } from './routes/orgVaults.js'
 import { orgAnalyticsRouter } from './routes/orgAnalytics.js'
 import { verificationsRouter } from './routes/verifications.js'
@@ -33,6 +34,7 @@ app.use(helmet());
 
 app.use('/api/health', healthRouter)
 app.use('/api/vaults', vaultsRouter)
+app.use('/api/vaults/:vaultId/milestones', milestonesRouter)
 app.use('/api/analytics', analyticsRouter)
 app.use('/api/api-keys', apiKeysRouter)
 app.use('/api/organizations', orgVaultsRouter)

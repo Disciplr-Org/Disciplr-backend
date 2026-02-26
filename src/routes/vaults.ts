@@ -20,6 +20,9 @@ import {
 import { normalizeCreateVaultInput, validateCreateVaultInput } from '../services/vaultValidation.js'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
+import { authenticate } from '../middleware/auth.js'
+import { requireUser } from '../middleware/rbac.js'
+import { cancelVault } from '../services/vaultTransitions.js'
 import { isValidISO8601, parseAndNormalizeToUTC, utcNow } from '../utils/timestamps.js'
 import { getPgPool } from '../db/pool.js'
 
@@ -237,4 +240,20 @@ vaultsRouter.post('/:id/cancel', authenticate, async (req: Request, res: Respons
   updateAnalyticsSummary()
 
   res.status(200).json({ vault: cancelResult.vault })
+})
+
+vaultsRouter.post('/:id/cancel', authenticate, requireUser, (req: Request, res: Response) => {
+  const vault = vaults.find((v) => v.id === req.params.id)
+  if (!vault) {
+    res.status(404).json({ error: 'Vault not found' })
+    return
+  }
+
+  const result = cancelVault(vault.id, req.user!.sub)
+  if (!result.success) {
+    res.status(409).json({ error: result.error })
+    return
+  }
+
+  res.json({ message: 'Vault cancelled', vault })
 })
