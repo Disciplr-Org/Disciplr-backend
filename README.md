@@ -4,22 +4,26 @@ API and milestone engine for Disciplr: programmable time-locked capital vaults o
 
 ## What it does
 
+- **Health:** `GET /api/health` — service status and timestamp.
+- **Vaults:**  
+  - `GET /api/vaults` — list all vaults (in-memory placeholder).  
+  - `POST /api/vaults` — create a vault (body: `creator`, `amount`, `endTimestamp`, `successDestination`, `failureDestination`).  
+  - `GET /api/vaults/:id` — get a vault by id.
+- **Background jobs (custom worker queue):**
+  - `GET /api/jobs/health` — queue status (`ok`, `degraded`, `down`) and failure-rate snapshot.
+  - `GET /api/jobs/metrics` — detailed queue metrics by job type.
+  - `POST /api/jobs/enqueue` — enqueue a typed job.
 - **Health:** `GET /api/health` - service status and timestamp.
 - **Auth:**
   - `POST /api/auth/login` - mock login and audit logging.
   - `POST /api/auth/users/:id/role` - role changes (admin only) with audit logging.
 - **Vaults:**
   - `GET /api/vaults` - list all vaults with pagination, sorting, and filtering.
-  - `POST /api/vaults` - create a vault.
+  - `POST /api/vaults` - create a vault (body: `creator`, `amount`, `endTimestamp`, `successDestination`, `failureDestination`, optional `milestones`).
   - `GET /api/vaults/:id` - get a vault by id.
+  - `POST /api/vaults/:id/milestones/:mid/validate` - validate an assigned milestone as verifier.
   - `POST /api/vaults/:id/cancel` - cancel a vault (creator/admin) with audit logging.
-- **Health:**
-  - `GET /api/health` - service status and timestamp.
   - `GET /api/health/security` - abuse monitoring metrics snapshot.
-- **Vaults:**
-  - `GET /api/vaults` - list all vaults with pagination, sorting, and filtering.
-  - `POST /api/vaults` - create a vault (body: `creator`, `amount`, `endTimestamp`, `successDestination`, `failureDestination`).
-  - `GET /api/vaults/:id` - get a vault by id.
 - **Transactions:**
   - `GET /api/transactions` - list all transactions with pagination, sorting, and filtering.
   - `GET /api/transactions/:id` - get a transaction by id.
@@ -33,6 +37,16 @@ API and milestone engine for Disciplr: programmable time-locked capital vaults o
 All list endpoints support consistent query parameters for pagination (`page`, `pageSize`), sorting (`sortBy`, `sortOrder`), and filtering (endpoint-specific fields). See [API Patterns Documentation](docs/API_PATTERNS.md) for details.
 
 Data is stored in memory for now. Production would use PostgreSQL, a Horizon listener for on-chain events, and a proper milestone/verification engine.
+
+## Milestone validation behavior
+
+- Enforces verifier role via `x-user-role: verifier` header.
+- Enforces assigned verifier via `x-user-id` matching milestone `verifierId`.
+- Persists validation event in `vault.validationEvents`.
+- Updates milestone state (`pending` -> `validated`) and `validatedAt`/`validatedBy`.
+- Emits domain events in `vault.domainEvents`:
+  - `milestone.validated` for every successful validation.
+  - `vault.state_changed` when all milestones are validated and vault transitions to `completed`.
 
 ## User Audit Logging (Issue #45)
 
@@ -59,8 +73,56 @@ Admin-only access requirements for audit query endpoints:
 - `x-user-role: admin`
 - `x-user-id: <admin-user-id>`
 
+## Timezone handling
+
+All timestamps are stored, transmitted, and returned in UTC (ISO 8601 with `Z` suffix). Input timestamps must include a timezone designator. See [Timezone Contract](docs/TIMEZONE_CONTRACT.md) for the full specification.
+
 ## Tech stack
 
+## Background job system
+
+The backend now includes a generic background processor built as a custom in-memory queue/worker with:
+
+- Typed job registration and validation.
+- Configurable worker concurrency and polling interval.
+- Retry handling with exponential backoff.
+- Queue health and metrics endpoints.
+- Recurring scheduled jobs for deadline checks and analytics recompute.
+
+### Built-in job types
+
+- `notification.send`
+- `deadline.check`
+- `oracle.call`
+- `analytics.recompute`
+
+### Enqueue example
+
+```bash
+curl -X POST http://localhost:3000/api/jobs/enqueue \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "notification.send",
+    "payload": {
+      "recipient": "user@example.com",
+      "subject": "Disciplr reminder",
+      "body": "You have a milestone due soon."
+    },
+    "maxAttempts": 3,
+    "delayMs": 0
+  }'
+```
+
+### Optional environment variables
+
+- `JOB_WORKER_CONCURRENCY` (default: `2`)
+- `JOB_QUEUE_POLL_INTERVAL_MS` (default: `250`)
+- `JOB_HISTORY_LIMIT` (default: `50`)
+- `ENABLE_JOB_SCHEDULER` (`false` disables recurring jobs)
+- `DEADLINE_CHECK_INTERVAL_MS` (default: `60000`)
+- `ANALYTICS_RECOMPUTE_INTERVAL_MS` (default: `300000`)
+
+### Example: create a vault
 - Node.js + TypeScript
 - Express
 - Helmet + CORS
@@ -90,6 +152,9 @@ API runs at `http://localhost:3000`.
 | `npm run build` | Compile TypeScript to `dist/` |
 | `npm run start` | Run compiled `dist/index.js` |
 | `npm run lint` | Run ESLint on `src` |
+| `npm run test` | Run Jest test suite |
+| `npm run test:watch` | Run Jest in watch mode |
+| `npm run test:api-keys` | Run API key route tests |
 | `npm run migrate:make <name>` | Create migration file in `db/migrations` |
 | `npm run migrate:latest` | Apply all pending migrations |
 | `npm run migrate:rollback` | Roll back the latest migration batch |
@@ -150,6 +215,20 @@ Migration tooling is standardized with Knex and PostgreSQL.
 
 ```text
 disciplr-backend/
+├── src/
+│   ├── jobs/
+│   │   ├── handlers.ts
+│   │   ├── queue.ts
+│   │   ├── system.ts
+│   │   └── types.ts
+│   ├── routes/
+│   │   ├── health.ts
+│   │   ├── jobs.ts
+│   │   └── vaults.ts
+│   └── index.ts
+├── package.json
+├── tsconfig.json
+└── README.md
 |- src/
 |  |- routes/
 |  |  |- health.ts
@@ -158,8 +237,6 @@ disciplr-backend/
 |  |  |- analytics.ts
 |  |  |- auth.ts
 |  |  `- admin.ts
-|  |- middleware/
-|  |  `- queryParser.ts
 |  |  `- privacy.ts
 |  |- middleware/
 |  |  |- queryParser.ts
@@ -172,11 +249,7 @@ disciplr-backend/
 |  |  `- pagination.ts
 |  `- index.ts
 |- docs/
-|  `- API_PATTERNS.md
-|  |- API_PATTERNS.md
 |  `- database-migrations.md
-|- examples/
-|  `- api-usage.md
 |- package.json
 |- tsconfig.json
 `- README.md
