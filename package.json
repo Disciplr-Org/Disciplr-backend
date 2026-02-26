@@ -24,13 +24,9 @@
     "express": "^4.21.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.3",
-<<<<<<< HEAD
     "pg": "^8.13.1",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1"
-=======
-    "pg": "^8.13.1"
->>>>>>> origin/main
   },
   "devDependencies": {
     "@apidevtools/swagger-parser": "^12.1.0",
