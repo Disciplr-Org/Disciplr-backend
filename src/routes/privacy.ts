@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express'
+import { utcNow } from '../utils/timestamps.js'
 import { prisma } from '../lib/prisma.js'
 
 export const privacyRouter = Router()
@@ -27,7 +28,7 @@ privacyRouter.get('/export', async (req: Request, res: Response) => {
 
         res.json({
             creator,
-            exportDate: new Date().toISOString(),
+            exportDate: utcNow(),
             data: {
                 vaults: userData,
             },
@@ -42,7 +43,7 @@ privacyRouter.get('/export', async (req: Request, res: Response) => {
  * Deletes all records associated with a specific creator.
  */
 privacyRouter.delete('/account', async (req: Request, res: Response) => {
-    const creator = creatorIdFromQuery(req)
+    const creator = req.query.creator as string
 
     if (!creator) {
         res.status(400).json({ error: 'Missing required query parameter: creator' })
@@ -68,7 +69,3 @@ privacyRouter.delete('/account', async (req: Request, res: Response) => {
         res.status(500).json({ error: error.message })
     }
 })
-
-function creatorIdFromQuery(req: Request): string | undefined {
-    return req.query.creator as string
-}

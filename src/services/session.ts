@@ -1,5 +1,4 @@
-import db from '../db/index.js'
-import { randomUUID } from 'node:crypto'
+import { db } from '../db/index.js'
 
 export interface SessionRecord {
   id: string
