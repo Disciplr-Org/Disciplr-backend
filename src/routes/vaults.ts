@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
+import { updateVaultMetrics, recordVaultOperation } from '../middleware/metrics.js'
 
 export const vaultsRouter = Router()
 
@@ -63,6 +64,7 @@ vaultsRouter.post('/', (req: Request, res: Response) => {
     res.status(400).json({
       error: 'Missing required fields: creator, amount, endTimestamp, successDestination, failureDestination',
     })
+    recordVaultOperation('create', 'error')
     return
   }
 
@@ -80,6 +82,8 @@ vaultsRouter.post('/', (req: Request, res: Response) => {
     createdAt: startTimestamp,
   }
   vaults.push(vault)
+  updateVaultMetrics(vaults)
+  recordVaultOperation('create', 'success')
   res.status(201).json(vault)
 })
 
