@@ -25,6 +25,26 @@ import { getPgPool } from '../db/pool.js'
 
 export const vaultsRouter = Router()
 
+// In-memory placeholder; replace with DB (e.g. PostgreSQL) later
+export interface Vault {
+  id: string
+  creator: string
+  amount: string
+  startTimestamp: string
+  endTimestamp: string
+  successDestination: string
+  failureDestination: string
+  status: 'active' | 'completed' | 'failed' | 'cancelled'
+  createdAt: string
+  orgId?: string
+}
+
+// In-memory placeholder; replace with DB (e.g. PostgreSQL) later
+export let vaults: Array<Vault> = []
+
+export const setVaults = (newVaults: Array<Vault>) => {
+  vaults = newVaults
+}
 export type { Vault, VaultStatusUpdate } from '../types/vault.js'
 
 /**

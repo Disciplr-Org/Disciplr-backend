@@ -14,6 +14,8 @@ import { healthRateLimiter, vaultsRateLimiter } from './middleware/rateLimiter.j
 import { createExportRouter } from './routes/exports.js'
 import { transactionsRouter } from './routes/transactions.js'
 import { privacyRouter } from './routes/privacy.js'
+import { orgVaultsRouter } from './routes/orgVaults.js'
+import { orgAnalyticsRouter } from './routes/orgAnalytics.js'
 import { privacyLogger } from './middleware/privacy-logger.js'
 import { adminRouter } from './routes/admin.js'
 import {
@@ -51,6 +53,8 @@ app.use('/api/exports', createExportRouter(Vault))
 app.use('/api/transactions', transactionsRouter)
 app.use('/api/analytics', analyticsRouter)
 app.use('/api/privacy', privacyRouter)
+app.use('/api/organizations', orgVaultsRouter)
+app.use('/api/organizations', orgAnalyticsRouter)
 app.use('/api/admin', adminRouter)
 
 const server = app.listen(PORT, () => {
