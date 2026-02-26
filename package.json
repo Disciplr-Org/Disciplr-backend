@@ -14,7 +14,13 @@
     "migrate:make": "knex migrate:make --knexfile knexfile.cjs --migrations-directory db/migrations --extension cjs",
     "migrate:latest": "knex migrate:latest --knexfile knexfile.cjs",
     "migrate:rollback": "knex migrate:rollback --knexfile knexfile.cjs",
-    "migrate:status": "knex migrate:status --knexfile knexfile.cjs"
+    "migrate:status": "knex migrate:status --knexfile knexfile.cjs",
+    "seed": "tsx seed/index.ts",
+    "seed:users": "tsx seed/index.ts users",
+    "seed:vaults": "tsx seed/index.ts vaults",
+    "seed:milestones": "tsx seed/index.ts milestones",
+    "seed:transactions": "tsx seed/index.ts transactions",
+    "seed:all": "tsx seed/index.ts all"
   },
   "dependencies": {
     "@aws-sdk/client-ses": "^3.600.0",
