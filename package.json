@@ -8,10 +8,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "eslint src --ext .ts",
-    "test": "tsx --test src/**/*.test.ts",
-    "test:api-keys": "tsx --test src/routes/apiKeys.test.ts"
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch"
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:api-keys": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/routes/apiKeys.test.ts",
     "migrate:make": "knex migrate:make --knexfile knexfile.cjs --migrations-directory db/migrations --extension cjs",
     "migrate:latest": "knex migrate:latest --knexfile knexfile.cjs",
     "migrate:rollback": "knex migrate:rollback --knexfile knexfile.cjs",
@@ -21,7 +20,7 @@
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "helmet": "^7.1.0",
-    "jsonwebtoken": "^9.0.3"
+    "jsonwebtoken": "^9.0.3",
     "pg": "^8.13.1"
   },
   "devDependencies": {
@@ -33,9 +32,9 @@
     "@types/supertest": "^6.0.3",
     "eslint": "^9.13.0",
     "jest": "^30.2.0",
+    "knex": "^3.1.0",
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.6",
-    "knex": "^3.1.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   }
