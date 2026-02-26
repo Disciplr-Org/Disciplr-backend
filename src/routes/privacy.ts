@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { prisma } from '../lib/prisma.js'
+import { vaults, setVaults } from './vaults.js'
 
 export const privacyRouter = Router()
 
@@ -7,7 +7,7 @@ export const privacyRouter = Router()
  * GET /api/privacy/export?creator=<USER_ID>
  * Exports all data related to a specific creator.
  */
-privacyRouter.get('/export', async (req: Request, res: Response) => {
+privacyRouter.get('/export', (req: Request, res: Response) => {
     const creator = req.query.creator as string
 
     if (!creator) {
@@ -15,33 +15,22 @@ privacyRouter.get('/export', async (req: Request, res: Response) => {
         return
     }
 
-    try {
-        const userData = await prisma.vault.findMany({
-            where: { creatorId: creator },
-            include: {
-                creator: {
-                    select: { id: true, email: true }
-                }
-            }
-        })
+    const userData = vaults.filter((vault) => vault.creator === creator)
 
-        res.json({
-            creator,
-            exportDate: new Date().toISOString(),
-            data: {
-                vaults: userData,
-            },
-        })
-    } catch (error: any) {
-        res.status(500).json({ error: error.message })
-    }
+    res.json({
+        creator,
+        exportDate: new Date().toISOString(),
+        data: {
+            vaults: userData,
+        },
+    })
 })
 
 /**
  * DELETE /api/privacy/account?creator=<USER_ID>
  * Deletes all records associated with a specific creator.
  */
-privacyRouter.delete('/account', async (req: Request, res: Response) => {
+privacyRouter.delete('/account', (req: Request, res: Response) => {
     const creator = creatorIdFromQuery(req)
 
     if (!creator) {
@@ -49,24 +38,21 @@ privacyRouter.delete('/account', async (req: Request, res: Response) => {
         return
     }
 
-    try {
-        const deleteResult = await prisma.vault.deleteMany({
-            where: { creatorId: creator }
-        })
+    const initialCount = vaults.length
+    const newVaults = vaults.filter((vault) => vault.creator !== creator)
 
-        if (deleteResult.count === 0) {
-            res.status(404).json({ error: 'No data found for this creator' })
-            return
-        }
-
-        res.json({
-            message: `Account data for creator ${creator} has been deleted.`,
-            deletedCount: deleteResult.count,
-            status: 'success'
-        })
-    } catch (error: any) {
-        res.status(500).json({ error: error.message })
+    if (newVaults.length === initialCount) {
+        res.status(404).json({ error: 'No data found for this creator' })
+        return
     }
+
+    setVaults(newVaults)
+
+    res.json({
+        message: `Account data for creator ${creator} has been deleted.`,
+        deletedCount: initialCount - newVaults.length,
+        status: 'success'
+    })
 })
 
 function creatorIdFromQuery(req: Request): string | undefined {

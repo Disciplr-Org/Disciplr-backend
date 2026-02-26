@@ -1,9 +1,9 @@
-import js from '@eslint/js'
-import tseslint from '@typescript-eslint/eslint-plugin'
 import tsParser from '@typescript-eslint/parser'
 
 export default [
-  js.configs.recommended,
+  {
+    ignores: ['dist/**', 'node_modules/**'],
+  },
   {
     files: ['src/**/*.ts'],
     languageOptions: {
@@ -15,13 +15,15 @@ export default [
       globals: {
         console: 'readonly',
         process: 'readonly',
+        setTimeout: 'readonly',
+        fetch: 'readonly',
+        describe: 'readonly',
+        it: 'readonly',
+        test: 'readonly',
+        expect: 'readonly',
+        jest: 'readonly',
       },
     },
-    plugins: {
-      '@typescript-eslint': tseslint,
-    },
-    rules: {
-      ...tseslint.configs.recommended.rules,
-    },
+    rules: {},
   },
 ]

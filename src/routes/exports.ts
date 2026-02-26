@@ -1,4 +1,5 @@
 import { Router, Response } from 'express'
+import { UserRole } from '../types/auth.js'
 import { authenticate, requireAdmin, signDownloadToken, verifyDownloadToken, AuthenticatedRequest } from '../middleware/auth.js'
 import { createJob, getJob, processJob, ExportFormat, ExportScope } from '../services/exportQueue.js'
 
@@ -41,7 +42,7 @@ export function createExportRouter(
         }
 
         const job = createJob({
-            userId: req.user!.id,
+            userId: req.user!.userId,
             isAdmin: false,
             scope: opts.scope,
             format: opts.format,
@@ -82,7 +83,7 @@ export function createExportRouter(
                     : undefined
 
             const job = createJob({
-                userId: req.user!.id,
+                userId: req.user!.userId,
                 isAdmin: true,
                 targetUserId,
                 scope: opts.scope,
@@ -111,7 +112,7 @@ export function createExportRouter(
         }
 
         // Users may only check their own jobs; admins may check any
-        if (req.user!.role !== 'admin' && job.userId !== req.user!.id) {
+        if (req.user!.role !== UserRole.ADMIN && job.userId !== req.user!.userId) {
             res.status(403).json({ error: 'Access denied' })
             return
         }

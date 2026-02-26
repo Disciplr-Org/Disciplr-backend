@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express'
-import { UserRole } from '@prisma/client'
+import { UserRole, type UserRole as UserRoleValue } from '../types/auth.js'
 
-export function requireRole(...allowedRoles: UserRole[]) {
+export function requireRole(...allowedRoles: UserRoleValue[]) {
      return (req: Request, res: Response, next: NextFunction): void => {
           if (!req.user) {
                res.status(401).json({ error: 'Unauthenticated' })

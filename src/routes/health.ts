@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, type Request, type Response } from 'express'
 import { getSecurityMetricsSnapshot } from '../security/abuse-monitor.js'
 
 export const healthRouter = Router()

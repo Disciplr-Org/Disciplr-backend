@@ -1,5 +1,7 @@
 import { prisma } from '../lib/prisma.js'
-import { VaultStatus, UserRole } from '@prisma/client'
+import { UserRole, type UserRole as UserRoleValue } from '../types/auth.js'
+
+type VaultStatus = 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
 
 export interface VaultFilters {
     status?: VaultStatus
@@ -15,7 +17,7 @@ export interface PaginationParams {
 }
 
 export class VaultService {
-    static async listVaults(filters: VaultFilters, pagination: PaginationParams, userId: string, role: UserRole) {
+    static async listVaults(filters: VaultFilters, pagination: PaginationParams, userId: string, role: UserRoleValue) {
         const page = pagination.page || 1
         const limit = pagination.limit || 10
         const skip = (page - 1) * limit
@@ -64,7 +66,7 @@ export class VaultService {
         }
     }
 
-    static async getVaultDetails(id: string, userId: string, role: UserRole) {
+    static async getVaultDetails(id: string, userId: string, role: UserRoleValue) {
         const vault = await prisma.vault.findUnique({
             where: { id },
             include: {

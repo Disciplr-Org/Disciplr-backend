@@ -89,19 +89,19 @@ API runs at `http://localhost:3000`.
 
 ## Scripts
 
-| Command | Description |
-|---|---|
-| `npm run dev` | Run with tsx watch |
-| `npm run build` | Compile TypeScript to `dist/` |
-| `npm run start` | Run compiled `dist/index.js` |
-| `npm run lint` | Run ESLint on `src` |
-| `npm run test` | Run Jest test suite |
-| `npm run test:watch` | Run Jest in watch mode |
-| `npm run test:api-keys` | Run API key route tests |
+| Command                       | Description                              |
+| ----------------------------- | ---------------------------------------- |
+| `npm run dev`                 | Run with tsx watch                       |
+| `npm run build`               | Compile TypeScript to `dist/`            |
+| `npm run start`               | Run compiled `dist/index.js`             |
+| `npm run lint`                | Run ESLint on `src`                      |
+| `npm run test`                | Run Jest test suite                      |
+| `npm run test:watch`          | Run Jest in watch mode                   |
+| `npm run test:api-keys`       | Run API key route tests                  |
 | `npm run migrate:make <name>` | Create migration file in `db/migrations` |
-| `npm run migrate:latest` | Apply all pending migrations |
-| `npm run migrate:rollback` | Roll back the latest migration batch |
-| `npm run migrate:status` | Show migration status |
+| `npm run migrate:latest`      | Apply all pending migrations             |
+| `npm run migrate:rollback`    | Roll back the latest migration batch     |
+| `npm run migrate:status`      | Show migration status                    |
 
 ## Abuse detection instrumentation
 
@@ -119,18 +119,18 @@ The backend includes abuse-oriented security instrumentation middleware.
 
 ### Thresholds (env-configurable)
 
-| Env var | Default | Meaning |
-|---|---|---|
-| `SECURITY_RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit lookback window |
-| `SECURITY_RATE_LIMIT_MAX_REQUESTS` | `120` | Max requests per IP in rate-limit window |
-| `SECURITY_SUSPICIOUS_WINDOW_MS` | `300000` | Lookback window for suspicious pattern checks |
-| `SECURITY_SUSPICIOUS_404_THRESHOLD` | `20` | 404 count threshold for endpoint scan detection |
-| `SECURITY_SUSPICIOUS_DISTINCT_PATH_THRESHOLD` | `12` | Distinct 404 path threshold for endpoint scan detection |
-| `SECURITY_SUSPICIOUS_BAD_REQUEST_THRESHOLD` | `30` | 400 count threshold for repeated bad request detection |
-| `SECURITY_SUSPICIOUS_HIGH_VOLUME_THRESHOLD` | `300` | Total request threshold for high-volume bursts |
-| `SECURITY_FAILED_LOGIN_WINDOW_MS` | `900000` | Lookback window for failed login burst checks |
-| `SECURITY_FAILED_LOGIN_BURST_THRESHOLD` | `5` | Failed login threshold per IP before alert |
-| `SECURITY_ALERT_COOLDOWN_MS` | `300000` | Minimum time between repeated alerts per IP/pattern |
+| Env var                                       | Default  | Meaning                                                 |
+| --------------------------------------------- | -------- | ------------------------------------------------------- |
+| `SECURITY_RATE_LIMIT_WINDOW_MS`               | `60000`  | Rate-limit lookback window                              |
+| `SECURITY_RATE_LIMIT_MAX_REQUESTS`            | `120`    | Max requests per IP in rate-limit window                |
+| `SECURITY_SUSPICIOUS_WINDOW_MS`               | `300000` | Lookback window for suspicious pattern checks           |
+| `SECURITY_SUSPICIOUS_404_THRESHOLD`           | `20`     | 404 count threshold for endpoint scan detection         |
+| `SECURITY_SUSPICIOUS_DISTINCT_PATH_THRESHOLD` | `12`     | Distinct 404 path threshold for endpoint scan detection |
+| `SECURITY_SUSPICIOUS_BAD_REQUEST_THRESHOLD`   | `30`     | 400 count threshold for repeated bad request detection  |
+| `SECURITY_SUSPICIOUS_HIGH_VOLUME_THRESHOLD`   | `300`    | Total request threshold for high-volume bursts          |
+| `SECURITY_FAILED_LOGIN_WINDOW_MS`             | `900000` | Lookback window for failed login burst checks           |
+| `SECURITY_FAILED_LOGIN_BURST_THRESHOLD`       | `5`      | Failed login threshold per IP before alert              |
+| `SECURITY_ALERT_COOLDOWN_MS`                  | `300000` | Minimum time between repeated alerts per IP/pattern     |
 
 ### Alert wiring guidance
 
@@ -187,6 +187,16 @@ disciplr-backend/
 Required env var:
 
 - `DATABASE_URL` (PostgreSQL connection string)
+
+Optional Horizon listener env vars:
+
+- `HORIZON_LISTENER_ENABLED` (`true`/`false`) to enable vault contract event listener
+- `STELLAR_NETWORK` (`testnet` or `mainnet`) to select default Horizon host
+- `STELLAR_HORIZON_URL` to override Horizon host directly
+- `STELLAR_VAULT_CONTRACT_IDS` comma-separated vault contract IDs to subscribe to
+- `STELLAR_VAULT_EVENT_TYPES` comma-separated events (`vault_created`, `validation`, `release`, `redirect`)
+- `HORIZON_POLL_INTERVAL_MS` polling interval in milliseconds (default `5000`)
+- `HORIZON_CURSOR` starting cursor (default `now`)
 
 Quick start:
 

@@ -1,4 +1,10 @@
-import { UserRole } from '@prisma/client'
+export const UserRole = {
+  USER: 'USER',
+  VERIFIER: 'VERIFIER',
+  ADMIN: 'ADMIN',
+} as const
+
+export type UserRole = (typeof UserRole)[keyof typeof UserRole]
 
 export interface AuthenticatedUser {
   userId: string
