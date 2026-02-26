@@ -16,7 +16,7 @@
  *   RETRY_BACKOFF_MS - Initial backoff delay in ms (optional, default: 100)
  */
 
-import { db } from '../db/knex.js'
+import { db } from '../db/index.js'
 import { EventProcessor } from './eventProcessor.js'
 import { HorizonListener } from './horizonListener.js'
 import { getValidatedConfig } from '../config/horizonListener.js'

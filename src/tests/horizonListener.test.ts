@@ -1,6 +1,6 @@
-import { HorizonListener } from '../services/horizonListener'
-import { EventProcessor } from '../services/eventProcessor'
-import { HorizonListenerConfig } from '../config/horizonListener'
+import { HorizonListener } from '../services/horizonListener.js'
+import { EventProcessor } from '../services/eventProcessor.js'
+import { HorizonListenerConfig } from '../config/horizonListener.js'
 import { Knex } from 'knex'
 import { jest } from '@jest/globals'
 

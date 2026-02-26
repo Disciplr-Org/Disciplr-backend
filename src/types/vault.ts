@@ -8,17 +8,24 @@ export enum VaultStatus {
 
 export interface Vault {
   id: string;
-  contract_id: string | null;
-  creator_address: string;
+  contract_id?: string | null;
+  creator_address?: string;
   amount: string; 
-  milestone_hash: string;
-  verifier_address: string;
-  success_destination: string;
-  failure_destination: string;
-  status: VaultStatus;
-  deadline: Date;
-  created_at: Date;
-  updated_at: Date;
+  milestone_hash?: string;
+  verifier_address?: string;
+  success_destination?: string;
+  failure_destination?: string;
+  status: VaultStatus | 'active' | 'completed' | 'failed' | 'cancelled';
+  deadline?: Date;
+  created_at?: Date;
+  updated_at?: Date;
+  creator?: string;
+  startTimestamp?: string;
+  endTimestamp?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  successDestination?: string;
+  failureDestination?: string;
 }
 
 export type CreateVaultDTO = {
@@ -31,18 +38,6 @@ export type CreateVaultDTO = {
   failureDestination: string;
   deadline: Date | string;
 };
-export interface Vault {
-    id: string
-    creator: string
-    amount: string
-    startTimestamp: string
-    endTimestamp: string
-    successDestination: string
-    failureDestination: string
-    status: 'active' | 'completed' | 'failed' | 'cancelled'
-    createdAt: string
-    updatedAt: string
-}
 
 export interface VaultAnalytics {
     totalVaults: number

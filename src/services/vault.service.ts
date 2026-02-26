@@ -1,13 +1,23 @@
 import { Pool } from 'pg';
-import { Vault, CreateVaultDTO, VaultStatus } from '../types/vault';
+import { Vault, CreateVaultDTO, VaultStatus } from '../types/vault.js';
+import pool from '../db/index.js'; 
+import { prisma } from '../lib/prisma.js'
+import { UserRole } from '../types/user.js'
 
-// Assuming you have a configured pg pool exported from your db setup
-import pool from '../db/index'; 
+export interface VaultFilters {
+    status?: any
+    minAmount?: string
+    maxAmount?: string
+    startDate?: string
+    endDate?: string
+}
+
+export interface PaginationParams {
+    page?: number
+    limit?: number
+}
 
 export class VaultService {
-  /**
-   * Creates a new vault record in the database.
-   */
   static async createVault(data: CreateVaultDTO): Promise<Vault> {
     const query = `
       INSERT INTO vaults (
@@ -32,9 +42,6 @@ export class VaultService {
     }
   }
 
-  /**
-   * Retrieves a vault by its internal UUID.
-   */
   static async getVaultById(id: string): Promise<Vault | null> {
     const query = `SELECT * FROM vaults WHERE id = $1;`;
     
@@ -47,9 +54,6 @@ export class VaultService {
     }
   }
 
-  /**
-   * Retrieves all vaults created by a specific Stellar address.
-   */
   static async getVaultsByUser(creatorAddress: string): Promise<Vault[]> {
     const query = `SELECT * FROM vaults WHERE creator_address = $1 ORDER BY created_at DESC;`;
     
@@ -62,10 +66,7 @@ export class VaultService {
     }
   }
 
-  /**
-   * Updates the status of an existing vault.
-   */
-  static async updateVaultStatus(id: string, status: VaultStatus): Promise<Vault | null> {
+  static async updateVaultStatus(id: string, status: string): Promise<Vault | null> {
     const query = `
       UPDATE vaults 
       SET status = $1, updated_at = NOW() 
@@ -81,32 +82,14 @@ export class VaultService {
       throw new Error('Database error during status update');
     }
   }
-}
-import { prisma } from '../lib/prisma.js'
-import { VaultStatus, UserRole } from '@prisma/client'
 
-export interface VaultFilters {
-    status?: VaultStatus
-    minAmount?: string
-    maxAmount?: string
-    startDate?: string
-    endDate?: string
-}
-
-export interface PaginationParams {
-    page?: number
-    limit?: number
-}
-
-export class VaultService {
-    static async listVaults(filters: VaultFilters, pagination: PaginationParams, userId: string, role: UserRole) {
+    static async listVaults(filters: VaultFilters, pagination: PaginationParams, userId: string, role: string) {
         const page = pagination.page || 1
         const limit = pagination.limit || 10
         const skip = (page - 1) * limit
 
         const where: any = {}
 
-        // Access control: Users see only their own, Admins see all
         if (role !== UserRole.ADMIN) {
             where.creatorId = userId
         }
@@ -148,7 +131,7 @@ export class VaultService {
         }
     }
 
-    static async getVaultDetails(id: string, userId: string, role: UserRole) {
+    static async getVaultDetails(id: string, userId: string, role: string) {
         const vault = await prisma.vault.findUnique({
             where: { id },
             include: {
@@ -162,7 +145,6 @@ export class VaultService {
             throw new Error('Vault not found')
         }
 
-        // Access control
         if (role !== UserRole.ADMIN && vault.creatorId !== userId) {
             throw new Error('Forbidden: You do not have access to this vault')
         }

@@ -1,5 +1,5 @@
-import { EventProcessor } from '../services/eventProcessor'
-import { ParsedEvent } from '../types/horizonSync'
+import { EventProcessor } from '../services/eventProcessor.js'
+import { ParsedEvent } from '../types/horizonSync.js'
 import knex, { Knex } from 'knex'
 
 describe('EventProcessor - Basic Functionality', () => {

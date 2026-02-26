@@ -1,9 +1,6 @@
 import knex from 'knex'
+// @ts-ignore
 import knexConfig from '../../knexfile.cjs'
-
-const db = knex(knexConfig as any)
-
-export { db }
 import pg from 'pg';
 import 'dotenv/config';
 
@@ -19,4 +16,7 @@ pool.on('error', (err) => {
   process.exit(-1);
 });
 
+const db = knex(knexConfig as any)
+
+export { db }
 export default pool;

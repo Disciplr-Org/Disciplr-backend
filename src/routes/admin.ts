@@ -1,15 +1,31 @@
-import { Router } from 'express'
-import { createAuditLog, getAuditLogById, listAuditLogs } from '../lib/audit-logs.js'
-import { cancelVaultById } from './vaults.js'
+import { Router, Request, Response } from 'express'
 import { authenticate, authorize } from '../middleware/auth.middleware.js'
 import { UserRole, UserStatus } from '../types/user.js'
 import { userService } from '../services/user.service.js'
+import { forceRevokeUserSessions } from '../services/session.js'
+import { createAuditLog, getAuditLogById, listAuditLogs } from '../lib/audit-logs.js'
+import { cancelVaultById } from '../services/vaultStore.js'
 
 export const adminRouter = Router()
 
 // Apply authentication to all admin routes
 adminRouter.use(authenticate)
 adminRouter.use(authorize([UserRole.ADMIN]))
+
+/**
+ * Force-logout a user (Admin only)
+ */
+adminRouter.post('/users/:userId/revoke-sessions', async (req: Request, res: Response) => {
+  const { userId } = req.params
+  
+  if (!userId) {
+    res.status(400).json({ error: 'Missing userId' })
+    return
+  }
+
+  await forceRevokeUserSessions(userId)
+  res.json({ message: `All sessions for user ${userId} have been revoked` })
+})
 
 const getStringQuery = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value : undefined
@@ -39,10 +55,10 @@ adminRouter.get('/audit-logs/:id', (req, res) => {
   res.status(200).json(auditLog)
 })
 
-adminRouter.post('/overrides/vaults/:id/cancel', (req, res) => {
+adminRouter.post('/overrides/vaults/:id/cancel', async (req, res) => {
   const reason = typeof req.body?.reason === 'string' ? req.body.reason : 'No reason provided'
 
-  const cancelResult = cancelVaultById(req.params.id)
+  const cancelResult = await cancelVaultById(req.params.id)
   if ('error' in cancelResult) {
     if (cancelResult.error === 'already_cancelled') {
       res.status(409).json({ error: 'Vault is already cancelled' })

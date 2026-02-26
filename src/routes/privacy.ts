@@ -1,7 +1,6 @@
-import { Router } from 'express'
+import { Router, Request, Response } from 'express'
 import { vaults, setVaults } from './vaults.js'
 import { utcNow } from '../utils/timestamps.js'
-import { Router, Request, Response } from 'express'
 import { prisma } from '../lib/prisma.js'
 
 export const privacyRouter = Router()
@@ -28,16 +27,9 @@ privacyRouter.get('/export', async (req: Request, res: Response) => {
             }
         })
 
-    res.json({
-        creator,
-        exportDate: utcNow(),
-        data: {
-            vaults: userData,
-        },
-    })
         res.json({
             creator,
-            exportDate: new Date().toISOString(),
+            exportDate: utcNow(),
             data: {
                 vaults: userData,
             },

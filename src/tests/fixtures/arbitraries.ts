@@ -5,7 +5,7 @@ import {
   VaultEventPayload,
   MilestoneEventPayload,
   ValidationEventPayload
-} from '../../types/horizonSync'
+} from '../../types/horizonSync.js'
 
 /**
  * Fast-check arbitraries for property-based testing

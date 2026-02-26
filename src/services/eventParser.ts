@@ -4,7 +4,7 @@ import {
   VaultEventPayload, 
   MilestoneEventPayload, 
   ValidationEventPayload 
-} from '../types/horizonSync'
+} from '../types/horizonSync.js'
 
 /**
  * Result of parsing a Horizon event

@@ -5,12 +5,12 @@ import {
   mockMilestoneValidatedEvent,
   allMockEvents,
   createMockVaultCreatedEvent
-} from './fixtures/horizonEvents'
+} from './fixtures/horizonEvents.js'
 import {
   arbitraryParsedEvent,
   arbitraryVaultCreatedEvent,
   arbitraryMilestoneCreatedEvent
-} from './fixtures/arbitraries'
+} from './fixtures/arbitraries.js'
 import fc from 'fast-check'
 
 describe('Test Fixtures and Helpers', () => {
@@ -39,7 +39,7 @@ describe('Test Fixtures and Helpers', () => {
 
     it('should have all mock events in collection', () => {
       expect(allMockEvents.length).toBeGreaterThan(0)
-      expect(allMockEvents.every(e => e.eventId && e.eventType)).toBe(true)
+      expect(allMockEvents.every((e: any) => e.eventId && e.eventType)).toBe(true)
     })
 
     it('should create custom vault event with overrides', () => {
