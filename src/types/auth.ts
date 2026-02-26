@@ -1,4 +1,4 @@
-import { UserRole } from '@prisma/client'
+import { UserRole } from './domain.js'
 
 export interface AuthenticatedUser {
   userId: string

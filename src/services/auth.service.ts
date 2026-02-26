@@ -1,7 +1,7 @@
 import { prisma } from '../lib/prisma.js'
 import { hashPassword, comparePassword, generateAccessToken, generateRefreshToken, verifyRefreshToken } from '../lib/auth-utils.js'
 import { RegisterInput, LoginInput } from '../lib/validation.js'
-import { UserRole } from '@prisma/client'
+import { UserRole } from '../types/domain.js'
 
 export class AuthService {
     static async register(input: RegisterInput) {

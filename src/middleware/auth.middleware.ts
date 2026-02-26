@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import { verifyAccessToken } from '../lib/auth-utils.js'
-import { UserRole } from '@prisma/client'
+import { UserRole } from '../types/domain.js'
 
 export const authenticate = (req: Request, res: Response, next: NextFunction) => {
     const authHeader = req.headers.authorization

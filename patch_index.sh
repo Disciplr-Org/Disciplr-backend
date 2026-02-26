@@ -1,3 +1,5 @@
+#!/bin/bash
+cat << 'INNER_EOF' > src/index.ts
 import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
@@ -36,7 +38,7 @@ app.use(privacyLogger)
 app.use('/api/health', healthRateLimiter, healthRouter)
 app.use('/api/vaults', vaultsRateLimiter, vaultsRouter)
 app.use('/api/auth', authRouter)
-app.use('/api/exports', createExportRouter(vaults as unknown as Record<string, unknown>[]))
+app.use('/api/exports', createExportRouter(vaults))
 app.use('/api/transactions', transactionsRouter)
 app.use('/api/analytics', analyticsRouter)
 app.use('/api/privacy', privacyRouter)
@@ -48,3 +50,6 @@ app.use(errorHandler)
 app.listen(PORT, () => {
   console.log(`Disciplr API listening on http://localhost:${PORT}`)
 })
+INNER_EOF
+chmod +x patch_index.sh
+./patch_index.sh

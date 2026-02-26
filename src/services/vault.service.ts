@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma.js'
-import { VaultStatus, UserRole } from '@prisma/client'
+import { VaultStatus, UserRole } from '../types/domain.js'
 
 export interface VaultFilters {
     status?: VaultStatus

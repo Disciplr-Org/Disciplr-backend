@@ -221,3 +221,33 @@ export const getVaultById = async (id: string): Promise<PersistedVault | null> =
 export const resetVaultStore = (): void => {
   memoryVaults.length = 0
 }
+
+export const cancelVaultById = async (
+  id: string,
+): Promise<{ vault: PersistedVault; previousStatus: string } | { error: 'not_found' | 'invalid_state'; currentStatus?: string }> => {
+  const vault = await getVaultById(id)
+  if (!vault) {
+    return { error: 'not_found' }
+  }
+
+  if (vault.status !== 'draft' && vault.status !== 'active') {
+    return { error: 'invalid_state', currentStatus: vault.status }
+  }
+
+  const pool = getPgPool()
+  if (pool) {
+    await pool.query('UPDATE vaults SET status = $1 WHERE id = $2', ['cancelled', id])
+  } else {
+    // Modify in-memory store if DB is not available
+    const memVault = memoryVaults.find(v => v.id === id)
+    if (memVault) {
+      memVault.status = 'cancelled'
+    }
+  }
+
+  const previousStatus = vault.status
+  const updatedVault = { ...vault, status: 'cancelled' as const }
+
+  return { vault: updatedVault, previousStatus }
+}
+

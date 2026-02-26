@@ -1,0 +1,7 @@
+npm warn Unknown global config "python". This will stop working in the next major version of npm.
+src/index.ts(39,44): error TS2345: Argument of type 'Vault[]' is not assignable to parameter of type 'Record<string, unknown>[]'.
+  Type 'Vault' is not assignable to type 'Record<string, unknown>'.
+    Index signature for type 'string' is missing in type 'Vault'.
+src/middleware/auth.ts(50,9): error TS2367: This comparison appears to be unintentional because the types 'UserRole | undefined' and '"admin"' have no overlap.
+src/routes/admin.ts(3,10): error TS2459: Module '"./vaults.js"' declares 'cancelVaultById' locally, but it is not exported.
+src/routes/exports.ts(114,13): error TS2367: This comparison appears to be unintentional because the types 'UserRole' and '"admin"' have no overlap.

@@ -3,6 +3,7 @@ import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 
 import { JWTPayload } from '../types/auth.js'
+import { UserRole } from '../types/domain.js'
 
 export type Role = 'user' | 'verifier' | 'admin'
 
@@ -11,38 +12,43 @@ export type JwtPayload = JWTPayload
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production'
 
+export interface AuthenticatedRequest extends Request {
+    user?: JwtPayload
+}
+
 export function authenticate(req: Request, res: Response, next: NextFunction): void {
-     const authHeader = req.headers.authorization
+    const authHeader = req.headers.authorization
 
-     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-          res.status(401).json({ error: 'Missing or malformed Authorization header' })
-          return
-     }
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        res.status(401).json({ error: 'Missing or malformed Authorization header' })
+        return
+    }
 
-     const token = authHeader.slice(7)
+    const token = authHeader.slice(7)
 
-     try {
-          const payload = jwt.verify(token, JWT_SECRET) as JwtPayload
-          req.user = payload
-          next()
-     } catch (err) {
-          if (err instanceof jwt.TokenExpiredError) {
-               res.status(401).json({ error: 'Token expired' })
-          } else {
-               res.status(401).json({ error: 'Invalid token' })
-          }
-     }
+    try {
+        const payload = jwt.verify(token, JWT_SECRET) as JwtPayload
+        req.user = payload
+        next()
+    } catch (err) {
+        if (err instanceof jwt.TokenExpiredError) {
+            res.status(401).json({ error: 'Token expired' })
+        } else {
+            res.status(401).json({ error: 'Invalid token' })
+        }
+    }
 }
 
 export function signToken(payload: JwtPayload, expiresIn = '1h'): string {
-     return jwt.sign(payload, JWT_SECRET, { expiresIn } as jwt.SignOptions)
+    return jwt.sign(payload, JWT_SECRET, { expiresIn } as jwt.SignOptions)
+}
 
 export function requireAdmin(
     req: AuthenticatedRequest,
     res: Response,
     next: NextFunction,
 ): void {
-    if (req.user?.role !== 'admin') {
+    if (req.user?.role !== UserRole.ADMIN) {
         res.status(403).json({ error: 'Admin role required' })
         return
     }

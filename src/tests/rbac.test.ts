@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { UserRole } from '@prisma/client'
+import { UserRole } from '../types/domain.js'
 import request from 'supertest'
 import express from 'express'
 import { authenticate, signToken } from '../middleware/auth.js'

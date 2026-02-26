@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { UserRole } from '@prisma/client'
+import { UserRole } from '../types/domain.js'
 
 export const registerSchema = z.object({
     email: z.string().email(),

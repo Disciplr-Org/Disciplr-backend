@@ -1,0 +1,6 @@
+npm warn Unknown global config "python". This will stop working in the next major version of npm.
+src/routes/admin.ts(79,71): error TS2339: Property 'currentStatus' does not exist on type 'Promise<{ vault: PersistedVault; previousStatus: string; } | { error: "not_found" | "invalid_state"; currentStatus?: string | undefined; }> & Record<"error", unknown>'.
+src/routes/admin.ts(92,29): error TS2339: Property 'vault' does not exist on type 'Promise<{ vault: PersistedVault; previousStatus: string; } | { error: "not_found" | "invalid_state"; currentStatus?: string | undefined; }>'.
+src/routes/admin.ts(95,36): error TS2339: Property 'previousStatus' does not exist on type 'Promise<{ vault: PersistedVault; previousStatus: string; } | { error: "not_found" | "invalid_state"; currentStatus?: string | undefined; }>'.
+src/routes/admin.ts(96,31): error TS2339: Property 'vault' does not exist on type 'Promise<{ vault: PersistedVault; previousStatus: string; } | { error: "not_found" | "invalid_state"; currentStatus?: string | undefined; }>'.
+src/routes/admin.ts(102,25): error TS2339: Property 'vault' does not exist on type 'Promise<{ vault: PersistedVault; previousStatus: string; } | { error: "not_found" | "invalid_state"; currentStatus?: string | undefined; }>'.

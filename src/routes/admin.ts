@@ -1,14 +1,16 @@
 import { Router } from 'express'
 import { createAuditLog, getAuditLogById, listAuditLogs } from '../lib/audit-logs.js'
-import { cancelVaultById } from './vaults.js'
+import { cancelVaultById } from '../services/vaultStore.js'
 
 export const adminRouter = Router()
 
 const getStringQuery = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value : undefined
 
+import { UserRole } from '../types/domain.js'
+
 const requireAdmin = (role: string | undefined, actorId: string | undefined): string | null => {
-  if (role !== 'admin') {
+  if (role !== UserRole.ADMIN && role !== 'admin') {
     return null
   }
 
@@ -56,7 +58,7 @@ adminRouter.get('/audit-logs/:id', (req, res) => {
   res.status(200).json(auditLog)
 })
 
-adminRouter.post('/overrides/vaults/:id/cancel', (req, res) => {
+adminRouter.post('/overrides/vaults/:id/cancel', async (req, res) => {
   const actorUserId = requireAdmin(req.header('x-user-role') ?? undefined, req.header('x-user-id') ?? undefined)
   if (!actorUserId) {
     res.status(403).json({ error: 'Admin access required (x-user-role=admin and x-user-id)' })
@@ -65,14 +67,9 @@ adminRouter.post('/overrides/vaults/:id/cancel', (req, res) => {
 
   const reason = typeof req.body?.reason === 'string' ? req.body.reason : 'No reason provided'
 
-  const cancelResult = cancelVaultById(req.params.id)
+  const cancelResult = await cancelVaultById(req.params.id)
   if ('error' in cancelResult) {
-    if (cancelResult.error === 'already_cancelled') {
-      res.status(409).json({ error: 'Vault is already cancelled' })
-      return
-    }
-
-    if (cancelResult.error === 'not_cancellable') {
+    if (cancelResult.error === 'invalid_state') {
       res.status(409).json({
         error: `Vault cannot be cancelled from status: ${cancelResult.currentStatus}`,
       })

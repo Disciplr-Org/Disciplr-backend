@@ -1,0 +1,13 @@
+npm warn Unknown global config "python". This will stop working in the next major version of npm.
+src/index.ts(39,44): error TS2345: Argument of type 'Vault[]' is not assignable to parameter of type 'Record<string, unknown>[]'.
+  Type 'Vault' is not assignable to type 'Record<string, unknown>'.
+    Index signature for type 'string' is missing in type 'Vault'.
+src/lib/validation.ts(2,10): error TS2305: Module '"@prisma/client"' has no exported member 'UserRole'.
+src/middleware/auth.middleware.ts(3,10): error TS2305: Module '"@prisma/client"' has no exported member 'UserRole'.
+src/middleware/rbac.ts(2,10): error TS2305: Module '"@prisma/client"' has no exported member 'UserRole'.
+src/routes/admin.ts(3,10): error TS2459: Module '"./vaults.js"' declares 'cancelVaultById' locally, but it is not exported.
+src/services/auth.service.ts(4,10): error TS2305: Module '"@prisma/client"' has no exported member 'UserRole'.
+src/services/vault.service.ts(2,10): error TS2305: Module '"@prisma/client"' has no exported member 'VaultStatus'.
+src/services/vault.service.ts(2,23): error TS2305: Module '"@prisma/client"' has no exported member 'UserRole'.
+src/tests/rbac.test.ts(3,10): error TS2305: Module '"@prisma/client"' has no exported member 'UserRole'.
+src/types/auth.ts(1,10): error TS2305: Module '"@prisma/client"' has no exported member 'UserRole'.

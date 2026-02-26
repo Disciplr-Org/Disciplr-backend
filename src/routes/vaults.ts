@@ -1,9 +1,25 @@
 import { Router } from 'express'
+import type { Request, Response } from 'express'
 import { authenticate } from '../middleware/auth.middleware.js'
 import { VaultService } from '../services/vault.service.js'
-import { VaultStatus } from '@prisma/client'
-
-export const vaultsRouter = Router()
+import { getPgPool } from '../db/pool.js'
+import {
+  IdempotencyConflictError,
+  getIdempotentResponse,
+  hashRequestPayload,
+  saveIdempotentResponse
+} from '../services/idempotency.js'
+import { buildVaultCreationPayload } from '../services/soroban.js'
+import {
+  createVaultWithMilestones,
+  getVaultById,
+  listVaults,
+  cancelVaultById
+} from '../services/vaultStore.js'
+import { normalizeCreateVaultInput, validateCreateVaultInput } from '../services/vaultValidation.js'
+import { queryParser } from '../middleware/queryParser.js'
+import { createAuditLog } from '../lib/audit-logs.js'
+import type { VaultCreateResponse } from '../types/vaults.js'
 
 export type VaultStatus = 'active' | 'completed' | 'failed' | 'cancelled'
 type MilestoneStatus = 'pending' | 'validated' | 'rejected'
@@ -82,12 +98,6 @@ function appendVaultHistory(
   })
 }
 
-export let vaults: Array<Vault> = []
-
-export const setVaults = (newVaults: Array<Vault>) => {
-  vaults = newVaults
-}
-
 // In-memory placeholder; replace with DB (e.g. PostgreSQL) later
 export let vaults: Array<Vault> = []
 
@@ -98,74 +108,6 @@ export const setVaults = (newVaults: Array<Vault>) => {
 const makeId = (prefix: string): string =>
   `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 
-const getVaultById = (id: string): Vault | undefined => vaults.find((vault) => vault.id === id)
-
-export const cancelVaultById = (id: string):
-  | { vault: Vault; previousStatus: VaultStatus }
-  | { error: 'not_found' | 'already_cancelled' | 'not_cancellable'; currentStatus?: VaultStatus } => {
-  const vault = getVaultById(id)
-  if (!vault) {
-    return { error: 'not_found' }
-  }
-
-  if (vault.status === 'cancelled') {
-    return { error: 'already_cancelled', currentStatus: vault.status }
-// List vaults with filtering and pagination
-vaultsRouter.get('/', authenticate, async (req, res) => {
-  const { status, minAmount, maxAmount, startDate, endDate, page, limit } = req.query
-
-  try {
-    const result = await VaultService.listVaults(
-      {
-        status: status as VaultStatus,
-        minAmount: minAmount as string,
-        maxAmount: maxAmount as string,
-        startDate: startDate as string,
-        endDate: endDate as string,
-      },
-      {
-        page: page ? parseInt(page as string) : undefined,
-        limit: limit ? parseInt(limit as string) : undefined,
-      },
-      req.user!.userId,
-      req.user!.role
-    )
-    res.json(result)
-  } catch (error: any) {
-    res.status(500).json({ error: error.message })
-  }
-})
-
-// Get vault detail
-vaultsRouter.get('/:id', authenticate, async (req, res) => {
-  const { id } = req.params
-
-  try {
-    const vault = await VaultService.getVaultDetails(id, req.user!.userId, req.user!.role)
-    res.json(vault)
-  } catch (error: any) {
-    const status = error.message.includes('Forbidden') ? 403 : 404
-    res.status(status).json({ error: error.message })
-import type { Request, Response } from 'express'
-import { getPgPool } from '../db/pool.js'
-import { 
-  IdempotencyConflictError, 
-  getIdempotentResponse, 
-  hashRequestPayload, 
-  saveIdempotentResponse 
-} from '../services/idempotency.js'
-import { buildVaultCreationPayload } from '../services/soroban.js'
-import { 
-  createVaultWithMilestones, 
-  getVaultById, 
-  listVaults,
-  cancelVaultById // Assuming this is moved to vaultStore for DB persistence
-} from '../services/vaultStore.js'
-import { normalizeCreateVaultInput, validateCreateVaultInput } from '../services/vaultValidation.js'
-import { queryParser } from '../middleware/queryParser.js'
-import { createAuditLog } from '../lib/audit-logs.js'
-import type { VaultCreateResponse } from '../types/vaults.js'
-
 export const vaultsRouter = Router()
 
 /**
@@ -174,43 +116,28 @@ export const vaultsRouter = Router()
  */
 vaultsRouter.get(
   '/',
+  authenticate,
   queryParser({
     allowedSortFields: ['createdAt', 'amount', 'endTimestamp', 'status'],
     allowedFilterFields: ['status', 'creator'],
   }),
   async (req: Request, res: Response) => {
-    // Note: In production, pass req.filters, req.sort, and req.pagination 
-    // directly to your DB query in listVaults()
-    const vaults = await listVaults(req.filters, req.sort, req.pagination)
-    res.json(vaults)
+    try {
+      // Note: In production, pass req.filters, req.sort, and req.pagination 
+      // directly to your DB query in listVaults()
+      const vaults = await listVaults()
+      res.json(vaults)
+    } catch (error: any) {
+      res.status(500).json({ error: error.message })
+    }
   }
 )
 
-vaultsRouter.post('/', (req: Request, res: Response) => {
-  const {
-    creator,
-    amount,
-    endTimestamp,
-    successDestination,
-    failureDestination,
-    milestones,
-  } = req.body as {
-    creator?: string
-    amount?: string
-    endTimestamp?: string
-    successDestination?: string
-    failureDestination?: string
-    milestones?: Array<{
-      id?: string
-      title?: string
-      verifierId?: string
-    }>
-  }
 /**
  * POST /
  * Creates a new vault with idempotency checks and audit logging.
  */
-vaultsRouter.post('/', async (req: Request, res: Response) => {
+vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
   const input = normalizeCreateVaultInput(req.body)
   const validation = validateCreateVaultInput(input)
 
@@ -218,13 +145,6 @@ vaultsRouter.post('/', async (req: Request, res: Response) => {
     res.status(400).json({
       error: 'Vault creation payload validation failed.',
       details: validation.errors,
-    })
-    return
-  }
-
-  if (milestones && (!Array.isArray(milestones) || milestones.some((m) => !m.title || !m.verifierId))) {
-    res.status(400).json({
-      error: 'If provided, milestones must be an array with title and verifierId for each milestone',
     })
     return
   }
@@ -251,73 +171,17 @@ vaultsRouter.post('/', async (req: Request, res: Response) => {
       res.status(500).json({ error: 'Failed to process idempotency key.' })
       return
     }
-  const id = makeId('vault')
-  const startTimestamp = new Date().toISOString()
-  const vault: Vault = {
-    id,
-    creator,
-    amount,
-    startTimestamp,
-    endTimestamp,
-    successDestination,
-    failureDestination,
-    status: 'active',
-    createdAt: startTimestamp,
-    milestones: (milestones ?? []).map((milestone) => ({
-      id: milestone.id ?? makeId('ms'),
-      title: milestone.title as string,
-      verifierId: milestone.verifierId as string,
-      status: 'pending',
-      validatedAt: null,
-      validatedBy: null,
-    })),
-    validationEvents: [],
-    domainEvents: [],
-    fundedAt: undefined,
-    milestoneValidatedAt: undefined,
-    cancelledAt: undefined,
-    cancellation: undefined,
-    history: [
-      {
-        id: makeId('history'),
-        type: 'created' as const,
-        timestamp: startTimestamp,
-        actor: creator,
-        role: 'creator' as const,
-      },
-    ],
-    validationRecords: [],
   }
 
   const pool = getPgPool()
   const client = pool ? await pool.connect() : null
 
-  appendVaultHistory(
-    id,
-    null,
-    'active',
-    'Vault created',
-    creator,
-    { initialAmount: amount }
-  )
-  const actorUserId = req.header('x-user-id') ?? creator
-  createAuditLog({
-    actor_user_id: actorUserId,
-    action: 'vault.created',
-    target_type: 'vault',
-    target_id: vault.id,
-    metadata: {
-      creator,
-      amount,
-      endTimestamp,
-    },
-  })
   try {
     if (client) await client.query('BEGIN')
 
     // 2. Database Insertion
     const { vault } = await createVaultWithMilestones(input, client ?? undefined)
-    
+
     // 3. Prepare Payloads
     const responseBody: VaultCreateResponse = {
       vault,
@@ -330,7 +194,7 @@ vaultsRouter.post('/', async (req: Request, res: Response) => {
       await saveIdempotentResponse(idempotencyKey, requestHash, vault.id, responseBody, client ?? undefined)
     }
 
-    const actorUserId = req.header('x-user-id') ?? input.creator
+    const actorUserId = req.header('x-user-id') || input.creator || 'system'
     createAuditLog({
       actor_user_id: actorUserId,
       action: 'vault.created',
@@ -351,34 +215,34 @@ vaultsRouter.post('/', async (req: Request, res: Response) => {
   }
 })
 
-vaultsRouter.get('/:id/history', (req, res) => {
+vaultsRouter.get('/:id/history', authenticate, (req, res) => {
   const history = vaultHistory
     .filter((entry) => entry.vaultId === req.params.id)
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
   res.json({ history })
 })
 
-vaultsRouter.get('/:id', (req: Request, res: Response) => {
-  const vault = getVaultById(req.params.id)
 /**
  * GET /:id
  */
-vaultsRouter.get('/:id', async (req: Request, res: Response) => {
+vaultsRouter.get('/:id', authenticate, async (req: Request, res: Response) => {
   const vault = await getVaultById(req.params.id)
   if (!vault) {
     res.status(404).json({ error: 'Vault not found' })
     return
   }
+
+  res.json(vault)
 })
 
-vaultsRouter.post('/:id/milestones/:mid/validate', (req: Request, res: Response) => {
-  const vault = getVaultById(req.params.id)
+vaultsRouter.post('/:id/milestones/:mid/validate', authenticate, async (req: Request, res: Response) => {
+  const vault: any = await getVaultById(req.params.id)
   if (!vault) {
     res.status(404).json({ error: 'Vault not found' })
     return
   }
 
-  const milestone = vault.milestones.find((m) => m.id === req.params.mid)
+  const milestone = vault.milestones.find((m: any) => m.id === req.params.mid) as any
   if (!milestone) {
     res.status(404).json({ error: 'Milestone not found in vault' })
     return
@@ -425,6 +289,7 @@ vaultsRouter.post('/:id/milestones/:mid/validate', (req: Request, res: Response)
     validatedAt: now,
     notes,
   }
+  vault.validationEvents = vault.validationEvents || []
   vault.validationEvents.push(validationEvent)
 
   const milestoneValidatedEvent: DomainEvent = {
@@ -437,9 +302,10 @@ vaultsRouter.post('/:id/milestones/:mid/validate', (req: Request, res: Response)
       verifierId: requesterId,
     },
   }
+  vault.domainEvents = vault.domainEvents || []
   vault.domainEvents.push(milestoneValidatedEvent)
 
-  if (vault.milestones.length > 0 && vault.milestones.every((m) => m.status === 'validated')) {
+  if (vault.milestones.length > 0 && vault.milestones.every((m: any) => m.status === 'validated')) {
     vault.status = 'completed'
     vault.domainEvents.push({
       id: makeId('domevt'),
@@ -465,11 +331,10 @@ vaultsRouter.post('/:id/milestones/:mid/validate', (req: Request, res: Response)
   })
 })
 
-vaultsRouter.post('/:id/cancel', (req: Request, res: Response) => {
 /**
  * POST /:id/cancel
  */
-vaultsRouter.post('/:id/cancel', async (req: Request, res: Response) => {
+vaultsRouter.post('/:id/cancel', authenticate, async (req: Request, res: Response) => {
   const actorUserId = req.header('x-user-id')
   const actorRole = req.header('x-user-role') ?? 'user'
   const reason = typeof req.body?.reason === 'string' ? req.body.reason : null
@@ -485,7 +350,8 @@ vaultsRouter.post('/:id/cancel', async (req: Request, res: Response) => {
     return
   }
 
-  const canCancel = actorUserId === existingVault.creator || actorRole === 'admin'
+  // Cast existingVault into right type (assuming creator exists on it from vaultStore)
+  const canCancel = actorUserId === (existingVault as any).creator || actorRole === 'admin'
   if (!canCancel) {
     res.status(403).json({ error: 'Only the creator or an admin can cancel this vault' })
     return
@@ -503,10 +369,10 @@ vaultsRouter.post('/:id/cancel', async (req: Request, res: Response) => {
     action: 'vault.cancelled',
     target_type: 'vault',
     target_id: cancelResult.vault.id,
-    metadata: { 
-      previousStatus: cancelResult.previousStatus, 
-      newStatus: cancelResult.vault.status, 
-      reason 
+    metadata: {
+      previousStatus: cancelResult.previousStatus,
+      newStatus: cancelResult.vault.status,
+      reason
     },
   })
 
