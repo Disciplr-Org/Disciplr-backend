@@ -1,6 +1,8 @@
 import request from 'supertest'
 import express from 'express'
 import { authenticate, signToken } from '../middleware/auth.js'
+import { describe, it, expect } from '@jest/globals'
+import { UserRole } from '../types/user.js'
 import { requireOrgAccess } from '../middleware/orgAuth.js'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
@@ -18,7 +20,7 @@ app.use(express.json())
 app.get(
   '/api/organizations/:orgId/vaults',
   authenticate,
-  requireOrgAccess('owner', 'admin', 'member'),
+  requireOrgAccess('owner', UserRole.ADMIN, 'member'),
   queryParser({
     allowedSortFields: ['createdAt', 'amount', 'endTimestamp', 'status'],
     allowedFilterFields: ['status', 'creator'],
@@ -37,7 +39,7 @@ app.get(
 app.get(
   '/api/organizations/:orgId/analytics',
   authenticate,
-  requireOrgAccess('owner', 'admin'),
+  requireOrgAccess('owner', UserRole.ADMIN),
   (req, res) => {
     const { orgId } = req.params
     const orgVaults = vaults.filter((v) => v.orgId === orgId)
@@ -79,7 +81,7 @@ app.get(
 )
 
 // ── Helpers ───────────────────────────────────────────────────────
-const token = (sub: string, role: 'user' | 'verifier' | 'admin' = 'user') =>
+const token = (sub: string, role: UserRole.USER | UserRole.VERIFIER | UserRole.ADMIN = UserRole.USER) =>
   `Bearer ${signToken({ sub, role })}`
 
 const ORG_ID = 'org-1'
@@ -93,7 +95,7 @@ function seedData() {
 
   setOrgMembers([
     { orgId: ORG_ID, userId: 'alice', role: 'owner' },
-    { orgId: ORG_ID, userId: 'bob', role: 'admin' },
+    { orgId: ORG_ID, userId: 'bob', role: UserRole.ADMIN },
     { orgId: ORG_ID, userId: 'carol', role: 'member' },
     { orgId: OTHER_ORG_ID, userId: 'dave', role: 'owner' },
   ])
