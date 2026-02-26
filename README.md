@@ -73,6 +73,10 @@ Admin-only access requirements for audit query endpoints:
 - `x-user-role: admin`
 - `x-user-id: <admin-user-id>`
 
+## Timezone handling
+
+All timestamps are stored, transmitted, and returned in UTC (ISO 8601 with `Z` suffix). Input timestamps must include a timezone designator. See [Timezone Contract](docs/TIMEZONE_CONTRACT.md) for the full specification.
+
 ## Tech stack
 
 ## Background job system
