@@ -8,8 +8,10 @@ export default [
     files: ['src/**/*.ts'],
     languageOptions: {
       parser: tsParser,
-      ecmaVersion: 'latest',
-      sourceType: 'module',
+      parserOptions: {
+        ecmaVersion: 'latest',
+        sourceType: 'module',
+      },
       globals: {
         console: 'readonly',
         process: 'readonly',
@@ -17,6 +19,7 @@ export default [
         fetch: 'readonly',
         describe: 'readonly',
         it: 'readonly',
+        test: 'readonly',
         expect: 'readonly',
         jest: 'readonly',
       },

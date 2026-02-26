@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, Request, Response } from 'express'
 import { vaults, setVaults } from './vaults.js'
 
 export const privacyRouter = Router()
@@ -7,7 +7,7 @@ export const privacyRouter = Router()
  * GET /api/privacy/export?creator=<USER_ID>
  * Exports all data related to a specific creator.
  */
-privacyRouter.get('/export', (req, res) => {
+privacyRouter.get('/export', (req: Request, res: Response) => {
     const creator = req.query.creator as string
 
     if (!creator) {
@@ -15,7 +15,7 @@ privacyRouter.get('/export', (req, res) => {
         return
     }
 
-    const userData = vaults.filter((v) => v.creator === creator)
+    const userData = vaults.filter((vault) => vault.creator === creator)
 
     res.json({
         creator,
@@ -30,8 +30,8 @@ privacyRouter.get('/export', (req, res) => {
  * DELETE /api/privacy/account?creator=<USER_ID>
  * Deletes all records associated with a specific creator.
  */
-privacyRouter.delete('/account', (req, res) => {
-    const creator = req.query.creator as string
+privacyRouter.delete('/account', (req: Request, res: Response) => {
+    const creator = creatorIdFromQuery(req)
 
     if (!creator) {
         res.status(400).json({ error: 'Missing required query parameter: creator' })
@@ -39,7 +39,7 @@ privacyRouter.delete('/account', (req, res) => {
     }
 
     const initialCount = vaults.length
-    const newVaults = vaults.filter((v) => v.creator !== creator)
+    const newVaults = vaults.filter((vault) => vault.creator !== creator)
 
     if (newVaults.length === initialCount) {
         res.status(404).json({ error: 'No data found for this creator' })
@@ -54,3 +54,7 @@ privacyRouter.delete('/account', (req, res) => {
         status: 'success'
     })
 })
+
+function creatorIdFromQuery(req: Request): string | undefined {
+    return req.query.creator as string
+}
