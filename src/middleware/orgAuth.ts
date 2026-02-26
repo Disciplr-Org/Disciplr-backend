@@ -15,7 +15,7 @@ export function requireOrgRole(requiredRoles: string[]) {
       return
     }
 
-    const userRole = await getUserOrganizationRole(req.user.sub, orgId)
+    const userRole = await getUserOrganizationRole(req.user.userId, orgId)
 
     if (!userRole || !requiredRoles.includes(userRole)) {
       res.status(403).json({
@@ -42,7 +42,7 @@ export function requireTeamRole(requiredRoles: string[]) {
       return
     }
 
-    const userRole = await getUserTeamRole(req.user.sub, teamId)
+    const userRole = await getUserTeamRole(req.user.userId, teamId)
 
     if (!userRole || !requiredRoles.includes(userRole)) {
       res.status(403).json({
