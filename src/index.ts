@@ -4,6 +4,7 @@ const PORT = process.env.PORT ?? 3000
 import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
+import { authRouter } from './routes/auth.js'
 import { vaultsRouter } from './routes/vaults.js'
 import { healthRouter } from './routes/health.js'
 import { transactionsRouter } from './routes/transactions.js'

@@ -1,21 +1,12 @@
 import { Request, Response, NextFunction } from 'express'
 import jwt from 'jsonwebtoken'
 
+import { JWTPayload } from '../types/auth.js'
+
 export type Role = 'user' | 'verifier' | 'admin'
 
-export interface JwtPayload {
-     sub: string
-     role: Role
-     email?: string
-}
-
-declare global {
-     namespace Express {
-          interface Request {
-               user?: JwtPayload
-          }
-     }
-}
+// Use JWTPayload from types/auth.ts as source of truth
+export type JwtPayload = JWTPayload
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production'
 
