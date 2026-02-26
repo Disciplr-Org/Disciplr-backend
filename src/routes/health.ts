@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import type { BackgroundJobSystem } from '../jobs/system.js'
+import { getSecurityMetricsSnapshot } from '../security/abuse-monitor.js'
 
 export const createHealthRouter = (jobSystem: BackgroundJobSystem): Router => {
   const healthRouter = Router()
@@ -23,3 +24,14 @@ export const createHealthRouter = (jobSystem: BackgroundJobSystem): Router => {
 
   return healthRouter
 }
+healthRouter.get('/', (_req: Request, res: Response) => {
+  res.json({
+    status: 'ok',
+    service: 'disciplr-backend',
+    timestamp: new Date().toISOString(),
+  })
+})
+
+healthRouter.get('/security', (_req, res) => {
+  res.json(getSecurityMetricsSnapshot())
+})
