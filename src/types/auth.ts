@@ -1,3 +1,5 @@
+import { UserRole } from '@prisma/client'
+
 export interface AuthenticatedUser {
   userId: string
 }
@@ -19,4 +21,18 @@ export interface ApiKeyRecord {
   scopes: string[]
   createdAt: string
   revokedAt: string | null
+}
+
+export interface JWTPayload {
+  userId: string
+  role: UserRole
+  email?: string
+}
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: JWTPayload
+    }
+  }
 }
