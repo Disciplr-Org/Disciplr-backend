@@ -1,53 +1,38 @@
 import { Request, Response, NextFunction } from 'express'
-import { getUserOrganizationRole, getUserTeamRole } from '../services/membership.js'
+import { AuthenticatedRequest } from './auth.js'
 
-export function requireOrgRole(requiredRoles: string[]) {
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    if (!req.user) {
-      res.status(401).json({ error: 'Unauthenticated' })
-      return
-    }
+export type OrgRole = 'owner' | 'admin' | 'member'
 
-    const orgId = req.params.orgId || req.body.orgId || req.query.orgId as string
-
-    if (!orgId) {
-      res.status(400).json({ error: 'Organization ID is required' })
-      return
-    }
-
-    const userRole = await getUserOrganizationRole(req.user.userId, orgId)
-
-    if (!userRole || !requiredRoles.includes(userRole)) {
-      res.status(403).json({
-        error: `Forbidden: requires organization role ${requiredRoles.join(' or ')}`,
-      })
-      return
-    }
-
-    next()
-  }
+export interface OrgMember {
+  orgId: string
+  userId: string
+  role: OrgRole
 }
 
-export function requireTeamRole(requiredRoles: string[]) {
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    if (!req.user) {
-      res.status(401).json({ error: 'Unauthenticated' })
+let orgMembers: OrgMember[] = []
+
+export const setOrgMembers = (members: OrgMember[]) => {
+  orgMembers = members
+}
+
+export const getMemberRole = (orgId: string, userId: string): OrgRole | null => {
+  const membership = orgMembers.find(m => m.orgId === orgId && m.userId === userId)
+  return membership ? membership.role : null
+}
+
+export const requireOrgAccess = (allowedRoles: OrgRole[]) => {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    const orgId = req.params.orgId || req.query.orgId as string
+    const userId = req.user?.userId || (req.user as any)?.sub
+
+    if (!orgId || !userId) {
+      res.status(401).json({ error: 'Auth/Org info missing' })
       return
     }
 
-    const teamId = req.params.teamId || req.body.teamId || req.query.teamId as string
-
-    if (!teamId) {
-      res.status(400).json({ error: 'Team ID is required' })
-      return
-    }
-
-    const userRole = await getUserTeamRole(req.user.userId, teamId)
-
-    if (!userRole || !requiredRoles.includes(userRole)) {
-      res.status(403).json({
-        error: `Forbidden: requires team role ${requiredRoles.join(' or ')}`,
-      })
+    const role = getMemberRole(orgId, userId)
+    if (!role || !allowedRoles.includes(role)) {
+      res.status(403).json({ error: 'Insufficient organization permissions' })
       return
     }
 

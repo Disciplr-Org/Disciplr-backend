@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import type { ApiKeyAuthContext, ApiKeyRecord } from '../types/auth.js'
+import { utcNow } from '../utils/timestamps.js'
 
 interface CreateApiKeyInput {
   userId?: string
@@ -19,7 +20,7 @@ const normalizeScopes = (scopes: string[]): string[] => {
 export const createApiKey = (input: CreateApiKeyInput): { apiKey: string; record: ApiKeyRecord } => {
   const id = randomUUID()
   const secret = randomBytes(32).toString('hex')
-  const createdAt = new Date().toISOString()
+  const createdAt = utcNow()
 
   const record: ApiKeyRecord = {
     id,
@@ -51,7 +52,7 @@ export const revokeApiKey = (apiKeyId: string, userId: string): ApiKeyRecord | n
   }
 
   if (!record.revokedAt) {
-    record.revokedAt = new Date().toISOString()
+    record.revokedAt = utcNow()
   }
 
   return record
