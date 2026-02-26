@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import { authenticateApiKey } from '../middleware/apiKeyAuth.js'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
+import { authenticateApiKey } from '../middleware/apiKeyAuth.js'
 
 export const analyticsRouter = Router()
 
