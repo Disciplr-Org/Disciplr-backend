@@ -10,14 +10,15 @@ API and milestone engine for Disciplr: programmable time-locked capital vaults o
   - `POST /api/vaults` — create a vault (body: `creator`, `amount`, `endTimestamp`, `successDestination`, `failureDestination`).  
   - `GET /api/vaults/:id` — get a vault by id.
 - **Transactions:**
-  - `GET /api/transactions` — list all transactions with pagination, sorting, and filtering.
+  - `GET /api/transactions` — list vault transactions with pagination, sorting, and filtering by vault, type, date range, and amount.
   - `GET /api/transactions/:id` — get a transaction by id.
+  - `POST /api/transactions/sync/:vaultId` — sync transactions for a specific vault from Stellar Horizon.
 - **Analytics:**
   - `GET /api/analytics` — list analytics views with pagination, sorting, and filtering.
 
 All list endpoints support consistent query parameters for pagination (`page`, `pageSize`), sorting (`sortBy`, `sortOrder`), and filtering (endpoint-specific fields). See [API Patterns Documentation](docs/API_PATTERNS.md) for details.
 
-Data is stored in memory for now. Production would use PostgreSQL, a Horizon listener for on-chain events, and a proper milestone/verification engine.
+Data is stored in PostgreSQL with transaction history aggregated from Stellar Horizon events. The system includes ETL services to process vault-related operations (creation, validation, release, redirect, cancel) and provides comprehensive transaction history APIs.
 - `GET /api/health`: service status and timestamp
 - `GET /api/vaults`: list all vaults (currently in-memory placeholder)
 - `POST /api/vaults`: create a vault
@@ -28,7 +29,9 @@ Data is stored in memory for now. Production would use PostgreSQL, a Horizon lis
 - Node.js + TypeScript
 - Express
 - Helmet + CORS
-- PostgreSQL migrations via Knex
+- PostgreSQL with Knex migrations
+- @stellar/stellar-sdk for Horizon API integration
+- Jest for testing
 
 ## Local setup
 
