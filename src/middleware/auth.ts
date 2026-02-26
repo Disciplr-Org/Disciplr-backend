@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import jwt from 'jsonwebtoken'
+import { config } from '../config.js'
 
 export type Role = 'user' | 'verifier' | 'admin'
 
@@ -17,8 +18,6 @@ declare global {
      }
 }
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production'
-
 export function authenticate(req: Request, res: Response, next: NextFunction): void {
      const authHeader = req.headers.authorization
 
@@ -30,7 +29,7 @@ export function authenticate(req: Request, res: Response, next: NextFunction): v
      const token = authHeader.slice(7)
 
      try {
-          const payload = jwt.verify(token, JWT_SECRET) as JwtPayload
+          const payload = jwt.verify(token, config.jwtSecret) as JwtPayload
           req.user = payload
           next()
      } catch (err) {
@@ -43,5 +42,5 @@ export function authenticate(req: Request, res: Response, next: NextFunction): v
 }
 
 export function signToken(payload: JwtPayload, expiresIn = '1h'): string {
-     return jwt.sign(payload, JWT_SECRET, { expiresIn } as jwt.SignOptions)
+     return jwt.sign(payload, config.jwtSecret, { expiresIn } as jwt.SignOptions)
 }
