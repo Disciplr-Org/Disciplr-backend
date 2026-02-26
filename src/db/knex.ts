@@ -1,5 +1,8 @@
 import knex, { Knex } from 'knex'
-import knexConfig from '../../knexfile.cjs'
+import { createRequire } from 'module'
+
+const require = createRequire(import.meta.url)
+const knexConfig = require('../../knexfile.cjs')
 
 /**
  * Knex database connection instance
@@ -13,10 +16,3 @@ export const db: Knex = knex(knexConfig)
 export async function closeDatabase(): Promise<void> {
   await db.destroy()
 }
-import { createRequire } from 'module'
-import knex from 'knex'
-
-const require = createRequire(import.meta.url)
-const config = require('../../knexfile.cjs')
-
-export const db = knex(config)

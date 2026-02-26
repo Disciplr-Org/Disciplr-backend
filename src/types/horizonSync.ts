@@ -7,7 +7,24 @@ export type EventType =
   | 'vault_failed'
   | 'vault_cancelled'
   | 'milestone_created'
+  | 'milestone_created'
   | 'milestone_validated'
+
+export interface HorizonOperation {
+  id: string
+  transaction_hash: string
+  type: string
+  created_at: string
+  [key: string]: any
+}
+
+export interface HorizonTransaction {
+  id: string
+  hash: string
+  ledger: number
+  created_at: string
+  [key: string]: any
+}
 
 // Parsed Event Interface
 export interface ParsedEvent {

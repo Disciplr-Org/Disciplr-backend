@@ -20,7 +20,7 @@ export function requireOrgAccess(...allowedRoles: OrgRole[]) {
       return
     }
 
-    const role = getMemberRole(orgId, req.user.sub)
+    const role = getMemberRole(orgId, req.user.userId)
     if (!role) {
       res.status(403).json({ error: 'You are not a member of this organization' })
       return

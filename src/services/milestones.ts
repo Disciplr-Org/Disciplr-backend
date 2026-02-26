@@ -41,13 +41,15 @@ export const verifyMilestone = (id: string): Milestone | null => {
 }
 
 export const allMilestonesVerified = (vaultId: string): boolean => {
-  const milestones = getMilestonesByVaultId(vaultId)
-  if (milestones.length === 0) return false
-  return milestones.every((m) => m.verified)
+  const milestonesList = getMilestonesByVaultId(vaultId)
+  if (milestonesList.length === 0) return false
+  return milestonesList.every((m) => m.verified)
 }
 
 export const resetMilestonesTable = (): void => {
   milestonesTable.length = 0
+}
+
 export type MilestoneStatus = 'success' | 'failed'
 export interface MilestoneEvent {
   id: string

@@ -9,6 +9,7 @@ import {
   setOrganizations,
   setOrgMembers,
 } from '../models/organizations.js'
+import { UserRole } from '../types/user.js'
 
 // ── Test app ──────────────────────────────────────────────────────
 const app = express()
@@ -79,8 +80,8 @@ app.get(
 )
 
 // ── Helpers ───────────────────────────────────────────────────────
-const token = (sub: string, role: 'user' | 'verifier' | 'admin' = 'user') =>
-  `Bearer ${signToken({ sub, role })}`
+const token = (userId: string, role: UserRole = UserRole.USER) =>
+  `Bearer ${signToken({ userId, role })}`
 
 const ORG_ID = 'org-1'
 const OTHER_ORG_ID = 'org-other'
@@ -93,7 +94,7 @@ function seedData() {
 
   setOrgMembers([
     { orgId: ORG_ID, userId: 'alice', role: 'owner' },
-    { orgId: ORG_ID, userId: 'bob', role: 'admin' },
+    { orgId: ORG_ID, userId: 'admin-1', role: 'admin' },
     { orgId: ORG_ID, userId: 'carol', role: 'member' },
     { orgId: OTHER_ORG_ID, userId: 'dave', role: 'owner' },
   ])

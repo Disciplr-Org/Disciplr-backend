@@ -1,15 +1,15 @@
-import { Horizon, Server } from '@stellar/stellar-sdk'
+import { Horizon } from '@stellar/stellar-sdk'
 import type { Transaction, HorizonOperation, ETLConfig, VaultReference } from '../types/transactions.js'
 import { db } from '../db/index.js'
 
 export class TransactionETLService {
-  private server: Server
+  private server: Horizon.Server
   private config: ETLConfig
   private readonly STELLAR_EXPLORER_BASE = 'https://stellar.expert/explorer/public/tx'
 
   constructor(config: ETLConfig) {
     this.config = config
-    this.server = new Server(config.horizonUrl)
+    this.server = new Horizon.Server(config.horizonUrl)
   }
 
   /**
@@ -213,11 +213,11 @@ export class TransactionETLService {
         vault_id: vault.id,
         tx_hash: operation.transaction_hash,
         type,
-        amount: operation.amount || '0',
-        asset_code: operation.asset_code || (operation.asset_type === 'native' ? null : operation.asset_code),
-        from_account: operation.from || operation.source_account,
-        to_account: operation.to || vault.success_destination,
-        memo: operation.memo || null,
+        amount: operation.amount ?? '0',
+        asset_code: operation.asset_code ?? null,
+        from_account: operation.from ?? operation.source_account,
+        to_account: operation.to ?? vault.success_destination,
+        memo: operation.memo ?? null,
         created_at: new Date(),
         stellar_ledger: operation.ledger,
         stellar_timestamp: new Date(operation.created_at),

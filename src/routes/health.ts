@@ -1,19 +1,18 @@
-import { Router } from 'express'
+import { Router, Request, Response } from 'express'
 import { utcNow } from '../utils/timestamps.js'
 import type { BackgroundJobSystem } from '../jobs/system.js'
-import { getSecurityMetricsSnapshot } from '../security/abuse-monitor.js'
 
 export const createHealthRouter = (jobSystem: BackgroundJobSystem): Router => {
   const healthRouter = Router()
 
-  healthRouter.get('/', (_req, res) => {
+  healthRouter.get('/', (_req: Request, res: Response) => {
     const queueMetrics = jobSystem.getMetrics()
     const status = queueMetrics.running ? 'ok' : 'degraded'
 
     res.status(status === 'ok' ? 200 : 503).json({
       status,
       service: 'disciplr-backend',
-      timestamp: new Date().toISOString(),
+      timestamp: utcNow(),
       jobs: {
         running: queueMetrics.running,
         queueDepth: queueMetrics.queueDepth,
@@ -25,14 +24,3 @@ export const createHealthRouter = (jobSystem: BackgroundJobSystem): Router => {
 
   return healthRouter
 }
-healthRouter.get('/', (_req: Request, res: Response) => {
-  res.json({
-    status: 'ok',
-    service: 'disciplr-backend',
-    timestamp: utcNow(),
-  })
-})
-
-healthRouter.get('/security', (_req, res) => {
-  res.json(getSecurityMetricsSnapshot())
-})
