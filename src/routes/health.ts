@@ -3,8 +3,8 @@ import { utcNow } from '../utils/timestamps.js'
 import type { BackgroundJobSystem } from '../jobs/system.js'
 import { getSecurityMetricsSnapshot } from '../security/abuse-monitor.js'
 
+export const healthRouter = Router()
 export const createHealthRouter = (jobSystem: BackgroundJobSystem): Router => {
-  const healthRouter = Router()
 
   healthRouter.get('/', (_req, res) => {
     const queueMetrics = jobSystem.getMetrics()
@@ -25,13 +25,13 @@ export const createHealthRouter = (jobSystem: BackgroundJobSystem): Router => {
 
   return healthRouter
 }
-healthRouter.get('/', (_req: Request, res: Response) => {
-  res.json({
-    status: 'ok',
-    service: 'disciplr-backend',
-    timestamp: utcNow(),
-  })
-})
+// healthRouter.get('/', (_req: Request, res: Response) => {
+//   res.json({
+//     status: 'ok',
+//     service: 'disciplr-backend',
+//     timestamp: utcNow(),
+//   })
+// })
 
 healthRouter.get('/security', (_req, res) => {
   res.json(getSecurityMetricsSnapshot())

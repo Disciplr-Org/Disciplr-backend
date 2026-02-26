@@ -2,7 +2,6 @@ import { app } from './app.js'
 import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
-import { vaultsRouter } from './routes/vaults.js'
 import { createHealthRouter } from './routes/health.js'
 import { createJobsRouter } from './routes/jobs.js'
 import { BackgroundJobSystem } from './jobs/system.js'
@@ -15,7 +14,7 @@ import { createExportRouter } from './routes/exports.js'
 import { transactionsRouter } from './routes/transactions.js'
 import { privacyRouter } from './routes/privacy.js'
 import { milestonesRouter } from './routes/milestones.js'
-import { privacyLogger } from './middleware/privacy-logger.js'
+import { verificationRouter } from './routes/verification.js'
 import { startExpirationChecker } from './services/expirationScheduler.js'
 import { orgVaultsRouter } from './routes/orgVaults.js'
 import { orgAnalyticsRouter } from './routes/orgAnalytics.js'
@@ -53,10 +52,14 @@ app.use('/api/vaults/:vaultId/milestones', milestonesRouter)
 app.use('/api/health', healthRateLimiter, healthRouter)
 app.use('/api/vaults', vaultsRateLimiter, vaultsRouter)
 app.use('/api/auth', authRouter)
-app.use('/api/exports', createExportRouter(Vault))
+// app.use('/api/exports', createExportRouter(Vault))
 app.use('/api/transactions', transactionsRouter)
 app.use('/api/analytics', analyticsRouter)
 app.use('/api/privacy', privacyRouter)
+app.use(
+   'api/verification/:vaultId/:milestoneIndex',
+   verificationRouter,
+ )
 app.use('/api/organizations', orgVaultsRouter)
 app.use('/api/organizations', orgAnalyticsRouter)
 app.use('/api/admin', adminRouter)
