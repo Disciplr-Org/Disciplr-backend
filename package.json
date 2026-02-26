@@ -1,4 +1,43 @@
 {
+    "name": "disciplr-backend",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "tsx watch src/index.ts",
+        "build": "tsc",
+        "start": "node dist/index.js",
+        "lint": "eslint src --ext .ts",
+        "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+        "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+        "test:api-keys": "tsx --test src/routes/apiKeys.test.ts",
+        "migrate:make": "knex migrate:make --knexfile knexfile.cjs --migrations-directory db/migrations --extension cjs",
+        "migrate:latest": "knex migrate:latest --knexfile knexfile.cjs",
+        "migrate:rollback": "knex migrate:rollback --knexfile knexfile.cjs",
+        "migrate:status": "knex migrate:status --knexfile knexfile.cjs"
+    },
+    "dependencies": {
+        "cors": "^2.8.6",
+        "express": "^4.21.0",
+        "helmet": "^7.2.0",
+        "jsonwebtoken": "^9.0.3",
+        "pg": "^8.13.1"
+    },
+    "devDependencies": {
+        "@types/cors": "^2.8.19",
+        "@types/express": "^4.17.21",
+        "@types/jest": "^30.0.0",
+        "@types/jsonwebtoken": "^9.0.10",
+        "@types/node": "^22.9.0",
+        "@types/supertest": "^6.0.3",
+        "eslint": "^9.13.0",
+        "jest": "^30.2.0",
+        "knex": "^3.1.0",
+        "supertest": "^7.2.2",
+        "ts-jest": "^29.4.6",
+        "tsx": "^4.19.2",
+        "typescript": "^5.6.3"
+    }
   "name": "disciplr-backend",
   "version": "0.1.0",
   "private": true,
@@ -8,6 +47,10 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "eslint src --ext .ts",
+    "test": "tsx --test src/**/*.test.ts",
+    "test:api-keys": "tsx --test src/routes/apiKeys.test.ts",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:vaults": "tsx --test src/routes/vaults.test.ts"
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
     "test:api-keys": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/routes/apiKeys.test.ts",
@@ -17,25 +60,44 @@
     "migrate:status": "knex migrate:status --knexfile knexfile.cjs"
   },
   "dependencies": {
+    "@prisma/client": "^6.19.2",
+    "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
+    "csv-stringify": "^6.6.0",
     "express": "^4.21.0",
+    "express-rate-limit": "^8.2.1",
+    "helmet": "^7.1.0"
+    "jsonwebtoken": "^9.0.3"
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.3",
+    "zod": "^4.3.6",
+    "pg": "^8.13.1"
+
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "pg": "^8.13.1"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@typescript-eslint/eslint-plugin": "^8.46.0",
+    "@typescript-eslint/parser": "^8.46.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
-    "@types/jest": "^30.0.0",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.9.0",
     "@types/supertest": "^6.0.3",
+    "dotenv": "^17.3.1",
     "eslint": "^9.13.0",
+    "prisma": "^6.19.2",
     "jest": "^30.2.0",
     "knex": "^3.1.0",
     "supertest": "^7.2.2",
+    "jest": "^30.2.0",
+    "@types/jest": "^30.0.0",
     "ts-jest": "^29.4.6",
     "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^4.0.18"
   }
 }
