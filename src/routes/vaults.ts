@@ -17,11 +17,39 @@ export interface Vault {
   createdAt: string
 }
 
+export type VaultStatus = Vault['status']
+
 // In-memory placeholder; replace with DB (e.g. PostgreSQL) later
 export let vaults: Array<Vault> = []
 
 export const setVaults = (newVaults: Array<Vault>) => {
   vaults = newVaults
+}
+
+const makeId = (prefix: string): string =>
+  `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+
+const getVaultById = (id: string): Vault | undefined => vaults.find((vault) => vault.id === id)
+
+export const cancelVaultById = (id: string):
+  | { vault: Vault; previousStatus: VaultStatus }
+  | { error: 'not_found' | 'already_cancelled' | 'not_cancellable'; currentStatus?: VaultStatus } => {
+  const vault = getVaultById(id)
+  if (!vault) {
+    return { error: 'not_found' }
+  }
+
+  if (vault.status === 'cancelled') {
+    return { error: 'already_cancelled', currentStatus: vault.status }
+  }
+
+  if (vault.status !== 'active') {
+    return { error: 'not_cancellable', currentStatus: vault.status }
+  }
+
+  const previousStatus = vault.status
+  vault.status = 'cancelled'
+  return { vault, previousStatus }
 }
 
 /**
