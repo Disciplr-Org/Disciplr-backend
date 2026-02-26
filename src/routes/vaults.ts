@@ -15,6 +15,7 @@ export interface Vault {
   failureDestination: string
   status: 'active' | 'completed' | 'failed' | 'cancelled'
   createdAt: string
+  orgId?: string
 }
 
 // In-memory placeholder; replace with DB (e.g. PostgreSQL) later
