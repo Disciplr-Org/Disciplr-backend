@@ -2,9 +2,15 @@ import { Router, Request, Response } from 'express'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
 
+// --- NEW IMPORTS FOR ISSUE #1 ---
+import { VaultService } from '../services/vault.service.js'
+import { VaultStatus } from '../types/vault.js'
+
 export const vaultsRouter = Router()
 
-// In-memory placeholder; replace with DB (e.g. PostgreSQL) later
+// ============================================================================
+// DO NOT MODIFY OR DELETE: Required by privacy.ts and existing integrations
+// ============================================================================
 export interface Vault {
   id: string
   creator: string
@@ -17,12 +23,12 @@ export interface Vault {
   createdAt: string
 }
 
-// In-memory placeholder; replace with DB (e.g. PostgreSQL) later
 export let vaults: Array<Vault> = []
 
 export const setVaults = (newVaults: Array<Vault>) => {
   vaults = newVaults
 }
+// ============================================================================
 
 vaultsRouter.get(
   '/',
@@ -50,13 +56,17 @@ vaultsRouter.get(
   }
 )
 
-vaultsRouter.post('/', (req: Request, res: Response) => {
+vaultsRouter.post('/', async (req: Request, res: Response) => {
   const {
     creator,
     amount,
     endTimestamp,
     successDestination,
     failureDestination,
+    // Extract new DB-specific fields if provided, fallback to defaults to prevent breaking
+    milestoneHash = 'pending_hash',
+    verifierAddress = 'pending_verifier',
+    contractId = null
   } = req.body as Record<string, string>
 
   if (!creator || !amount || !endTimestamp || !successDestination || !failureDestination) {
@@ -66,8 +76,28 @@ vaultsRouter.post('/', (req: Request, res: Response) => {
     return
   }
 
-  const id = `vault-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
   const startTimestamp = new Date().toISOString()
+  let dbVaultId: string | null = null;
+
+  // 1. Persist to PostgreSQL (Issue #1 Requirement)
+  try {
+    const newDbVault = await VaultService.createVault({
+      contractId,
+      creatorAddress: creator,
+      amount,
+      milestoneHash,
+      verifierAddress,
+      successDestination,
+      failureDestination,
+      deadline: endTimestamp
+    });
+    dbVaultId = newDbVault.id;
+  } catch (error) {
+    console.error('Warning: Failed to save to PostgreSQL, falling back to in-memory only.', error);
+  }
+
+  // 2. Persist to In-Memory Array (To prevent breaking existing code)
+  const id = dbVaultId || `vault-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
   const vault = {
     id,
     creator,
@@ -79,11 +109,24 @@ vaultsRouter.post('/', (req: Request, res: Response) => {
     status: 'active' as const,
     createdAt: startTimestamp,
   }
+  
   vaults.push(vault)
   res.status(201).json(vault)
 })
 
-vaultsRouter.get('/:id', (req: Request, res: Response) => {
+vaultsRouter.get('/:id', async (req: Request, res: Response) => {
+  // 1. Try to fetch from PostgreSQL first
+  try {
+    const dbVault = await VaultService.getVaultById(req.params.id);
+    if (dbVault) {
+      res.json(dbVault);
+      return;
+    }
+  } catch (error) {
+    // Fails silently (e.g., if ID is not a valid UUID format), falls back to array
+  }
+
+  // 2. Fallback to existing in-memory logic
   const vault = vaults.find((v) => v.id === req.params.id)
   if (!vault) {
     res.status(404).json({ error: 'Vault not found' })
@@ -91,3 +134,47 @@ vaultsRouter.get('/:id', (req: Request, res: Response) => {
   }
   res.json(vault)
 })
+
+// ============================================================================
+// NEW ROUTES FOR ISSUE #1 (Database Persistence & Status Updates)
+// ============================================================================
+
+// GET /api/vaults/user/:address
+vaultsRouter.get('/user/:address', async (req: Request, res: Response) => {
+  try {
+    const userVaults = await VaultService.getVaultsByUser(req.params.address);
+    res.json(userVaults);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch user vaults from database' });
+  }
+});
+
+// PATCH /api/vaults/:id/status
+vaultsRouter.patch('/:id/status', async (req: Request, res: Response) => {
+  const { status } = req.body;
+  
+  if (!Object.values(VaultStatus).includes(status as VaultStatus)) {
+    res.status(400).json({ error: 'Invalid vault status' });
+    return;
+  }
+
+  try {
+    // 1. Update Database
+    const updatedVault = await VaultService.updateVaultStatus(req.params.id, status as VaultStatus);
+    
+    if (!updatedVault) {
+      res.status(404).json({ error: 'Vault not found in database' });
+      return;
+    }
+
+    // 2. Keep the in-memory array synced so GET / and privacy routes don't show stale data
+    const arrayIndex = vaults.findIndex(v => v.id === req.params.id);
+    if (arrayIndex !== -1) {
+      vaults[arrayIndex].status = status.toLowerCase() as any;
+    }
+
+    res.json(updatedVault);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update vault status' });
+  }
+});
