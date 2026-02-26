@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express'
-import { Role } from './auth.js'
+import { UserRole } from '@prisma/client'
 
-export function requireRole(...allowedRoles: Role[]) {
+export function requireRole(...allowedRoles: UserRole[]) {
      return (req: Request, res: Response, next: NextFunction): void => {
           if (!req.user) {
                res.status(401).json({ error: 'Unauthenticated' })
@@ -20,6 +20,6 @@ export function requireRole(...allowedRoles: Role[]) {
 }
 
 // Convenience helpers
-export const requireUser = requireRole('user', 'verifier', 'admin')
-export const requireVerifier = requireRole('verifier', 'admin')
-export const requireAdmin = requireRole('admin')
+export const requireUser = requireRole(UserRole.USER, UserRole.VERIFIER, UserRole.ADMIN)
+export const requireVerifier = requireRole(UserRole.VERIFIER, UserRole.ADMIN)
+export const requireAdmin = requireRole(UserRole.ADMIN)

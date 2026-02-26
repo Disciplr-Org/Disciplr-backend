@@ -1,4 +1,4 @@
-import type { ApiKeyAuthContext, AuthenticatedUser } from './auth.js'
+import type { AuthenticatedUser, ApiKeyAuthContext } from './auth.js'
 
 declare global {
   namespace Express {
