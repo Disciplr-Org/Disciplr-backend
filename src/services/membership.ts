@@ -1,4 +1,4 @@
-import db from '../db/index.js'
+import { db } from '../db/index.js'
 import type { Membership, CreateMembershipInput } from '../types/enterprise.js'
 
 export const createMembership = async (input: CreateMembershipInput): Promise<Membership> => {

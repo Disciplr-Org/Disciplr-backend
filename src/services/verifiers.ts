@@ -1,4 +1,4 @@
-import { db } from '../db/knex.js'
+import { db } from '../db/index.js'
 
 export type VerifierStatus = 'pending' | 'approved' | 'suspended'
 

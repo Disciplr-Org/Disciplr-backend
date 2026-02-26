@@ -1,13 +1,14 @@
 import { Router, Request, Response } from 'express'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
+import { authenticateApiKey } from '../middleware/apiKeyAuth.js'
+import { utcNow } from '../utils/timestamps.js'
 import {
   getOverallAnalytics,
   getAnalyticsByPeriod,
   getVaultStatusBreakdown,
   getCapitalAnalytics,
 } from '../services/analytics.service.js'
-import { authenticateApiKey } from '../middleware/apiKeyAuth.js'
 
 export const analyticsRouter = Router()
 
@@ -46,17 +47,12 @@ analyticsRouter.get('/vaults', authenticateApiKey(['read:vaults']), (_req: Reque
       activeVaults: 4,
       completionRate: 0.75,
     },
-    generatedAt: new Date().toISOString(),
+    generatedAt: utcNow(),
   })
-}) // Fixed missing closing braces
+})
 
-// Valid time periods
 const VALID_PERIODS = ['7d', '30d', '90d', '1y', 'all']
 
-/**
- * GET /api/analytics/dashboard
- * Get overall dashboard metrics (all-time)
- */
 analyticsRouter.get('/dashboard', authenticateApiKey(['read:analytics']), (_req, res) => {
   try {
     const analytics = getOverallAnalytics()
@@ -67,21 +63,14 @@ analyticsRouter.get('/dashboard', authenticateApiKey(['read:analytics']), (_req,
   }
 })
 
-/**
- * GET /api/analytics/dashboard/:period
- * Get dashboard metrics for a specific time period
- * Valid periods: 7d, 30d, 90d, 1y
- */
 analyticsRouter.get('/dashboard/:period', authenticateApiKey(['read:analytics']), (req, res) => {
   const { period } = req.params
-
   if (!VALID_PERIODS.includes(period)) {
     res.status(400).json({
       error: `Invalid period. Valid periods: ${VALID_PERIODS.join(', ')}`,
     })
     return
   }
-
   try {
     const analytics = getAnalyticsByPeriod(period)
     res.json(analytics)
@@ -91,10 +80,6 @@ analyticsRouter.get('/dashboard/:period', authenticateApiKey(['read:analytics'])
   }
 })
 
-/**
- * GET /api/analytics/status
- * Get vault status breakdown
- */
 analyticsRouter.get('/status', authenticateApiKey(['read:analytics']), (_req, res) => {
   try {
     const breakdown = getVaultStatusBreakdown()
@@ -105,21 +90,14 @@ analyticsRouter.get('/status', authenticateApiKey(['read:analytics']), (_req, re
   }
 })
 
-/**
- * GET /api/analytics/capital
- * Get capital analytics
- * Query params: period (optional, default: all)
- */
 analyticsRouter.get('/capital', authenticateApiKey(['read:analytics']), (req, res) => {
   const period = (req.query.period as string) || 'all'
-
   if (!VALID_PERIODS.includes(period)) {
     res.status(400).json({
       error: `Invalid period. Valid periods: ${VALID_PERIODS.join(', ')}`,
     })
     return
   }
-
   try {
     const capital = getCapitalAnalytics(period)
     res.json(capital)
@@ -129,36 +107,27 @@ analyticsRouter.get('/capital', authenticateApiKey(['read:analytics']), (req, re
   }
 })
 
-/**
- * GET /api/analytics/overview
- * Get complete analytics overview with all metrics
- * Query params: period (optional, default: all)
- */
 analyticsRouter.get('/overview', authenticateApiKey(['read:analytics']), (req, res) => {
   const period = (req.query.period as string) || 'all'
-
   if (!VALID_PERIODS.includes(period)) {
     res.status(400).json({
       error: `Invalid period. Valid periods: ${VALID_PERIODS.join(', ')}`,
     })
     return
   }
-
   try {
     const dashboard = period === 'all' ? getOverallAnalytics() : getAnalyticsByPeriod(period)
     const status = getVaultStatusBreakdown()
     const capital = getCapitalAnalytics(period)
-
     res.json({
       dashboard,
       status,
       capital,
       period,
+      generatedAt: utcNow(),
     })
   } catch (error) {
     console.error('Error fetching analytics overview:', error)
     res.status(500).json({ error: 'Failed to fetch analytics overview' })
   }
 })
-
-// I will assume listMilestoneEvents doesn't exist natively but there were no conflicts on the remainder of the file, let me double check the bottom chunk. Wait! 

@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express'
+import { utcNow } from '../utils/timestamps.js'
 
 /**
  * Middleware to mask PII in logs.
@@ -8,7 +9,7 @@ export const privacyLogger = (req: Request, _res: Response, next: NextFunction) 
     const ip = req.ip || req.socket.remoteAddress || 'unknown'
     const maskedIp = maskIp(ip)
 
-    const timestamp = new Date().toISOString()
+    const timestamp = utcNow()
     const method = req.method
     const url = req.url
 

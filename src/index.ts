@@ -1,5 +1,6 @@
 import { app } from './app.js'
 import { vaultsRouter } from './routes/vaults.js'
+import { milestonesRouter } from './routes/milestones.js'
 import { createHealthRouter } from './routes/health.js'
 import { createJobsRouter } from './routes/jobs.js'
 import { BackgroundJobSystem } from './jobs/system.js'
@@ -13,6 +14,9 @@ import { adminRouter } from './routes/admin.js'
 import { adminVerifiersRouter } from './routes/adminVerifiers.js'
 import { verificationsRouter } from './routes/verifications.js'
 import { apiKeysRouter } from './routes/apiKeys.js'
+import { orgVaultsRouter } from './routes/orgVaults.js'
+import { orgAnalyticsRouter } from './routes/orgAnalytics.js'
+import { startExpirationChecker } from './services/expirationScheduler.js'
 import {
   securityMetricsMiddleware,
   securityRateLimitMiddleware,
@@ -33,11 +37,14 @@ app.use(securityRateLimitMiddleware)
 app.use('/api/health', healthRateLimiter, createHealthRouter(jobSystem))
 app.use('/api/jobs', createJobsRouter(jobSystem))
 app.use('/api/vaults', vaultsRateLimiter, vaultsRouter)
+app.use('/api/vaults/:vaultId/milestones', milestonesRouter)
 app.use('/api/auth', authRouter)
 app.use('/api/exports', createExportRouter([])) // Passing empty array as vaultsStore since the service uses db now
 app.use('/api/transactions', transactionsRouter)
 app.use('/api/analytics', analyticsRouter)
 app.use('/api/privacy', privacyRouter)
+app.use('/api/organizations', orgVaultsRouter)
+app.use('/api/organizations', orgAnalyticsRouter)
 app.use('/api/admin', adminRouter)
 app.use('/api/admin/verifiers', adminVerifiersRouter)
 app.use('/api/verifications', verificationsRouter)
@@ -45,6 +52,7 @@ app.use('/api/api-keys', apiKeysRouter)
 
 const server = app.listen(PORT, () => {
   console.log(`Disciplr API listening on http://localhost:${PORT}`)
+  startExpirationChecker()
 })
 
 let shuttingDown = false

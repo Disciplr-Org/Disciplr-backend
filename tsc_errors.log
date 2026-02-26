@@ -1,0 +1,29 @@
+src/db/index.ts(2,24): error TS7016: Could not find a declaration file for module '../../knexfile.cjs'. '/Users/smartdev/Documents/Dev/blockchain/Disciplr-backend/knexfile.cjs' implicitly has an 'any' type.
+src/routes/milestones.ts(5,3): error TS2724: '"../services/milestones.js"' has no exported member named 'createMilestone'. Did you mean 'resetMilestones'?
+src/routes/milestones.ts(6,3): error TS2305: Module '"../services/milestones.js"' has no exported member 'getMilestonesByVaultId'.
+src/routes/milestones.ts(7,3): error TS2305: Module '"../services/milestones.js"' has no exported member 'getMilestoneById'.
+src/routes/milestones.ts(8,3): error TS2305: Module '"../services/milestones.js"' has no exported member 'verifyMilestone'.
+src/routes/milestones.ts(9,3): error TS2305: Module '"../services/milestones.js"' has no exported member 'allMilestonesVerified'.
+src/routes/privacy.ts(1,10): error TS2300: Duplicate identifier 'Router'.
+src/routes/privacy.ts(4,10): error TS2300: Duplicate identifier 'Router'.
+src/routes/vaults.ts(146,9): error TS2322: Type 'string | null' is not assignable to type 'string | undefined'.
+  Type 'null' is not assignable to type 'string | undefined'.
+src/services/horizonListenerMain.ts(19,20): error TS2307: Cannot find module '../db/knex.js' or its corresponding type declarations.
+src/services/vaultTransitions.ts(2,10): error TS2305: Module '"./milestones.js"' has no exported member 'allMilestonesVerified'.
+src/services/verifiers.ts(1,20): error TS2307: Cannot find module '../db/knex.js' or its corresponding type declarations.
+src/tests/eventProcessor.basic.test.ts(1,32): error TS2835: Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean '../services/eventProcessor.js'?
+src/tests/fixtures.test.ts(8,8): error TS2835: Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean './fixtures/horizonEvents.js'?
+src/tests/fixtures.test.ts(13,8): error TS2835: Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean './fixtures/arbitraries.js'?
+src/tests/fixtures.test.ts(42,34): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/tests/fixtures/arbitraries.ts(8,8): error TS2835: Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean '../../types/horizonSync.js'?
+src/tests/fixtures/horizonEvents.ts(1,29): error TS2835: Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean '../../types/horizonSync.js'?
+src/tests/horizonListener.test.ts(1,33): error TS2835: Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean '../services/horizonListener.js'?
+src/tests/horizonListener.test.ts(2,32): error TS2835: Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean '../services/eventProcessor.js'?
+src/tests/horizonListener.test.ts(3,39): error TS2835: Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean '../config/horizonListener.js'?
+src/tests/orgVaults.test.ts(83,30): error TS2322: Type '"user" | "verifier" | "admin"' is not assignable to type 'UserRole'.
+  Type '"user"' is not assignable to type 'UserRole'. Did you mean '"USER"'?
+src/tests/vaultTransitions.test.ts(4,10): error TS2724: '"../services/milestones.js"' has no exported member named 'resetMilestonesTable'. Did you mean 'resetMilestones'?
+src/tests/vaultTransitions.test.ts(4,32): error TS2724: '"../services/milestones.js"' has no exported member named 'createMilestone'. Did you mean 'resetMilestones'?
+src/tests/vaultTransitions.test.ts(4,49): error TS2305: Module '"../services/milestones.js"' has no exported member 'verifyMilestone'.
+src/tests/vaultTransitions.test.ts(32,30): error TS2322: Type '"user" | "verifier" | "admin"' is not assignable to type 'UserRole'.
+  Type '"user"' is not assignable to type 'UserRole'. Did you mean '"USER"'?

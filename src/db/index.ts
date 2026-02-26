@@ -1,7 +1,22 @@
 import knex from 'knex'
 // @ts-ignore
-import config from '../../knexfile.cjs'
+import knexConfig from '../../knexfile.cjs'
+import pg from 'pg';
+import 'dotenv/config';
 
-const db = knex((config as any).default || config)
+const { Pool } = pg;
 
-export default db
+// Ensure DATABASE_URL is in your .env file
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle client', err);
+  process.exit(-1);
+});
+
+const db = knex(knexConfig as any)
+
+export { db }
+export default pool;
