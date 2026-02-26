@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
+import { createValidationMiddleware } from '../middleware/validation/index.js'
+import { transactionsQuerySchema, getTransactionByIdSchema } from '../middleware/validation/schemas.js'
 
 export const transactionsRouter = Router()
 
@@ -16,6 +18,7 @@ const transactions: Array<{
 
 transactionsRouter.get(
   '/',
+  createValidationMiddleware(transactionsQuerySchema, { source: 'query' }),
   queryParser({
     allowedSortFields: ['timestamp', 'amount', 'type', 'status'],
     allowedFilterFields: ['vaultId', 'type', 'status'],
@@ -36,11 +39,14 @@ transactionsRouter.get(
   }
 )
 
-transactionsRouter.get('/:id', (req: Request, res: Response) => {
-  const transaction = transactions.find((t) => t.id === req.params.id)
-  if (!transaction) {
-    res.status(404).json({ error: 'Transaction not found' })
-    return
+transactionsRouter.get('/:id', 
+  createValidationMiddleware(getTransactionByIdSchema, { source: 'params' }),
+  (req: Request, res: Response) => {
+    const transaction = transactions.find((t) => t.id === req.params.id)
+    if (!transaction) {
+      res.status(404).json({ error: 'Transaction not found' })
+      return
+    }
+    res.json(transaction)
   }
-  res.json(transaction)
-})
+)

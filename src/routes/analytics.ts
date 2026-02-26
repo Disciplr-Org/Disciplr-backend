@@ -1,6 +1,9 @@
 import { Router, Request, Response } from 'express'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
+import { authenticateApiKey } from '../middleware/apiKeyAuth.js'
+import { createValidationMiddleware } from '../middleware/validation/index.js'
+import { analyticsQuerySchema } from '../middleware/validation/schemas.js'
 
 export const analyticsRouter = Router()
 
@@ -16,6 +19,7 @@ const analyticsViews: Array<{
 
 analyticsRouter.get(
   '/',
+  createValidationMiddleware(analyticsQuerySchema, { source: 'query' }),
   queryParser({
     allowedSortFields: ['timestamp', 'value', 'metric'],
     allowedFilterFields: ['vaultId', 'metric', 'period'],
@@ -35,10 +39,6 @@ analyticsRouter.get(
     res.json(paginatedResult)
   }
 )
-import { Router } from 'express'
-import { authenticateApiKey } from '../middleware/apiKeyAuth.js'
-
-export const analyticsRouter = Router()
 
 analyticsRouter.get('/overview', authenticateApiKey(['read:analytics']), (_req, res) => {
   res.json({

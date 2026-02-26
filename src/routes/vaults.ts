@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
+import { createValidationMiddleware } from '../middleware/validation/index.js'
+import { createVaultSchema, getVaultByIdSchema, vaultsQuerySchema } from '../middleware/validation/schemas.js'
 
 export const vaultsRouter = Router()
 
@@ -26,6 +28,7 @@ export const setVaults = (newVaults: Array<Vault>) => {
 
 vaultsRouter.get(
   '/',
+  createValidationMiddleware(vaultsQuerySchema, { source: 'query' }),
   queryParser({
     allowedSortFields: ['createdAt', 'amount', 'endTimestamp', 'status'],
     allowedFilterFields: ['status', 'creator'],
@@ -50,44 +53,43 @@ vaultsRouter.get(
   }
 )
 
-vaultsRouter.post('/', (req: Request, res: Response) => {
-  const {
-    creator,
-    amount,
-    endTimestamp,
-    successDestination,
-    failureDestination,
-  } = req.body as Record<string, string>
+vaultsRouter.post('/', 
+  createValidationMiddleware(createVaultSchema, { source: 'body' }),
+  (req: Request, res: Response) => {
+    const {
+      creator,
+      amount,
+      endTimestamp,
+      successDestination,
+      failureDestination,
+    } = req.body
 
-  if (!creator || !amount || !endTimestamp || !successDestination || !failureDestination) {
-    res.status(400).json({
-      error: 'Missing required fields: creator, amount, endTimestamp, successDestination, failureDestination',
-    })
-    return
+    const id = `vault-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+    const startTimestamp = new Date().toISOString()
+    const vault = {
+      id,
+      creator,
+      amount,
+      startTimestamp,
+      endTimestamp,
+      successDestination,
+      failureDestination,
+      status: 'active' as const,
+      createdAt: startTimestamp,
+    }
+    vaults.push(vault)
+    res.status(201).json(vault)
   }
+)
 
-  const id = `vault-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-  const startTimestamp = new Date().toISOString()
-  const vault = {
-    id,
-    creator,
-    amount,
-    startTimestamp,
-    endTimestamp,
-    successDestination,
-    failureDestination,
-    status: 'active' as const,
-    createdAt: startTimestamp,
+vaultsRouter.get('/:id', 
+  createValidationMiddleware(getVaultByIdSchema, { source: 'params' }),
+  (req: Request, res: Response) => {
+    const vault = vaults.find((v) => v.id === req.params.id)
+    if (!vault) {
+      res.status(404).json({ error: 'Vault not found' })
+      return
+    }
+    res.json(vault)
   }
-  vaults.push(vault)
-  res.status(201).json(vault)
-})
-
-vaultsRouter.get('/:id', (req: Request, res: Response) => {
-  const vault = vaults.find((v) => v.id === req.params.id)
-  if (!vault) {
-    res.status(404).json({ error: 'Vault not found' })
-    return
-  }
-  res.json(vault)
-})
+)
