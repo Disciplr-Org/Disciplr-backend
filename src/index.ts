@@ -8,6 +8,9 @@ import { transactionsRouter } from './routes/transactions.js'
 import { analyticsRouter } from './routes/analytics.js'
 import { privacyRouter } from './routes/privacy.js'
 import { privacyLogger } from './middleware/privacy-logger.js'
+import { milestoneDocumentsRouter } from './routes/milestoneDocuments.js'
+// ...
+app.use('/api/milestone-documents', milestoneDocumentsRouter)
 
 const PORT = process.env.PORT ?? 3000
 
