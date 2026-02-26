@@ -48,6 +48,8 @@ export const allMilestonesVerified = (vaultId: string): boolean => {
 
 export const resetMilestonesTable = (): void => {
   milestonesTable.length = 0
+}
+
 export type MilestoneStatus = 'success' | 'failed'
 export interface MilestoneEvent {
   id: string
