@@ -26,6 +26,7 @@ Data is stored in memory for vaults, but transactions use PostgreSQL with real-t
 - **PostgreSQL** for transaction storage
 - **Stellar SDK** for Horizon integration
 - **Helmet** and **CORS** for security and cross-origin
+- **Knex** for database migrations
 
 ## Local setup
 
@@ -54,12 +55,13 @@ chmod +x setup.sh && ./setup.sh
 # From repo root
 cd disciplr-backend
 npm install
+npm run migrate:latest
 npm run dev
 ```
 
 API runs at **http://localhost:3000**. Frontend dev server can proxy `/api` to this port.
 
-### Scripts
+## Scripts
 
 | Command        | Description                    |
 |----------------|--------------------------------|
@@ -70,41 +72,25 @@ API runs at **http://localhost:3000**. Frontend dev server can proxy `/api` to t
 | `npm run test` | Run all tests                  |
 | `npm run test:system` | Run transaction system tests |
 | `npm run test:api` | Run API endpoint tests      |
+| `npm run migrate:make <name>` | Create migration file in `db/migrations` |
+| `npm run migrate:latest` | Apply all pending migrations |
+| `npm run migrate:rollback` | Roll back the latest migration batch |
+| `npm run migrate:status` | Show migration status |
 
-### Example: create a vault
+## Database migrations
 
-```bash
-curl -X POST http://localhost:3000/api/vaults \
-  -H "Content-Type: application/json" \
-  -d '{
-    "creator": "G...",
-    "amount": "1000",
-    "endTimestamp": "2025-12-31T23:59:59Z",
-    "successDestination": "G...",
-    "failureDestination": "G..."
-  }'
-```
+Migration tooling is standardized with Knex and PostgreSQL.
 
-### Example: query transaction history
+- Config: `knexfile.cjs`
+- Baseline migration: `db/migrations/20260225190000_initial_baseline.cjs`
+- Full process (authoring, rollout, rollback, CI/CD): `docs/database-migrations.md`
+
+Quick start:
 
 ```bash
-# Get all transactions with pagination
-curl "http://localhost:3000/api/transactions?page=1&limit=20"
-
-# Filter by transaction type
-curl "http://localhost:3000/api/transactions?type=creation"
-
-# Filter by vault ID
-curl "http://localhost:3000/api/transactions?vault=vault-123"
-
-# Filter by date range
-curl "http://localhost:3000/api/transactions?startDate=2024-01-01T00:00:00Z&endDate=2024-01-31T23:59:59Z"
-
-# Get transactions for a specific user
-curl "http://localhost:3000/api/transactions/user/GABC..."
+npm run migrate:latest
+npm run migrate:status
 ```
-
-For complete transaction system documentation, see [TRANSACTION_SYSTEM.md](./TRANSACTION_SYSTEM.md).
 
 ## Project layout
 
@@ -128,16 +114,57 @@ disciplr-backend/
 ├── test/
 │   ├── transactionSystem.test.ts    🆕
 │   └── apiEndpoints.test.ts         🆕
-├── migrations/
-│   └── 001_create_transactions_table.sql  🆕
+├── db/
+│   └── migrations/
+│       └── 20260225190000_initial_baseline.cjs
+├── docs/
+│   └── database-migrations.md
+├── examples/
+│   └── api-usage.md
 ├── package.json
 ├── tsconfig.json
+├── knexfile.cjs
 ├── env.example                      🆕
 ├── setup.sh                        🆕
 ├── setup.bat                       🆕
 ├── TRANSACTION_SYSTEM.md            🆕
 └── README.md
 ```
+
+## Example: create a vault
+
+```bash
+curl -X POST http://localhost:3000/api/vaults \
+  -H "Content-Type: application/json" \
+  -d '{
+    "creator": "G...",
+    "amount": "1000",
+    "endTimestamp": "2025-12-31T23:59:59Z",
+    "successDestination": "G...",
+    "failureDestination": "G..."
+  }'
+```
+
+## Example: query transaction history
+
+```bash
+# Get all transactions with pagination
+curl "http://localhost:3000/api/transactions?page=1&limit=20"
+
+# Filter by transaction type
+curl "http://localhost:3000/api/transactions?type=creation"
+
+# Filter by vault ID
+curl "http://localhost:3000/api/transactions?vault=vault-123"
+
+# Filter by date range
+curl "http://localhost:3000/api/transactions?startDate=2024-01-01T00:00:00Z&endDate=2024-01-31T23:59:59Z"
+
+# Get transactions for a specific user
+curl "http://localhost:3000/api/transactions/user/GABC..."
+```
+
+For complete transaction system documentation, see [TRANSACTION_SYSTEM.md](./TRANSACTION_SYSTEM.md).
 
 ## Merging into a remote
 
