@@ -8,23 +8,28 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "eslint src --ext .ts",
-    "test": "tsx --test src/**/*.test.ts",
-    "test:api-keys": "tsx --test src/routes/apiKeys.test.ts"
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch"
+    "test:api-keys": "tsx --test src/routes/apiKeys.test.ts",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "validate:docs": "npm run build && node -e \"const { swaggerSpec } = require('./dist/config/swagger.js'); const SwaggerParser = require('@apidevtools/swagger-parser'); SwaggerParser.validate(swaggerSpec).then(() => console.log('✅ OpenAPI spec is valid')).catch(err => { console.error('❌ OpenAPI spec validation failed:', err); process.exit(1); });\"",
     "migrate:make": "knex migrate:make --knexfile knexfile.cjs --migrations-directory db/migrations --extension cjs",
     "migrate:latest": "knex migrate:latest --knexfile knexfile.cjs",
     "migrate:rollback": "knex migrate:rollback --knexfile knexfile.cjs",
     "migrate:status": "knex migrate:status --knexfile knexfile.cjs"
   },
   "dependencies": {
+    "@types/swagger-jsdoc": "^6.0.4",
+    "@types/swagger-ui-express": "^4.1.8",
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "helmet": "^7.1.0",
-    "jsonwebtoken": "^9.0.3"
-    "pg": "^8.13.1"
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.13.1",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
+    "@apidevtools/swagger-parser": "^12.1.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/jest": "^30.0.0",
@@ -33,9 +38,9 @@
     "@types/supertest": "^6.0.3",
     "eslint": "^9.13.0",
     "jest": "^30.2.0",
+    "knex": "^3.1.0",
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.6",
-    "knex": "^3.1.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   }

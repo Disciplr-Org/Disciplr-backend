@@ -24,6 +24,67 @@ export const setVaults = (newVaults: Array<Vault>) => {
   vaults = newVaults
 }
 
+/**
+ * @swagger
+ * /api/vaults:
+ *   get:
+ *     summary: Get all vaults
+ *     description: Retrieve a paginated list of vaults with optional filtering and sorting
+ *     tags: [Vaults]
+ *     security:
+ *       - bearerAuth: []
+ *       - apiKeyAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Page number for pagination
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *         description: Number of items per page
+ *       - in: query
+ *         name: sort
+ *         schema:
+ *           type: string
+ *           enum: [createdAt, amount, endTimestamp, status]
+ *         description: Field to sort by
+ *       - in: query
+ *         name: order
+ *         schema:
+ *           type: string
+ *           enum: [asc, desc]
+ *           default: desc
+ *         description: Sort order
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [active, completed, failed, cancelled]
+ *         description: Filter by vault status
+ *       - in: query
+ *         name: creator
+ *         schema:
+ *           type: string
+ *         description: Filter by creator
+ *     responses:
+ *       200:
+ *         description: List of vaults retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/PaginatedResponse'
+ *       401:
+ *         description: Unauthorized
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
 vaultsRouter.get(
   '/',
   queryParser({
@@ -50,6 +111,42 @@ vaultsRouter.get(
   }
 )
 
+/**
+ * @swagger
+ * /api/vaults:
+ *   post:
+ *     summary: Create a new vault
+ *     description: Create a new vault with specified parameters
+ *     tags: [Vaults]
+ *     security:
+ *       - bearerAuth: []
+ *       - apiKeyAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/CreateVaultRequest'
+ *     responses:
+ *       201:
+ *         description: Vault created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Vault'
+ *       400:
+ *         description: Bad request - invalid input
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *       401:
+ *         description: Unauthorized
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
 vaultsRouter.post('/', (req: Request, res: Response) => {
   const {
     creator,
@@ -83,6 +180,44 @@ vaultsRouter.post('/', (req: Request, res: Response) => {
   res.status(201).json(vault)
 })
 
+/**
+ * @swagger
+ * /api/vaults/{id}:
+ *   get:
+ *     summary: Get a vault by ID
+ *     description: Retrieve a specific vault by its unique identifier
+ *     tags: [Vaults]
+ *     security:
+ *       - bearerAuth: []
+ *       - apiKeyAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Vault ID
+ *         example: vault-1640592000000-abc1234
+ *     responses:
+ *       200:
+ *         description: Vault retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Vault'
+ *       404:
+ *         description: Vault not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *       401:
+ *         description: Unauthorized
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
 vaultsRouter.get('/:id', (req: Request, res: Response) => {
   const vault = vaults.find((v) => v.id === req.params.id)
   if (!vault) {
