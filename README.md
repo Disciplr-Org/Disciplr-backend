@@ -4,6 +4,15 @@ API and milestone engine for Disciplr: programmable time-locked capital vaults o
 
 ## What it does
 
+- **Health:** `GET /api/health` — service status and timestamp.
+- **Vaults:**  
+  - `GET /api/vaults` — list all vaults (in-memory placeholder).  
+  - `POST /api/vaults` — create a vault (body: `creator`, `amount`, `endTimestamp`, `successDestination`, `failureDestination`).  
+  - `GET /api/vaults/:id` — get a vault by id.
+- **Background jobs (custom worker queue):**
+  - `GET /api/jobs/health` — queue status (`ok`, `degraded`, `down`) and failure-rate snapshot.
+  - `GET /api/jobs/metrics` — detailed queue metrics by job type.
+  - `POST /api/jobs/enqueue` — enqueue a typed job.
 - **Health:** `GET /api/health` - service status and timestamp.
 - **Auth:**
   - `POST /api/auth/login` - mock login and audit logging.
@@ -64,8 +73,56 @@ Admin-only access requirements for audit query endpoints:
 - `x-user-role: admin`
 - `x-user-id: <admin-user-id>`
 
+## Timezone handling
+
+All timestamps are stored, transmitted, and returned in UTC (ISO 8601 with `Z` suffix). Input timestamps must include a timezone designator. See [Timezone Contract](docs/TIMEZONE_CONTRACT.md) for the full specification.
+
 ## Tech stack
 
+## Background job system
+
+The backend now includes a generic background processor built as a custom in-memory queue/worker with:
+
+- Typed job registration and validation.
+- Configurable worker concurrency and polling interval.
+- Retry handling with exponential backoff.
+- Queue health and metrics endpoints.
+- Recurring scheduled jobs for deadline checks and analytics recompute.
+
+### Built-in job types
+
+- `notification.send`
+- `deadline.check`
+- `oracle.call`
+- `analytics.recompute`
+
+### Enqueue example
+
+```bash
+curl -X POST http://localhost:3000/api/jobs/enqueue \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "notification.send",
+    "payload": {
+      "recipient": "user@example.com",
+      "subject": "Disciplr reminder",
+      "body": "You have a milestone due soon."
+    },
+    "maxAttempts": 3,
+    "delayMs": 0
+  }'
+```
+
+### Optional environment variables
+
+- `JOB_WORKER_CONCURRENCY` (default: `2`)
+- `JOB_QUEUE_POLL_INTERVAL_MS` (default: `250`)
+- `JOB_HISTORY_LIMIT` (default: `50`)
+- `ENABLE_JOB_SCHEDULER` (`false` disables recurring jobs)
+- `DEADLINE_CHECK_INTERVAL_MS` (default: `60000`)
+- `ANALYTICS_RECOMPUTE_INTERVAL_MS` (default: `300000`)
+
+### Example: create a vault
 - Node.js + TypeScript
 - Express
 - Helmet + CORS
@@ -158,6 +215,20 @@ Migration tooling is standardized with Knex and PostgreSQL.
 
 ```text
 disciplr-backend/
+├── src/
+│   ├── jobs/
+│   │   ├── handlers.ts
+│   │   ├── queue.ts
+│   │   ├── system.ts
+│   │   └── types.ts
+│   ├── routes/
+│   │   ├── health.ts
+│   │   ├── jobs.ts
+│   │   └── vaults.ts
+│   └── index.ts
+├── package.json
+├── tsconfig.json
+└── README.md
 |- src/
 |  |- routes/
 |  |  |- health.ts
