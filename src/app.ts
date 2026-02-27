@@ -1,34 +1,20 @@
 import cors from 'cors'
 import express from 'express'
 import helmet from 'helmet'
-import { privacyLogger } from './middleware/privacy-logger.js'
+import { analyticsRouter } from './routes/analytics.js'
+import { apiKeysRouter } from './routes/apiKeys.js'
+import { healthRouter } from './routes/health.js'
+import { vaultsRouter } from './routes/vaults.js'
+import { milestonesRouter } from './routes/milestones.js'
 
 export const app = express()
 
 app.use(helmet())
-
-const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'];
-const corsOptions: cors.CorsOptions = {
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'idempotency-key'],
-  credentials: true,
-};
-
-app.use(cors(corsOptions))
+app.use(cors({ origin: true }))
 app.use(express.json())
 
-app.use((_req, res, next) => {
-  res.setHeader('X-Timezone', 'UTC')
-  next()
-})
-
-app.use(privacyLogger)
-
-// Routes are mounted in index.ts
+app.use('/api/health', healthRouter)
+app.use('/api/vaults', vaultsRouter)
+app.use('/api/milestones', milestonesRouter)
+app.use('/api/analytics', analyticsRouter)
+app.use('/api/api-keys', apiKeysRouter)
