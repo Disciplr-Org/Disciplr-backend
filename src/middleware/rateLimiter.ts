@@ -1,5 +1,6 @@
 import rateLimit from 'express-rate-limit'
 import type { Request, Response } from 'express'
+import { recordRateLimitBreach } from './metrics.js'
 
 export interface RateLimitConfig {
   windowMs: number
@@ -10,17 +11,6 @@ export interface RateLimitConfig {
   skipSuccessfulRequests?: boolean
   keyGenerator?: (req: Request) => string
   handler?: (req: Request, res: Response) => void
-}
-
-const logRateLimitBreached = (req: Request): void => {
-  const timestamp = new Date().toISOString()
-  const clientIp = req.ip ?? req.socket.remoteAddress ?? 'unknown'
-  const method = req.method
-  const path = req.path
-  const userAgent = req.headers['user-agent'] ?? 'unknown'
-  const apiKey = req.headers['x-api-key'] ?? 'none'
-
-  console.warn(`[RATE_LIMIT_BREACH] ${timestamp} | IP: ${clientIp} | API_KEY: ${apiKey} | ${method} ${path} | User-Agent: ${userAgent}`)
 }
 
 const createRateLimiter = (config: Partial<RateLimitConfig> = {}) => {
@@ -38,7 +28,8 @@ const createRateLimiter = (config: Partial<RateLimitConfig> = {}) => {
       return apiKey ?? req.ip ?? req.socket.remoteAddress ?? 'unknown'
     }),
     handler: config.handler ?? ((req, res) => {
-      logRateLimitBreached(req)
+      const clientType = req.headers['x-api-key'] ? 'api_key' : 'ip'
+      recordRateLimitBreach(req.route?.path || req.path, clientType)
       res.status(429).json({
         error: config.message ?? 'Too many requests, please try again later.',
         retryAfter: Math.ceil(windowMs / 1000),
