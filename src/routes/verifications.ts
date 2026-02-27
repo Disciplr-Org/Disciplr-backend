@@ -7,7 +7,7 @@ export const verificationsRouter = Router()
 
 verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request, res: Response) => {
   const payload = req.user!
-  const verifierUserId = payload.sub
+  const verifierUserId = payload.userId
   const { targetId, result, disputed } = req.body as {
     targetId?: string
     result?: 'approved' | 'rejected'
