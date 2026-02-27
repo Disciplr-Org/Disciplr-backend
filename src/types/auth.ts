@@ -27,6 +27,7 @@ export interface JWTPayload {
   userId: string
   role: UserRole
   email?: string
+  jti?: string
 }
 
 declare global {

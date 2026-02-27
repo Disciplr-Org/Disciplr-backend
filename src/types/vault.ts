@@ -19,6 +19,11 @@ export interface Vault {
   deadline: Date;
   created_at: Date;
   updated_at: Date;
+  // Legacy fields for compatibility with in-memory logic
+  creator?: string;
+  startTimestamp?: string;
+  endTimestamp?: string;
+  createdAt?: string;
 }
 
 export type CreateVaultDTO = {
@@ -31,18 +36,6 @@ export type CreateVaultDTO = {
   failureDestination: string;
   deadline: Date | string;
 };
-export interface Vault {
-    id: string
-    creator: string
-    amount: string
-    startTimestamp: string
-    endTimestamp: string
-    successDestination: string
-    failureDestination: string
-    status: 'active' | 'completed' | 'failed' | 'cancelled'
-    createdAt: string
-    updatedAt: string
-}
 
 export interface VaultAnalytics {
     totalVaults: number
@@ -66,5 +59,5 @@ export interface TimeRangeFilter {
 }
 
 export interface VaultStatusUpdate {
-    status: 'active' | 'completed' | 'failed' | 'cancelled'
+    status: VaultStatus
 }

@@ -1,35 +1,38 @@
 import { Request, Response, NextFunction } from 'express'
-import { OrgRole, getOrganization, getMemberRole } from '../models/organizations.js'
+import { AuthenticatedRequest } from './auth.js'
 
-export function requireOrgAccess(...allowedRoles: OrgRole[]) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    if (!req.user) {
-      res.status(401).json({ error: 'Unauthenticated' })
+export type OrgRole = 'owner' | 'admin' | 'member'
+
+export interface OrgMember {
+  orgId: string
+  userId: string
+  role: OrgRole
+}
+
+let orgMembers: OrgMember[] = []
+
+export const setOrgMembers = (members: OrgMember[]) => {
+  orgMembers = members
+}
+
+export const getMemberRole = (orgId: string, userId: string): OrgRole | null => {
+  const membership = orgMembers.find(m => m.orgId === orgId && m.userId === userId)
+  return membership ? membership.role : null
+}
+
+export const requireOrgAccess = (allowedRoles: OrgRole[]) => {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    const orgId = req.params.orgId || req.query.orgId as string
+    const userId = req.user?.userId || (req.user as any)?.sub
+
+    if (!orgId || !userId) {
+      res.status(401).json({ error: 'Auth/Org info missing' })
       return
     }
 
-    const { orgId } = req.params
-    if (!orgId) {
-      res.status(400).json({ error: 'Missing orgId parameter' })
-      return
-    }
-
-    const org = getOrganization(orgId)
-    if (!org) {
-      res.status(404).json({ error: 'Organization not found' })
-      return
-    }
-
-    const role = getMemberRole(orgId, req.user.sub)
-    if (!role) {
-      res.status(403).json({ error: 'You are not a member of this organization' })
-      return
-    }
-
-    if (!allowedRoles.includes(role)) {
-      res.status(403).json({
-        error: `Forbidden: requires role ${allowedRoles.join(' or ')}, got '${role}'`,
-      })
+    const role = getMemberRole(orgId, userId)
+    if (!role || !allowedRoles.includes(role)) {
+      res.status(403).json({ error: 'Insufficient organization permissions' })
       return
     }
 

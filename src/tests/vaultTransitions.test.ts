@@ -1,5 +1,7 @@
 import request from 'supertest'
 import { app } from '../app.js'
+import { describe, it, expect, beforeEach } from '@jest/globals'
+import { UserRole } from '../types/user.js'
 import { vaults, setVaults, type Vault } from '../routes/vaults.js'
 import { resetMilestonesTable, createMilestone, verifyMilestone } from '../services/milestones.js'
 import {
@@ -28,7 +30,7 @@ const makeVault = (overrides: Partial<Vault> = {}): Vault => ({
   ...overrides,
 })
 
-const tokenFor = (sub: string, role: 'user' | 'verifier' | 'admin') =>
+const tokenFor = (sub: string, role: UserRole.USER | UserRole.VERIFIER | UserRole.ADMIN) =>
   `Bearer ${signToken({ sub, role })}`
 
 beforeEach(() => {
@@ -241,7 +243,7 @@ describe('POST /api/vaults/:id/cancel', () => {
 
     const res = await request(app)
       .post(`/api/vaults/${vault.id}/cancel`)
-      .set('Authorization', tokenFor('user-1', 'user'))
+      .set('Authorization', tokenFor('user-1', UserRole.USER))
 
     expect(res.status).toBe(200)
     expect(res.body.vault.status).toBe('cancelled')
@@ -253,7 +255,7 @@ describe('POST /api/vaults/:id/cancel', () => {
 
     const res = await request(app)
       .post(`/api/vaults/${vault.id}/cancel`)
-      .set('Authorization', tokenFor('user-2', 'user'))
+      .set('Authorization', tokenFor('user-2', UserRole.USER))
 
     expect(res.status).toBe(409)
   })
@@ -276,7 +278,7 @@ describe('Milestones routes', () => {
 
     const res = await request(app)
       .post(`/api/vaults/${vault.id}/milestones`)
-      .set('Authorization', tokenFor('user-1', 'user'))
+      .set('Authorization', tokenFor('user-1', UserRole.USER))
       .send({ description: 'First milestone' })
 
     expect(res.status).toBe(201)
@@ -305,7 +307,7 @@ describe('Milestones routes', () => {
 
     const res = await request(app)
       .patch(`/api/vaults/${vault.id}/milestones/${ms.id}/verify`)
-      .set('Authorization', tokenFor('verifier-1', 'verifier'))
+      .set('Authorization', tokenFor('verifier-1', UserRole.VERIFIER))
 
     expect(res.status).toBe(200)
     expect(res.body.milestone.verified).toBe(true)
@@ -319,7 +321,7 @@ describe('Milestones routes', () => {
 
     const res = await request(app)
       .patch(`/api/vaults/${vault.id}/milestones/${ms.id}/verify`)
-      .set('Authorization', tokenFor('user-1', 'user'))
+      .set('Authorization', tokenFor('user-1', UserRole.USER))
 
     expect(res.status).toBe(403)
   })
@@ -333,14 +335,14 @@ describe('Milestones routes', () => {
     // Verify first milestone
     await request(app)
       .patch(`/api/vaults/${vault.id}/milestones/${ms1.id}/verify`)
-      .set('Authorization', tokenFor('v1', 'verifier'))
+      .set('Authorization', tokenFor('v1', UserRole.VERIFIER))
 
     expect(vault.status).toBe('active')
 
     // Verify second (last) milestone
     const res = await request(app)
       .patch(`/api/vaults/${vault.id}/milestones/${ms2.id}/verify`)
-      .set('Authorization', tokenFor('v1', 'verifier'))
+      .set('Authorization', tokenFor('v1', UserRole.VERIFIER))
 
     expect(res.status).toBe(200)
     expect(res.body.vaultCompleted).toBe(true)
