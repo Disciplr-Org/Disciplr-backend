@@ -9,8 +9,9 @@ const config: Config = {
      transform: {
           '^.+\\.ts$': ['<rootDir>/node_modules/ts-jest', { useESM: true, diagnostics: { ignoreCodes: [151002] } }],
      },
-     testMatch: ['**/tests/**/*.test.ts'],
+     testMatch: ['**/tests/**/*.test.ts', '**/*.test.ts'],
      clearMocks: true,
+     setupFilesAfterEnv: ['<rootDir>/src/tests/setup.ts'],
 }
 
 export default config
