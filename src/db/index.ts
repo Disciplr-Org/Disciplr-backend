@@ -1,22 +1,20 @@
 import knex from 'knex'
-import knexConfig from '../../knexfile.cjs'
+import pg from 'pg'
+import { createRequire } from 'module'
 
-const db = knex(knexConfig as any)
+const require = createRequire(import.meta.url)
+const knexConfig = require('../../knexfile.cjs')
 
-export { db }
-import pg from 'pg';
-import 'dotenv/config';
+/**
+ * Standard database connection setup
+ * Exports both Knex for query building and pg Pool for low-level access
+ */
 
-const { Pool } = pg;
+export const db = knex(knexConfig)
 
-// Ensure DATABASE_URL is in your .env file
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
+export const pool = new pg.Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+})
 
-pool.on('error', (err) => {
-  console.error('Unexpected error on idle client', err);
-  process.exit(-1);
-});
-
-export default pool;
+export default pool

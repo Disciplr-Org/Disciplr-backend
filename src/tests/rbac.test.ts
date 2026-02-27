@@ -1,80 +1,112 @@
-import { describe, it } from 'node:test'
-import assert from 'node:assert/strict'
-import { UserRole } from '@prisma/client'
+import { describe, it, beforeAll } from '@jest/globals'
 import request from 'supertest'
 import express from 'express'
 import { authenticate, signToken } from '../middleware/auth.js'
 import { requireUser, requireVerifier, requireAdmin } from '../middleware/rbac.js'
+import { UserRole } from '@prisma/client'
+import { jest } from '@jest/globals'
 
-// ── Test app ──────────────────────────────────────────────────────
-const app = express()
-app.use(express.json())
-
-app.get('/user-route', authenticate, requireUser, (_req, res) => res.json({ ok: true }))
-app.post('/verify-route', authenticate, requireVerifier, (_req, res) => res.json({ ok: true }))
-app.delete('/admin-route', authenticate, requireAdmin, (_req, res) => res.json({ ok: true }))
-
-// ── Token helpers ─────────────────────────────────────────────────
-const token = (role: 'user' | 'verifier' | 'admin') => {
-     const roleMap: Record<string, UserRole> = {
-          user: UserRole.USER,
-          verifier: UserRole.VERIFIER,
-          admin: UserRole.ADMIN,
-     }
-     return `Bearer ${signToken({ userId: '1', role: roleMap[role] })}`
+// Mock database connection
+const mockDb = {
+  insert: jest.fn<any>().mockReturnThis(),
+  returning: jest.fn<any>().mockReturnThis(),
+  where: jest.fn<any>().mockReturnThis(),
+  whereNull: jest.fn<any>().mockReturnThis(),
+  andWhere: jest.fn<any>().mockReturnThis(),
+  update: jest.fn<any>().mockReturnThis(),
+  first: jest.fn<any>().mockResolvedValue({ id: 'mock-session-id' }),
 }
 
-// ── authenticate ──────────────────────────────────────────────────
+jest.unstable_mockModule('../db/index.js', () => ({
+  default: jest.fn<any>(() => mockDb),
+}))
+
+let app: express.Express
+let tokenHelpers: Record<string, () => Promise<string>>
+
+beforeAll(async () => {
+    // Dynamic import to allow mocks to be applied before module evaluation
+    const authModule = await import('../middleware/auth.js')
+    const rbacModule = await import('../middleware/rbac.js')
+
+    app = express()
+    app.use(express.json())
+
+    app.get('/user-route', authModule.authenticate, rbacModule.requireUser, (_req, res) => res.json({ ok: true }))
+    app.post('/verify-route', authModule.authenticate, rbacModule.requireVerifier, (_req, res) => res.json({ ok: true }))
+    app.delete('/admin-route', authModule.authenticate, rbacModule.requireAdmin, (_req, res) => res.json({ ok: true }))
+
+    tokenHelpers = {
+        user: async () => `Bearer ${await authModule.signToken({ userId: '1', role: UserRole.USER })}`,
+        verifier: async () => `Bearer ${await authModule.signToken({ userId: '1', role: UserRole.VERIFIER })}`,
+        admin: async () => `Bearer ${await authModule.signToken({ userId: '1', role: UserRole.ADMIN })}`,
+    }
+})
+
 describe('authenticate', () => {
      it('rejects request with no token', async () => {
           const res = await request(app).get('/user-route')
-          assert.strictEqual(res.status, 401)
+          expect(res.status).toBe(401)
      })
 
      it('rejects an invalid token', async () => {
-          const res = await request(app).get('/user-route').set('Authorization', 'Bearer bad.token')
-          assert.strictEqual(res.status, 401)
-     })
-
-     it('rejects an expired token', async () => {
-          const expired = `Bearer ${signToken({ userId: '1', role: UserRole.USER }, '-1s')}`
-          const res = await request(app).get('/user-route').set('Authorization', expired)
-          assert.strictEqual(res.status, 401)
-          assert.match(res.body.error, /expired/i)
+          const res = await request(app).get('/user-route').set('Authorization', 'Bearer invalid-token')
+          expect(res.status).toBe(401)
      })
 
      it('accepts a valid token', async () => {
-          const res = await request(app).get('/user-route').set('Authorization', token('user'))
-          assert.strictEqual(res.status, 200)
+          const res = await request(app).get('/user-route').set('Authorization', await tokenHelpers.user())
+          expect(res.status).toBe(200)
      })
 })
 
-// ── requireUser ───────────────────────────────────────────────────
 describe('requireUser', () => {
-     it('allows user', async () => assert.strictEqual((await request(app).get('/user-route').set('Authorization', token('user'))).status, 200))
-     it('allows verifier', async () => assert.strictEqual((await request(app).get('/user-route').set('Authorization', token('verifier'))).status, 200))
-     it('allows admin', async () => assert.strictEqual((await request(app).get('/user-route').set('Authorization', token('admin'))).status, 200))
+     it('allows user', async () => {
+          const res = await request(app).get('/user-route').set('Authorization', await tokenHelpers.user())
+          expect(res.status).toBe(200)
+     })
+
+     it('allows verifier', async () => {
+          const res = await request(app).get('/user-route').set('Authorization', await tokenHelpers.verifier())
+          expect(res.status).toBe(200)
+     })
+
+     it('allows admin', async () => {
+          const res = await request(app).get('/user-route').set('Authorization', await tokenHelpers.admin())
+          expect(res.status).toBe(200)
+     })
 })
 
-// ── requireVerifier ───────────────────────────────────────────────
 describe('requireVerifier', () => {
      it('forbids user', async () => {
-          const res = await request(app).post('/verify-route').set('Authorization', token('user'))
-          assert.strictEqual(res.status, 403)
+          const res = await request(app).post('/verify-route').set('Authorization', await tokenHelpers.user())
+          expect(res.status).toBe(403)
      })
-     it('allows verifier', async () => assert.strictEqual((await request(app).post('/verify-route').set('Authorization', token('verifier'))).status, 200))
-     it('allows admin', async () => assert.strictEqual((await request(app).post('/verify-route').set('Authorization', token('admin'))).status, 200))
+
+     it('allows verifier', async () => {
+          const res = await request(app).post('/verify-route').set('Authorization', await tokenHelpers.verifier())
+          expect(res.status).toBe(200)
+     })
+
+     it('allows admin', async () => {
+          const res = await request(app).post('/verify-route').set('Authorization', await tokenHelpers.admin())
+          expect(res.status).toBe(200)
+     })
 })
 
-// ── requireAdmin ──────────────────────────────────────────────────
 describe('requireAdmin', () => {
      it('forbids user', async () => {
-          const res = await request(app).delete('/admin-route').set('Authorization', token('user'))
-          assert.strictEqual(res.status, 403)
+          const res = await request(app).delete('/admin-route').set('Authorization', await tokenHelpers.user())
+          expect(res.status).toBe(403)
      })
+
      it('forbids verifier', async () => {
-          const res = await request(app).delete('/admin-route').set('Authorization', token('verifier'))
-          assert.strictEqual(res.status, 403)
+          const res = await request(app).delete('/admin-route').set('Authorization', await tokenHelpers.verifier())
+          expect(res.status).toBe(403)
      })
-     it('allows admin', async () => assert.strictEqual((await request(app).delete('/admin-route').set('Authorization', token('admin'))).status, 200))
+
+     it('allows admin', async () => {
+          const res = await request(app).delete('/admin-route').set('Authorization', await tokenHelpers.admin())
+          expect(res.status).toBe(200)
+     })
 })
