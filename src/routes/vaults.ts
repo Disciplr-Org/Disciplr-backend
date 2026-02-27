@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { authenticate } from '../middleware/auth.middleware.js'
 import { VaultService } from '../services/vault.service.js'
-import { VaultStatus } from '@prisma/client'
+import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
 import { updateAnalyticsSummary } from '../db/database.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import {
@@ -73,8 +73,20 @@ vaultsRouter.get(
   }),
   async (req: Request, res: Response) => {
     try {
-      // Prioritize the service-based listing if it provides more features
-      const vaults = await listVaults(req.filters, req.sort, req.pagination)
+      // Fetch all vaults
+      let vaults = await listVaults()
+      
+      // Apply filters, sort, and pagination if available
+      if (req.filters && applyFilters) {
+          vaults = applyFilters(vaults as any, req.filters)
+      }
+      if (req.sort && applySort) {
+          vaults = applySort(vaults as any, req.sort)
+      }
+      if (req.pagination && paginateArray) {
+          vaults = paginateArray(vaults as any, req.pagination) as any
+      }
+
       res.json(vaults)
     } catch (error: any) {
       res.status(500).json({ error: error.message })
@@ -220,7 +232,7 @@ vaultsRouter.get('/:id', async (req: Request, res: Response) => {
       await saveIdempotentResponse(idempotencyKey, requestHash, vault.id, responseBody, client ?? undefined)
     }
 
-    const actorUserId = req.header('x-user-id') ?? input.creator
+    const actorUserId = (req.header('x-user-id') ?? input.creator) || 'unknown'
     createAuditLog({
       actor_user_id: actorUserId,
       action: 'vault.created',
