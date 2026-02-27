@@ -14,6 +14,7 @@ adminRouter.use(authorize([UserRole.ADMIN]))
 
 /**
  * Force-logout a user (Admin only) - Preserve Issue #46 logic
+ * Force-logout a user (Admin only) - Issue #46 logic preserved
  */
 adminRouter.post('/users/:userId/revoke-sessions', async (req: Request, res: Response) => {
   const { userId } = req.params
