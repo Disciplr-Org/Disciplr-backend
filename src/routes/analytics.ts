@@ -1,8 +1,9 @@
 import { Router, Request, Response } from 'express'
+import { authenticate } from '../middleware/auth.js'
 import { authenticateApiKey } from '../middleware/apiKeyAuth.js'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
-import { authenticateApiKey } from '../middleware/apiKeyAuth.js'
+import { utcNow } from '../utils/timestamps.js'
 
 export const analyticsRouter = Router()
 
@@ -17,6 +18,7 @@ const analyticsViews: Array<{
 
 analyticsRouter.get(
   '/',
+  authenticateApiKey(['read:analytics']),
   queryParser({
     allowedSortFields: ['timestamp', 'value', 'metric'],
     allowedFilterFields: ['vaultId', 'metric', 'period'],
@@ -48,13 +50,23 @@ analyticsRouter.get('/overview', authenticateApiKey(['read:analytics']), (_req, 
   })
 })
 
-analyticsRouter.get('/vaults', authenticateApiKey(['read:vaults']), (_req, res) => {
-  res.json({
-    metrics: {
-      totalVaults: 16,
-      activeVaults: 4,
-      completionRate: 0.75,
-    },
-    generatedAt: new Date().toISOString(),
+analyticsRouter.get('/summary', authenticate, (_req, res) => {
+  res.status(200).json({
+    total_vaults: 10,
+    active_vaults: 5,
+    completed_vaults: 3,
+    failed_vaults: 2,
+    total_locked_capital: '5000.0000000',
+    active_capital: '2500.0000000',
+    success_rate: 60.0,
+    last_updated: utcNow(),
+  })
+})
+
+analyticsRouter.get('/vaults/:id', authenticate, (req, res) => {
+  res.status(200).json({
+    vault_id: req.params.id,
+    status: 'active',
+    performance: 'on_track',
   })
 })

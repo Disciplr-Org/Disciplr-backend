@@ -1,16 +1,20 @@
 import { Router } from 'express'
-import { getSecurityMetricsSnapshot } from '../security/abuse-monitor.js'
+import { BackgroundJobSystem } from '../jobs/system.js'
+import { startExpirationChecker } from '../services/expirationScheduler.js'
+import { horizonListenerConfig } from '../config/horizonListener.js'
 
-export const healthRouter = Router()
+export const createHealthRouter = (jobSystem: BackgroundJobSystem) => {
+  const router = Router()
 
-healthRouter.get('/', (_req: Request, res: Response) => {
-  res.json({
-    status: 'ok',
-    service: 'disciplr-backend',
-    timestamp: new Date().toISOString(),
+  router.get('/', (req, res) => {
+    res.status(200).json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      jobs: jobSystem.getMetrics()
+      jobs: jobSystem.getUptimeMetrics()
+    })
   })
-})
 
-healthRouter.get('/security', (_req, res) => {
-  res.json(getSecurityMetricsSnapshot())
-})
+  return router
+}

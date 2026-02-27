@@ -1,13 +1,48 @@
-import { Router } from 'express'
+import { Router, Request, Response } from 'express'
 import { AuthService } from '../services/auth.service.js'
 import { registerSchema, loginSchema, refreshSchema } from '../lib/validation.js'
+import { createAuditLog } from '../lib/audit-logs.js'
+import { authenticate } from '../middleware/auth.js'
+import { revokeSession, revokeAllUserSessions } from '../services/session.js'
 
 export const authRouter = Router()
+
+// ------------- Mock Users & Audit Logs Setup -------------
+type UserRole = 'user' | 'verifier' | 'admin'
+
+type MockUser = {
+  id: string
+  role: UserRole
+  lastLoginAt: string | null
+}
+
+const users: MockUser[] = []
+const supportedRoles: UserRole[] = ['user', 'verifier', 'admin']
+
+const getMockUserById = (userId: string): MockUser | undefined => users.find((user) => user.id === userId)
+
+const upsertMockUser = (userId: string): MockUser => {
+  const existing = getMockUserById(userId)
+  if (existing) {
+    return existing
+  }
+
+  const created: MockUser = {
+    id: userId,
+    role: 'user',
+    lastLoginAt: null,
+  }
+  users.push(created)
+  return created
+}
+
+// ------------- Endpoints -------------
 
 authRouter.post('/register', async (req, res) => {
     const result = registerSchema.safeParse(req.body)
     if (!result.success) {
-        return res.status(400).json({ error: result.error.format() })
+        res.status(400).json({ error: result.error.format() })
+        return
     }
 
     try {
@@ -19,9 +54,38 @@ authRouter.post('/register', async (req, res) => {
 })
 
 authRouter.post('/login', async (req, res) => {
+    // Support mock login if only userId is provided (from audit-logs feature branch)
+    if (req.body.userId && !req.body.email && !req.body.password) {
+        const { userId } = req.body as { userId: string }
+
+        const now = new Date().toISOString()
+        const user = upsertMockUser(userId)
+        user.lastLoginAt = now
+
+        const auditLog = createAuditLog({
+            actor_user_id: user.id,
+            action: 'auth.login',
+            target_type: 'user',
+            target_id: user.id,
+            metadata: {
+                userAgent: req.header('user-agent') ?? 'unknown',
+                ip: req.ip,
+            },
+        })
+
+        res.status(200).json({
+            user,
+            token: `mock-token-${user.id}`,
+            auditLogId: auditLog.id,
+        })
+        return
+    }
+
+    // Real login flow
     const result = loginSchema.safeParse(req.body)
     if (!result.success) {
-        return res.status(400).json({ error: result.error.format() })
+        res.status(400).json({ error: result.error.format() })
+        return
     }
 
     try {
@@ -35,7 +99,8 @@ authRouter.post('/login', async (req, res) => {
 authRouter.post('/refresh', async (req, res) => {
     const result = refreshSchema.safeParse(req.body)
     if (!result.success) {
-        return res.status(400).json({ error: result.error.format() })
+        res.status(400).json({ error: result.error.format() })
+        return
     }
 
     try {
@@ -46,72 +111,35 @@ authRouter.post('/refresh', async (req, res) => {
     }
 })
 
-authRouter.post('/logout', async (req, res) => {
+authRouter.post('/logout', authenticate, async (req: Request, res: Response) => {
+    // 1. AuthService refresh token logout
     const { refreshToken } = req.body
     if (refreshToken) {
-        await AuthService.logout(refreshToken)
+        try {
+            await AuthService.logout(refreshToken)
+        } catch (error) {
+            console.error('Failed to logout refresh token:', error)
+        }
     }
-    res.status(204).send()
-import { createAuditLog } from '../lib/audit-logs.js'
 
-export const authRouter = Router()
+    // 2. Database access token session revocation
+    const jti = req.user?.jti
+    if (jti) {
+        await revokeSession(jti)
+    }
 
-type UserRole = 'user' | 'verifier' | 'admin'
+    res.json({ message: 'Successfully logged out' })
+})
 
-type User = {
-  id: string
-  role: UserRole
-  lastLoginAt: string | null
-}
-
-const users: User[] = []
-const supportedRoles: UserRole[] = ['user', 'verifier', 'admin']
-
-const getUserById = (userId: string): User | undefined => users.find((user) => user.id === userId)
-
-const upsertUser = (userId: string): User => {
-  const existing = getUserById(userId)
-  if (existing) {
-    return existing
-  }
-
-  const created: User = {
-    id: userId,
-    role: 'user',
-    lastLoginAt: null,
-  }
-  users.push(created)
-  return created
-}
-
-authRouter.post('/login', (req, res) => {
-  const { userId } = req.body as { userId?: string }
-
+authRouter.post('/logout-all', authenticate, async (req: Request, res: Response) => {
+  const userId = req.user?.userId
   if (!userId) {
-    res.status(400).json({ error: 'Missing required field: userId' })
+    res.status(401).json({ error: 'Unauthorized' })
     return
   }
 
-  const now = new Date().toISOString()
-  const user = upsertUser(userId)
-  user.lastLoginAt = now
-
-  const auditLog = createAuditLog({
-    actor_user_id: user.id,
-    action: 'auth.login',
-    target_type: 'user',
-    target_id: user.id,
-    metadata: {
-      userAgent: req.header('user-agent') ?? 'unknown',
-      ip: req.ip,
-    },
-  })
-
-  res.status(200).json({
-    user,
-    token: `mock-token-${user.id}`,
-    auditLogId: auditLog.id,
-  })
+  await revokeAllUserSessions(userId)
+  res.json({ message: 'Successfully logged out from all devices' })
 })
 
 authRouter.post('/users/:id/role', (req, res) => {
@@ -134,7 +162,7 @@ authRouter.post('/users/:id/role', (req, res) => {
     return
   }
 
-  const user = upsertUser(req.params.id)
+  const user = upsertMockUser(req.params.id)
   const previousRole = user.role
   user.role = role as UserRole
 

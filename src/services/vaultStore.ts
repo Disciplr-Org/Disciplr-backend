@@ -221,3 +221,61 @@ export const getVaultById = async (id: string): Promise<PersistedVault | null> =
 export const resetVaultStore = (): void => {
   memoryVaults.length = 0
 }
+
+export type CancelVaultResult = 
+  | { error: 'not_found' | 'already_cancelled' | 'not_cancellable'; currentStatus?: string }
+  | { vault: PersistedVault; previousStatus: string }
+
+export const cancelVaultById = async (id: string): Promise<CancelVaultResult> => {
+  const pool = getPgPool()
+  if (!pool) {
+    // In-memory fallback
+    const idx = memoryVaults.findIndex(v => v.id === id)
+    if (idx === -1) return { error: 'not_found' }
+    const vault = memoryVaults[idx]
+    
+    if (vault.status === 'cancelled') {
+        return { error: 'already_cancelled', currentStatus: 'cancelled' }
+    }
+    if (vault.status !== 'draft' && vault.status !== 'active') {
+        return { error: 'not_cancellable', currentStatus: vault.status }
+    }
+    
+    const previousStatus = vault.status
+    vault.status = 'cancelled'
+    return { vault, previousStatus }
+  }
+
+  // Database path
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const vaultRes = await client.query<{ status: string }>('SELECT status FROM vaults WHERE id = $1 FOR UPDATE', [id])
+    
+    if (vaultRes.rows.length === 0) {
+      await client.query('ROLLBACK')
+      return { error: 'not_found' }
+    }
+    
+    const vaultStatus = vaultRes.rows[0].status
+    if (vaultStatus === 'cancelled') {
+      await client.query('ROLLBACK')
+      return { error: 'already_cancelled', currentStatus: 'cancelled' }
+    }
+    if (vaultStatus !== 'draft' && vaultStatus !== 'active') {
+      await client.query('ROLLBACK')
+      return { error: 'not_cancellable', currentStatus: vaultStatus }
+    }
+    
+    await client.query("UPDATE vaults SET status = 'cancelled' WHERE id = $1", [id])
+    await client.query('COMMIT')
+    
+    const vault = await getVaultById(id)
+    return { vault: vault!, previousStatus: vaultStatus }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
+}

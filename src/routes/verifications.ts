@@ -1,6 +1,6 @@
-import { Router } from 'express'
+import { Router, Request, Response } from 'express'
 import { authenticate } from '../middleware/auth.js'
-import { requireVerifier } from '../middleware/rbac.js'
+import { requireVerifier, requireAdmin } from '../middleware/rbac.js'
 import {
   createValidationTransaction,
   findValidationTransactionById,
@@ -9,10 +9,9 @@ import {
   type ValidationPayload,
   type ValidationTransactionRecord,
 } from '../services/verifications.js'
+import { recordVerification, listVerifications } from '../services/verifiers.js'
 
 export const verificationsRouter = Router()
-
-verificationsRouter.use(authenticate, requireVerifier)
 
 const toApiResponse = (record: ValidationTransactionRecord, replayed: boolean) => ({
   id: record.id,
@@ -55,7 +54,35 @@ const isValidationPayload = (value: unknown): value is ValidationPayload => {
   )
 }
 
-verificationsRouter.post('/validations', (req, res) => {
+verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request, res: Response) => {
+  const payload = req.user!
+  const verifierUserId = payload.userId
+  const { targetId, result, disputed } = req.body as {
+    targetId?: string
+    result?: 'approved' | 'rejected'
+    disputed?: boolean
+  }
+
+  if (!targetId || !targetId.trim()) {
+    res.status(400).json({ error: 'targetId is required' })
+    return
+  }
+
+  if (result !== 'approved' && result !== 'rejected') {
+    res.status(400).json({ error: "result must be 'approved' or 'rejected'" })
+    return
+  }
+
+  const rec = await recordVerification(verifierUserId, targetId.trim(), result, !!disputed)
+  res.status(201).json({ verification: rec })
+})
+
+verificationsRouter.get('/', authenticate, requireAdmin, async (_req: Request, res: Response) => {
+  const all = await listVerifications()
+  res.json({ verifications: all })
+})
+
+verificationsRouter.post('/validations', authenticate, requireVerifier, (req, res) => {
   const idempotencyKey = req.header('idempotency-key')?.trim()
   if (!idempotencyKey) {
     res.status(400).json({ error: 'Missing required Idempotency-Key header.' })
@@ -71,7 +98,7 @@ verificationsRouter.post('/validations', (req, res) => {
   }
 
   try {
-    const { record, replayed } = createValidationTransaction(req.body, req.user!.sub, idempotencyKey)
+    const { record, replayed } = createValidationTransaction(req.body, req.user!.userId, idempotencyKey)
     res.status(replayed ? 200 : 201).json(toApiResponse(record, replayed))
   } catch (error) {
     if (error instanceof IdempotencyConflictError) {
@@ -82,12 +109,12 @@ verificationsRouter.post('/validations', (req, res) => {
   }
 })
 
-verificationsRouter.get('/validations', (_req, res) => {
+verificationsRouter.get('/validations', authenticate, requireVerifier, (_req, res) => {
   const records = listValidationTransactions().map((record) => toApiResponse(record, false))
   res.json({ records, count: records.length })
 })
 
-verificationsRouter.get('/validations/:id', (req, res) => {
+verificationsRouter.get('/validations/:id', authenticate, requireVerifier, (req, res) => {
   const record = findValidationTransactionById(req.params.id)
   if (!record) {
     res.status(404).json({ error: 'Validation transaction not found.' })
