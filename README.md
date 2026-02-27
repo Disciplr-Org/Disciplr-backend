@@ -265,3 +265,12 @@ Quick start:
 npm run migrate:latest
 npm run migrate:status
 ```
+
+## Security controls
+
+- Verification endpoints:
+  - `POST /api/verifications/validations` (verifier/admin only, idempotent using `Idempotency-Key`)
+  - `GET /api/verifications/validations` (verifier/admin only)
+  - `GET /api/verifications/validations/:id` (verifier/admin only)
+- Evidence payloads are encrypted at rest before persistence using AES-256-GCM.
+- Backend threat model assumptions are documented in `docs/backend-threat-model.md`.
