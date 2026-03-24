@@ -1,4 +1,5 @@
-import { ParsedEvent } from '../../types/horizonSync'
+import { ParsedEvent, EventType } from '../../types/horizonSync'
+import type { HorizonEvent } from '../../services/eventParser.js'
 
 /**
  * Mocked Horizon event fixtures for testing
@@ -142,6 +143,35 @@ export const allMockEvents: ParsedEvent[] = [
   mockMilestoneRejectedEvent,
   mockMilestonePendingReviewEvent
 ]
+
+export const rawEventSymbolFixtures: Array<{ eventType: EventType; symbol: string }> = [
+  { eventType: 'vault_created', symbol: 'vault_created' },
+  { eventType: 'vault_completed', symbol: 'vault-completed' },
+  { eventType: 'vault_failed', symbol: 'VaultFailed' },
+  { eventType: 'vault_cancelled', symbol: 'symbol(vault_cancelled)' },
+  { eventType: 'milestone_created', symbol: 'milestone.created' },
+  { eventType: 'milestone_validated', symbol: 'milestone validated' }
+]
+
+export function createMockRawHorizonEvent(overrides: Partial<HorizonEvent> = {}): HorizonEvent {
+  return {
+    type: 'contract',
+    ledger: 12345,
+    ledgerClosedAt: '2024-01-15T10:30:00Z',
+    contractId: 'CDISCIPLR123',
+    id: 'abc123-0',
+    pagingToken: 'abc123-0',
+    topic: ['vault_created'],
+    value: {
+      xdr: 'AAAAAgAAAA...'
+    },
+    inSuccessfulContractCall: true,
+    txHash: 'abc123',
+    ...overrides
+  }
+}
+
+export const mockRawVaultCreatedEvent = createMockRawHorizonEvent()
 
 // Helper function to create a custom vault created event
 export function createMockVaultCreatedEvent(overrides: Partial<ParsedEvent> = {}): ParsedEvent {

@@ -1,10 +1,12 @@
 import { describe, it, expect } from '@jest/globals'
 import {
+  createMockRawHorizonEvent,
   mockVaultCreatedEvent,
   mockMilestoneCreatedEvent,
   mockMilestoneValidatedEvent,
   allMockEvents,
-  createMockVaultCreatedEvent
+  createMockVaultCreatedEvent,
+  rawEventSymbolFixtures
 } from './fixtures/horizonEvents.js'
 import {
   arbitraryParsedEvent,
@@ -49,6 +51,27 @@ describe('Test Fixtures and Helpers', () => {
       })
       expect(customEvent.eventId).toBe('custom-id:0')
       expect((customEvent.payload as any).vaultId).toBe('custom-vault-id')
+    })
+
+    it('should create raw Horizon events with safe defaults', () => {
+      const rawEvent = createMockRawHorizonEvent({ topic: ['vault-completed'] })
+
+      expect(rawEvent.type).toBe('contract')
+      expect(rawEvent.contractId).toBe('CDISCIPLR123')
+      expect(rawEvent.topic).toEqual(['vault-completed'])
+      expect(rawEvent.value.xdr).toBeDefined()
+    })
+
+    it('should include symbol fixtures for every supported event type', () => {
+      expect(rawEventSymbolFixtures).toHaveLength(6)
+      expect(rawEventSymbolFixtures.map(({ eventType }) => eventType)).toEqual([
+        'vault_created',
+        'vault_completed',
+        'vault_failed',
+        'vault_cancelled',
+        'milestone_created',
+        'milestone_validated',
+      ])
     })
   })
 

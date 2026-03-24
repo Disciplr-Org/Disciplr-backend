@@ -38,6 +38,107 @@ export interface HorizonEvent {
   txHash: string
 }
 
+type EventParserMetrics = {
+  parsedTotal: number
+  parseFailures: number
+  unknownEventSymbols: number
+  byEventType: Record<EventType, number>
+}
+
+const validEventTypes: EventType[] = [
+  'vault_created',
+  'vault_completed',
+  'vault_failed',
+  'vault_cancelled',
+  'milestone_created',
+  'milestone_validated'
+]
+
+const eventSymbolToType: Record<string, EventType> = {
+  vault_created: 'vault_created',
+  vault_completed: 'vault_completed',
+  vault_failed: 'vault_failed',
+  vault_cancelled: 'vault_cancelled',
+  milestone_created: 'milestone_created',
+  milestone_validated: 'milestone_validated'
+}
+
+const eventParserMetrics: EventParserMetrics = {
+  parsedTotal: 0,
+  parseFailures: 0,
+  unknownEventSymbols: 0,
+  byEventType: createEmptyEventTypeCounts()
+}
+
+function createEmptyEventTypeCounts(): Record<EventType, number> {
+  return {
+    vault_created: 0,
+    vault_completed: 0,
+    vault_failed: 0,
+    vault_cancelled: 0,
+    milestone_created: 0,
+    milestone_validated: 0
+  }
+}
+
+function logEventParserWarning(event: string, fields: Record<string, unknown>): void {
+  try {
+    console.warn(JSON.stringify({ level: 'warn', event, ...fields }))
+  } catch {
+    // Ignore logging failures so event parsing remains fail-safe.
+  }
+}
+
+function buildSafeEventDetails(rawEvent: HorizonEvent): Record<string, unknown> {
+  return {
+    contractId: rawEvent.contractId,
+    eventId: rawEvent.id,
+    ledger: rawEvent.ledger,
+    topic: rawEvent.topic,
+    txHashPresent: Boolean(rawEvent.txHash),
+    hasXdr: Boolean(rawEvent.value?.xdr)
+  }
+}
+
+function incrementParseFailure(): void {
+  eventParserMetrics.parseFailures += 1
+}
+
+function normalizeEventSymbol(symbol: string): string {
+  const trimmedSymbol = symbol.trim()
+  const withoutPrefix = trimmedSymbol.replace(/^symbol:/i, '')
+  const withoutWrapper = withoutPrefix.match(/^symbol\((.*)\)$/i)?.[1] ?? withoutPrefix
+
+  return withoutWrapper
+    .replace(/^['"]+|['"]+$/g, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[\s.:/-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toLowerCase()
+}
+
+function resolveEventType(rawSymbol: string): EventType | null {
+  const normalizedSymbol = normalizeEventSymbol(rawSymbol)
+  return eventSymbolToType[normalizedSymbol] ?? null
+}
+
+export function getEventParserMetricsSnapshot(): EventParserMetrics {
+  return {
+    parsedTotal: eventParserMetrics.parsedTotal,
+    parseFailures: eventParserMetrics.parseFailures,
+    unknownEventSymbols: eventParserMetrics.unknownEventSymbols,
+    byEventType: { ...eventParserMetrics.byEventType }
+  }
+}
+
+export function resetEventParserMetrics(): void {
+  eventParserMetrics.parsedTotal = 0
+  eventParserMetrics.parseFailures = 0
+  eventParserMetrics.unknownEventSymbols = 0
+  eventParserMetrics.byEventType = createEmptyEventTypeCounts()
+}
+
 /**
  * Validates vault_created event payload
  * 
@@ -354,32 +455,45 @@ export function parseHorizonEvent(rawEvent: HorizonEvent): ParseResult {
   try {
     // Validate required fields
     if (!rawEvent.txHash) {
+      incrementParseFailure()
       return {
         success: false,
         error: 'Missing transaction hash',
-        details: { rawEvent }
+        details: buildSafeEventDetails(rawEvent)
       }
     }
 
     if (!rawEvent.id) {
+      incrementParseFailure()
       return {
         success: false,
         error: 'Missing event id',
-        details: { rawEvent }
+        details: buildSafeEventDetails(rawEvent)
       }
     }
 
     if (typeof rawEvent.ledger !== 'number') {
+      incrementParseFailure()
       return {
         success: false,
         error: 'Missing or invalid ledger number',
-        details: { rawEvent }
+        details: buildSafeEventDetails(rawEvent)
+      }
+    }
+
+    if (!rawEvent.value?.xdr || typeof rawEvent.value.xdr !== 'string') {
+      incrementParseFailure()
+      return {
+        success: false,
+        error: 'Missing event payload XDR',
+        details: buildSafeEventDetails(rawEvent)
       }
     }
 
     // Extract event index from the event id (format: "txHash-index")
     const eventIndexMatch = rawEvent.id.match(/-(\d+)$/)
     if (!eventIndexMatch) {
+      incrementParseFailure()
       return {
         success: false,
         error: 'Could not extract event index from event id',
@@ -393,30 +507,49 @@ export function parseHorizonEvent(rawEvent: HorizonEvent): ParseResult {
 
     // Extract event type from topic (first element)
     if (!rawEvent.topic || rawEvent.topic.length === 0) {
+      incrementParseFailure()
       return {
         success: false,
         error: 'Missing event topic',
-        details: { rawEvent }
+        details: buildSafeEventDetails(rawEvent)
       }
     }
 
-    const eventType = rawEvent.topic[0] as EventType
-
-    // Validate event type
-    const validEventTypes: EventType[] = [
-      'vault_created',
-      'vault_completed',
-      'vault_failed',
-      'vault_cancelled',
-      'milestone_created',
-      'milestone_validated'
-    ]
-
-    if (!validEventTypes.includes(eventType)) {
+    const rawEventSymbol = rawEvent.topic[0]
+    if (typeof rawEventSymbol !== 'string' || rawEventSymbol.trim().length === 0) {
+      incrementParseFailure()
       return {
         success: false,
-        error: `Unknown event type: ${eventType}`,
-        details: { eventType, validTypes: validEventTypes }
+        error: 'Missing or invalid event symbol',
+        details: buildSafeEventDetails(rawEvent)
+      }
+    }
+
+    const eventType = resolveEventType(rawEventSymbol)
+
+    if (!eventType) {
+      const normalizedSymbol = normalizeEventSymbol(rawEventSymbol)
+      incrementParseFailure()
+      eventParserMetrics.unknownEventSymbols += 1
+      logEventParserWarning('horizon_event_parser_unknown_symbol', {
+        contractId: rawEvent.contractId,
+        eventId: rawEvent.id,
+        ledger: rawEvent.ledger,
+        normalizedSymbol,
+        rawSymbol: rawEventSymbol
+      })
+
+      return {
+        success: false,
+        error: `Unknown event type: ${rawEventSymbol}`,
+        details: {
+          contractId: rawEvent.contractId,
+          eventId: rawEvent.id,
+          ledger: rawEvent.ledger,
+          normalizedSymbol,
+          rawSymbol: rawEventSymbol,
+          validTypes: validEventTypes
+        }
       }
     }
 
@@ -424,6 +557,7 @@ export function parseHorizonEvent(rawEvent: HorizonEvent): ParseResult {
     const payload = routeToPayloadParser(eventType, rawEvent.value.xdr)
     
     if (!payload) {
+      incrementParseFailure()
       return {
         success: false,
         error: `Failed to parse payload for event type: ${eventType}`,
@@ -441,11 +575,15 @@ export function parseHorizonEvent(rawEvent: HorizonEvent): ParseResult {
       payload
     }
 
+    eventParserMetrics.parsedTotal += 1
+    eventParserMetrics.byEventType[eventType] += 1
+
     return {
       success: true,
       event: parsedEvent
     }
   } catch (error) {
+    incrementParseFailure()
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Unknown parsing error',

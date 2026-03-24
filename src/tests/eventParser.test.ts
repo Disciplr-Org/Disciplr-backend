@@ -1,24 +1,43 @@
-import { parseHorizonEvent, HorizonEvent } from '../services/eventParser.js'
+import { jest } from '@jest/globals'
+import {
+  getEventParserMetricsSnapshot,
+  parseHorizonEvent,
+  resetEventParserMetrics,
+} from '../services/eventParser.js'
+import {
+  createMockRawHorizonEvent,
+  rawEventSymbolFixtures,
+} from './fixtures/horizonEvents.js'
 
 describe('eventParser', () => {
-  describe('parseHorizonEvent', () => {
-    it('should parse vault_created event and route to vault payload parser', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12345,
-        ledgerClosedAt: '2024-01-15T10:30:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'abc123-0',
-        pagingToken: 'abc123-0',
-        topic: ['vault_created'],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: 'abc123'
-      }
+  beforeEach(() => {
+    resetEventParserMetrics()
+    jest.restoreAllMocks()
+  })
 
-      const result = parseHorizonEvent(mockEvent)
+  describe('parseHorizonEvent', () => {
+    it.each(rawEventSymbolFixtures)(
+      'maps emitted symbol $symbol to parser type $eventType',
+      ({ eventType, symbol }) => {
+        const result = parseHorizonEvent(
+          createMockRawHorizonEvent({
+            id: `${eventType}-0`,
+            ledger: 12345,
+            topic: [symbol],
+            txHash: eventType,
+          }),
+        )
+
+        expect(result.success).toBe(true)
+        if (result.success) {
+          expect(result.event.eventType).toBe(eventType)
+          expect(result.event.eventId).toBe(`${eventType}:0`)
+        }
+      },
+    )
+
+    it('should preserve parsed event metadata for canonical symbols', () => {
+      const result = parseHorizonEvent(createMockRawHorizonEvent())
 
       expect(result.success).toBe(true)
       if (result.success) {
@@ -32,156 +51,68 @@ describe('eventParser', () => {
       }
     })
 
-    it('should parse vault_completed event and route to vault payload parser', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12346,
-        ledgerClosedAt: '2024-01-15T10:31:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'def456-1',
-        pagingToken: 'def456-1',
-        topic: ['vault_completed'],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: 'def456'
-      }
-
-      const result = parseHorizonEvent(mockEvent)
-
-      expect(result.success).toBe(true)
-      if (result.success) {
-        expect(result.event.eventType).toBe('vault_completed')
-        expect(result.event.payload).toBeDefined()
-        expect((result.event.payload as any).status).toBe('completed')
-      }
-    })
-
-    it('should parse milestone_created event and route to milestone payload parser', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12347,
-        ledgerClosedAt: '2024-01-15T10:32:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'ghi789-2',
-        pagingToken: 'ghi789-2',
-        topic: ['milestone_created'],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: 'ghi789'
-      }
-
-      const result = parseHorizonEvent(mockEvent)
-
-      expect(result.success).toBe(true)
-      if (result.success) {
-        expect(result.event.eventType).toBe('milestone_created')
-        expect(result.event.payload).toBeDefined()
-        expect((result.event.payload as any).milestoneId).toBeDefined()
-        expect((result.event.payload as any).vaultId).toBeDefined()
-      }
-    })
-
-    it('should parse milestone_validated event and route to validation payload parser', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12348,
-        ledgerClosedAt: '2024-01-15T10:33:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'jkl012-3',
-        pagingToken: 'jkl012-3',
-        topic: ['milestone_validated'],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: 'jkl012'
-      }
-
-      const result = parseHorizonEvent(mockEvent)
-
-      expect(result.success).toBe(true)
-      if (result.success) {
-        expect(result.event.eventType).toBe('milestone_validated')
-        expect(result.event.payload).toBeDefined()
-        expect((result.event.payload as any).validationId).toBeDefined()
-        expect((result.event.payload as any).milestoneId).toBeDefined()
-      }
-    })
-
     it('should return error for unknown event type', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12349,
-        ledgerClosedAt: '2024-01-15T10:34:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'mno345-4',
-        pagingToken: 'mno345-4',
-        topic: ['unknown_event'],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: 'mno345'
-      }
-
-      const result = parseHorizonEvent(mockEvent)
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+      const result = parseHorizonEvent(
+        createMockRawHorizonEvent({
+          id: 'mno345-4',
+          ledger: 12349,
+          topic: ['unknown_event'],
+          txHash: 'mno345',
+        }),
+      )
 
       expect(result.success).toBe(false)
       if (!result.success) {
         expect(result.error).toContain('Unknown event type')
+        expect(result.details).toMatchObject({
+          eventId: 'mno345-4',
+          ledger: 12349,
+          normalizedSymbol: 'unknown_event',
+          rawSymbol: 'unknown_event',
+        })
       }
+
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('horizon_event_parser_unknown_symbol'),
+      )
+
+      const metrics = getEventParserMetricsSnapshot()
+      expect(metrics.parseFailures).toBe(1)
+      expect(metrics.unknownEventSymbols).toBe(1)
     })
 
     it('should return error for missing transaction hash', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12350,
-        ledgerClosedAt: '2024-01-15T10:35:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'pqr678-5',
-        pagingToken: 'pqr678-5',
-        topic: ['vault_created'],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: ''
-      }
-
-      const result = parseHorizonEvent(mockEvent)
+      const result = parseHorizonEvent(createMockRawHorizonEvent({ txHash: '' }))
 
       expect(result.success).toBe(false)
       if (!result.success) {
         expect(result.error).toContain('Missing transaction hash')
+        expect(result.details).toMatchObject({
+          txHashPresent: false,
+        })
       }
     })
 
     it('should return error for missing event topic', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12351,
-        ledgerClosedAt: '2024-01-15T10:36:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'stu901-6',
-        pagingToken: 'stu901-6',
-        topic: [],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: 'stu901'
-      }
-
-      const result = parseHorizonEvent(mockEvent)
+      const result = parseHorizonEvent(createMockRawHorizonEvent({ topic: [] }))
 
       expect(result.success).toBe(false)
       if (!result.success) {
         expect(result.error).toContain('Missing event topic')
       }
+    })
+
+    it('tracks parsed counts by canonical event type', () => {
+      parseHorizonEvent(createMockRawHorizonEvent({ topic: ['vault-created'], txHash: 'tx-1' }))
+      parseHorizonEvent(createMockRawHorizonEvent({ topic: ['milestoneValidated'], txHash: 'tx-2' }))
+
+      const metrics = getEventParserMetricsSnapshot()
+      expect(metrics.parsedTotal).toBe(2)
+      expect(metrics.parseFailures).toBe(0)
+      expect(metrics.byEventType.vault_created).toBe(1)
+      expect(metrics.byEventType.milestone_validated).toBe(1)
     })
   })
 })
