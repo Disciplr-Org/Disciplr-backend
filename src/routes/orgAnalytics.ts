@@ -1,12 +1,14 @@
 import { Router, Request, Response } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireOrgAccess } from '../middleware/orgAuth.js'
+import { analyticsRateLimiter } from '../middleware/rateLimiter.js'
 import { vaults, Vault } from './vaults.js'
 
 export const orgAnalyticsRouter = Router()
 
 orgAnalyticsRouter.get(
   '/:orgId/analytics',
+  analyticsRateLimiter,
   authenticate,
   requireOrgAccess('owner', 'admin'),
   (req: Request, res: Response) => {

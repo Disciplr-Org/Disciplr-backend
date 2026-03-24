@@ -173,11 +173,16 @@ The backend includes abuse-oriented security instrumentation middleware.
   - `security.failed_login_attempt`
   - `security.rate_limit_triggered`
   - `security.suspicious_pattern`
+- Rate-limit logs include the limiter profile, request method, request path, threshold, and window without logging raw API keys or user identifiers.
 
 ### Thresholds (env-configurable)
 
 | Env var | Default | Meaning |
 |---|---|---|
+| `ANALYTICS_RATE_LIMIT_WINDOW_MS` | `900000` | Analytics read rate-limit window |
+| `ANALYTICS_RATE_LIMIT_MAX` | `120` | Max analytics requests per client key or IP in the analytics window |
+| `MUTATION_RATE_LIMIT_WINDOW_MS` | `900000` | Mutation endpoint rate-limit window for `POST`, `PUT`, `PATCH`, `DELETE` |
+| `MUTATION_RATE_LIMIT_MAX` | `40` | Max mutation requests per client key or IP in the mutation window |
 | `SECURITY_RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit lookback window |
 | `SECURITY_RATE_LIMIT_MAX_REQUESTS` | `120` | Max requests per IP in rate-limit window |
 | `SECURITY_SUSPICIOUS_WINDOW_MS` | `300000` | Lookback window for suspicious pattern checks |

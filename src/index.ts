@@ -5,7 +5,12 @@ import { createJobsRouter } from './routes/jobs.js'
 import { BackgroundJobSystem } from './jobs/system.js'
 import { authRouter } from './routes/auth.js'
 import { analyticsRouter } from './routes/analytics.js'
-import { healthRateLimiter, vaultsRateLimiter } from './middleware/rateLimiter.js'
+import {
+  analyticsRateLimiter,
+  healthRateLimiter,
+  mutationRateLimiter,
+  vaultsRateLimiter,
+} from './middleware/rateLimiter.js'
 import { createExportRouter } from './routes/exports.js'
 import { transactionsRouter } from './routes/transactions.js'
 import { privacyRouter } from './routes/privacy.js'
@@ -37,13 +42,14 @@ app.use(securityMetricsMiddleware)
 app.use(securityRateLimitMiddleware)
 
 app.use('/api/health', healthRateLimiter, createHealthRouter(jobSystem))
+app.use('/api', mutationRateLimiter)
 app.use('/api/jobs', createJobsRouter(jobSystem))
 app.use('/api/vaults', vaultsRateLimiter, vaultsRouter)
 app.use('/api/vaults/:vaultId/milestones', milestonesRouter)
 app.use('/api/auth', authRouter)
 app.use('/api/exports', createExportRouter([]))
 app.use('/api/transactions', transactionsRouter)
-app.use('/api/analytics', analyticsRouter)
+app.use('/api/analytics', analyticsRateLimiter, analyticsRouter)
 app.use('/api/privacy', privacyRouter)
 app.use('/api/organizations', orgVaultsRouter)
 app.use('/api/organizations', orgAnalyticsRouter)
