@@ -20,8 +20,6 @@ import {
 } from '../services/vaultStore.js'
 import { normalizeCreateVaultInput, validateCreateVaultInput } from '../services/vaultValidation.js'
 import { queryParser } from '../middleware/queryParser.js'
-import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
-import { updateAnalyticsSummary } from '../db/database.js'
 import { utcNow } from '../utils/timestamps.js'
 import { prisma } from '../lib/prisma.js'
 
@@ -35,7 +33,7 @@ export interface Vault {
   id: string
   creator: string
   amount: string
-  status: 'active' | 'completed' | 'failed' | 'cancelled'
+  status: 'pending' | 'active' | 'completed' | 'failed' | 'cancelled'
   startTimestamp: string
   endTimestamp: string
   successDestination: string

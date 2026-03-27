@@ -1,9 +1,9 @@
 export enum VaultStatus {
-  PENDING = 'PENDING',
-  ACTIVE = 'ACTIVE',
-  COMPLETED = 'COMPLETED',
-  FAILED = 'FAILED',
-  CANCELLED = 'CANCELLED'
+  PENDING = 'pending',
+  ACTIVE = 'active',
+  COMPLETED = 'completed',
+  FAILED = 'failed',
+  CANCELLED = 'cancelled'
 }
 
 export interface Vault {

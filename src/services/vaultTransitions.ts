@@ -1,5 +1,6 @@
 import { vaults, type Vault } from '../routes/vaults.js'
 import { allMilestonesVerified } from './milestones.js'
+import { VaultStatus } from '../types/vault.js'
 
 type TerminalStatus = 'completed' | 'failed' | 'cancelled'
 
@@ -10,16 +11,32 @@ export interface TransitionResult {
 
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled'])
 
+// Define valid transitions
+const VALID_TRANSITIONS: Record<string, Set<string>> = {
+  'pending': new Set(['active']),
+  'active': new Set(['completed', 'failed', 'cancelled']),
+  'completed': new Set(),
+  'failed': new Set(),
+  'cancelled': new Set(),
+}
+
 const findVault = (vaultId: string): Vault | undefined =>
   vaults.find((v) => v.id === vaultId)
 
 export const getTransitionError = (
   vault: Vault,
-  targetStatus: TerminalStatus,
+  targetStatus: string,
   requesterId?: string,
 ): string | null => {
+  // Check if current status is terminal
   if (TERMINAL_STATUSES.has(vault.status)) {
     return `Vault is already '${vault.status}' and cannot transition`
+  }
+
+  // Check if transition is valid
+  const currentStatus = vault.status
+  if (!VALID_TRANSITIONS[currentStatus]?.has(targetStatus)) {
+    return `Invalid transition from '${currentStatus}' to '${targetStatus}'`
   }
 
   switch (targetStatus) {
@@ -43,8 +60,12 @@ export const getTransitionError = (
       }
       return null
     }
+    case 'active': {
+      // pending -> active is always allowed (no additional checks)
+      return null
+    }
     default:
-      return `Unknown target status: ${targetStatus as string}`
+      return `Unknown target status: ${targetStatus}`
   }
 }
 
@@ -78,6 +99,17 @@ export const cancelVault = (vaultId: string, requesterId: string): TransitionRes
   if (error) return { success: false, error }
 
   vault.status = 'cancelled'
+  return { success: true }
+}
+
+export const activateVault = (vaultId: string): TransitionResult => {
+  const vault = findVault(vaultId)
+  if (!vault) return { success: false, error: 'Vault not found' }
+
+  const error = getTransitionError(vault, 'active')
+  if (error) return { success: false, error }
+
+  vault.status = 'active'
   return { success: true }
 }
 
