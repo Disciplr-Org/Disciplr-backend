@@ -5,9 +5,10 @@ const config: Config = {
      extensionsToTreatAsEsm: ['.ts'],
      moduleNameMapper: {
           '^(\\.{1,2}/.*)\\.js$': '$1',
+          '^@prisma/client$': '<rootDir>/src/tests/__mocks__/prisma-client.ts',
      },
      transform: {
-          '^.+\\.ts$': ['<rootDir>/node_modules/ts-jest', { useESM: true, diagnostics: { ignoreCodes: [151002] } }],
+          '^.+\\.ts$': ['<rootDir>/node_modules/ts-jest', { useESM: true, diagnostics: false }],
      },
      testMatch: ['**/tests/**/*.test.ts'],
      clearMocks: true,

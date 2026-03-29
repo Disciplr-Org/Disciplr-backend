@@ -1,74 +1,78 @@
-export interface Milestone {
-  id: string
-  vaultId: string
-  description: string
-  verified: boolean
-  verifiedAt: string | null
-  createdAt: string
+import { db } from '../db/knex.js'
+import { MilestoneRepository } from '../repositories/milestoneRepository.js'
+import { getTransitionError } from './milestoneTransitions.js'
+import type { Milestone, MilestoneStatus, TransitionResult } from '../types/milestone.js'
+
+// ─── Repository instance ────────────────────────────────────────────
+
+let repo = new MilestoneRepository(db)
+
+/** Exposed for test injection */
+export const _getRepository = (): MilestoneRepository => repo
+export const _setRepository = (r: MilestoneRepository): void => { repo = r }
+
+// ─── Milestone CRUD & transitions ───────────────────────────────────
+
+export const createMilestone = async (
+  data: Omit<Milestone, 'created_at' | 'updated_at'>,
+): Promise<Milestone> => {
+  return repo.create(data)
 }
 
-const milestonesTable: Milestone[] = []
+export const getMilestoneById = async (id: string): Promise<Milestone | undefined> => {
+  return repo.getById(id)
+}
 
-export const createMilestone = (vaultId: string, description: string): Milestone => {
-  const id = `ms-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-  const milestone: Milestone = {
-    id,
-    vaultId,
-    description,
-    verified: false,
-    verifiedAt: null,
-    createdAt: new Date().toISOString(),
+export const getMilestonesByVaultId = async (vaultId: string): Promise<Milestone[]> => {
+  return repo.listByVault(vaultId)
+}
+
+export const transitionMilestone = async (
+  id: string,
+  targetStatus: MilestoneStatus,
+): Promise<TransitionResult & { milestone?: Milestone }> => {
+  const milestone = await repo.getById(id)
+  if (!milestone) return { success: false, error: 'Milestone not found' }
+
+  const error = getTransitionError(milestone.status, targetStatus)
+  if (error) {
+    console.warn(`[Milestones] Transition rejected: milestone=${id} from=${milestone.status} to=${targetStatus} reason="${error}"`)
+    return { success: false, error }
   }
-  milestonesTable.push(milestone)
-  return milestone
+
+  const updated = await repo.updateStatus(id, targetStatus)
+  if (!updated) return { success: false, error: 'Failed to update milestone' }
+
+  console.info(`[Milestones] Transition OK: milestone=${id} vault=${milestone.vault_id} from=${milestone.status} to=${targetStatus}`)
+  return { success: true, milestone: updated }
 }
 
-export const getMilestonesByVaultId = (vaultId: string): Milestone[] => {
-  return milestonesTable.filter((m) => m.vaultId === vaultId)
+export const allMilestonesCompleted = async (vaultId: string): Promise<boolean> => {
+  return repo.allCompletedByVault(vaultId)
 }
 
-export const getMilestoneById = (id: string): Milestone | undefined => {
-  return milestonesTable.find((m) => m.id === id)
-}
+// ─── In-memory milestone analytics (kept as separate concern) ───────
 
-export const verifyMilestone = (id: string): Milestone | null => {
-  const milestone = milestonesTable.find((m) => m.id === id)
-  if (!milestone) return null
-
-  milestone.verified = true
-  milestone.verifiedAt = new Date().toISOString()
-  return milestone
-}
-
-export const allMilestonesVerified = (vaultId: string): boolean => {
-  const milestones = getMilestonesByVaultId(vaultId)
-  if (milestones.length === 0) return false
-  return milestones.every((m) => m.verified)
-}
-
-export const resetMilestonesTable = (): void => {
-  milestonesTable.length = 0
-}
-export type MilestoneStatus = 'success' | 'failed'
+export type MilestoneEventStatus = 'success' | 'failed'
 export interface MilestoneEvent {
   id: string
   userId: string
   vaultId: string
   name: string
-  status: MilestoneStatus
+  status: MilestoneEventStatus
   timestamp: string
 }
 
-let milestones: MilestoneEvent[] = []
+let milestoneEvents: MilestoneEvent[] = []
 
-export const resetMilestones = (): void => {
-  milestones = []
+export const resetMilestoneEvents = (): void => {
+  milestoneEvents = []
 }
 
 export const addMilestoneEvent = (event: Omit<MilestoneEvent, 'id'>): MilestoneEvent => {
   const id = `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const record: MilestoneEvent = { id, ...event }
-  milestones.push(record)
+  milestoneEvents.push(record)
   return record
 }
 
@@ -78,7 +82,7 @@ export const listMilestoneEvents = (opts?: {
   from?: string
   to?: string
 }): MilestoneEvent[] => {
-  let result = [...milestones]
+  let result = [...milestoneEvents]
   if (opts?.userId) result = result.filter((e) => e.userId === opts.userId)
   if (opts?.vaultId) result = result.filter((e) => e.vaultId === opts.vaultId)
   if (opts?.from) {

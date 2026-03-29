@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { afterEach, beforeEach, test } from 'node:test'
 import { app } from '../app.js'
 import { resetApiKeysTable, createApiKey } from '../services/apiKeys.js'
-import { resetMilestones, addMilestoneEvent } from '../services/milestones.js'
+import { resetMilestoneEvents as resetMilestones, addMilestoneEvent } from '../services/milestones.js'
 
 let baseUrl = ''
 let server: ReturnType<typeof app.listen> | null = null
