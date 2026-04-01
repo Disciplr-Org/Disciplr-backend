@@ -1,5 +1,6 @@
 import { db, getTimeRangeFilter, updateAnalyticsSummary } from '../db/database.js'
 import type { VaultAnalytics, VaultAnalyticsWithPeriod } from '../types/vault.js'
+import { utcNow } from '../utils/timestamps.js'
 
 /**
  * Get overall vault analytics summary (all-time)
@@ -45,6 +46,8 @@ export function getOverallAnalytics(): VaultAnalytics {
  */
 export function getAnalyticsByPeriod(period: string): VaultAnalyticsWithPeriod {
     const { startDate, endDate } = getTimeRangeFilter(period)
+    
+    console.log(`[${utcNow()}] [Analytics] Fetching stats for period: ${period} [Range: ${startDate} - ${endDate}]`)
 
     const stats = db.prepare(`
     SELECT 
@@ -150,6 +153,7 @@ export function getCapitalAnalytics(period: string = 'all'): {
     `).get() as typeof stats
     } else {
         const { startDate, endDate } = getTimeRangeFilter(period)
+        console.log(`[${utcNow()}] [Analytics] Fetching capital stats for period: ${period} [Range: ${startDate} - ${endDate}]`)
         stats = db.prepare(`
       SELECT 
         SUM(CAST(amount AS REAL)) as total_locked_capital,

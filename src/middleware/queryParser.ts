@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express'
 import {
   parsePaginationParams,
+  parseCursorPaginationParams,
   parseSortParams,
   parseFilterParams,
 } from '../utils/pagination.js'
@@ -15,6 +16,7 @@ export function queryParser(options: QueryParserOptions = {}) {
     try {
       // Parse pagination
       req.pagination = parsePaginationParams(req)
+      req.cursorPagination = parseCursorPaginationParams(req)
 
       // Parse sorting if allowed fields are specified
       if (options.allowedSortFields && options.allowedSortFields.length > 0) {
@@ -40,6 +42,7 @@ declare global {
   namespace Express {
     interface Request {
       pagination?: ReturnType<typeof parsePaginationParams>
+      cursorPagination?: ReturnType<typeof parseCursorPaginationParams>
       sort?: ReturnType<typeof parseSortParams>
       filters?: ReturnType<typeof parseFilterParams>
     }

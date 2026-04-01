@@ -1,130 +1,142 @@
-import type { CreateVaultInput, MilestoneInput } from '../types/vaults.js'
+import { z } from 'zod'
 
-const STELLAR_ADDRESS_REGEX = /^G[A-Z2-7]{55}$/
+// ─── Soroban-aligned constants ───────────────────────────────────────────────
 
-type ValidationResult = { valid: true } | { valid: false; errors: string[] }
+/** Minimum vault / milestone amount (inclusive). Maps to contract lower-bound. */
+export const VAULT_AMOUNT_MIN = 1
 
-const isPositiveNumber = (value: string): boolean => {
-  const num = Number(value)
-  return Number.isFinite(num) && num > 0
-}
+/** Maximum vault / milestone amount (inclusive). Maps to i128 practical upper-bound. */
+export const VAULT_AMOUNT_MAX = 1_000_000_000
 
-const isIsoDate = (value: string): boolean => !Number.isNaN(Date.parse(value))
+/** Stellar strkey G-address: 'G' + 55 base-32 chars (A-Z, 2-7). */
+const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/
 
-const normalizeMilestone = (milestone: MilestoneInput): MilestoneInput => ({
-  title: milestone.title.trim(),
-  description: milestone.description?.trim(),
-  dueDate: milestone.dueDate,
-  amount: `${milestone.amount}`,
+// ─── Reusable field schemas ──────────────────────────────────────────────────
+
+// Zod v4 uses { error: '...' } instead of { required_error: '...' }
+const stellarAddressSchema = z
+  .string({ error: 'required' })
+  .regex(STELLAR_ADDRESS_RE, 'must be a valid Stellar public key')
+
+/**
+ * Amount field: stored as a string, but the value must parse to a finite
+ * positive number within the Soroban contract bounds.
+ * Accepts both numeric strings ("1000") and JS numbers (1000) via preprocess.
+ */
+const amountStringSchema = z.preprocess(
+  (val) => (typeof val === 'number' ? String(val) : val),
+  z
+    .string({ error: 'required' })
+    .refine(
+      (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 },
+      'must be a positive number',
+    )
+    .refine(
+      (v) => { const n = Number(v); return n >= VAULT_AMOUNT_MIN && n <= VAULT_AMOUNT_MAX },
+      `must be between ${VAULT_AMOUNT_MIN} and ${VAULT_AMOUNT_MAX.toLocaleString()}`,
+    ),
+)
+
+const isoTimestampSchema = z
+  .string({ error: 'required' })
+  .refine((v) => !isNaN(Date.parse(v)), 'must be a valid ISO timestamp')
+
+// ─── Milestone schema ────────────────────────────────────────────────────────
+
+const milestoneSchema = z.object({
+  title: z
+    .string({ error: 'is required' })
+    .refine((v) => v.trim().length > 0, 'is required'),
+  description: z.string().optional(),
+  dueDate: isoTimestampSchema,
+  amount: amountStringSchema,
 })
 
-export const normalizeCreateVaultInput = (payload: unknown): CreateVaultInput => {
-  const typed = payload as Record<string, unknown>
+// ─── Root vault schema ───────────────────────────────────────────────────────
 
-  return {
-    amount: `${typed.amount ?? ''}`,
-    startDate: `${typed.startDate ?? new Date().toISOString()}`,
-    endDate: `${typed.endDate ?? ''}`,
-    verifier: `${typed.verifier ?? ''}`,
-    destinations: {
-      success: `${(typed.destinations as { success?: unknown } | undefined)?.success ?? ''}`,
-      failure: `${(typed.destinations as { failure?: unknown } | undefined)?.failure ?? ''}`,
-    },
-    milestones: Array.isArray(typed.milestones)
-      ? typed.milestones.map((item) => {
-          const milestone = item as Record<string, unknown>
-          return normalizeMilestone({
-            title: `${milestone.title ?? ''}`,
-            description: milestone.description ? `${milestone.description}` : undefined,
-            dueDate: `${milestone.dueDate ?? ''}`,
-            amount: `${milestone.amount ?? ''}`,
+export const createVaultSchema = z
+  .object({
+    amount: amountStringSchema,
+    startDate: isoTimestampSchema,
+    endDate: isoTimestampSchema,
+    verifier: stellarAddressSchema,
+    destinations: z.object({
+      success: stellarAddressSchema,
+      failure: stellarAddressSchema,
+    }),
+    milestones: z
+      .array(milestoneSchema)
+      .min(1, 'must contain at least one item'),
+    creator: stellarAddressSchema.optional(),
+    onChain: z
+      .object({
+        mode: z.enum(['build', 'submit']).optional().default('build'),
+        contractId: z.string().optional(),
+        networkPassphrase: z.string().optional(),
+        sourceAccount: z.string().optional(),
+      })
+      .optional(),
+  })
+  .superRefine((data, ctx) => {
+    const startMs = Date.parse(data.startDate)
+    const endMs = Date.parse(data.endDate)
+
+    // endDate must be strictly after startDate
+    if (!isNaN(startMs) && !isNaN(endMs) && endMs <= startMs) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'must be greater than startDate',
+        path: ['endDate'],
+      })
+    }
+
+    // Each milestone dueDate must be >= startDate
+    if (!isNaN(startMs)) {
+      data.milestones.forEach((milestone, i) => {
+        const dueMs = Date.parse(milestone.dueDate)
+        if (!isNaN(dueMs) && dueMs < startMs) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'cannot be before startDate',
+            path: ['milestones', i, 'dueDate'],
           })
+        }
+      })
+    }
+
+    // Total milestone amounts must not exceed vault amount
+    const vaultAmount = Number(data.amount)
+    if (Number.isFinite(vaultAmount)) {
+      const total = data.milestones.reduce((acc, m) => acc + Number(m.amount), 0)
+      if (total > vaultAmount) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Total milestone amount cannot exceed vault amount',
+          path: ['milestones'],
         })
-      : [],
-    creator: typed.creator ? `${typed.creator}` : undefined,
-    onChain: {
-      mode: typed.onChain && typeof typed.onChain === 'object' ? ((typed.onChain as { mode?: 'build' | 'submit' }).mode ?? 'build') : 'build',
-      contractId: typed.onChain && typeof typed.onChain === 'object' ? ((typed.onChain as { contractId?: string }).contractId ?? undefined) : undefined,
-      networkPassphrase:
-        typed.onChain && typeof typed.onChain === 'object'
-          ? ((typed.onChain as { networkPassphrase?: string }).networkPassphrase ?? undefined)
-          : undefined,
-      sourceAccount:
-        typed.onChain && typeof typed.onChain === 'object' ? ((typed.onChain as { sourceAccount?: string }).sourceAccount ?? undefined) : undefined,
-    },
-  }
-}
-
-export const validateCreateVaultInput = (input: CreateVaultInput): ValidationResult => {
-  const errors: string[] = []
-
-  if (!isPositiveNumber(input.amount)) {
-    errors.push('amount must be a positive number.')
-  } else {
-    const value = Number(input.amount)
-    if (value < 1 || value > 1_000_000_000) {
-      errors.push('amount must be between 1 and 1,000,000,000.')
-    }
-  }
-
-  if (!isIsoDate(input.startDate)) {
-    errors.push('startDate must be a valid ISO timestamp.')
-  }
-
-  if (!isIsoDate(input.endDate)) {
-    errors.push('endDate must be a valid ISO timestamp.')
-  }
-
-  if (isIsoDate(input.startDate) && isIsoDate(input.endDate)) {
-    if (new Date(input.endDate).getTime() <= new Date(input.startDate).getTime()) {
-      errors.push('endDate must be greater than startDate.')
-    }
-  }
-
-  if (!STELLAR_ADDRESS_REGEX.test(input.verifier)) {
-    errors.push('verifier must be a valid Stellar public key.')
-  }
-
-  if (!STELLAR_ADDRESS_REGEX.test(input.destinations.success)) {
-    errors.push('destinations.success must be a valid Stellar public key.')
-  }
-
-  if (!STELLAR_ADDRESS_REGEX.test(input.destinations.failure)) {
-    errors.push('destinations.failure must be a valid Stellar public key.')
-  }
-
-  if (!Array.isArray(input.milestones) || input.milestones.length === 0) {
-    errors.push('milestones must contain at least one item.')
-  }
-
-  input.milestones.forEach((milestone, index) => {
-    if (!milestone.title.trim()) {
-      errors.push(`milestones[${index}].title is required.`)
-    }
-
-    if (!isPositiveNumber(milestone.amount)) {
-      errors.push(`milestones[${index}].amount must be a positive number.`)
-    }
-
-    if (!isIsoDate(milestone.dueDate)) {
-      errors.push(`milestones[${index}].dueDate must be a valid ISO timestamp.`)
-    }
-
-    if (isIsoDate(milestone.dueDate) && isIsoDate(input.startDate)) {
-      if (new Date(milestone.dueDate).getTime() < new Date(input.startDate).getTime()) {
-        errors.push(`milestones[${index}].dueDate cannot be before startDate.`)
       }
     }
   })
 
-  const milestoneTotal = input.milestones.reduce((acc, milestone) => acc + Number(milestone.amount), 0)
-  if (isPositiveNumber(input.amount) && milestoneTotal > Number(input.amount)) {
-    errors.push('Total milestone amount cannot exceed vault amount.')
-  }
+export type ParsedCreateVaultInput = z.infer<typeof createVaultSchema>
 
-  if (errors.length > 0) {
-    return { valid: false, errors }
-  }
+// ─── Error helpers ───────────────────────────────────────────────────────────
 
-  return { valid: true }
-}
+const formatIssuePath = (path: ReadonlyArray<PropertyKey>): string =>
+  path
+    .filter((seg): seg is string | number => typeof seg === 'string' || typeof seg === 'number')
+    .reduce<string>((acc, seg, i) => {
+      if (typeof seg === 'number') return `${acc}[${seg}]`
+      return i === 0 ? seg : `${acc}.${seg}`
+    }, '')
+
+/**
+ * Flatten a ZodError into a string array that matches the existing error
+ * format, e.g. "amount must be a positive number",
+ * "milestones[0].dueDate must be a valid ISO timestamp".
+ */
+export const flattenZodErrors = (error: z.ZodError): string[] =>
+  error.issues.map((issue) => {
+    const prefix = formatIssuePath(issue.path)
+    return prefix ? `${prefix} ${issue.message}` : issue.message
+  })

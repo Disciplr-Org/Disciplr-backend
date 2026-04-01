@@ -1,25 +1,49 @@
 import { Request, Response, NextFunction } from 'express'
-import { UserRole } from '@prisma/client'
+import { UserRole } from '../types/user.js'
 
-export function requireRole(...allowedRoles: UserRole[]) {
-     return (req: Request, res: Response, next: NextFunction): void => {
-          if (!req.user) {
-               res.status(401).json({ error: 'Unauthenticated' })
-               return
-          }
+type RBACOptions = {
+  allow: UserRole[];
+};
 
-          if (!allowedRoles.includes(req.user.role)) {
-               res.status(403).json({
-                    error: `Forbidden: requires role ${allowedRoles.join(' or ')}, got '${req.user.role}'`,
-               })
-               return
-          }
+const logRBACDenied = (req: Request, reason: string) => {
+  console.warn(
+    JSON.stringify({
+      level: "warn",
+      event: "security.rbac_denied",
+      service: "disciplr-backend",
+      userId: req.user?.userId ?? "unknown",
+      role: req.user?.role ?? "unknown",
+      path: req.originalUrl,
+      method: req.method,
+      reason,
+      timestamp: new Date().toISOString(),
+    }),
+  );
+};
 
-          next()
-     }
-}
+export const enforceRBAC = (options: RBACOptions) => {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    // Deny by default
+    if (!req.user) {
+      logRBACDenied(req, "missing_user");
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
 
-// Convenience helpers
-export const requireUser = requireRole(UserRole.USER, UserRole.VERIFIER, UserRole.ADMIN)
-export const requireVerifier = requireRole(UserRole.VERIFIER, UserRole.ADMIN)
-export const requireAdmin = requireRole(UserRole.ADMIN)
+    if (!options.allow.includes(req.user.role)) {
+      logRBACDenied(req, "insufficient_role");
+      res.status(403).json({
+        error: "Forbidden",
+        message: `Requires role: ${options.allow.join(", ")}`,
+      });
+      return;
+    }
+
+    next();
+  };
+};
+
+// Convenience
+export const requireAdmin = enforceRBAC({
+  allow: [UserRole.ADMIN],
+});

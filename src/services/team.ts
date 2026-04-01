@@ -1,4 +1,4 @@
-import db from '../db/index.js'
+import { db } from '../db/index.js'
 import type { Team, CreateTeamInput } from '../types/enterprise.js'
 
 export const createTeam = async (input: CreateTeamInput): Promise<Team> => {

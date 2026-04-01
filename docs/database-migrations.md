@@ -98,3 +98,50 @@ jobs:
   ```
 - Keep database backups/snapshots in production for disaster recovery.
 - For destructive changes, use multi-step deploys (additive migration, backfill, cleanup migration).
+
+## Corrective migration: `20260227000000_fix_vault_schema.cjs`
+
+This migration closes the schema drift between the Knex-managed `vaults` / `milestones` tables and the `PersistedVault` / `PersistedMilestone` TypeScript interfaces used by `vaultStore.ts`.
+
+### Changes applied (`exports.up`)
+
+| Change | Detail |
+|---|---|
+| Column rename | `start_timestamp` → `start_date` |
+| Column rename | `end_timestamp` → `end_date` |
+| Column added | `verifier VARCHAR(255) NOT NULL` |
+| Column added | `updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()` |
+| Index dropped | `idx_vaults_end_timestamp` (references old column name) |
+| Index created | `idx_vaults_end_date` on `end_date` |
+| Enum value added | `'draft'` added to `vault_status` |
+| Status default changed | `status` default changed from `'active'` to `'draft'` |
+| Milestones aligned | Adds `sort_order`, `amount`, `due_date` columns if missing |
+
+### Rollback procedure (`exports.down`)
+
+> **Important:** If any vault rows have `status = 'draft'` when rollback runs, those rows are automatically updated to `status = 'active'` before the enum value is removed. This is logged (without row data) and is not silent.
+
+Steps performed by `exports.down`:
+
+1. Any `'draft'` rows are updated to `'active'` (with a warning log).
+2. `status` default is restored to `'active'`.
+3. `'draft'` is removed from `vault_status` via the create-new-enum / cast / drop-old / rename pattern.
+4. `idx_vaults_end_date` is dropped; `idx_vaults_end_timestamp` is recreated.
+5. `updated_at` and `verifier` columns are dropped.
+6. `end_date` → `end_timestamp` and `start_date` → `start_timestamp` are renamed back.
+7. Any milestones columns added in `up` are dropped.
+
+### Prisma schema alignment
+
+`prisma/schema.prisma` was updated in the same change:
+
+- `VaultStatus` enum gains `DRAFT`
+- `startTimestamp` / `endTimestamp` renamed to `startDate` / `endDate` with `@map` directives
+- `verifier String` field added
+- `updatedAt DateTime @updatedAt @map("updated_at")` added
+- Status default changed to `DRAFT`
+- Index updated to `@@index([endDate])`
+
+### Security / PII note
+
+The migration emits structured JSON log entries for each step (step name + status only). No column values — wallet addresses, amounts, or destinations — are logged at any level.

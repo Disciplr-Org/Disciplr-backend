@@ -1,4 +1,12 @@
+import { initEnv } from './config/index.js'
+
+// Validate environment variables before any other initialisation.
+// This ensures the process exits immediately on misconfiguration.
+initEnv()
+
 import { app } from './app.js'
+import { errorHandler } from './middleware/errorHandler.js'
+import { notFound } from './middleware/notFound.js'
 import { vaultsRouter } from './routes/vaults.js'
 import { createHealthRouter } from './routes/health.js'
 import { createJobsRouter } from './routes/jobs.js'
@@ -13,6 +21,7 @@ import { milestonesRouter } from './routes/milestones.js'
 import { startExpirationChecker } from './services/expirationScheduler.js'
 import { orgVaultsRouter } from './routes/orgVaults.js'
 import { orgAnalyticsRouter } from './routes/orgAnalytics.js'
+import { orgMembersRouter } from './routes/orgMembers.js'
 import { adminRouter } from './routes/admin.js'
 import { adminVerifiersRouter } from './routes/adminVerifiers.js'
 import { verificationsRouter } from './routes/verifications.js'
@@ -47,11 +56,16 @@ app.use('/api/analytics', analyticsRouter)
 app.use('/api/privacy', privacyRouter)
 app.use('/api/organizations', orgVaultsRouter)
 app.use('/api/organizations', orgAnalyticsRouter)
+app.use('/api/organizations', orgMembersRouter)
 app.use('/api/admin', adminRouter)
 app.use('/api/admin/verifiers', adminVerifiersRouter)
 app.use('/api/verifications', verificationsRouter)
 app.use('/api/api-keys', apiKeysRouter)
 app.use('/api/notifications', notificationsRouter)
+
+// Catch-all 404 and uniform error shape – must be registered after all routes.
+app.use(notFound)
+app.use(errorHandler)
 
 const ETL_INTERVAL_MINUTES = parseInt(process.env.ETL_INTERVAL_MINUTES ?? '5', 10)
 

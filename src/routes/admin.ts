@@ -1,16 +1,17 @@
 import { Router, Request, Response } from 'express'
-import { authenticate, authorize } from '../middleware/auth.js'
+import { authenticate } from '../middleware/auth.js'
+import { authorize } from '../middleware/auth.middleware.js'
 import { UserRole, UserStatus } from '../types/user.js'
-import { userService } from '../services/user.service.js'
+import { userService, DeleteResult } from '../services/user.service.js'
 import { forceRevokeUserSessions } from '../services/session.js'
 import { createAuditLog, getAuditLogById, listAuditLogs } from '../lib/audit-logs.js'
-import { cancelVaultById } from './vaults.js'
+import { cancelVaultById } from '../services/vaultStore.js'
 
 export const adminRouter = Router()
 
 // Apply authentication to all admin routes
 adminRouter.use(authenticate)
-adminRouter.use(authorize([UserRole.ADMIN]))
+adminRouter.use(requireAdmin)
 
 /**
  * Force-logout a user (Admin only) - Preserve Issue #46 logic
@@ -103,6 +104,7 @@ adminRouter.get('/users', async (req, res) => {
       search: getStringQuery(req.query.search),
       limit: getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined,
       offset: getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined,
+      includeDeleted: req.query.includeDeleted === 'true',
     }
 
     if (filters.role && !Object.values(UserRole).includes(filters.role)) {
@@ -161,6 +163,99 @@ adminRouter.patch('/users/:id/status', async (req, res) => {
       metadata: { old_status: targetUser.status, new_status: status },
     })
     res.status(200).json({ user: updatedUser })
+  } catch (error) {
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+adminRouter.delete('/users/:id', async (req, res) => {
+  try {
+    const hard = req.query.hard === 'true'
+    const targetUser = await userService.getUserById(req.params.id, true)
+
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    if (req.params.id === req.user!.userId) {
+      return res.status(400).json({ error: 'Cannot delete your own account' })
+    }
+
+    let result: DeleteResult | null
+
+    if (hard) {
+      result = await userService.hardDeleteUser(req.params.id)
+    } else {
+      result = await userService.softDeleteUser(req.params.id)
+    }
+
+    if (!result) {
+      return res.status(500).json({ error: 'Failed to delete user' })
+    }
+
+    if (!result.success && result.deletionType === 'soft') {
+      return res.status(409).json({
+        error: 'User is already deleted',
+        deletedAt: result.deletedAt
+      })
+    }
+
+    const auditLog = createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: hard ? 'user.hard_delete' : 'user.soft_delete',
+      target_type: 'user',
+      target_id: req.params.id,
+      metadata: {
+        deletion_type: result.deletionType,
+        deleted_at: result.deletedAt,
+        target_email: targetUser.email
+      },
+    })
+
+    res.status(200).json({
+      message: hard ? 'User permanently deleted' : 'User soft-deleted',
+      result,
+      auditLogId: auditLog.id
+    })
+  } catch (error) {
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+adminRouter.post('/users/:id/restore', async (req, res) => {
+  try {
+    const targetUser = await userService.getUserById(req.params.id, true)
+
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    if (!targetUser.deletedAt) {
+      return res.status(400).json({ error: 'User is not deleted' })
+    }
+
+    const restoredUser = await userService.restoreUser(req.params.id)
+
+    if (!restoredUser) {
+      return res.status(500).json({ error: 'Failed to restore user' })
+    }
+
+    const auditLog = createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: 'user.restore',
+      target_type: 'user',
+      target_id: req.params.id,
+      metadata: {
+        previous_deleted_at: targetUser.deletedAt,
+        target_email: targetUser.email
+      },
+    })
+
+    res.status(200).json({
+      message: 'User restored',
+      user: restoredUser,
+      auditLogId: auditLog.id
+    })
   } catch (error) {
     res.status(500).json({ error: 'Internal server error' })
   }

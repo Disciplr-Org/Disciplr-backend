@@ -1,293 +1,164 @@
-import { parseHorizonEvent, HorizonEvent } from '../services/eventParser.js'
+import { parseHorizonEvent } from '../services/eventParser.js'
+import { createRawHorizonEvent } from './fixtures/horizonEvents.js'
 
 describe('eventParser - Payload Validation', () => {
-  describe('vault_created validation', () => {
-    it('should validate all required fields for vault_created events', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12345,
-        ledgerClosedAt: '2024-01-15T10:30:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'abc123-0',
-        pagingToken: 'abc123-0',
-        topic: ['vault_created'],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: 'abc123'
-      }
+  it('should validate all required fields for vault_created events', () => {
+    const result = parseHorizonEvent(
+      createRawHorizonEvent('vault_created', {
+        vaultId: 'vault-123',
+        creator: 'GCREATORXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+        amount: '1000.0000000',
+        startTimestamp: '2024-01-01T00:00:00.000Z',
+        endTimestamp: '2024-12-31T00:00:00.000Z',
+        successDestination: 'GSUCCESSXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+        failureDestination: 'GFAILUREXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+      })
+    )
 
-      const result = parseHorizonEvent(mockEvent)
-
-      expect(result.success).toBe(true)
-      if (result.success) {
-        const payload = result.event.payload as any
-        
-        // Verify all required fields are present
-        expect(payload.vaultId).toBeDefined()
-        expect(typeof payload.vaultId).toBe('string')
-        
-        expect(payload.creator).toBeDefined()
-        expect(typeof payload.creator).toBe('string')
-        
-        expect(payload.amount).toBeDefined()
-        expect(typeof payload.amount).toBe('string')
-        expect(parseFloat(payload.amount)).not.toBeNaN()
-        
-        expect(payload.startTimestamp).toBeDefined()
-        expect(payload.startTimestamp instanceof Date).toBe(true)
-        
-        expect(payload.endTimestamp).toBeDefined()
-        expect(payload.endTimestamp instanceof Date).toBe(true)
-        
-        expect(payload.successDestination).toBeDefined()
-        expect(typeof payload.successDestination).toBe('string')
-        
-        expect(payload.failureDestination).toBeDefined()
-        expect(typeof payload.failureDestination).toBe('string')
-      }
-    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      const payload = result.event.payload as any
+      expect(payload.vaultId).toBe('vault-123')
+      expect(payload.creator).toBe('GCREATORXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
+      expect(payload.amount).toBe('1000.0000000')
+      expect(payload.startTimestamp).toEqual(new Date('2024-01-01T00:00:00.000Z'))
+      expect(payload.endTimestamp).toEqual(new Date('2024-12-31T00:00:00.000Z'))
+      expect(payload.successDestination).toBe('GSUCCESSXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
+      expect(payload.failureDestination).toBe('GFAILUREXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
+    }
   })
 
-  describe('vault status event validation', () => {
-    it('should validate vault_completed event has vaultId and status', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12346,
-        ledgerClosedAt: '2024-01-15T10:31:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'def456-1',
-        pagingToken: 'def456-1',
-        topic: ['vault_completed'],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: 'def456'
-      }
+  it('should validate vault status events from encoded payload fields', () => {
+    const completed = parseHorizonEvent(
+      createRawHorizonEvent('vault_completed', {
+        vaultId: 'vault-complete'
+      })
+    )
+    const failed = parseHorizonEvent(
+      createRawHorizonEvent('vault_failed', {
+        vaultId: 'vault-failed',
+        status: 'failed'
+      })
+    )
+    const cancelled = parseHorizonEvent(
+      createRawHorizonEvent('vault_cancelled', {
+        vaultId: 'vault-cancelled'
+      })
+    )
 
-      const result = parseHorizonEvent(mockEvent)
+    expect(completed.success).toBe(true)
+    expect(failed.success).toBe(true)
+    expect(cancelled.success).toBe(true)
 
-      expect(result.success).toBe(true)
-      if (result.success) {
-        const payload = result.event.payload as any
-        
-        expect(payload.vaultId).toBeDefined()
-        expect(typeof payload.vaultId).toBe('string')
-        
-        expect(payload.status).toBeDefined()
-        expect(payload.status).toBe('completed')
-      }
-    })
+    if (completed.success) {
+      expect(completed.event.payload).toMatchObject({
+        vaultId: 'vault-complete',
+        status: 'completed'
+      })
+    }
 
-    it('should validate vault_failed event has vaultId and status', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12347,
-        ledgerClosedAt: '2024-01-15T10:32:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'ghi789-2',
-        pagingToken: 'ghi789-2',
-        topic: ['vault_failed'],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: 'ghi789'
-      }
+    if (failed.success) {
+      expect(failed.event.payload).toMatchObject({
+        vaultId: 'vault-failed',
+        status: 'failed'
+      })
+    }
 
-      const result = parseHorizonEvent(mockEvent)
-
-      expect(result.success).toBe(true)
-      if (result.success) {
-        const payload = result.event.payload as any
-        
-        expect(payload.vaultId).toBeDefined()
-        expect(typeof payload.vaultId).toBe('string')
-        
-        expect(payload.status).toBeDefined()
-        expect(payload.status).toBe('failed')
-      }
-    })
-
-    it('should validate vault_cancelled event has vaultId and status', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12348,
-        ledgerClosedAt: '2024-01-15T10:33:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'jkl012-3',
-        pagingToken: 'jkl012-3',
-        topic: ['vault_cancelled'],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: 'jkl012'
-      }
-
-      const result = parseHorizonEvent(mockEvent)
-
-      expect(result.success).toBe(true)
-      if (result.success) {
-        const payload = result.event.payload as any
-        
-        expect(payload.vaultId).toBeDefined()
-        expect(typeof payload.vaultId).toBe('string')
-        
-        expect(payload.status).toBeDefined()
-        expect(payload.status).toBe('cancelled')
-      }
-    })
+    if (cancelled.success) {
+      expect(cancelled.event.payload).toMatchObject({
+        vaultId: 'vault-cancelled',
+        status: 'cancelled'
+      })
+    }
   })
 
-  describe('milestone_created validation', () => {
-    it('should validate all required fields for milestone_created events', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12349,
-        ledgerClosedAt: '2024-01-15T10:34:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'mno345-4',
-        pagingToken: 'mno345-4',
-        topic: ['milestone_created'],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: 'mno345'
-      }
+  it('should validate all required fields for milestone_created events', () => {
+    const result = parseHorizonEvent(
+      createRawHorizonEvent('milestone_created', {
+        milestoneId: 'milestone-456',
+        vaultId: 'vault-456',
+        title: 'First Milestone',
+        description: 'Complete first task',
+        targetAmount: '500.0000000',
+        deadline: '2024-06-30T00:00:00.000Z'
+      })
+    )
 
-      const result = parseHorizonEvent(mockEvent)
-
-      expect(result.success).toBe(true)
-      if (result.success) {
-        const payload = result.event.payload as any
-        
-        // Verify all required fields are present
-        expect(payload.milestoneId).toBeDefined()
-        expect(typeof payload.milestoneId).toBe('string')
-        
-        expect(payload.vaultId).toBeDefined()
-        expect(typeof payload.vaultId).toBe('string')
-        
-        expect(payload.title).toBeDefined()
-        expect(typeof payload.title).toBe('string')
-        
-        expect(payload.targetAmount).toBeDefined()
-        expect(typeof payload.targetAmount).toBe('string')
-        expect(parseFloat(payload.targetAmount)).not.toBeNaN()
-        
-        expect(payload.deadline).toBeDefined()
-        expect(payload.deadline instanceof Date).toBe(true)
-        expect(isNaN(payload.deadline.getTime())).toBe(false)
-      }
-    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      const payload = result.event.payload as any
+      expect(payload.milestoneId).toBe('milestone-456')
+      expect(payload.vaultId).toBe('vault-456')
+      expect(payload.title).toBe('First Milestone')
+      expect(payload.targetAmount).toBe('500.0000000')
+      expect(payload.deadline).toEqual(new Date('2024-06-30T00:00:00.000Z'))
+    }
   })
 
-  describe('milestone_validated validation', () => {
-    it('should validate all required fields for milestone_validated events', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12350,
-        ledgerClosedAt: '2024-01-15T10:35:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'pqr678-5',
-        pagingToken: 'pqr678-5',
-        topic: ['milestone_validated'],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: 'pqr678'
-      }
+  it('should validate all required fields for milestone_validated events', () => {
+    const result = parseHorizonEvent(
+      createRawHorizonEvent('milestone_validated', {
+        validationId: 'validation-789',
+        milestoneId: 'milestone-789',
+        validatorAddress: 'GVALIDATORXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+        validationResult: 'pending_review',
+        evidenceHash: 'hash-abc123def456',
+        validatedAt: '2024-03-15T10:30:00.000Z'
+      })
+    )
 
-      const result = parseHorizonEvent(mockEvent)
-
-      expect(result.success).toBe(true)
-      if (result.success) {
-        const payload = result.event.payload as any
-        
-        // Verify all required fields are present
-        expect(payload.validationId).toBeDefined()
-        expect(typeof payload.validationId).toBe('string')
-        
-        expect(payload.milestoneId).toBeDefined()
-        expect(typeof payload.milestoneId).toBe('string')
-        
-        expect(payload.validatorAddress).toBeDefined()
-        expect(typeof payload.validatorAddress).toBe('string')
-        
-        expect(payload.validationResult).toBeDefined()
-        expect(typeof payload.validationResult).toBe('string')
-        expect(['approved', 'rejected', 'pending_review']).toContain(payload.validationResult)
-        
-        expect(payload.validatedAt).toBeDefined()
-        expect(payload.validatedAt instanceof Date).toBe(true)
-        expect(isNaN(payload.validatedAt.getTime())).toBe(false)
-      }
-    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      const payload = result.event.payload as any
+      expect(payload.validationId).toBe('validation-789')
+      expect(payload.milestoneId).toBe('milestone-789')
+      expect(payload.validatorAddress).toBe('GVALIDATORXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
+      expect(payload.validationResult).toBe('pending_review')
+      expect(payload.validatedAt).toEqual(new Date('2024-03-15T10:30:00.000Z'))
+    }
   })
 
-  describe('data type validation', () => {
-    it('should validate that amounts are valid decimal numbers', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12351,
-        ledgerClosedAt: '2024-01-15T10:36:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'stu901-6',
-        pagingToken: 'stu901-6',
-        topic: ['vault_created'],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: 'stu901'
-      }
+  it('should reject encoded payloads with missing required fields', () => {
+    const result = parseHorizonEvent(
+      createRawHorizonEvent('milestone_created', {
+        milestoneId: 'milestone-invalid',
+        vaultId: 'vault-invalid',
+        description: 'Missing title and target amount',
+        deadline: '2024-06-30T00:00:00.000Z'
+      })
+    )
 
-      const result = parseHorizonEvent(mockEvent)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toContain('Failed to parse payload')
+    }
+  })
 
-      expect(result.success).toBe(true)
-      if (result.success) {
-        const payload = result.event.payload as any
-        
-        // Verify amount is a valid decimal number
-        expect(payload.amount).toBeDefined()
-        const amountValue = parseFloat(payload.amount)
-        expect(amountValue).not.toBeNaN()
-        expect(amountValue).toBeGreaterThan(0)
-      }
-    })
+  it('should reject invalid decimal and date values without throwing', () => {
+    const invalidAmountResult = parseHorizonEvent(
+      createRawHorizonEvent('vault_created', {
+        vaultId: 'vault-invalid-amount',
+        creator: 'GCREATORXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+        amount: 'not-a-number',
+        startTimestamp: '2024-01-01T00:00:00.000Z',
+        endTimestamp: '2024-12-31T00:00:00.000Z',
+        successDestination: 'GSUCCESSXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+        failureDestination: 'GFAILUREXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+      })
+    )
 
-    it('should validate that dates are valid Date objects', () => {
-      const mockEvent: HorizonEvent = {
-        type: 'contract',
-        ledger: 12352,
-        ledgerClosedAt: '2024-01-15T10:37:00Z',
-        contractId: 'CDISCIPLR123',
-        id: 'vwx234-7',
-        pagingToken: 'vwx234-7',
-        topic: ['milestone_created'],
-        value: {
-          xdr: 'AAAAAgAAAA...'
-        },
-        inSuccessfulContractCall: true,
-        txHash: 'vwx234'
-      }
+    const invalidDateResult = parseHorizonEvent(
+      createRawHorizonEvent('milestone_validated', {
+        validationId: 'validation-invalid-date',
+        milestoneId: 'milestone-invalid-date',
+        validatorAddress: 'GVALIDATORXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+        validationResult: 'approved',
+        evidenceHash: 'hash-invalid-date',
+        validatedAt: 'not-a-date'
+      })
+    )
 
-      const result = parseHorizonEvent(mockEvent)
-
-      expect(result.success).toBe(true)
-      if (result.success) {
-        const payload = result.event.payload as any
-        
-        // Verify deadline is a valid Date object
-        expect(payload.deadline).toBeDefined()
-        expect(payload.deadline instanceof Date).toBe(true)
-        expect(isNaN(payload.deadline.getTime())).toBe(false)
-      }
-    })
+    expect(invalidAmountResult.success).toBe(false)
+    expect(invalidDateResult.success).toBe(false)
   })
 })

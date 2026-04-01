@@ -8,7 +8,15 @@ const config: Config = {
           '^@prisma/client$': '<rootDir>/src/tests/__mocks__/prisma-client.ts',
      },
      transform: {
-          '^.+\\.ts$': ['<rootDir>/node_modules/ts-jest', { useESM: true, diagnostics: false }],
+        '^.+\\.ts$': ['<rootDir>/node_modules/ts-jest', {
+            useESM: true,
+            tsconfig: {
+                module: 'NodeNext',
+                moduleResolution: 'NodeNext',
+                target: 'ES2022'
+            },
+            diagnostics: { ignoreCodes: [151002] }
+        }],
      },
      testMatch: ['**/tests/**/*.test.ts'],
      clearMocks: true,

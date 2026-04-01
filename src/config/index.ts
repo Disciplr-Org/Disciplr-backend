@@ -1,14 +1,10 @@
+import { validateEnv, type Env, type EnvWarning } from './env.js'
+
 type AppConfig = {
   env: string
   port: number
   serviceName: string
   corsOrigins: string[] | '*'
-}
-
-const parsePort = (value: string | undefined, fallback: number) => {
-  if (!value) return fallback
-  const parsed = Number.parseInt(value, 10)
-  return Number.isNaN(parsed) ? fallback : parsed
 }
 
 /**
@@ -52,11 +48,52 @@ export function parseCorsOrigins(value: string | undefined, env: string): string
   return ['http://localhost:3000']
 }
 
+/** Validated environment – populated by `initEnv()`. */
+let _validated: Env | undefined
+
+/** Warnings produced during the last `initEnv()` call. */
+let _envWarnings: EnvWarning[] = []
+
+/**
+ * Run Zod-based environment validation.  Must be called once at startup
+ * before any module reads `config`.  Calling it more than once is safe
+ * (subsequent calls are no-ops).
+ */
+export function initEnv(
+  raw?: Record<string, string | undefined>,
+): { env: Env; warnings: EnvWarning[] } {
+  if (_validated) return { env: _validated, warnings: _envWarnings }
+  const result = validateEnv(raw)
+  _validated = result.env
+  _envWarnings = result.warnings
+  return result
+}
+
+/**
+ * Return the validated env, throwing if `initEnv()` has not been called.
+ * Useful in modules that import env values at the top level.
+ */
+export function getEnv(): Env {
+  if (!_validated) {
+    throw new Error('Environment not validated yet — call initEnv() first')
+  }
+  return _validated
+}
+
+/** Reset internal state — exposed for tests only. */
+export function _resetEnvForTesting(): void {
+  _validated = undefined
+  _envWarnings = []
+}
+
 const _env = process.env.NODE_ENV ?? 'development'
 
 export const config: AppConfig = {
   env: _env,
-  port: parsePort(process.env.PORT, 3000),
-  serviceName: process.env.SERVICE_NAME ?? 'disciplr-backend',
-  corsOrigins: parseCorsOrigins(process.env.CORS_ORIGINS, _env),
+  port: _validated?.PORT ?? (process.env.PORT ? Number(process.env.PORT) : 3000),
+  serviceName: _validated?.SERVICE_NAME ?? process.env.SERVICE_NAME ?? 'disciplr-backend',
+  corsOrigins: parseCorsOrigins(
+    _validated?.CORS_ORIGINS ?? process.env.CORS_ORIGINS,
+    _env,
+  ),
 }

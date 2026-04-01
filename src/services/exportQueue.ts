@@ -23,6 +23,7 @@ export interface ExportJob {
 
 /** In-memory store — swap for a DB table / Redis hash in production */
 const jobs = new Map<string, ExportJob>()
+const CSV_UTF8_BOM = '\uFEFF'
 
 export function createJob(params: Omit<ExportJob, 'id' | 'status' | 'createdAt'>): ExportJob {
     const job: ExportJob = {
@@ -37,6 +38,10 @@ export function createJob(params: Omit<ExportJob, 'id' | 'status' | 'createdAt'>
 
 export function getJob(id: string): ExportJob | undefined {
     return jobs.get(id)
+}
+
+export function resetExportJobs(): void {
+    jobs.clear()
 }
 
 /** Simulate data retrieval — replace with real DB queries */
@@ -74,7 +79,10 @@ function fetchData(
     return { vaults: userVaults, transactions, analytics }
 }
 
-function serialize(data: Record<string, unknown>, format: ExportFormat): { buffer: Buffer; filename: string } {
+export function serializeExportData(
+    data: Record<string, unknown>,
+    format: ExportFormat,
+): { buffer: Buffer; filename: string } {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
 
     if (format === 'json') {
@@ -94,7 +102,7 @@ function serialize(data: Record<string, unknown>, format: ExportFormat): { buffe
     }
 
     return {
-        buffer: Buffer.from(parts.join(''), 'utf8'),
+        buffer: Buffer.from(`${CSV_UTF8_BOM}${parts.join('')}`, 'utf8'),
         filename: `export-${timestamp}.csv`,
     }
 }
@@ -118,15 +126,39 @@ export async function processJob(
     try {
         const targetUser = job.isAdmin ? job.targetUserId : job.userId
         const data = fetchData(job.scope, targetUser, vaultsStore)
-        const { buffer, filename } = serialize(data, job.format)
+        const { buffer, filename } = serializeExportData(data, job.format)
 
         job.result = buffer
         job.filename = filename
         job.status = 'done'
         job.completedAt = new Date().toISOString()
+
+        console.info(
+            JSON.stringify({
+                level: 'info',
+                event: 'exports.job_completed',
+                jobId: job.id,
+                format: job.format,
+                scope: job.scope,
+                bytes: buffer.length,
+                completedAt: job.completedAt,
+            }),
+        )
     } catch (err) {
         job.status = 'failed'
         job.error = err instanceof Error ? err.message : String(err)
         job.completedAt = new Date().toISOString()
+
+        console.error(
+            JSON.stringify({
+                level: 'error',
+                event: 'exports.job_failed',
+                jobId: job.id,
+                format: job.format,
+                scope: job.scope,
+                completedAt: job.completedAt,
+                error: job.error,
+            }),
+        )
     }
 }

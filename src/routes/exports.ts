@@ -153,10 +153,23 @@ export function createExportRouter(
             return
         }
 
-        const mimeType = job.format === 'csv' ? 'text/csv' : 'application/json'
+        const mimeType = job.format === 'csv' ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8'
         res.setHeader('Content-Type', mimeType)
         res.setHeader('Content-Disposition', `attachment; filename="${job.filename}"`)
         res.setHeader('Content-Length', job.result.length)
+
+        console.info(
+            JSON.stringify({
+                level: 'info',
+                event: 'exports.download_served',
+                jobId: job.id,
+                format: job.format,
+                bytes: job.result.length,
+                filename: job.filename,
+                timestamp: new Date().toISOString(),
+            }),
+        )
+
         res.send(job.result)
     })
 

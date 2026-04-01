@@ -413,6 +413,13 @@ This implementation plan breaks down the Horizon Listener → Database Sync feat
 - [ ] 14. Final checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
+- [x] 15. Stellar SDK Upgrade Regression Suite
+  - [x] 15.1 Create SDK regression tests
+    - Create `src/tests/regression/stellarSdkRegression.test.ts`
+    - Implement tests for XDR serialization, ScVal conversion, and Address validation
+    - Ensure property-based tests cover diverse native type mappings
+    - _Requirements: 11.1, 12.5_
+
 ## Notes
 
 - Tasks marked with `*` are optional and can be skipped for faster MVP

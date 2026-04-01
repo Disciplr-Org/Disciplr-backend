@@ -20,6 +20,7 @@ enum UserStatus {
 }
 
 enum VaultStatus {
+  DRAFT
   ACTIVE
   COMPLETED
   FAILED
@@ -35,8 +36,11 @@ model User {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   lastLoginAt   DateTime?
+  deletedAt     DateTime?
   vaults        Vault[]
   refreshTokens RefreshToken[]
+
+  @@index([deletedAt])
 }
 
 model RefreshToken {
@@ -51,17 +55,20 @@ model RefreshToken {
 
 model Vault {
   id                 String      @id @default(uuid())
-  creatorId          String
+  creatorId          String      @map("creator_id")
   creator            User        @relation(fields: [creatorId], references: [id])
   amount             String
-  startTimestamp     DateTime    @default(now())
-  endTimestamp       DateTime
-  successDestination String
-  failureDestination String
-  status             VaultStatus @default(ACTIVE)
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
+  startDate          DateTime    @default(now()) @map("start_date")
+  endDate            DateTime    @map("end_date")
+  verifier           String
+  successDestination String      @map("success_destination")
+  failureDestination String      @map("failure_destination")
+  status             VaultStatus @default(DRAFT)
+  createdAt          DateTime    @default(now()) @map("created_at")
+  updatedAt          DateTime    @updatedAt @map("updated_at")
 
   @@index([creatorId])
   @@index([status])
+  @@index([endDate])
+  @@map("vaults")
 }

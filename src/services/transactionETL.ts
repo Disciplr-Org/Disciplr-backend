@@ -202,10 +202,42 @@ export class TransactionETLService {
         const vault = await this.findVaultByAccounts(operation.from!, operation.to!)
         if (vault) return vault
       }
+
+      // Strategy 4: Check Soroban events for vault ID
+      const vaultFromEvents = await this.findVaultFromEvents(operation.transaction_hash)
+      if (vaultFromEvents) return vaultFromEvents
       
       return null
     } catch (error) {
       console.error('Error finding vault for operation:', error)
+      return null
+    }
+  }
+
+  /**
+   * Find vault ID from Soroban events in a transaction
+   */
+  private async findVaultFromEvents(txHash: string): Promise<VaultReference | null> {
+    try {
+      // Use type assertion to bypass potential SDK type missing methods for Horizon events
+      const events = await (this.server as any).events()
+        .forTransaction(txHash)
+        .call()
+
+      for (const event of events.records) {
+        // Vault ID is usually in the first topic or in the value for vault-related events
+        // For now, look for anything that looks like a vault ID in the topics
+        for (const topic of event.topic) {
+          if (topic.startsWith('vault_') || (topic.length === 36 && topic.includes('-'))) {
+             const vaultId = topic.replace('vault_', '')
+             const vault = await this.getVaultById(vaultId)
+             if (vault) return vault
+          }
+        }
+      }
+      return null
+    } catch (error) {
+      // Silently ignore errors in event lookup to avoid failing the whole ETL run
       return null
     }
   }

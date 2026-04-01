@@ -1,6 +1,7 @@
 import type { Request } from 'express'
 import type {
   PaginationParams,
+  CursorPaginationParams,
   SortParams,
   FilterParams,
   PaginatedResponse,
@@ -18,6 +19,32 @@ export function parsePaginationParams(req: Request): PaginationParams {
   )
 
   return { page, pageSize }
+}
+
+export function parseCursorPaginationParams(req: Request): CursorPaginationParams {
+  const cursor = req.query.cursor as string
+  const limit = Math.min(
+    MAX_PAGE_SIZE,
+    Math.max(1, parseInt(req.query.limit as string) || DEFAULT_PAGE_SIZE)
+  )
+
+  return { cursor, limit }
+}
+
+export function encodeCursor(timestamp: Date, id: string): string {
+  const str = `${timestamp.toISOString()}|${id}`
+  return Buffer.from(str).toString('base64url')
+}
+
+export function decodeCursor(cursor: string): { timestamp: Date; id: string } {
+  try {
+    const decoded = Buffer.from(cursor, 'base64url').toString('utf8')
+    const [timestampStr, id] = decoded.split('|')
+    if (!timestampStr || !id) throw new Error('Invalid cursor format')
+    return { timestamp: new Date(timestampStr), id }
+  } catch (error) {
+    throw new Error('Invalid cursor')
+  }
 }
 
 export function parseSortParams(req: Request, allowedFields: string[]): SortParams {

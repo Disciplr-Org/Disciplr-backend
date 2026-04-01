@@ -1,4 +1,4 @@
-import { ParsedEvent } from '../../types/horizonSync'
+import { ParsedEvent } from '../../types/horizonSync.js'
 
 /**
  * Mocked Horizon event fixtures for testing
@@ -142,6 +142,36 @@ export const allMockEvents: ParsedEvent[] = [
   mockMilestoneRejectedEvent,
   mockMilestonePendingReviewEvent
 ]
+
+export function encodeMockHorizonPayload(payload: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64')
+}
+
+export function createRawHorizonEvent(
+  eventType: ParsedEvent['eventType'],
+  payload: Record<string, unknown>,
+  overrides: Partial<HorizonEvent> = {}
+): HorizonEvent {
+  const txHash = overrides.txHash ?? 'abc123def456'
+  const eventIndex = overrides.id
+    ? Number.parseInt(overrides.id.split('-').pop() ?? '0', 10) || 0
+    : 0
+
+  return {
+    type: 'contract',
+    ledger: overrides.ledger ?? 12345,
+    ledgerClosedAt: overrides.ledgerClosedAt ?? '2024-01-15T10:30:00Z',
+    contractId: overrides.contractId ?? 'CDISCIPLR123',
+    id: overrides.id ?? `${txHash}-${eventIndex}`,
+    pagingToken: overrides.pagingToken ?? `${txHash}-${eventIndex}`,
+    topic: overrides.topic ?? [eventType],
+    value: overrides.value ?? {
+      xdr: encodeMockHorizonPayload(payload)
+    },
+    inSuccessfulContractCall: overrides.inSuccessfulContractCall ?? true,
+    txHash
+  }
+}
 
 // Helper function to create a custom vault created event
 export function createMockVaultCreatedEvent(overrides: Partial<ParsedEvent> = {}): ParsedEvent {

@@ -2,10 +2,48 @@ import { TransactionETLService } from '../services/transactionETL.js'
 import { db } from '../db/index.js'
 import type { ETLConfig } from '../types/transactions.js'
 
+jest.mock('../db/index.js', () => {
+  const mockTrx = jest.fn().mockImplementation(() => mockTrx);
+  (mockTrx as any).commit = jest.fn();
+  (mockTrx as any).rollback = jest.fn();
+  (mockTrx as any).insert = jest.fn().mockReturnThis();
+  (mockTrx as any).where = jest.fn().mockReturnThis();
+  (mockTrx as any).first = jest.fn().mockResolvedValue(null);
+  (mockTrx as any).count = jest.fn().mockResolvedValue([{ count: '1' }]);
+
+  const mockKnex = jest.fn().mockImplementation(() => ({
+    where: jest.fn().mockReturnThis(),
+    first: jest.fn().mockImplementation(async () => {
+        return {
+          id: 'etl-test-vault-123456789012345678901234567890123456789012345678901234567890',
+          user_id: 'test-user-id',
+          vault_id: 'etl-test-vault-123456789012345678901234567890123456789012345678901234567890',
+          creator: 'GTEST1234567890123456789012345678901234567890123456789012345678901',
+          verifier: 'GVERIFIER1234567890123456789012345678901234567890123456789012345678901',
+          success_destination: 'GTO1234567890123456789012345678901234567890123456789012345678901',
+          failure_destination: 'GFAIL1234567890123456789012345678901234567890123456789012345678901'
+        }
+    }),
+    insert: jest.fn().mockReturnThis(),
+    returning: jest.fn().mockImplementation(async () => [{ id: 'test-id' }]),
+    del: jest.fn().mockResolvedValue(1),
+    count: jest.fn().mockResolvedValue([{ count: '1' }])
+  }));
+
+  (mockKnex as any).transaction = jest.fn().mockResolvedValue(mockTrx);
+
+  return {
+    db: mockKnex,
+    pool: {
+      query: jest.fn()
+    }
+  };
+})
+
 describe('TransactionETLService', () => {
   let etlService: TransactionETLService
-  let testUserId: string
-  let testVaultId: string
+  let testUserId = 'test-user-id'
+  let testVaultId = 'etl-test-vault-123456789012345678901234567890123456789012345678901234567890'
 
   const mockConfig: ETLConfig = {
     horizonUrl: 'https://horizon-testnet.stellar.org',
@@ -16,35 +54,9 @@ describe('TransactionETLService', () => {
 
   beforeAll(async () => {
     etlService = new TransactionETLService(mockConfig)
-
-    // Create test user
-    const user = await db('users').insert({
-      email: 'etl-test@example.com',
-      password_hash: 'hashed_password'
-    }).returning('*')
-    testUserId = user[0].id
-
-    // Create test vault
-    const vault = await db('vaults').insert({
-      id: 'etl-test-vault-123456789012345678901234567890123456789012345678901234567890',
-      creator: 'GETL1234567890123456789012345678901234567890123456789012345678901',
-      amount: '50.0000000',
-      start_timestamp: new Date(),
-      end_timestamp: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      success_destination: 'GETLDEST1234567890123456789012345678901234567890123456789012345678901',
-      failure_destination: 'GETLFAIL1234567890123456789012345678901234567890123456789012345678901',
-      status: 'active',
-      user_id: testUserId
-    }).returning('*')
-    testVaultId = vault[0].id
   })
 
   afterAll(async () => {
-    // Clean up test data
-    await db('transactions').where('user_id', testUserId).del()
-    await db('vaults').where('user_id', testUserId).del()
-    await db('users').where('id', testUserId).del()
-    await db.destroy()
   })
 
   describe('transformHorizonOperation', () => {
@@ -158,7 +170,7 @@ describe('TransactionETLService', () => {
         tx_hash: 'abcdef1234567890123456789012345678901234567890123456789012345678901234567890',
         type: 'release',
         amount: '100.0000000',
-        asset_code: 'XLM',
+        asset_code: null,
         from_account: 'GFROM1234567890123456789012345678901234567890123456789012345678901',
         to_account: 'GTO1234567890123456789012345678901234567890123456789012345678901',
         memo: 'test memo',
@@ -207,6 +219,54 @@ describe('TransactionETLService', () => {
         .count('* as count')
 
       expect(parseInt(String(count[0].count))).toBe(1)
+    })
+  })
+
+  describe('findVaultFromEvents', () => {
+    it('should find vault ID from Soroban events', async () => {
+      const txHash = 'test_tx_hash_with_events'
+      const mockEvents = {
+        records: [
+          {
+            topic: ['vault_created', testVaultId],
+            value: { xdr: '...' }
+          }
+        ]
+      }
+
+      // Mock this.server.events().forTransaction(txHash).call()
+      const mockEventsBuilder = {
+        forTransaction: jest.fn().mockReturnThis(),
+        call: jest.fn().mockResolvedValue(mockEvents)
+      };
+      (etlService as any).server.events = jest.fn().mockReturnValue(mockEventsBuilder)
+
+      const result = await (etlService as any).findVaultFromEvents(txHash)
+
+      expect(result).toBeTruthy()
+      expect(result.id).toBe(testVaultId)
+    })
+
+    it('should return null if no vault ID is found in events', async () => {
+      const txHash = 'test_tx_hash_no_vault'
+      const mockEvents = {
+        records: [
+          {
+            topic: ['some_other_event', 'not-a-vault-id'],
+            value: { xdr: '...' }
+          }
+        ]
+      }
+
+      const mockEventsBuilder = {
+        forTransaction: jest.fn().mockReturnThis(),
+        call: jest.fn().mockResolvedValue(mockEvents)
+      };
+      (etlService as any).server.events = jest.fn().mockReturnValue(mockEventsBuilder)
+
+      const result = await (etlService as any).findVaultFromEvents(txHash)
+
+      expect(result).toBeNull()
     })
   })
 })

@@ -1,31 +1,25 @@
-import { Router, Request, Response } from 'express'
-import { authenticate } from '../middleware/auth.js'
-import { VaultService } from '../services/vault.service.js'
+import { Router, type Request, type Response } from 'express'
+import { authenticate } from '../middleware/auth.middleware.js'
 import { UserRole } from '../types/user.js'
+import { VaultService } from '../services/vault.service.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
 import { updateAnalyticsSummary } from '../db/database.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import {
-  IdempotencyConflictError,
   getIdempotentResponse,
   hashRequestPayload,
-  saveIdempotentResponse
+  saveIdempotentResponse,
 } from '../services/idempotency.js'
 import { buildVaultCreationPayload } from '../services/soroban.js'
-import {
-  createVaultWithMilestones,
-  getVaultById,
-  listVaults,
-  cancelVaultById
-} from '../services/vaultStore.js'
-import { normalizeCreateVaultInput, validateCreateVaultInput } from '../services/vaultValidation.js'
+import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById } from '../services/vaultStore.js'
+import { createVaultSchema, flattenZodErrors } from '../services/vaultValidation.js'
 import { queryParser } from '../middleware/queryParser.js'
 import { utcNow } from '../utils/timestamps.js'
-import { prisma } from '../lib/prisma.js'
+import type { VaultCreateResponse } from '../types/vaults.js'
 
 export const vaultsRouter = Router()
 
-// In-memory fallback (for development/legacy support)
+// In-memory fallback (for development / legacy support)
 export let vaults: any[] = []
 export const setVaults = (newVaults: any[]) => { vaults = newVaults }
 
@@ -41,9 +35,8 @@ export interface Vault {
   createdAt: string
 }
 
-/**
- * GET /api/vaults
- */
+// GET /api/vaults
+
 vaultsRouter.get(
   '/',
   authenticate,
@@ -53,135 +46,137 @@ vaultsRouter.get(
   }),
   async (req: Request, res: Response) => {
     try {
-      // Fetch all vaults
       let result = await listVaults()
 
-      // Apply filters, sort, and pagination if available
-      if ((req as any).filters && applyFilters) {
-          result = applyFilters(result as any, (req as any).filters)
-      }
-      if ((req as any).sort && applySort) {
-          result = applySort(result as any, (req as any).sort)
-      }
-      if ((req as any).pagination && paginateArray) {
-          result = paginateArray(result as any, (req as any).pagination) as any
-      }
+      if (req.filters && applyFilters) result = applyFilters(result as any, req.filters)
+      if (req.sort && applySort) result = applySort(result as any, req.sort)
+      if (req.pagination && paginateArray) result = paginateArray(result as any, req.pagination) as any
 
       res.json(result)
     } catch (error: any) {
       res.status(500).json({ error: error.message })
     }
-  }
+  },
 )
 
-/**
- * POST /api/vaults
- */
-vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
-  const { creator, amount, endTimestamp, successDestination, failureDestination, milestoneHash, verifierAddress, contractId } = req.body
+// POST /api/vaults 
 
-  if (!creator || !amount || !endTimestamp || !successDestination || !failureDestination) {
-    res.status(400).json({ error: 'Missing required vault fields' })
+vaultsRouter.post('/', authenticate, async (req: Request, res: Response) => {
+  // 1. Idempotency – replay cached response if key+hash match
+  const idempotencyKey = req.header('idempotency-key') ?? null
+  const requestHash = hashRequestPayload(req.body)
+
+  if (idempotencyKey) {
+    try {
+      const cached = await getIdempotentResponse<VaultCreateResponse>(idempotencyKey, requestHash)
+      if (cached !== null) {
+        res.status(200).json({ ...cached, idempotency: { key: idempotencyKey, replayed: true } })
+        return
+      }
+    } catch (err) {
+      if (err instanceof IdempotencyConflictError) {
+        res.status(409).json({ error: err.message })
+        return
+      }
+      throw err
+    }
+  }
+
+  // 2. Validate with Zod (Soroban-aligned bounds)
+  const parseResult = createVaultSchema.safeParse(req.body)
+  if (!parseResult.success) {
+    res.status(400).json({ details: flattenZodErrors(parseResult.error) })
     return
   }
 
-  // 1. Persist to PostgreSQL via VaultService (Issue #46/Issue #80 logic)
-  let dbVaultId: string | undefined;
+  const input = parseResult.data
+
+  // 3. Persist and respond
   try {
-    const newDbVault = await VaultService.createVault({
-      contractId: contractId || 'mock-contract-id',
-      creatorAddress: creator,
-      amount,
-      milestoneHash,
-      verifierAddress,
-      successDestination,
-      failureDestination,
-      deadline: endTimestamp
-    });
-    dbVaultId = newDbVault.id;
+    const { vault } = await createVaultWithMilestones(input)
+
+    const responseBody: VaultCreateResponse = {
+      vault,
+      onChain: await buildVaultCreationPayload(input, vault),
+      idempotency: { key: idempotencyKey, replayed: false },
+    }
+
+    if (idempotencyKey) {
+      await saveIdempotentResponse(idempotencyKey, requestHash, vault.id, responseBody)
+    }
+
+    const actorUserId = (req.header('x-user-id') ?? input.creator) || req.user?.userId || 'unknown'
+    createAuditLog({
+      actor_user_id: actorUserId,
+      action: 'vault.created',
+      target_type: 'vault',
+      target_id: vault.id,
+      metadata: { creator: input.creator, amount: input.amount },
+    })
+
+    updateAnalyticsSummary()
+
+    res.status(201).json(responseBody)
   } catch (error) {
-    console.error('Warning: Failed to save to PostgreSQL, falling back to in-memory only.', error);
+    console.error('Vault creation failed', error)
+    res.status(500).json({ error: 'Failed to create vault.' })
   }
-
-  // 2. Persist to In-Memory Array
-  const id = dbVaultId || `vault-${Date.now()}`
-  const startTimestamp = utcNow()
-  const vault: Vault = {
-    id,
-    creator,
-    amount,
-    startTimestamp,
-    endTimestamp,
-    successDestination,
-    failureDestination,
-    status: 'active',
-    createdAt: startTimestamp,
-  }
-
-  vaults.push(vault)
-  updateAnalyticsSummary()
-
-  res.status(201).json(vault)
 })
 
-/**
- * GET /api/vaults/:id
- */
+// ─── GET /api/vaults/:id ─────────────────────────────────────────────────────
+
 vaultsRouter.get('/:id', authenticate, async (req: Request, res: Response) => {
-  // 1. Try DB first
+  // Try DB-backed store first (falls back to in-memory automatically)
   try {
-    const dbVault = await VaultService.getVaultById(req.params.id)
-    if (dbVault) {
-      res.json(dbVault)
+    const vault = await getVaultById(req.params.id)
+    if (vault) {
+      res.json(vault)
       return
     }
-  } catch (error) {}
+  } catch (_err) {
+    // fall through to legacy in-memory array
+  }
 
-  // 2. Try In-memory
-  const vault = vaults.find(v => v.id === req.params.id)
+  // Legacy in-memory fallback
+  const vault = vaults.find((v) => v.id === req.params.id)
   if (!vault) {
     res.status(404).json({ error: 'Vault not found' })
     return
   }
-  res.json(vault)
 })
 
-/**
- * POST /api/vaults/:id/cancel
- */
+// ─── POST /api/vaults/:id/cancel ─────────────────────────────────────────────
+
 vaultsRouter.post('/:id/cancel', authenticate, async (req, res) => {
   const actorUserId = req.user!.userId
   const actorRole = req.user!.role
 
   let existingVault = await VaultService.getVaultById(req.params.id)
-  if (!existingVault) existingVault = vaults.find(v => v.id === req.params.id)
+  if (!existingVault) existingVault = vaults.find((v) => v.id === req.params.id)
 
   if (!existingVault) return res.status(404).json({ error: 'Vault not found' })
 
-  // Access control
   if (actorUserId !== existingVault.creator && actorRole !== UserRole.ADMIN) {
     return res.status(403).json({ error: 'Forbidden' })
   }
 
-  // 1. Update Database
   try {
     await VaultService.updateVaultStatus(req.params.id, 'cancelled' as any)
-  } catch (error) {}
+  } catch (_err) { /* non-fatal */ }
 
-  // 2. Update In-memory
-  const arrayIndex = vaults.findIndex(v => v.id === req.params.id);
-  if (arrayIndex !== -1) vaults[arrayIndex].status = 'cancelled';
+  const arrayIndex = vaults.findIndex((v) => v.id === req.params.id)
+  if (arrayIndex !== -1) vaults[arrayIndex].status = 'cancelled'
 
   updateAnalyticsSummary()
-  res.status(200).json({ message: 'Vault cancelled', vault: existingVault })
+  res.status(200).json({ message: 'Vault cancelled', id: req.params.id })
 })
 
-// Additional user-specific routes (Standardized)
+// GET /api/vaults/user/:address 
 vaultsRouter.get('/user/:address', authenticate, async (req: Request, res: Response) => {
   try {
-    const userVaults = await VaultService.getVaultsByUser(req.params.address);
-    res.json(userVaults);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch user vaults' });
+    const userVaults = await VaultService.getVaultsByUser(req.params.address)
+    res.json(userVaults)
+  } catch (_err) {
+    res.status(500).json({ error: 'Failed to fetch user vaults' })
   }
-});
+})

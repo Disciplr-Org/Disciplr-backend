@@ -73,6 +73,20 @@ describe('Horizon Listener Configuration', () => {
       expect(config.retryMaxAttempts).toBe(3)
       expect(config.retryBackoffMs).toBe(100)
     })
+
+    it('should preserve invalid numeric environment values for validation to reject', () => {
+      process.env.HORIZON_URL = 'https://horizon-testnet.stellar.org'
+      process.env.CONTRACT_ADDRESS = 'CDISCIPLR'
+      process.env.START_LEDGER = '123abc'
+      process.env.RETRY_MAX_ATTEMPTS = '3.5'
+      process.env.RETRY_BACKOFF_MS = '50ms'
+
+      const config = loadHorizonListenerConfig()
+
+      expect(config.startLedger).toBeNaN()
+      expect(config.retryMaxAttempts).toBeNaN()
+      expect(config.retryBackoffMs).toBeNaN()
+    })
   })
 
   describe('validateHorizonListenerConfig', () => {
@@ -213,6 +227,30 @@ describe('Horizon Listener Configuration', () => {
       const mockConsoleError = jest.spyOn(console, 'error').mockImplementation(() => {})
 
       expect(() => validateHorizonListenerConfig(config)).toThrow('process.exit: 1')
+      expect(mockConsoleError).toHaveBeenCalledWith('  - RETRY_BACKOFF_MS must be a non-negative number')
+
+      mockExit.mockRestore()
+      mockConsoleError.mockRestore()
+    })
+
+    it('should fail validation when numeric values contain trailing characters', () => {
+      const config = {
+        horizonUrl: 'https://horizon-testnet.stellar.org',
+        contractAddresses: ['CDISCIPLR'],
+        startLedger: Number.NaN,
+        retryMaxAttempts: Number.NaN,
+        retryBackoffMs: Number.NaN,
+        shutdownTimeoutMs: 30000,
+      }
+
+      const mockExit = jest.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
+        throw new Error(`process.exit: ${code}`)
+      })
+      const mockConsoleError = jest.spyOn(console, 'error').mockImplementation(() => {})
+
+      expect(() => validateHorizonListenerConfig(config)).toThrow('process.exit: 1')
+      expect(mockConsoleError).toHaveBeenCalledWith('  - START_LEDGER must be a non-negative number')
+      expect(mockConsoleError).toHaveBeenCalledWith('  - RETRY_MAX_ATTEMPTS must be a non-negative number')
       expect(mockConsoleError).toHaveBeenCalledWith('  - RETRY_BACKOFF_MS must be a non-negative number')
 
       mockExit.mockRestore()

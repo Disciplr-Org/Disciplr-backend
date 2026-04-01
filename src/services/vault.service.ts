@@ -1,8 +1,7 @@
-import { Pool } from 'pg';
-import { Vault, CreateVaultDTO, VaultStatus } from '../types/vault';
+import { Vault, CreateVaultDTO, VaultStatus } from '../types/vault.js';
 
 // Assuming you have a configured pg pool exported from your db setup
-import pool from '../db/index'; 
+import pool from '../db/index.js';
 
 export class VaultService {
   /**
@@ -11,13 +10,13 @@ export class VaultService {
   static async createVault(data: CreateVaultDTO): Promise<Vault> {
     const query = `
       INSERT INTO vaults (
-        contract_id, creator_address, amount, milestone_hash, 
+        contract_id, creator_address, amount, milestone_hash,
         verifier_address, success_destination, failure_destination, deadline
-      ) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING *;
     `;
-    
+
     const values = [
       data.contractId, data.creatorAddress, data.amount, data.milestoneHash,
       data.verifierAddress, data.successDestination, data.failureDestination, data.deadline
@@ -37,7 +36,7 @@ export class VaultService {
    */
   static async getVaultById(id: string): Promise<Vault | null> {
     const query = `SELECT * FROM vaults WHERE id = $1;`;
-    
+
     try {
       const result = await pool.query(query, [id]);
       return result.rows.length ? result.rows[0] : null;
@@ -52,7 +51,7 @@ export class VaultService {
    */
   static async getVaultsByUser(creatorAddress: string): Promise<Vault[]> {
     const query = `SELECT * FROM vaults WHERE creator_address = $1 ORDER BY created_at DESC;`;
-    
+
     try {
       const result = await pool.query(query, [creatorAddress]);
       return result.rows;
@@ -67,12 +66,12 @@ export class VaultService {
    */
   static async updateVaultStatus(id: string, status: VaultStatus): Promise<Vault | null> {
     const query = `
-      UPDATE vaults 
-      SET status = $1, updated_at = NOW() 
-      WHERE id = $2 
+      UPDATE vaults
+      SET status = $1, updated_at = NOW()
+      WHERE id = $2
       RETURNING *;
     `;
-    
+
     try {
       const result = await pool.query(query, [status, id]);
       return result.rows.length ? result.rows[0] : null;
@@ -81,4 +80,17 @@ export class VaultService {
       throw new Error('Database error during status update');
     }
   }
+}
+
+// Use Prisma only when DATABASE_URL is available
+let prisma: any
+try {
+    if (process.env.DATABASE_URL) {
+        const { prisma: realPrisma } = await import('../lib/prisma.js')
+        prisma = realPrisma
+    } else {
+        prisma = mockPrisma
+    }
+} catch {
+    prisma = mockPrisma
 }

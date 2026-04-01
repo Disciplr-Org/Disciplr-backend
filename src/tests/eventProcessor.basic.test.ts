@@ -1,5 +1,5 @@
-import { EventProcessor } from '../services/eventProcessor'
-import { ParsedEvent } from '../types/horizonSync'
+import { EventProcessor } from '../services/eventProcessor.js'
+import { ParsedEvent } from '../types/horizonSync.js'
 import knex, { Knex } from 'knex'
 
 describe('EventProcessor - Basic Functionality', () => {
@@ -202,14 +202,15 @@ describe('EventProcessor - Basic Functionality', () => {
       const result = await processor.processEvent(event)
       expect(result.success).toBe(false)
       expect(result.error).toContain('Vault not found')
+      expect(result.retryCount).toBe(0)
 
       // Check milestone was not created
       const milestones = await db('milestones').select('*')
       expect(milestones).toHaveLength(0)
 
-      // Check event was moved to dead letter queue
+      // Non-retryable validation/business-rule failures should be skipped, not dead-lettered
       const failedEvents = await db('failed_events').where({ event_id: event.eventId })
-      expect(failedEvents).toHaveLength(1)
+      expect(failedEvents).toHaveLength(0)
     })
   })
 
@@ -301,7 +302,6 @@ describe('EventProcessor - Basic Functionality', () => {
 
   describe('Reprocess Failed Events', () => {
     it('should reprocess a failed event after fixing the issue', async () => {
-      // Create an event that will fail (vault doesn't exist)
       const event: ParsedEvent = {
         eventId: 'test-tx-hash:6',
         transactionHash: 'test-tx-hash',
@@ -318,13 +318,15 @@ describe('EventProcessor - Basic Functionality', () => {
         }
       }
 
-      // Process event - should fail
-      const result1 = await processor.processEvent(event)
-      expect(result1.success).toBe(false)
-
-      // Check event is in dead letter queue
-      const failedEvents1 = await db('failed_events').where({ event_id: event.eventId })
-      expect(failedEvents1).toHaveLength(1)
+      // Seed a failed event directly to exercise reprocessing behavior.
+      await db('failed_events').insert({
+        event_id: event.eventId,
+        event_payload: JSON.stringify(event),
+        error_message: 'Connection refused',
+        retry_count: 3,
+        failed_at: new Date(),
+        created_at: new Date()
+      })
 
       // Now create the vault
       await db('vaults').insert({

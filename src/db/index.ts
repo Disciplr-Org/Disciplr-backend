@@ -1,9 +1,19 @@
 import knex from 'knex'
 import pg from 'pg'
-import { createRequire } from 'module'
 
-const require = createRequire(import.meta.url)
-const knexConfig = require('../../knexfile.cjs')
+const knexConfig = {
+  client: 'pg',
+  connection: process.env.DATABASE_URL,
+  migrations: {
+    directory: './db/migrations',
+    extension: 'cjs',
+    tableName: 'knex_migrations',
+  },
+  pool: {
+    min: 2,
+    max: 10,
+  },
+}
 
 /**
  * Standard database connection setup

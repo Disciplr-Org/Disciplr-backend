@@ -85,6 +85,25 @@ Update user status with audit logging.
 }
 ```
 
+
+### Verifier administration endpoints (`/api/admin/verifiers`)
+
+These endpoints support full verifier profile CRUD with backward-compatible moderation actions.
+
+- `GET /api/admin/verifiers`: list verifier profiles with aggregate verification stats.
+- `GET /api/admin/verifiers/:userId`: fetch a single verifier profile and stats.
+- `POST /api/admin/verifiers`: create a verifier profile.
+  - Body: `userId` (required), optional `displayName`, optional `metadata` object, optional `status` (`pending|approved|suspended`).
+  - Returns `201` on create, `409` when the verifier already exists.
+- `PATCH /api/admin/verifiers/:userId`: partial update for `displayName`, `metadata`, and/or `status`.
+- `DELETE /api/admin/verifiers/:userId`: deletes verifier profile and linked verifications.
+- `POST /api/admin/verifiers/:userId/approve`: compatibility endpoint to mark approved.
+- `POST /api/admin/verifiers/:userId/suspend`: compatibility endpoint to mark suspended.
+
+Observability + privacy notes:
+- Structured events are emitted for create/update/delete operations.
+- Logs intentionally include only a short user-id prefix to avoid unnecessary PII leakage.
+
 ## Security
 
 - JWT authentication required
@@ -92,6 +111,19 @@ Update user status with audit logging.
 - Input validation for all parameters
 - Comprehensive audit logging
 - Tamper-proof audit trails
+
+## Audit Log Schema
+
+Audit entries are now normalized to a consistent schema and sanitized to prevent leaking sensitive data.
+
+Common audit log fields:
+- `id`: unique identifier
+- `actor_user_id`: user or system that performed the action
+- `action`: event name
+- `target_type`: entity type
+- `target_id`: entity identifier
+- `created_at`: ISO timestamp
+- `metadata`: structured key/value details (snake_case keys, sensitive keys removed, `admin_id` auto-populated for non-system actors)
 
 ## Error Responses
 

@@ -32,7 +32,9 @@ describe('Analytics Service', () => {
             const start = new Date(startDate)
             const end = new Date(endDate)
             const diffDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)
-            expect(diffDays).toBeCloseTo(7, 0)
+            // Expect boundaries to cover 7 full previous days + today (8 full UTC dates)
+            expect(diffDays).toBeGreaterThan(7.99)
+            expect(diffDays).toBeLessThan(8.01)
         })
 
         it('should return correct date range for 30d', () => {
@@ -40,7 +42,8 @@ describe('Analytics Service', () => {
             const start = new Date(startDate)
             const end = new Date(endDate)
             const diffDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)
-            expect(diffDays).toBeCloseTo(30, 0)
+            expect(diffDays).toBeGreaterThan(30.99)
+            expect(diffDays).toBeLessThan(31.01)
         })
 
         it('should return correct date range for 90d', () => {
@@ -48,7 +51,8 @@ describe('Analytics Service', () => {
             const start = new Date(startDate)
             const end = new Date(endDate)
             const diffDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)
-            expect(diffDays).toBeCloseTo(90, 0)
+            expect(diffDays).toBeGreaterThan(90.99)
+            expect(diffDays).toBeLessThan(91.01)
         })
 
         it('should return correct date range for 1y', () => {
@@ -56,12 +60,29 @@ describe('Analytics Service', () => {
             const start = new Date(startDate)
             const end = new Date(endDate)
             const diffDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)
-            expect(diffDays).toBeCloseTo(365, 0)
+            expect(diffDays).toBeGreaterThanOrEqual(365)
+            expect(diffDays).toBeLessThan(367)
+        })
+
+        it('should return boundaries aligned to UTC midnight', () => {
+            const { startDate, endDate } = getTimeRangeFilter('7d')
+            expect(startDate.endsWith('T00:00:00.000Z')).toBe(true)
+            expect(endDate.endsWith('T23:59:59.999Z')).toBe(true)
+        })
+
+        it('should return exactly 7 full days between boundaries for 7d', () => {
+            const { startDate, endDate } = getTimeRangeFilter('7d')
+            const start = new Date(startDate)
+            const end = new Date(endDate)
+            // (7 days + 23:59:59.999) = 8 days minus 1ms
+            const expectedMs = (8 * 24 * 60 * 60 * 1000) - 1
+            expect(end.getTime() - start.getTime()).toBe(expectedMs)
         })
 
         it('should return epoch start for unknown period', () => {
-            const { startDate } = getTimeRangeFilter('unknown')
+            const { startDate, endDate } = getTimeRangeFilter('unknown')
             expect(startDate).toBe(new Date(0).toISOString())
+            expect(endDate.endsWith('T23:59:59.999Z')).toBe(true)
         })
     })
 

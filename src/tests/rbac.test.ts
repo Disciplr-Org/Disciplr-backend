@@ -3,7 +3,7 @@ import request from 'supertest'
 import express from 'express'
 import { authenticate, signToken } from '../middleware/auth.js'
 import { requireUser, requireVerifier, requireAdmin } from '../middleware/rbac.js'
-import { UserRole } from '@prisma/client'
+import { UserRole } from '../types/user.js'
 import { jest } from '@jest/globals'
 
 // Mock database connection

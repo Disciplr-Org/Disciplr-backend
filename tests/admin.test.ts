@@ -1,8 +1,8 @@
 import request from 'supertest'
-import { app } from '../app.js'
-import { db } from '../db/index.js'
-import { UserRole, UserStatus } from '../types/user.js'
-import { generateAccessToken } from '../lib/auth-utils.js'
+import { app } from '../src/app.js'
+import { db } from '../src/db/index.js'
+import { UserRole, UserStatus } from '../src/types/user.js'
+import { generateAccessToken } from '../src/lib/auth-utils.js'
 
 describe('Admin User Management API', () => {
   let adminToken: string
@@ -336,6 +336,250 @@ describe('Admin User Management API', () => {
         .expect(200)
 
       expect(response.body.audit_logs.every((log: any) => log.action === 'user.role.update')).toBe(true)
+    })
+
+    test('should normalize metadata keys and include admin_id', async () => {
+      const targetUserId = testUsers[1].id
+
+      await request(app)
+        .patch(`/api/admin/users/${targetUserId}/role`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ role: UserRole.VERIFIER })
+        .expect(200)
+
+      const response = await request(app)
+        .get('/api/admin/audit-logs?action=user.role.update')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200)
+
+      const auditLog = response.body.audit_logs.find((log: any) => log.target_id === targetUserId)
+      expect(auditLog).toBeDefined()
+      expect(auditLog.metadata).toHaveProperty('admin_id', testUsers[0].id)
+      expect(auditLog.metadata).toHaveProperty('old_role')
+      expect(auditLog.metadata).toHaveProperty('new_role')
+      expect(auditLog.metadata).not.toHaveProperty('oldRole')
+    })
+
+    test('should strip sensitive data from metadata', async () => {
+      const loginResponse = await request(app)
+        .post('/api/auth/login')
+        .send({ userId: 'sensitive-audit-user' })
+        .expect(200)
+
+      const createdAuditLogId = loginResponse.body.auditLogId
+
+      const detailResponse = await request(app)
+        .get(`/api/admin/audit-logs/${createdAuditLogId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200)
+
+      expect(detailResponse.body.metadata).toHaveProperty('user_agent')
+      expect(detailResponse.body.metadata).not.toHaveProperty('ip')
+      expect(detailResponse.body.metadata).not.toHaveProperty('email')
+      expect(detailResponse.body.metadata).not.toHaveProperty('token')
+    })
+  })
+
+  describe('DELETE /api/admin/users/:id (Soft Delete)', () => {
+    let deleteTargetUser: any
+
+    beforeAll(async () => {
+      deleteTargetUser = {
+        id: 'delete-target-test-id',
+        email: 'delete-target-test@example.com',
+        passwordHash: 'hashed-password',
+        role: UserRole.USER,
+        status: UserStatus.ACTIVE,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      }
+      await db('users').insert(deleteTargetUser)
+    })
+
+    afterAll(async () => {
+      await db('users').where('id', deleteTargetUser.id).del()
+    })
+
+    test('should soft-delete user successfully', async () => {
+      const response = await request(app)
+        .delete(`/api/admin/users/${deleteTargetUser.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200)
+
+      expect(response.body).toHaveProperty('message', 'User soft-deleted')
+      expect(response.body).toHaveProperty('result')
+      expect(response.body.result.deletionType).toBe('soft')
+      expect(response.body.result.deletedAt).toBeDefined()
+      expect(response.body).toHaveProperty('auditLogId')
+    })
+
+    test('should return 409 when soft-deleting already deleted user', async () => {
+      const response = await request(app)
+        .delete(`/api/admin/users/${deleteTargetUser.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(409)
+
+      expect(response.body).toHaveProperty('error', 'User is already deleted')
+      expect(response.body).toHaveProperty('deletedAt')
+    })
+
+    test('should return 404 for non-existent user', async () => {
+      const response = await request(app)
+        .delete('/api/admin/users/non-existent-id')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(404)
+
+      expect(response.body).toHaveProperty('error', 'User not found')
+    })
+
+    test('should prevent admin from deleting own account', async () => {
+      const response = await request(app)
+        .delete(`/api/admin/users/${testUsers[0].id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(400)
+
+      expect(response.body).toHaveProperty('error', 'Cannot delete your own account')
+    })
+
+    test('should exclude soft-deleted users from list by default', async () => {
+      const response = await request(app)
+        .get('/api/admin/users')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200)
+
+      const deletedUser = response.body.data.find((u: any) => u.id === deleteTargetUser.id)
+      expect(deletedUser).toBeUndefined()
+    })
+
+    test('should include soft-deleted users when includeDeleted is true', async () => {
+      const response = await request(app)
+        .get('/api/admin/users?includeDeleted=true')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200)
+
+      const deletedUser = response.body.data.find((u: any) => u.id === deleteTargetUser.id)
+      expect(deletedUser).toBeDefined()
+      expect(deletedUser.deletedAt).toBeDefined()
+    })
+  })
+
+  describe('POST /api/admin/users/:id/restore', () => {
+    let restoreTargetUser: any
+
+    beforeAll(async () => {
+      restoreTargetUser = {
+        id: 'restore-target-test-id',
+        email: 'restore-target-test@example.com',
+        passwordHash: 'hashed-password',
+        role: UserRole.USER,
+        status: UserStatus.ACTIVE,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deleted_at: new Date()
+      }
+      await db('users').insert(restoreTargetUser)
+    })
+
+    afterAll(async () => {
+      await db('users').where('id', restoreTargetUser.id).del()
+    })
+
+    test('should restore soft-deleted user successfully', async () => {
+      const response = await request(app)
+        .post(`/api/admin/users/${restoreTargetUser.id}/restore`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200)
+
+      expect(response.body).toHaveProperty('message', 'User restored')
+      expect(response.body).toHaveProperty('user')
+      expect(response.body.user.deletedAt).toBeUndefined()
+      expect(response.body).toHaveProperty('auditLogId')
+    })
+
+    test('should return 400 when restoring non-deleted user', async () => {
+      const response = await request(app)
+        .post(`/api/admin/users/${restoreTargetUser.id}/restore`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(400)
+
+      expect(response.body).toHaveProperty('error', 'User is not deleted')
+    })
+
+    test('should return 404 for non-existent user', async () => {
+      const response = await request(app)
+        .post('/api/admin/users/non-existent-id/restore')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(404)
+
+      expect(response.body).toHaveProperty('error', 'User not found')
+    })
+  })
+
+  describe('DELETE /api/admin/users/:id?hard=true (Hard Delete)', () => {
+    let hardDeleteTargetUser: any
+
+    beforeEach(async () => {
+      hardDeleteTargetUser = {
+        id: 'hard-delete-target-test-id',
+        email: 'hard-delete-target-test@example.com',
+        passwordHash: 'hashed-password',
+        role: UserRole.USER,
+        status: UserStatus.ACTIVE,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      }
+      await db('users').where('id', hardDeleteTargetUser.id).del()
+      await db('users').insert(hardDeleteTargetUser)
+    })
+
+    afterEach(async () => {
+      if (hardDeleteTargetUser?.id) {
+        await db('users').where('id', hardDeleteTargetUser.id).del()
+      }
+    })
+
+    test('should hard-delete user permanently', async () => {
+      const response = await request(app)
+        .delete(`/api/admin/users/${hardDeleteTargetUser.id}?hard=true`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200)
+
+      expect(response.body).toHaveProperty('message', 'User permanently deleted')
+      expect(response.body).toHaveProperty('result')
+      expect(response.body.result.deletionType).toBe('hard')
+      expect(response.body).toHaveProperty('auditLogId')
+
+      const userCheck = await db('users').where('id', hardDeleteTargetUser.id).first()
+      expect(userCheck).toBeUndefined()
+    })
+
+    test('should return 404 for non-existent user on hard delete', async () => {
+      const response = await request(app)
+        .delete('/api/admin/users/non-existent-id?hard=true')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(404)
+
+      expect(response.body).toHaveProperty('error', 'User not found')
+    })
+
+    test('should create audit log for hard delete', async () => {
+      await request(app)
+        .delete(`/api/admin/users/${hardDeleteTargetUser.id}?hard=true`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200)
+
+      const auditResponse = await request(app)
+        .get('/api/admin/audit-logs?action=user.hard_delete')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200)
+
+      const hardDeleteLog = auditResponse.body.audit_logs.find((log: any) =>
+        log.action === 'user.hard_delete' &&
+        log.target_id === hardDeleteTargetUser.id
+      )
+
+      expect(hardDeleteLog).toBeDefined()
+      expect(hardDeleteLog.metadata).toHaveProperty('deletion_type', 'hard')
     })
   })
 })

@@ -21,19 +21,50 @@ export interface VerificationRecord {
   timestamp: string
 }
 
-export const createOrGetVerifierProfile = async (userId: string, opts?: { displayName?: string; metadata?: Record<string, unknown> }) => {
-  const existing = await db('verifiers').where({ user_id: userId }).first()
-  if (existing) return mapVerifierRow(existing)
+export const createVerifierProfile = async (
+  userId: string,
+  opts?: { displayName?: string; metadata?: Record<string, unknown>; status?: VerifierStatus },
+): Promise<VerifierProfile> => {
+  const updates = mapStatusToUpdates(opts?.status ?? 'pending')
 
   const [inserted] = await db('verifiers')
     .insert({
       user_id: userId,
       display_name: opts?.displayName ?? null,
       metadata: opts?.metadata ?? null,
+      ...updates,
     })
     .returning('*')
 
   return mapVerifierRow(inserted)
+}
+
+export const createOrGetVerifierProfile = async (userId: string, opts?: { displayName?: string; metadata?: Record<string, unknown> }) => {
+  const existing = await db('verifiers').where({ user_id: userId }).first()
+  if (existing) return mapVerifierRow(existing)
+
+  return createVerifierProfile(userId, opts)
+}
+
+export const updateVerifierProfile = async (
+  userId: string,
+  updates: { displayName?: string | null; metadata?: Record<string, unknown> | null; status?: VerifierStatus },
+): Promise<VerifierProfile | null> => {
+  const current = await db('verifiers').where({ user_id: userId }).first()
+  if (!current) return null
+
+  const patch: Record<string, unknown> = {}
+  if (updates.displayName !== undefined) patch.display_name = updates.displayName
+  if (updates.metadata !== undefined) patch.metadata = updates.metadata
+  if (updates.status !== undefined) Object.assign(patch, mapStatusToUpdates(updates.status))
+
+  const [updated] = await db('verifiers').where({ user_id: userId }).update(patch).returning('*')
+  return mapVerifierRow(updated)
+}
+
+export const deleteVerifierProfile = async (userId: string): Promise<boolean> => {
+  const deletedCount = await db('verifiers').where({ user_id: userId }).del()
+  return deletedCount > 0
 }
 
 export const getVerifierProfile = async (userId: string): Promise<VerifierProfile | undefined> => {
@@ -48,14 +79,10 @@ export const listVerifierProfiles = async (): Promise<VerifierProfile[]> => {
 }
 
 export const setVerifierStatus = async (userId: string, status: VerifierStatus): Promise<VerifierProfile | null> => {
-  const updates: any = { status }
-  if (status === 'approved') updates.approved_at = db.fn.now()
-  if (status === 'suspended') updates.suspended_at = db.fn.now()
-
   const row = await db('verifiers').where({ user_id: userId }).first()
   if (!row) return null
 
-  const [updated] = await db('verifiers').where({ user_id: userId }).update(updates).returning('*')
+  const [updated] = await db('verifiers').where({ user_id: userId }).update(mapStatusToUpdates(status)).returning('*')
   return mapVerifierRow(updated)
 }
 
@@ -103,6 +130,29 @@ export const getVerifierStats = async (userId: string) => {
 export const resetVerifiers = async (): Promise<void> => {
   await db('verifications').del()
   await db('verifiers').del()
+}
+
+function mapStatusToUpdates(status: VerifierStatus): Record<string, unknown> {
+  if (status === 'approved') {
+    return {
+      status,
+      approved_at: db.fn.now(),
+      suspended_at: null,
+    }
+  }
+
+  if (status === 'suspended') {
+    return {
+      status,
+      suspended_at: db.fn.now(),
+    }
+  }
+
+  return {
+    status,
+    approved_at: null,
+    suspended_at: null,
+  }
 }
 
 function mapVerifierRow(row: any): VerifierProfile {

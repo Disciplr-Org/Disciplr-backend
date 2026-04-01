@@ -1,20 +1,31 @@
 import fc from 'fast-check'
 import {
   ParsedEvent,
-  EventType,
   VaultEventPayload,
   MilestoneEventPayload,
   ValidationEventPayload
-} from '../../types/horizonSync'
+} from '../../types/horizonSync.js'
 
-/**
- * Fast-check arbitraries for property-based testing
- * These generators create random valid events for testing universal properties
- */
+let arbLoggingEnabled = false
+
+export const setArbLogEnabled = (enabled: boolean) => {
+  arbLoggingEnabled = enabled
+  if (enabled && process.env.NODE_ENV !== 'test') {
+    console.log('[arbitraries] Logging enabled')
+  }
+}
+
+export const logArbGeneration = (arbName: string, numRuns: number) => {
+  if (arbLoggingEnabled && process.env.NODE_ENV !== 'test') {
+    console.log(`[arbitraries] Generated ${numRuns} samples for ${arbName}`)
+  }
+}
 
 // Generate a valid Stellar address (56 characters starting with G)
 export const arbitraryStellarAddress = (): fc.Arbitrary<string> =>
-  fc.string({ minLength: 55, maxLength: 55 }).map(s => 'G' + s.toUpperCase())
+  fc.string({ minLength: 55, maxLength: 55 }).map(s => 
+    'G' + s.split('').map(c => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[Math.abs(c.charCodeAt(0)) % 36]).join('')
+  )
 
 // Generate a valid transaction hash (64 character hex string)
 export const arbitraryTransactionHash = (): fc.Arbitrary<string> =>
@@ -237,3 +248,165 @@ export const arbitraryConsistentEventId = (): fc.Arbitrary<{
     transactionHash: hash,
     eventIndex: index
   }))
+
+// Generate a ProcessedEvent
+export const arbitraryProcessedEvent = (): fc.Arbitrary<ProcessedEvent> =>
+  fc.record({
+    eventId: arbitraryEventId(),
+    transactionHash: arbitraryTransactionHash(),
+    eventIndex: arbitraryEventIndex(),
+    ledgerNumber: arbitraryLedgerNumber(),
+    processedAt: arbitraryPastDate(),
+    createdAt: arbitraryPastDate()
+  })
+
+// Generate a FailedEvent
+export const arbitraryFailedEvent = (): fc.Arbitrary<FailedEvent> =>
+  fc.record({
+    id: fc.integer({ min: 1, max: 100000 }),
+    eventId: arbitraryEventId(),
+    eventPayload: arbitraryParsedEvent(),
+    errorMessage: fc.string({ minLength: 1, maxLength: 500 }),
+    retryCount: fc.integer({ min: 0, max: 5 }),
+    failedAt: arbitraryPastDate(),
+    createdAt: arbitraryPastDate()
+  })
+
+// Generate a ListenerState
+export const arbitraryListenerState = (): fc.Arbitrary<ListenerState> =>
+  fc.record({
+    id: fc.integer({ min: 1, max: 1000 }),
+    serviceName: fc.string({ minLength: 1, maxLength: 100 }),
+    lastProcessedLedger: arbitraryLedgerNumber(),
+    lastProcessedAt: arbitraryPastDate(),
+    createdAt: arbitraryPastDate(),
+    updatedAt: arbitraryPastDate()
+  })
+
+// Generate a Milestone (database entity)
+export const arbitraryMilestone = (): fc.Arbitrary<Milestone> =>
+  fc.record({
+    id: arbitraryMilestoneId(),
+    vaultId: arbitraryVaultId(),
+    title: fc.string({ minLength: 1, maxLength: 255 }),
+    description: fc.option(fc.string({ minLength: 0, maxLength: 1000 })),
+    targetAmount: arbitraryAmount(),
+    currentAmount: arbitraryAmount(),
+    deadline: arbitraryFutureDate(),
+    status: fc.constantFrom('pending', 'in_progress', 'completed', 'failed'),
+    createdAt: arbitraryPastDate(),
+    updatedAt: arbitraryPastDate()
+  })
+
+// Generate a Validation (database entity)
+export const arbitraryValidation = (): fc.Arbitrary<Validation> =>
+  fc.record({
+    id: arbitraryValidationId(),
+    milestoneId: arbitraryMilestoneId(),
+    validatorAddress: arbitraryStellarAddress(),
+    validationResult: arbitraryValidationResult(),
+    evidenceHash: fc.option(arbitraryEvidenceHash()),
+    validatedAt: arbitraryPastDate(),
+    createdAt: arbitraryPastDate()
+  })
+
+// Generate an organization ID
+export const arbitraryOrganizationId = (): fc.Arbitrary<string> =>
+  fc.string({ minLength: 10, maxLength: 64 }).map(s => `org-${s}`)
+
+// Generate a team ID
+export const arbitraryTeamId = (): fc.Arbitrary<string> =>
+  fc.string({ minLength: 10, maxLength: 64 }).map(s => `team-${s}`)
+
+// Generate a user ID
+export const arbitraryUserId = (): fc.Arbitrary<string> =>
+  fc.string({ minLength: 10, maxLength: 64 }).map(s => `user-${s}`)
+
+// Generate a contract address (Contract IDs are 56 chars starting with C on Stellar)
+export const arbitraryContractAddress = (): fc.Arbitrary<string> =>
+  fc.string({ minLength: 54, maxLength: 54 }).map(s => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    let result = 'C'
+    for (let i = 0; i < 54; i++) {
+      const idx = Math.abs((s.charCodeAt(i % s.length) + i * 17) % chars.length)
+      result += chars[idx]
+    }
+    return result
+  })
+
+// Generate a valid Horizon URL
+export const arbitraryHorizonUrl = (): fc.Arbitrary<string> =>
+  fc.oneof(
+    fc.constant('https://horizon.stellar.org'),
+    fc.constant('https://horizon-testnet.stellar.org'),
+    fc.constant('https://horizon-futurenet.stellar.org'),
+    fc.string({ minLength: 20, maxLength: 100 }).map(s => `https://${s.split('').map(c => 'abcdefghijklmnopqrstuvwxyz.'[Math.abs(c.charCodeAt(0)) % 28]).join('')}`)
+  )
+
+// Generate a milestone status
+export const arbitraryMilestoneStatus = (): fc.Arbitrary<'pending' | 'in_progress' | 'completed' | 'failed'> =>
+  fc.constantFrom('pending', 'in_progress', 'completed', 'failed')
+
+// Generate a unique vault ID (for testing uniqueness constraints)
+export const arbitraryUniqueVaultId = (): fc.Arbitrary<string> =>
+  fc.uniqueArray(arbitraryVaultId(), { minLength: 1, maxLength: 10 }).map(arr => arr[0])
+
+// Generate multiple events as a sequence
+export const arbitraryEventSequence = (minEvents: number = 2, maxEvents: number = 10): fc.Arbitrary<ParsedEvent[]> =>
+  fc.array(arbitraryParsedEvent(), { minLength: minEvents, maxLength: maxEvents })
+
+// Generate events for a specific vault (all related events)
+export const arbitraryVaultEventSequence = (): fc.Arbitrary<{
+  created: ParsedEvent
+  milestones: ParsedEvent[]
+  completed: ParsedEvent
+}> =>
+  fc.record({
+    created: arbitraryVaultCreatedEvent(),
+    milestones: fc.array(arbitraryMilestoneCreatedEvent(), { minLength: 1, maxLength: 5 }),
+    completed: arbitraryVaultCompletedEvent()
+  })
+
+// Generate edge case: empty strings, extreme values
+export const arbitraryEdgeCaseAmount = (): fc.Arbitrary<string> =>
+  fc.oneof(
+    fc.constant('0.0000000'),
+    fc.constant('0.0000001'),
+    fc.constant('999999.9999999'),
+    fc.constant('1000000.0000000'),
+    arbitraryAmount()
+  )
+
+// Generate edge case: very long strings
+export const arbitraryEdgeCaseString = (): fc.Arbitrary<string> =>
+  fc.oneof(
+    fc.constant(''),
+    fc.string({ minLength: 1000, maxLength: 2000 }),
+    fc.string({ minLength: 1, maxLength: 255 })
+  )
+
+// Filtered arbitrary: valid Stellar address without special chars in payload
+export const arbitrarySafeStellarAddress = (): fc.Arbitrary<string> =>
+  arbitraryStellarAddress().map(addr => addr.replace(/[^A-Z0-9]/g, '').slice(0, 56))
+
+// Generate a vault with invalid state transitions for negative testing
+export const arbitraryInvalidStatusTransition = (): fc.Arbitrary<{
+  fromStatus: 'active' | 'completed' | 'failed' | 'cancelled'
+  toStatus: 'active' | 'completed' | 'failed' | 'cancelled'
+  isValid: boolean
+}> =>
+  fc.record({
+    fromStatus: arbitraryVaultStatus(),
+    toStatus: arbitraryVaultStatus(),
+    isValid: fc.boolean()
+  }).map(record => {
+    const invalidTransitions = [
+      { from: 'completed', to: 'active' },
+      { from: 'failed', to: 'active' },
+      { from: 'cancelled', to: 'active' },
+      { from: 'completed', to: 'failed' },
+      { from: 'failed', to: 'completed' }
+    ]
+    const isInvalid = invalidTransitions.some(t => t.from === record.fromStatus && t.to === record.toStatus)
+    return { ...record, isValid: !isInvalid }
+  })

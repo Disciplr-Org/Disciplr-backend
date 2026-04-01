@@ -2,6 +2,8 @@ import Database, { Database as DatabaseType } from 'better-sqlite3'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
+import { subDays, subYears } from 'date-fns'
+import { utcStartOfDay, utcEndOfDay } from '../utils/timestamps.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -119,27 +121,28 @@ export function updateAnalyticsSummary(): void {
     )
 }
 
-// Helper function to get time-range filter
+// Helper function to get time-range filter aligned to UTC boundaries
 export function getTimeRangeFilter(period: string): { startDate: string; endDate: string } {
-    const endDate = new Date().toISOString()
+    const now = new Date()
+    const endDate = utcEndOfDay(now)
     let startDate: string
 
     switch (period) {
         case '7d':
-            startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+            startDate = utcStartOfDay(subDays(now, 7))
             break
         case '30d':
-            startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+            startDate = utcStartOfDay(subDays(now, 30))
             break
         case '90d':
-            startDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
+            startDate = utcStartOfDay(subDays(now, 90))
             break
         case '1y':
-            startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString()
+            startDate = utcStartOfDay(subYears(now, 1))
             break
         default:
             // Default to all time
-            startDate = new Date(0).toISOString()
+            return { startDate: new Date(0).toISOString(), endDate }
     }
 
     return { startDate, endDate }

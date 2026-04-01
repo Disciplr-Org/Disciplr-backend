@@ -7,6 +7,7 @@ export interface RetryConfig {
   initialBackoffMs: number
   maxBackoffMs: number
   backoffMultiplier: number
+  jitterFactor: number
 }
 
 export const DEFAULT_RETRY_CONFIG: RetryConfig = {
@@ -14,6 +15,7 @@ export const DEFAULT_RETRY_CONFIG: RetryConfig = {
   initialBackoffMs: 100,
   maxBackoffMs: 60000,
   backoffMultiplier: 2,
+  jitterFactor: 0.5,
 }
 
 /**
@@ -21,6 +23,20 @@ export const DEFAULT_RETRY_CONFIG: RetryConfig = {
  */
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Calculate jitter to add randomization to backoff delay
+ * Uses "Full Jitter" strategy: random value between 0 and baseDelay
+ * This prevents thundering herd and is recommended by AWS
+ * 
+ * @param baseDelayMs - The base delay in milliseconds
+ * @param jitterFactor - Jitter factor (0 = no jitter, 1 = max jitter)
+ * @returns The delay with jitter applied
+ */
+export function calculateJitter(baseDelayMs: number, jitterFactor: number): number {
+  const jitterRange = baseDelayMs * jitterFactor
+  return Math.random() * jitterRange
 }
 
 /**
@@ -88,8 +104,9 @@ export async function retryWithBackoff<T>(
         throw lastError
       }
       
-      // Wait before retrying with exponential backoff
-      await sleep(backoffMs)
+      // Wait before retrying with exponential backoff (with jitter)
+      const jitteredDelay = backoffMs + calculateJitter(backoffMs, config.jitterFactor)
+      await sleep(jitteredDelay)
       
       // Calculate next backoff with cap
       backoffMs = Math.min(

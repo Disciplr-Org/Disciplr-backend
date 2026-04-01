@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { queryParser } from '../middleware/queryParser.js'
-import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
+import { applyFilters, applySort, paginateArray, encodeCursor, decodeCursor } from '../utils/pagination.js'
 import { db } from '../db/index.js'
 import { requireUserAuth } from '../middleware/userAuth.js'
 
@@ -64,13 +64,33 @@ transactionsRouter.get(
       const totalCount = await query.clone().count('* as total').first()
       const total = parseInt(String(totalCount?.total || '0'))
 
-      // Apply pagination
-      const limit = parseInt(String(req.pagination?.pageSize || '20'))
-      const offset = (parseInt(String(req.pagination?.page || '1')) - 1) * limit
-      
-      query = query.limit(limit).offset(offset)
+      // Apply pagination (Cursor-based)
+      const limit = Math.min(100, parseInt(String(req.cursorPagination?.limit || '20')))
+      const cursor = req.cursorPagination?.cursor
 
-      const transactions = await query.select(
+      if (cursor) {
+        try {
+          const { timestamp, id } = decodeCursor(cursor)
+          // Stable cursor condition: (timestamp < current) OR (timestamp = current AND id < current)
+          // This assumes DESCENDING order by timestamp then id.
+          query = query.where(function() {
+            this.where('stellar_timestamp', '<', timestamp)
+                .orWhere(function() {
+                  this.where('stellar_timestamp', '=', timestamp)
+                      .andWhere('id', '<', id)
+                })
+          })
+        } catch (err) {
+          res.status(400).json({ error: 'Invalid cursor' })
+          return
+        }
+      }
+
+      // Enforce stable ordering
+      query = query.orderBy('stellar_timestamp', 'desc').orderBy('id', 'desc')
+
+      // Fetch one extra item to determine if there's a next page
+      const transactions = await query.limit(limit + 1).select(
         'id',
         'vault_id',
         'type',
@@ -86,8 +106,17 @@ transactionsRouter.get(
         'explorer_url'
       )
 
+      const hasMore = transactions.length > limit
+      const results = transactions.slice(0, limit)
+
+      let nextCursor: string | undefined
+      if (hasMore && results.length > 0) {
+        const lastItem = results[results.length - 1]
+        nextCursor = encodeCursor(new Date(lastItem.stellar_timestamp), lastItem.id)
+      }
+
       const response = {
-        data: transactions.map(tx => ({
+        data: results.map(tx => ({
           id: tx.id,
           vault_id: tx.vault_id,
           type: tx.type,
@@ -104,11 +133,10 @@ transactionsRouter.get(
         })),
         pagination: {
           limit,
-          offset,
-          total,
-          has_more: offset + limit < total,
-          page: Math.floor(offset / limit) + 1,
-          pageSize: limit
+          cursor,
+          next_cursor: nextCursor,
+          has_more: hasMore,
+          count: results.length
         }
       }
 
@@ -206,16 +234,30 @@ transactionsRouter.get(
         }
       }
 
-      // Apply sorting
-      if (req.sort) {
-        const sortField = req.sort.sortBy || 'stellar_timestamp'
-        const sortDirection = req.sort.sortOrder === 'desc' ? 'desc' : 'asc'
-        query = query.orderBy(sortField, sortDirection)
-      } else {
-        query = query.orderBy('stellar_timestamp', 'desc')
+      // Apply pagination (Cursor-based)
+      const limit = Math.min(100, parseInt(String(req.cursorPagination?.limit || '20')))
+      const cursor = req.cursorPagination?.cursor
+
+      if (cursor) {
+        try {
+          const { timestamp, id } = decodeCursor(cursor)
+          query = query.where(function() {
+            this.where('stellar_timestamp', '<', timestamp)
+                .orWhere(function() {
+                  this.where('stellar_timestamp', '=', timestamp)
+                      .andWhere('id', '<', id)
+                })
+          })
+        } catch (err) {
+          res.status(400).json({ error: 'Invalid cursor' })
+          return
+        }
       }
 
-      const transactions = await query.select(
+      // Enforce stable ordering
+      query = query.orderBy('stellar_timestamp', 'desc').orderBy('id', 'desc')
+
+      const transactions = await query.limit(limit + 1).select(
         'id',
         'vault_id',
         'type',
@@ -231,11 +273,23 @@ transactionsRouter.get(
         'explorer_url'
       )
 
+      const hasMore = transactions.length > limit
+      const results = transactions.slice(0, limit)
+
+      let nextCursor: string | undefined
+      if (hasMore && results.length > 0) {
+        const lastItem = results[results.length - 1]
+        nextCursor = encodeCursor(new Date(lastItem.stellar_timestamp), lastItem.id)
+      }
+
       res.json({
-        data: transactions,
+        data: results,
         pagination: {
-          total: transactions.length,
-          has_more: false
+          limit,
+          cursor,
+          next_cursor: nextCursor,
+          has_more: hasMore,
+          count: results.length
         }
       })
     } catch (error) {

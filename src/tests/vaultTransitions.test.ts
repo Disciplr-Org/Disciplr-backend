@@ -305,7 +305,7 @@ describe('POST /api/vaults/:id/cancel', () => {
 
     const res = await request(app)
       .post(`/api/vaults/${vault.id}/cancel`)
-      .set('Authorization', await tokenFor('user-1', UserRole.USER))
+      .set('Authorization', tokenFor('user-1', UserRole.USER))
 
     expect(res.status).toBe(200)
     expect(res.body.vault.status).toBe('cancelled')
@@ -317,7 +317,7 @@ describe('POST /api/vaults/:id/cancel', () => {
 
     const res = await request(app)
       .post(`/api/vaults/${vault.id}/cancel`)
-      .set('Authorization', await tokenFor('user-2', UserRole.USER))
+      .set('Authorization', tokenFor('user-2', UserRole.USER))
 
     expect(res.status).toBe(403)
   })
@@ -352,7 +352,7 @@ describe('Milestones routes', () => {
 
     const res = await request(app)
       .post(`/api/vaults/${vault.id}/milestones`)
-      .set('Authorization', await tokenFor('user-1', UserRole.USER))
+      .set('Authorization', tokenFor('user-1', UserRole.USER))
       .send({ title: 'First milestone', target_amount: '500', deadline: futureDate() })
 
     expect(res.status).toBe(201)
@@ -396,7 +396,7 @@ describe('Milestones routes', () => {
 
     const res = await request(app)
       .patch(`/api/vaults/${vault.id}/milestones/ms-test-1/transition`)
-      .set('Authorization', await tokenFor('verifier-1', UserRole.VERIFIER))
+      .set('Authorization', tokenFor('verifier-1', UserRole.VERIFIER))
       .send({ status: 'completed' })
 
     expect(res.status).toBe(200)
@@ -421,7 +421,7 @@ describe('Milestones routes', () => {
 
     const res = await request(app)
       .patch(`/api/vaults/${vault.id}/milestones/ms-test-1/transition`)
-      .set('Authorization', await tokenFor('user-1', UserRole.USER))
+      .set('Authorization', tokenFor('user-1', UserRole.USER))
       .send({ status: 'completed' })
 
     expect(res.status).toBe(403)
@@ -448,7 +448,7 @@ describe('Milestones routes', () => {
 
     const res = await request(app)
       .patch(`/api/vaults/${vault.id}/milestones/ms-test-1/transition`)
-      .set('Authorization', await tokenFor('user-1', UserRole.USER))
+      .set('Authorization', tokenFor('user-1', UserRole.USER))
       .send({ status: 'in_progress' })
 
     expect(res.status).toBe(200)
@@ -477,7 +477,7 @@ describe('Milestones routes', () => {
 
     const res = await request(app)
       .patch(`/api/vaults/${vault.id}/milestones/ms-test-1/verify`)
-      .set('Authorization', await tokenFor('verifier-1', UserRole.VERIFIER))
+      .set('Authorization', tokenFor('verifier-1', UserRole.VERIFIER))
 
     expect(res.status).toBe(200)
     expect(res.body.milestone.status).toBe('completed')
@@ -506,7 +506,7 @@ describe('Milestones routes', () => {
 
     const res = await request(app)
       .patch(`/api/vaults/${vault.id}/milestones/ms-test-2/transition`)
-      .set('Authorization', await tokenFor('v1', UserRole.VERIFIER))
+      .set('Authorization', tokenFor('v1', UserRole.VERIFIER))
       .send({ status: 'completed' })
 
     expect(res.status).toBe(200)

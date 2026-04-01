@@ -8,6 +8,12 @@ import type { OrgRole } from '../models/organizations.js'
 
 export type { OrgRole } from '../models/organizations.js'
 
+/** Alias: enforce org-level role access (roles passed as array). */
+export const requireOrgRole = (roles: (OrgRole | string)[]) => requireOrgAccess(...roles)
+
+/** Alias: enforce team-level role access (roles passed as array). */
+export const requireTeamRole = (roles: (OrgRole | string)[]) => requireOrgAccess(...roles)
+
 /**
  * Middleware factory that enforces organization-level access control.
  * Checks that the org exists, the caller is a member, and their role

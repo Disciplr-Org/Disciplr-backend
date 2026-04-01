@@ -3,6 +3,7 @@ import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { randomUUID } from 'node:crypto'
 import { recordSession, validateSession } from '../services/session.js'
+import { UserRole } from '../types/user.js'
 
 import { JWTPayload } from '../types/auth.js'
 
@@ -74,6 +75,24 @@ export function requireAdmin(
         return
     }
     next()
+}
+
+export function authorize(allowedRoles: UserRole[]) {
+    return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+        if (!req.user) {
+            res.status(401).json({ error: 'Unauthenticated' })
+            return
+        }
+
+        if (!allowedRoles.includes(req.user.role as UserRole)) {
+            res.status(403).json({
+                error: `Forbidden: requires role ${allowedRoles.join(' or ')}, got '${req.user.role}'`,
+            })
+            return
+        }
+
+        next()
+    }
 }
 
 /** Generate a time-limited, HMAC-signed download token */

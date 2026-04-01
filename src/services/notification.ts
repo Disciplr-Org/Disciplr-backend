@@ -1,4 +1,4 @@
-import db from '../db/index.js'
+import { db } from '../db/index.js'
 import type { Notification, CreateNotificationInput } from '../types/notification.js'
 
 // Minimal structured logger — emits JSON to stdout, no PII (no user_id, title, message)

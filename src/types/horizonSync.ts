@@ -109,6 +109,7 @@ export interface HorizonListenerConfig {
   retryMaxAttempts: number
   retryBackoffMs: number
   shutdownTimeoutMs: number
+  lagThreshold: number
 }
 
 export interface ProcessorConfig {

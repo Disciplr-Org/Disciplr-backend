@@ -54,6 +54,8 @@ GET /api/exports/download/:signedToken
 No `Authorization` header required — the signed token is the credential.
 Returns the file with appropriate `Content-Type` and `Content-Disposition` headers.
 
+CSV downloads are emitted as UTF-8 with a leading BOM so spreadsheet tools such as Microsoft Excel preserve non-ASCII characters correctly on open.
+
 ---
 
 ## Query Parameters
