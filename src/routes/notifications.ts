@@ -5,6 +5,7 @@ import {
   markAsRead,
   markAllAsRead,
 } from '../services/notification.js'
+import { requireJson } from '../middleware/requireJson.js'
 
 export const notificationsRouter = Router()
 
@@ -39,7 +40,7 @@ notificationsRouter.patch('/:id/read', async (req: Request, res: Response) => {
 })
 
 // POST /api/notifications/read-all - Mark all as read
-notificationsRouter.post('/read-all', async (req: Request, res: Response) => {
+notificationsRouter.post('/read-all', requireJson, async (req: Request, res: Response) => {
   if (!req.user) {
     res.status(401).json({ error: 'Unauthenticated' })
     return

@@ -10,6 +10,7 @@ import {
   LastAdminError,
   type OrgRole,
 } from '../models/organizations.js'
+import { requireJson } from '../middleware/requireJson.js'
 
 export const orgMembersRouter = Router()
 
@@ -33,6 +34,7 @@ orgMembersRouter.post(
   '/:orgId/members',
   authenticate,
   requireOrgAccess('owner', 'admin'),
+  requireJson,
   (req: Request, res: Response) => {
     const { orgId } = req.params
     const { userId, role } = req.body as { userId?: string; role?: string }
@@ -108,6 +110,7 @@ orgMembersRouter.patch(
   '/:orgId/members/:userId/role',
   authenticate,
   requireOrgAccess('owner'),
+  requireJson,
   (req: Request, res: Response) => {
     const { orgId, userId } = req.params
     const { role } = req.body as { role?: string }

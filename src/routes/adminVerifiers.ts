@@ -12,6 +12,7 @@ import {
   setVerifierStatus,
   updateVerifierProfile,
 } from '../services/verifiers.js'
+import { requireJson } from '../middleware/requireJson.js'
 
 export const adminVerifiersRouter = Router()
 
@@ -33,7 +34,7 @@ adminVerifiersRouter.get('/:userId', async (req: Request, res: Response) => {
   res.json({ profile: p, stats: await getVerifierStats(userId) })
 })
 
-adminVerifiersRouter.post('/', async (req: Request, res: Response) => {
+adminVerifiersRouter.post('/', requireJson, async (req: Request, res: Response) => {
   const { userId, displayName, metadata, status } = req.body as {
     userId?: unknown
     displayName?: unknown
@@ -82,7 +83,7 @@ adminVerifiersRouter.post('/', async (req: Request, res: Response) => {
   }
 })
 
-adminVerifiersRouter.patch('/:userId', async (req: Request, res: Response) => {
+adminVerifiersRouter.patch('/:userId', requireJson, async (req: Request, res: Response) => {
   const userId = req.params.userId
   const { displayName, metadata, status } = req.body as {
     displayName?: unknown

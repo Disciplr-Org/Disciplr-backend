@@ -2,10 +2,11 @@ import { Router, Request, Response } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireVerifier, requireAdmin } from '../middleware/rbac.js'
 import { recordVerification, listVerifications } from '../services/verifiers.js'
+import { requireJson } from '../middleware/requireJson.js'
 
 export const verificationsRouter = Router()
 
-verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request, res: Response) => {
+verificationsRouter.post('/', authenticate, requireVerifier, requireJson, async (req: Request, res: Response) => {
   const payload = req.user!
   const verifierUserId = payload.userId
   const { targetId, result, disputed } = req.body as {

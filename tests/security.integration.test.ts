@@ -12,6 +12,7 @@ import cors from 'cors'
 import request from 'supertest'
 import { generateAccessToken } from '../src/lib/auth-utils.js'
 import { UserRole } from '../src/types/user.js'
+import { requireJson } from '../src/middleware/requireJson.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -79,7 +80,7 @@ testApp.get('/api/vaults', authenticate, (req, res) => {
   res.json({ data: testVaults, pagination: null })
 })
 
-testApp.post('/api/vaults', authenticate, (req, res) => {
+testApp.post('/api/vaults', authenticate, requireJson, (req, res) => {
   const { creator, amount, endTimestamp, successDestination, failureDestination } = req.body
 
   if (!creator || !amount || !endTimestamp || !successDestination || !failureDestination) {
@@ -437,6 +438,199 @@ describe('Security Integration Tests', () => {
       expect(overrideRes.status).toBe(200)
       expect(overrideRes.body.vault.status).toBe('cancelled')
       expect(overrideRes.body).toHaveProperty('auditLogId')
+    })
+  })
+
+  describe('Content-Type enforcement', () => {
+    describe('GET endpoints (should not enforce Content-Type)', () => {
+      it('allows GET requests without Content-Type header', async () => {
+        const res = await request(testApp)
+          .get('/api/vaults')
+          .set('Authorization', `Bearer ${userToken()}`)
+        
+        expect(res.status).toBe(200)
+        expect(res.body).toHaveProperty('data')
+      })
+
+      it('allows GET requests with any Content-Type header', async () => {
+        const res = await request(testApp)
+          .get('/api/vaults')
+          .set('Authorization', `Bearer ${userToken()}`)
+          .set('Content-Type', 'text/plain')
+        
+        expect(res.status).toBe(200)
+        expect(res.body).toHaveProperty('data')
+      })
+    })
+
+    describe('POST endpoints with Content-Type enforcement', () => {
+      it('allows POST with application/json Content-Type', async () => {
+        const res = await request(testApp)
+          .post('/api/vaults')
+          .set('Authorization', `Bearer ${userToken()}`)
+          .set('Content-Type', 'application/json')
+          .send(vaultBody())
+        
+        expect(res.status).toBe(201)
+        expect(res.body).toHaveProperty('vault')
+      })
+
+      it('allows POST with application/json; charset=utf-8', async () => {
+        const res = await request(testApp)
+          .post('/api/vaults')
+          .set('Authorization', `Bearer ${userToken()}`)
+          .set('Content-Type', 'application/json; charset=utf-8')
+          .send(vaultBody())
+        
+        expect(res.status).toBe(201)
+        expect(res.body).toHaveProperty('vault')
+      })
+
+      it('rejects POST without Content-Type header when body is present', async () => {
+        const res = await request(testApp)
+          .post('/api/vaults')
+          .set('Authorization', `Bearer ${userToken()}`)
+          .send(vaultBody())
+        
+        expect(res.status).toBe(415)
+        expect(res.body).toHaveProperty('error')
+        expect(res.body.error).toContain('Content-Type must be application/json')
+      })
+
+      it('rejects POST with text/plain Content-Type', async () => {
+        const res = await request(testApp)
+          .post('/api/vaults')
+          .set('Authorization', `Bearer ${userToken()}`)
+          .set('Content-Type', 'text/plain')
+          .send('some text data')
+        
+        expect(res.status).toBe(415)
+        expect(res.body).toHaveProperty('error')
+        expect(res.body.error).toContain('Content-Type must be application/json')
+      })
+
+      it('rejects POST with application/x-www-form-urlencoded', async () => {
+        const res = await request(testApp)
+          .post('/api/vaults')
+          .set('Authorization', `Bearer ${userToken()}`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('key=value&another=data')
+        
+        expect(res.status).toBe(415)
+        expect(res.body).toHaveProperty('error')
+        expect(res.body.error).toContain('Content-Type must be application/json')
+      })
+
+      it('rejects POST with multipart/form-data', async () => {
+        const res = await request(testApp)
+          .post('/api/vaults')
+          .set('Authorization', `Bearer ${userToken()}`)
+          .set('Content-Type', 'multipart/form-data')
+          .field('creator', stellar('USER'))
+          .field('amount', '5000')
+        
+        expect(res.status).toBe(415)
+        expect(res.body).toHaveProperty('error')
+        expect(res.body.error).toContain('Content-Type must be application/json')
+      })
+    })
+
+    describe('POST endpoints without body', () => {
+      it('allows POST without Content-Type when no body is sent', async () => {
+        const res = await request(testApp)
+          .post('/api/vaults')
+          .set('Authorization', `Bearer ${userToken()}`)
+          .send('')
+        
+        // Should get validation error for missing fields, not content-type error
+        expect(res.status).toBe(400)
+        expect(res.body).toHaveProperty('error')
+        expect(res.body.error).toContain('Missing required vault fields')
+      })
+    })
+
+    describe('Charset handling', () => {
+      it('allows UTF-8 charset', async () => {
+        const res = await request(testApp)
+          .post('/api/vaults')
+          .set('Authorization', `Bearer ${userToken()}`)
+          .set('Content-Type', 'application/json; charset=utf-8')
+          .send(vaultBody())
+        
+        expect(res.status).toBe(201)
+      })
+
+      it('rejects non-UTF-8 charset', async () => {
+        const res = await request(testApp)
+          .post('/api/vaults')
+          .set('Authorization', `Bearer ${userToken()}`)
+          .set('Content-Type', 'application/json; charset=iso-8859-1')
+          .send(vaultBody())
+        
+        expect(res.status).toBe(415)
+        expect(res.body).toHaveProperty('error')
+        expect(res.body.error).toContain('Only UTF-8 charset is supported for JSON')
+      })
+    })
+
+    describe('Security edge cases', () => {
+      it('rejects attempts to bypass with malformed Content-Type', async () => {
+        const res = await request(testApp)
+          .post('/api/vaults')
+          .set('Authorization', `Bearer ${userToken()}`)
+          .set('Content-Type', '')
+          .send(vaultBody())
+        
+        expect(res.status).toBe(415)
+        expect(res.body).toHaveProperty('error')
+        expect(res.body.error).toContain('Content-Type must be application/json')
+      })
+
+      it('handles Content-Type with whitespace correctly', async () => {
+        const res = await request(testApp)
+          .post('/api/vaults')
+          .set('Authorization', `Bearer ${userToken()}`)
+          .set('Content-Type', ' application/json ')
+          .send(vaultBody())
+        
+        expect(res.status).toBe(201)
+      })
+    })
+
+    describe('Error response consistency', () => {
+      it('returns consistent error format for all content-type rejections', async () => {
+        const scenarios = [
+          {
+            name: 'missing Content-Type',
+            contentType: null
+          },
+          {
+            name: 'invalid Content-Type',
+            contentType: 'text/plain'
+          },
+          {
+            name: 'invalid charset',
+            contentType: 'application/json; charset=ascii'
+          }
+        ]
+
+        for (const scenario of scenarios) {
+          const req = request(testApp)
+            .post('/api/vaults')
+            .set('Authorization', `Bearer ${userToken()}`)
+          
+          if (scenario.contentType) {
+            req.set('Content-Type', scenario.contentType)
+          }
+          
+          const res = await req.send(vaultBody())
+          
+          expect(res.status).toBe(415)
+          expect(res.body).toHaveProperty('error')
+          expect(typeof res.body.error).toBe('string')
+          expect(res.body.error.length).toBeGreaterThan(0)
+        }
+      })
     })
   })
 })

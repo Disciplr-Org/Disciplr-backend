@@ -10,11 +10,12 @@ import {
 } from '../services/milestones.js'
 import { completeVault } from '../services/vaultTransitions.js'
 import { vaults } from './vaults.js'
+import { requireJson } from '../middleware/requireJson.js'
 
 export const milestonesRouter = Router({ mergeParams: true })
 
 // POST /api/vaults/:vaultId/milestones
-milestonesRouter.post('/', authenticate, requireUser, (req: Request, res: Response) => {
+milestonesRouter.post('/', authenticate, requireUser, requireJson, (req: Request, res: Response) => {
   const { vaultId } = req.params
   const vault = vaults.find((v) => v.id === vaultId)
 

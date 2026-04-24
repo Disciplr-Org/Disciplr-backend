@@ -6,6 +6,7 @@ import { userService, DeleteResult } from '../services/user.service.js'
 import { forceRevokeUserSessions } from '../services/session.js'
 import { createAuditLog, getAuditLogById, listAuditLogs } from '../lib/audit-logs.js'
 import { cancelVaultById } from '../services/vaultStore.js'
+import { requireJson } from '../middleware/requireJson.js'
 
 export const adminRouter = Router()
 
@@ -57,7 +58,7 @@ adminRouter.get('/audit-logs/:id', (req, res) => {
   res.status(200).json(auditLog)
 })
 
-adminRouter.post('/overrides/vaults/:id/cancel', async (req, res) => {
+adminRouter.post('/overrides/vaults/:id/cancel', requireJson, async (req, res) => {
   const reason = typeof req.body?.reason === 'string' ? req.body.reason : 'No reason provided'
 
   const cancelResult = await cancelVaultById(req.params.id)
@@ -122,7 +123,7 @@ adminRouter.get('/users', async (req, res) => {
   }
 })
 
-adminRouter.patch('/users/:id/role', async (req, res) => {
+adminRouter.patch('/users/:id/role', requireJson, async (req, res) => {
   try {
     const { role } = req.body
     if (!role || !Object.values(UserRole).includes(role)) {
@@ -145,7 +146,7 @@ adminRouter.patch('/users/:id/role', async (req, res) => {
   }
 })
 
-adminRouter.patch('/users/:id/status', async (req, res) => {
+adminRouter.patch('/users/:id/status', requireJson, async (req, res) => {
   try {
     const { status } = req.body
     if (!status || !Object.values(UserStatus).includes(status)) {

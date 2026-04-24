@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { requireUserAuth } from '../middleware/userAuth.js'
 import { createApiKey, listApiKeysForUser, revokeApiKey } from '../services/apiKeys.js'
+import { requireJson } from '../middleware/requireJson.js'
 
 export const apiKeysRouter = Router()
 
@@ -13,7 +14,7 @@ apiKeysRouter.get('/', (req, res) => {
   res.json({ apiKeys })
 })
 
-apiKeysRouter.post('/', (req, res) => {
+apiKeysRouter.post('/', requireJson, (req, res) => {
   const userId = req.authUser!.userId
   const { label, scopes, orgId } = req.body as {
     label?: string
@@ -49,7 +50,7 @@ apiKeysRouter.post('/', (req, res) => {
   })
 })
 
-apiKeysRouter.post('/:id/revoke', (req, res) => {
+apiKeysRouter.post('/:id/revoke', requireJson, (req, res) => {
   const userId = req.authUser!.userId
   const record = revokeApiKey(req.params.id, userId)
 

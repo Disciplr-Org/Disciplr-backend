@@ -1,6 +1,7 @@
 import { Router, Response } from 'express'
 import { authenticate, requireAdmin, signDownloadToken, verifyDownloadToken, AuthenticatedRequest } from '../middleware/auth.js'
 import { createJob, getJob, processJob, ExportFormat, ExportScope } from '../services/exportQueue.js'
+import { requireJson } from '../middleware/requireJson.js'
 
 /**
  * The vaults store is shared with vaults.ts.
@@ -33,7 +34,7 @@ export function createExportRouter(
      *
      * Returns { jobId, statusUrl, pollIntervalMs }
      */
-    router.post('/me', authenticate, (req: AuthenticatedRequest, res: Response) => {
+    router.post('/me', authenticate, requireJson, (req: AuthenticatedRequest, res: Response) => {
         const opts = parseOptions(req)
         if (!opts) {
             res.status(400).json({ error: 'Invalid format or scope parameter' })
@@ -69,6 +70,7 @@ export function createExportRouter(
         '/admin',
         authenticate,
         requireAdmin,
+        requireJson,
         (req: AuthenticatedRequest, res: Response) => {
             const opts = parseOptions(req)
             if (!opts) {
