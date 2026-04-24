@@ -6,7 +6,11 @@ import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 
 import adminRoutes from './routes/admin';
+import authRoutes from './routes/auth';
+import vaultsRoutes from './routes/vaults';
+import jobsRoutes from './routes/jobs';
 import { auditLogger } from './lib/audit-logs';
+import { requireJson, validateJsonPayload } from './middleware/requireJson';
 
 dotenv.config();
 
@@ -18,7 +22,11 @@ const PORT = process.env.PORT || 3000;
 app.use(helmet());
 app.use(cors());
 app.use(morgan('combined'));
+
+// JSON content-type enforcement middleware
+app.use(requireJson);
 app.use(express.json({ limit: '10mb' }));
+app.use(validateJsonPayload);
 app.use(express.urlencoded({ extended: true }));
 
 // Health check
@@ -28,6 +36,9 @@ app.get('/health', (req, res) => {
 
 // Routes
 app.use('/api/admin', adminRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/vaults', vaultsRoutes);
+app.use('/api/jobs', jobsRoutes);
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
