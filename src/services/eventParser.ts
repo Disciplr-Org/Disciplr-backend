@@ -217,9 +217,10 @@ function parseVaultPayload(
           return null
         }
         return payload
-      
-      default:
-        return null
+      }
+
+    default:
+      return null
     }
   } catch (error) {
     console.error('Error parsing vault payload XDR:', error)

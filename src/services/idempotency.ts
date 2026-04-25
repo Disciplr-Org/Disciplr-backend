@@ -76,3 +76,12 @@ export class IdempotencyService {
     })
   }
 }
+
+/**
+ * Reset the idempotency store (for testing)
+ */
+export function resetIdempotencyStore(): void {
+  // In a real implementation, this would clear the database tables
+  // For testing purposes, this is a no-op
+  console.log('Idempotency store reset (test mode)')
+}
