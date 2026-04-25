@@ -1,5 +1,5 @@
 import { checkListenerLag } from '../services/monitor.js'
-import { Server } from '@stellar/stellar-sdk'
+import Server from '@stellar/stellar-sdk'
 import { db } from '../db/knex.js'
 import { getValidatedConfig } from '../config/horizonListener.js'
 import { jest } from '@jest/globals'
@@ -40,7 +40,7 @@ describe('checkListenerLag', () => {
       ledgers: jest.fn().mockReturnThis(),
       order: jest.fn().mockReturnThis(),
       limit: jest.fn().mockReturnThis(),
-      call: jest.fn().mockResolvedValue({
+      call: (jest.fn() as any).mockResolvedValue({
         records: [{ sequence: 150 }]
       })
     }
@@ -49,7 +49,7 @@ describe('checkListenerLag', () => {
     // Mock DB response for listener_state
     const mockQueryBuilder = {
       where: jest.fn().mockReturnThis(),
-      first: jest.fn().mockResolvedValue({ last_processed_ledger: 100 })
+      first: (jest.fn() as any).mockResolvedValue({ last_processed_ledger: 100 })
     }
     ;(db as any).mockReturnValue(mockQueryBuilder)
 
@@ -66,7 +66,7 @@ describe('checkListenerLag', () => {
       ledgers: jest.fn().mockReturnThis(),
       order: jest.fn().mockReturnThis(),
       limit: jest.fn().mockReturnThis(),
-      call: jest.fn().mockResolvedValue({
+      call: (jest.fn() as any).mockResolvedValue({
         records: [{ sequence: 105 }]
       })
     }
@@ -75,7 +75,7 @@ describe('checkListenerLag', () => {
     // Mock DB response for listener_state
     const mockQueryBuilder = {
       where: jest.fn().mockReturnThis(),
-      first: jest.fn().mockResolvedValue({ last_processed_ledger: 100 })
+      first: (jest.fn() as any).mockResolvedValue({ last_processed_ledger: 100 })
     }
     ;(db as any).mockReturnValue(mockQueryBuilder)
 
@@ -91,7 +91,7 @@ describe('checkListenerLag', () => {
       ledgers: jest.fn().mockReturnThis(),
       order: jest.fn().mockReturnThis(),
       limit: jest.fn().mockReturnThis(),
-      call: jest.fn().mockResolvedValue({
+      call: (jest.fn() as any).mockResolvedValue({
         records: [{ sequence: 150 }]
       })
     }
@@ -100,7 +100,7 @@ describe('checkListenerLag', () => {
     // Mock DB response as null (no state yet)
     const mockQueryBuilder = {
       where: jest.fn().mockReturnThis(),
-      first: jest.fn().mockResolvedValue(null)
+      first: (jest.fn() as any).mockResolvedValue(null)
     }
     ;(db as any).mockReturnValue(mockQueryBuilder)
 

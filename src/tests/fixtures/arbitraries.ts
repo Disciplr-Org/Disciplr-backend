@@ -6,6 +6,52 @@ import {
   ValidationEventPayload
 } from '../../types/horizonSync.js'
 
+// Define missing types for test fixtures
+export interface ProcessedEvent {
+  eventId: string
+  transactionHash: string
+  eventIndex: number
+  ledgerNumber: number
+  processedAt: Date
+  createdAt: Date
+}
+
+export interface FailedEvent {
+  id: number
+  eventId: string
+  eventPayload: any
+  errorMessage: string
+  createdAt: Date
+  retryCount: number
+}
+
+export interface ListenerState {
+  id: number
+  lastProcessedLedger: number
+  lastProcessedEventId: string
+  updatedAt: Date
+}
+
+export interface Milestone {
+  id: string
+  vaultId: string
+  title: string
+  description: string
+  targetAmount: string
+  deadline: Date
+  status: 'pending' | 'completed' | 'failed'
+  createdAt: Date
+}
+
+export interface Validation {
+  id: string
+  milestoneId: string
+  validatorAddress: string
+  isValid: boolean
+  validationData: any
+  createdAt: Date
+}
+
 let arbLoggingEnabled = false
 
 export const setArbLogEnabled = (enabled: boolean) => {

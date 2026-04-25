@@ -50,6 +50,7 @@ export function loadHorizonListenerConfig(): HorizonListenerConfig {
   const startLedger = parseNonNegativeInteger(startLedgerRaw)
   const retryMaxAttempts = parseNonNegativeInteger(retryMaxAttemptsRaw, 3) as number
   const retryBackoffMs = parseNonNegativeInteger(retryBackoffMsRaw, 100) as number
+  const lagThreshold = parseNonNegativeInteger(lagThresholdRaw, 1000) as number
   const shutdownTimeoutMs = 30000 // 30 seconds default
 
   return {
