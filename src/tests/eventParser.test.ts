@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals'
 import { parseHorizonEvent } from '../services/eventParser.js'
 import { createRawHorizonEvent } from './fixtures/horizonEvents.js'
 

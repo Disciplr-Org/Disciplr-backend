@@ -25,6 +25,7 @@ describe('Horizon Listener Configuration', () => {
       process.env.START_LEDGER = '12345'
       process.env.RETRY_MAX_ATTEMPTS = '5'
       process.env.RETRY_BACKOFF_MS = '200'
+      process.env.LAG_THRESHOLD = '1000'
 
       const config = loadHorizonListenerConfig()
 
@@ -34,6 +35,7 @@ describe('Horizon Listener Configuration', () => {
       expect(config.retryMaxAttempts).toBe(5)
       expect(config.retryBackoffMs).toBe(200)
       expect(config.shutdownTimeoutMs).toBe(30000)
+      expect(config.lagThreshold).toBe(1000)
     })
 
     it('should parse CONTRACT_ADDRESS as comma-separated list', () => {
@@ -97,6 +99,7 @@ describe('Horizon Listener Configuration', () => {
         retryMaxAttempts: 3,
         retryBackoffMs: 100,
         shutdownTimeoutMs: 30000,
+        lagThreshold: 1000,
       }
 
       // Should not throw or exit
@@ -110,6 +113,7 @@ describe('Horizon Listener Configuration', () => {
         retryMaxAttempts: 3,
         retryBackoffMs: 100,
         shutdownTimeoutMs: 30000,
+        lagThreshold: 1000,
       }
 
       const mockExit = jest.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
@@ -132,6 +136,7 @@ describe('Horizon Listener Configuration', () => {
         retryMaxAttempts: 3,
         retryBackoffMs: 100,
         shutdownTimeoutMs: 30000,
+        lagThreshold: 1000,
       }
 
       const mockExit = jest.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
@@ -153,6 +158,7 @@ describe('Horizon Listener Configuration', () => {
         retryMaxAttempts: 3,
         retryBackoffMs: 100,
         shutdownTimeoutMs: 30000,
+        lagThreshold: 1000,
       }
 
       const mockExit = jest.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
@@ -177,6 +183,7 @@ describe('Horizon Listener Configuration', () => {
         retryMaxAttempts: 3,
         retryBackoffMs: 100,
         shutdownTimeoutMs: 30000,
+        lagThreshold: 1000,
       }
 
       const mockExit = jest.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
@@ -198,6 +205,7 @@ describe('Horizon Listener Configuration', () => {
         retryMaxAttempts: -1,
         retryBackoffMs: 100,
         shutdownTimeoutMs: 30000,
+        lagThreshold: 1000,
       }
 
       const mockExit = jest.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
@@ -219,6 +227,7 @@ describe('Horizon Listener Configuration', () => {
         retryMaxAttempts: 3,
         retryBackoffMs: -100,
         shutdownTimeoutMs: 30000,
+        lagThreshold: 1000,
       }
 
       const mockExit = jest.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
@@ -241,6 +250,7 @@ describe('Horizon Listener Configuration', () => {
         retryMaxAttempts: Number.NaN,
         retryBackoffMs: Number.NaN,
         shutdownTimeoutMs: 30000,
+        lagThreshold: 1000,
       }
 
       const mockExit = jest.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
