@@ -196,32 +196,35 @@ function parseVaultPayload(
           console.error(`Vault created validation error: ${createdError}`)
           return null
         }
-      }
+        break
 
-      return payload
+      case 'vault_completed':
+      case 'vault_failed':
+      case 'vault_cancelled':
+        const decoded = decodePayloadRecord(xdrData);
+        if (!decoded) {
+          return null;
+        }
+        
+        payload = {
+          vaultId: readStringField(decoded, 'vaultId') ?? '',
+          status: ((readStringField(decoded, 'status')) ?
+            eventType.replace('vault_', '') : undefined) as VaultEventPayload['status']
+        };
 
-    case 'vault_completed':
-    case 'vault_failed':
-    case 'vault_cancelled':
-      const decoded = decodePayloadRecord(xdrData);
-      payload = {
-        vaultId: readStringField(decoded, 'vaultId') ?? '',
-        status: ((readStringField(decoded, 'status')) ?
-          eventType.replace('vault_', '') : undefined) as VaultEventPayload['status']
-      };
-
-      {
         const statusError = validateVaultStatusPayload(payload)
         if (statusError) {
           console.error(`Vault status validation error: ${statusError}`)
           return null
         }
-        return payload
-      }
+        break
 
-    default:
-      return null
+      default:
+        return null
     }
+    
+    // Return the payload after successful switch processing
+    return payload
   } catch (error) {
     console.error('Error parsing vault payload XDR:', error)
     return null
@@ -301,23 +304,6 @@ function parseMilestonePayload(xdrData: string): MilestoneEventPayload | null {
     console.error('Error parsing milestone payload XDR:', error)
     return null
   }
-
-  const payload: MilestoneEventPayload = {
-    milestoneId: readStringField(decoded, 'milestoneId') ?? '',
-    vaultId: readStringField(decoded, 'vaultId') ?? '',
-    title: readStringField(decoded, 'title') ?? '',
-    description: readStringField(decoded, 'description') ?? '',
-    targetAmount: readStringField(decoded, 'targetAmount') ?? '',
-    deadline: readDateField(decoded, 'deadline') ?? new Date('invalid')
-  }
-
-  const error = validateMilestonePayload(payload)
-  if (error) {
-    console.error(`Milestone validation error: ${error}`)
-    return null
-  }
-
-  return payload
 }
 
 /**
@@ -393,8 +379,6 @@ function parseValidationPayload(xdrData: string): ValidationEventPayload | null 
     console.error('Error parsing validation payload XDR:', error)
     return null
   }
-
-  return payload
 }
 
 /**
