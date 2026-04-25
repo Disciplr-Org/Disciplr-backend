@@ -13,7 +13,9 @@ export const createHealthRouter = (jobSystem: BackgroundJobSystem) => {
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       jobs: jobSystem.getMetrics()
-    };)
+    }
+    
+    res.json(healthData)
   })
 
   return router

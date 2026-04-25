@@ -1,13 +1,12 @@
-import type { Config } from 'jest'
-
-const config: Config = {
+/** @type {import('jest').Config} */
+module.exports = {
      testEnvironment: 'node',
      extensionsToTreatAsEsm: ['.ts'],
      moduleNameMapper: {
           '^(\\.{1,2}/.*)\\.js$': '$1',
      },
      transform: {
-        '^.+\\.ts$': ['<rootDir>/node_modules/ts-jest', { 
+        '^.+\\.ts$': ['ts-jest', { 
             useESM: true, 
             tsconfig: {
                 module: 'NodeNext',
@@ -20,5 +19,3 @@ const config: Config = {
      testMatch: ['**/tests/**/*.test.ts'],
      clearMocks: true,
 }
-
-export default config

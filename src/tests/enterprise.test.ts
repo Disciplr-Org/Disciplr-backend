@@ -40,7 +40,7 @@ beforeAll(async () => {
 
 describe('Enterprise Hierarchy & RBAC', () => {
   it('should allow access with correct organization role', async () => {
-    mockDb.first.mockResolvedValueOnce({ role: 'admin' })
+    mockDb.first.mockResolvedValue({ role: 'admin' })
     
     const res = await request(app).get('/org/org-1/admin')
     expect(res.status).toBe(200)
@@ -48,7 +48,7 @@ describe('Enterprise Hierarchy & RBAC', () => {
   })
 
   it('should deny access with incorrect organization role', async () => {
-    mockDb.first.mockResolvedValueOnce({ role: 'member' })
+    mockDb.first.mockResolvedValue({ role: 'member' })
     
     const res = await request(app).get('/org/org-1/admin')
     expect(res.status).toBe(403)
@@ -56,7 +56,7 @@ describe('Enterprise Hierarchy & RBAC', () => {
   })
 
   it('should allow access with correct team role', async () => {
-    mockDb.first.mockResolvedValueOnce({ role: 'member' })
+    mockDb.first.mockResolvedValue({ role: 'member' })
     
     const res = await request(app).get('/team/team-1/member')
     expect(res.status).toBe(200)
@@ -64,7 +64,7 @@ describe('Enterprise Hierarchy & RBAC', () => {
   })
 
   it('should deny access with incorrect team role', async () => {
-    mockDb.first.mockResolvedValueOnce(null)
+    mockDb.first.mockResolvedValue({ role: 'guest' })
     
     const res = await request(app).get('/team/team-1/member')
     expect(res.status).toBe(403)

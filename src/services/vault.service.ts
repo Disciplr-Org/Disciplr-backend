@@ -29,7 +29,22 @@ export class VaultService {
       console.error('Error creating vault:', error);
       throw new Error('Database error during vault creation');
     }
-}
+  }
+
+  /**
+   * Retrieves a vault by ID
+   */
+  static async getVaultById(id: string): Promise<Vault | null> {
+    const query = 'SELECT * FROM vaults WHERE contract_id = $1';
+    
+    try {
+      const result = await pool.query(query, [id]);
+      return result.rows[0] || null;
+    } catch (error) {
+      console.error('Error retrieving vault:', error);
+      throw new Error('Database error during vault retrieval');
+    }
+  }
 
 // Use Prisma only when DATABASE_URL is available
 let prisma: any
