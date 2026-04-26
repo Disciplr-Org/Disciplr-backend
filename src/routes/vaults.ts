@@ -69,6 +69,9 @@ vaultsRouter.get('/:id', authenticate, async (req: Request, res: Response) => {
     res.status(404).json({ error: 'Vault not found' })
     return
   }
+  
+  // Return JSON response for legacy fallback
+  res.json(vault)
 })
 
 // GET /api/vaults/user/:address 

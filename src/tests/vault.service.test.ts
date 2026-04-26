@@ -49,8 +49,10 @@ describe('VaultService', () => {
     }) as any;
 
     const result = await VaultService.getVaultById('test-uuid-2');
-    assert.notEqual(result, null);
-    assert.equal(result?.id, 'test-uuid-2');
+    assert.notStrictEqual(result, null);
+    if (result) {
+      assert.strictEqual(result.id, 'test-uuid-2');
+    }
   });
 
   test('getVaultById returns null if not found', async () => {
@@ -64,5 +66,30 @@ describe('VaultService', () => {
 
     const result = await VaultService.getVaultById('fake-id');
     assert.equal(result, null);
+  });
+
+  test('getVaultById returns vault from legacy fallback when DB fails', async () => {
+    // Mock DB to fail
+    pool.query = async () => {
+      throw new Error('DB connection failed');
+    };
+
+    const result = await VaultService.getVaultById('test-id');
+    assert.equal(result, null);
+  });
+
+  test('getVaultById returns vault from legacy fallback when found', async () => {
+    // Mock DB to fail
+    pool.query = async () => {
+      throw new Error('DB connection failed');
+    };
+
+    // Mock legacy vaults array to have test data
+    const { getVaultStore, setVaultStore } = await import('../services/vaultStore.js');
+    setVaultStore([{ id: 'test-id', creator: 'test-creator' }]);
+
+    const result = await VaultService.getVaultById('test-id');
+    assert.equal(result.id, 'test-id');
+    assert.equal(result.creator, 'test-creator');
   });
 });

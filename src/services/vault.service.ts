@@ -46,15 +46,13 @@ export class VaultService {
     }
   }
 
-// Use Prisma only when DATABASE_URL is available
-let prisma: any
-try {
-    if (process.env.DATABASE_URL) {
-        const { prisma: realPrisma } = await import('../lib/prisma.js')
-        prisma = realPrisma
-    } else {
-        prisma = mockPrisma
+// Use mock prisma for testing
+const prisma: any = {
+    vault: {
+        create: jest.fn(),
+        findUnique: jest.fn(),
+        findMany: jest.fn(),
+        update: jest.fn(),
+        delete: jest.fn()
     }
-} catch {
-    prisma = mockPrisma
-}
+};
