@@ -59,17 +59,17 @@ export const defaultSorobanClient: SorobanClient = {
   async submitVaultCreation(config, args) {
     // Dynamic import keeps the top-level module lightweight and avoids
     // breaking test suites that never exercise real submission.
+    const stellarSdk = await import('@stellar/stellar-sdk')
     const {
       Keypair,
       Contract,
-      SorobanRpc,
       Networks,
       TransactionBuilder,
       nativeToScVal,
       BASE_FEE,
-    } = await import('@stellar/stellar-sdk')
+    } = stellarSdk.default || stellarSdk
 
-    const server = new SorobanRpc.Server(config.rpcUrl)
+    const server = new ((stellarSdk.default || stellarSdk) as any).Server(config.rpcUrl)
     const keypair = Keypair.fromSecret(config.secretKey)
     const account = await server.getAccount(config.sourceAccount)
 
