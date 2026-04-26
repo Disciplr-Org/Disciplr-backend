@@ -198,7 +198,7 @@ function parseVaultPayload(
         }
         break
 
-      case 'vault_completed':
+case 'vault_completed':
       case 'vault_failed':
       case 'vault_cancelled':
         const decoded = decodePayloadRecord(xdrData);
