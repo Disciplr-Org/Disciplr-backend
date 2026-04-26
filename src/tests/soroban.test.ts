@@ -104,8 +104,8 @@ const restoreEnv = (): void => {
 const createMockClient = (
   result?: { txHash: string },
   error?: Error,
-): { client: SorobanClient; spy: jest.Mock } => {
-  const spy = jest.fn<SorobanClient['submitVaultCreation']>()
+): { client: SorobanClient; spy: any } => {
+  const spy = (jest.fn() as any)
   if (error) {
     spy.mockRejectedValue(error)
   } else {

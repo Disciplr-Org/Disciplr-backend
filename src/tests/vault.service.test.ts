@@ -1,5 +1,5 @@
+import { jest } from '@jest/globals';
 import assert from 'node:assert/strict';
-import { test, describe, afterEach } from 'node:test';
 import { VaultService } from '../services/vault.service.js';
 import pool from '../db/index.js';
 import { VaultStatus } from '../types/vault.js';

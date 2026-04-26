@@ -1,15 +1,16 @@
+import { jest } from '@jest/globals'
 import { TransactionETLService } from '../services/transactionETL.js'
 import { db } from '../db/index.js'
 import type { ETLConfig } from '../types/transactions.js'
 
 jest.mock('../db/index.js', () => {
-  const mockTrx = jest.fn().mockImplementation(() => mockTrx);
-  (mockTrx as any).commit = jest.fn();
-  (mockTrx as any).rollback = jest.fn();
-  (mockTrx as any).insert = jest.fn().mockReturnThis();
-  (mockTrx as any).where = jest.fn().mockReturnThis();
-  (mockTrx as any).first = jest.fn().mockResolvedValue(null);
-  (mockTrx as any).count = jest.fn().mockResolvedValue([{ count: '1' }]);
+  const mockTrx = (jest.fn() as any).mockImplementation(() => mockTrx);
+  (mockTrx as any).commit = (jest.fn() as any)();
+  (mockTrx as any).rollback = (jest.fn() as any)();
+  (mockTrx as any).insert = (jest.fn() as any).mockReturnThis();
+  (mockTrx as any).where = (jest.fn() as any).mockReturnThis();
+  (mockTrx as any).first = (jest.fn() as any).mockResolvedValue(null);
+  (mockTrx as any).count = (jest.fn() as any).mockResolvedValue([{ count: '1' }]);
 
   const mockKnex = jest.fn().mockImplementation(() => ({
     where: jest.fn().mockReturnThis(),
@@ -24,18 +25,18 @@ jest.mock('../db/index.js', () => {
           failure_destination: 'GFAIL1234567890123456789012345678901234567890123456789012345678901'
         }
     }),
-    insert: jest.fn().mockReturnThis(),
-    returning: jest.fn().mockImplementation(async () => [{ id: 'test-id' }]),
-    del: jest.fn().mockResolvedValue(1),
-    count: jest.fn().mockResolvedValue([{ count: '1' }])
+    insert: (jest.fn() as any).mockReturnThis(),
+    returning: (jest.fn() as any).mockImplementation(async () => [{ id: 'test-id' }]),
+    del: (jest.fn() as any).mockResolvedValue(1),
+    count: (jest.fn() as any).mockResolvedValue([{ count: '1' }])
   }));
 
-  (mockKnex as any).transaction = jest.fn().mockResolvedValue(mockTrx);
+  (mockKnex as any).transaction = (jest.fn() as any).mockResolvedValue(mockTrx);
 
   return {
     db: mockKnex,
     pool: {
-      query: jest.fn()
+      query: (jest.fn() as any)
     }
   };
 })
@@ -236,10 +237,10 @@ describe('TransactionETLService', () => {
 
       // Mock this.server.events().forTransaction(txHash).call()
       const mockEventsBuilder = {
-        forTransaction: jest.fn().mockReturnThis(),
-        call: jest.fn().mockResolvedValue(mockEvents)
+        forTransaction: (jest.fn() as any).mockReturnThis(),
+        call: (jest.fn() as any).mockResolvedValue(mockEvents)
       };
-      (etlService as any).server.events = jest.fn().mockReturnValue(mockEventsBuilder)
+      (etlService as any).server.events = (jest.fn() as any).mockReturnValue(mockEventsBuilder)
 
       const result = await (etlService as any).findVaultFromEvents(txHash)
 
@@ -259,10 +260,10 @@ describe('TransactionETLService', () => {
       }
 
       const mockEventsBuilder = {
-        forTransaction: jest.fn().mockReturnThis(),
-        call: jest.fn().mockResolvedValue(mockEvents)
+        forTransaction: (jest.fn() as any).mockReturnThis(),
+        call: (jest.fn() as any).mockResolvedValue(mockEvents)
       };
-      (etlService as any).server.events = jest.fn().mockReturnValue(mockEventsBuilder)
+      (etlService as any).server.events = (jest.fn() as any).mockReturnValue(mockEventsBuilder)
 
       const result = await (etlService as any).findVaultFromEvents(txHash)
 

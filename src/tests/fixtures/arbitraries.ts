@@ -322,10 +322,8 @@ export const arbitraryFailedEvent = (): fc.Arbitrary<FailedEvent> =>
 export const arbitraryListenerState = (): fc.Arbitrary<ListenerState> =>
   fc.record({
     id: fc.integer({ min: 1, max: 1000 }),
-    serviceName: fc.string({ minLength: 1, maxLength: 100 }),
     lastProcessedLedger: arbitraryLedgerNumber(),
-    lastProcessedAt: arbitraryPastDate(),
-    createdAt: arbitraryPastDate(),
+    lastProcessedEventId: arbitraryEventId(),
     updatedAt: arbitraryPastDate()
   })
 
@@ -339,7 +337,7 @@ export const arbitraryMilestone = (): fc.Arbitrary<Milestone> =>
     targetAmount: arbitraryAmount(),
     currentAmount: arbitraryAmount(),
     deadline: arbitraryFutureDate(),
-    status: fc.constantFrom('pending', 'in_progress', 'completed', 'failed'),
+    status: fc.constantFrom('pending', 'completed', 'failed'),
     createdAt: arbitraryPastDate(),
     updatedAt: arbitraryPastDate()
   })
@@ -350,8 +348,8 @@ export const arbitraryValidation = (): fc.Arbitrary<Validation> =>
     id: arbitraryValidationId(),
     milestoneId: arbitraryMilestoneId(),
     validatorAddress: arbitraryStellarAddress(),
-    validationResult: arbitraryValidationResult(),
-    evidenceHash: fc.option(arbitraryEvidenceHash()),
+    isValid: fc.boolean(),
+    validationData: fc.option(fc.anything()),
     validatedAt: arbitraryPastDate(),
     createdAt: arbitraryPastDate()
   })
