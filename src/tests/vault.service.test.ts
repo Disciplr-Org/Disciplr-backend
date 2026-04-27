@@ -26,13 +26,15 @@ describe('VaultService', () => {
 
   test('createVault successfully inserts into db', async () => {
     // Mock the DB response
-    pool.query = async () => ({
-      rows: [{ id: 'test-uuid-1', ...mockVaultData, status: VaultStatus.PENDING }],
-      command: 'INSERT',
-      rowCount: 1,
-      oid: 0,
-      fields: []
-    }) as any;
+    pool.query = async () => {
+      return {
+        rows: [{ id: 'test-uuid-1', ...mockVaultData, status: VaultStatus.PENDING }],
+        command: 'INSERT',
+        rowCount: 1,
+        oid: 0,
+        fields: []
+      };
+    };
 
     const result = await VaultService.createVault(mockVaultData);
     assert.equal(result.id, 'test-uuid-1');
