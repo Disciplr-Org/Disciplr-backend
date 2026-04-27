@@ -18,12 +18,9 @@ export const requireJson = (req: Request, res: Response, next: NextFunction) => 
   }
 
   const contentLength = req.headers['content-length']
-  const hasBody = contentLength && parseInt(contentLength, 10) > 0
-
-  if (!hasBody) {
-    return next()
-  }
-
+  const transferEncoding = req.headers['transfer-encoding']
+  const hasBody = (contentLength && parseInt(contentLength, 10) > 0) || 
+                   (transferEncoding && transferEncoding.toLowerCase() !== 'identity')
   const contentType = req.headers['content-type']
   
   if (!contentType) {
