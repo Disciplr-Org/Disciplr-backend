@@ -160,6 +160,10 @@ vaultsRouter.get('/:id', authenticate, async (req: Request, res: Response) => {
     res.status(404).json({ error: 'Vault not found' })
     return
   }
+
+  // Return 200 + vault JSON when found in legacy fallback
+  // This ensures the response is always properly formatted JSON
+  return res.status(200).json(vault)
 })
 
 // ─── POST /api/vaults/:id/cancel ─────────────────────────────────────────────
