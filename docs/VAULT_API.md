@@ -7,6 +7,7 @@ API endpoints for vault lifecycle management including creation, retrieval, canc
 ## Authentication
 
 All endpoints require:
+
 - `Authorization: Bearer <jwt_token>` header
 
 ## Endpoints
@@ -16,6 +17,7 @@ All endpoints require:
 List vaults with pagination, filtering, and sorting.
 
 **Query Parameters:**
+
 - `status`: Filter by status (active, completed, failed, cancelled)
 - `creator`: Filter by creator address
 - `sort`: Sort field (createdAt, amount, endTimestamp, status)
@@ -24,6 +26,7 @@ List vaults with pagination, filtering, and sorting.
 - `limit`: Results per page
 
 **Response:**
+
 ```json
 {
   "data": [
@@ -53,20 +56,97 @@ List vaults with pagination, filtering, and sorting.
 Create a new vault.
 
 **Body:**
+
 ```json
 {
-  "creator": "GABC...",
-  "amount": "1000.0000000",
-  "endTimestamp": "2026-03-26T12:00:00Z",
-  "successDestination": "G...",
-  "failureDestination": "G...",
-  "milestoneHash": "hash123",
-  "verifierAddress": "G...",
-  "contractId": "contract123"
+  "amount": "1000",
+  "startDate": "2030-01-01T00:00:00.000Z",
+  "endDate": "2030-06-01T00:00:00.000Z",
+  "verifier": "GABC...",
+  "destinations": {
+    "success": "G...",
+    "failure": "G..."
+  },
+  "milestones": [
+    {
+      "title": "Milestone title",
+      "description": "Optional description",
+      "dueDate": "2030-02-01T00:00:00.000Z",
+      "amount": "500"
+    }
+  ],
+  "creator": "GABC...", // Optional
+  "onChain": {
+    // Optional
+    "mode": "build", // "build" or "submit", defaults to "build"
+    "contractId": "contract123",
+    "networkPassphrase": "test-network",
+    "sourceAccount": "G..."
+  }
+}
+```
+
+**Validation Constraints:**
+
+#### Amount Validation
+
+- **Type**: String or number (numbers are converted to strings)
+- **Range**: 1 to 1,000,000,000 (inclusive)
+- **Format**: Must be a positive finite number
+- **Invalid examples**: "0", "-100", "abc", "Infinity", "NaN"
+
+#### Stellar Address Validation
+
+- **Format**: `G` followed by 55 characters from A-Z and 2-7
+- **Case sensitive**: Must be uppercase
+- **Example**: `GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAF`
+
+#### Timestamp Validation
+
+- **Format**: ISO 8601 timestamp
+- **Required fields**: startDate, endDate, milestone.dueDate
+- **Date relationships**:
+  - endDate must be strictly after startDate
+  - milestone.dueDate must be >= startDate
+- **Invalid examples**: "invalid-date", "2023-13-01T00:00:00.000Z"
+
+#### Milestones Validation
+
+- **Array**: Must contain at least 1 milestone
+- **Title**: Required, non-empty string (whitespace-only strings are rejected)
+- **Description**: Optional string
+- **Amount**: Same validation rules as vault amount
+- **Total constraint**: Sum of all milestone amounts must not exceed vault amount
+
+#### Security Constraints
+
+- **Payload size**: Limited to prevent DoS attacks
+- **Processing time**: Validation completes within 5 seconds for large payloads
+- **Type safety**: Strict type validation with no prototype pollution
+- **Malicious input**: Rejected quickly with consistent error format
+
+#### Error Response Format
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "fields": [
+      {
+        "path": "amount",
+        "message": "must be between 1 and 1,000,000,000"
+      },
+      {
+        "path": "verifier",
+        "message": "must be a valid Stellar public key"
+      }
+    ]
+  }
 }
 ```
 
 **Response:** `201 Created`
+
 ```json
 {
   "id": "uuid",
@@ -86,6 +166,7 @@ Create a new vault.
 Get vault by ID. Tries database first, falls back to in-memory storage.
 
 **Response:**
+
 ```json
 {
   "id": "uuid",
@@ -105,6 +186,7 @@ Get vault by ID. Tries database first, falls back to in-memory storage.
 Cancel a vault. Only the creator or an admin can cancel.
 
 **Body:**
+
 ```json
 {
   "reason": "Optional cancellation reason"
@@ -112,6 +194,7 @@ Cancel a vault. Only the creator or an admin can cancel.
 ```
 
 **Response:** `200 OK`
+
 ```json
 {
   "message": "Vault cancelled",
@@ -121,6 +204,7 @@ Cancel a vault. Only the creator or an admin can cancel.
 
 **Audit Logging:**
 This endpoint creates an audit log entry with:
+
 - Action: `vault.cancelled`
 - Target: `vault:{vault_id}`
 - Metadata:
@@ -136,6 +220,7 @@ This endpoint creates an audit log entry with:
 Get all vaults for a specific user address.
 
 **Response:**
+
 ```json
 [
   {
@@ -151,7 +236,7 @@ Get all vaults for a specific user address.
 ## Error Responses
 
 ```json
-{"error": "Descriptive message"}
+{ "error": "Descriptive message" }
 ```
 
 Status codes: 200, 201, 400, 401, 403, 404, 500

@@ -14,6 +14,10 @@ import { UserRole } from '../types/user.js'
 let baseUrl = ''
 let server: ReturnType<typeof testApp.listen> | null = null
 
+// Test tokens for different users
+const userToken = generateAccessToken({ userId: 'test-user', role: UserRole.USER })
+const otherToken = generateAccessToken({ userId: 'other-user', role: UserRole.USER })
+
 const stellar = (): string => `G${'A'.repeat(55)}`
 
 const validPayload = () => ({
@@ -405,5 +409,405 @@ describe('GET /api/vaults - List Contract', () => {
         assert.ok(item.status)
       }
     })
+  })
+})
+
+// ─── Comprehensive Invalid Payload Tests ───────────────────────────────────
+
+describe('POST /api/vaults - Invalid Payload Validation', () => {
+  test('rejects payload with missing required fields', async () => {
+    const invalidPayloads = [
+      {},
+      { amount: '1000' },
+      { amount: '1000', startDate: '2030-01-01T00:00:00.000Z' },
+      { amount: '1000', startDate: '2030-01-01T00:00:00.000Z', endDate: '2030-06-01T00:00:00.000Z' },
+      { amount: '1000', startDate: '2030-01-01T00:00:00.000Z', endDate: '2030-06-01T00:00:00.000Z', verifier: stellar() },
+      { amount: '1000', startDate: '2030-01-01T00:00:00.000Z', endDate: '2030-06-01T00:00:00.000Z', verifier: stellar(), destinations: { success: stellar() } },
+    ]
+
+    for (const payload of invalidPayloads) {
+      const response = await fetch(`${baseUrl}/api/vaults`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'authorization': `Bearer ${userToken}`,
+        },
+        body: JSON.stringify(payload),
+      })
+
+      assert.equal(response.status, 400)
+      const body = await response.json()
+      assert.equal(body.error.code, 'VALIDATION_ERROR')
+      assert.ok(Array.isArray(body.error.fields))
+      assert.ok(body.error.fields.length > 0)
+    }
+  })
+
+  test('rejects payload with invalid amount values', async () => {
+    const invalidAmounts = [
+      '0',
+      '-1',
+      '-1000',
+      'abc',
+      '1.5.5',
+      'Infinity',
+      '-Infinity',
+      'NaN',
+      '',
+      '1000000001', // Above max
+      '99999999999999999999999999999999999999999999999999', // Extremely large
+    ]
+
+    for (const amount of invalidAmounts) {
+      const response = await fetch(`${baseUrl}/api/vaults`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'authorization': `Bearer ${userToken}`,
+        },
+        body: JSON.stringify({ ...validPayload(), amount }),
+      })
+
+      assert.equal(response.status, 400)
+      const body = await response.json()
+      assert.equal(body.error.code, 'VALIDATION_ERROR')
+      assert.ok(body.error.fields.some((f: any) => f.path === 'amount'))
+    }
+  })
+
+  test('accepts boundary amount values', async () => {
+    const boundaryAmounts = [
+      '1', // Minimum
+      '1000000000', // Maximum
+      '500',
+      '999999999',
+    ]
+
+    for (const amount of boundaryAmounts) {
+      const response = await fetch(`${baseUrl}/api/vaults`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'authorization': `Bearer ${userToken}`,
+        },
+        body: JSON.stringify({ ...validPayload(), amount }),
+      })
+
+      // Should either succeed (201) or fail with non-validation error
+      assert.ok([201, 400].includes(response.status))
+      if (response.status === 400) {
+        const body = await response.json()
+        if (body.error.code === 'VALIDATION_ERROR') {
+          assert.fail(`Boundary amount ${amount} should be valid`)
+        }
+      }
+    }
+  })
+
+  test('rejects payload with invalid Stellar addresses', async () => {
+    const invalidAddresses = [
+      'A' + 'B'.repeat(55), // Wrong prefix
+      'G' + 'A'.repeat(54), // Too short
+      'G' + 'A'.repeat(56), // Too long
+      'G' + 'a'.repeat(55), // Lowercase
+      'G' + 'A'.repeat(50) + '12345', // Invalid characters
+      'G' + 'A'.repeat(55) + 'X', // Too long
+      '', // Empty
+      'not-a-stellar-address',
+      'GBAD5643Q3QDJPZYK5F5VVJFJQXH5FKQG5H2ZYZYJN5NQVA5Z3ZWJ2', // Real but wrong format
+    ]
+
+    for (const address of invalidAddresses) {
+      const response = await fetch(`${baseUrl}/api/vaults`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'authorization': `Bearer ${userToken}`,
+        },
+        body: JSON.stringify({ 
+          ...validPayload(), 
+          verifier: address,
+          destinations: { success: address, failure: stellar() }
+        }),
+      })
+
+      assert.equal(response.status, 400)
+      const body = await response.json()
+      assert.equal(body.error.code, 'VALIDATION_ERROR')
+      assert.ok(body.error.fields.some((f: any) => f.path === 'verifier'))
+    }
+  })
+
+  test('rejects payload with invalid timestamps', async () => {
+    const invalidTimestamps = [
+      'invalid-date',
+      '2023-13-01T00:00:00.000Z', // Invalid month
+      '2023-02-30T00:00:00.000Z', // Invalid day
+      '2023-01-01T24:00:00.000Z', // Invalid hour
+      '2023-01-01T23:60:00.000Z', // Invalid minute
+      '2023-01-01T23:59:60.000Z', // Invalid second
+      '2023-01-01', // Missing time
+      'January 1, 2023', // Wrong format
+      '',
+      1234567890, // Number instead of string
+      null,
+      undefined,
+    ]
+
+    for (const timestamp of invalidTimestamps) {
+      const response = await fetch(`${baseUrl}/api/vaults`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'authorization': `Bearer ${userToken}`,
+        },
+        body: JSON.stringify({ 
+          ...validPayload(), 
+          startDate: timestamp 
+        }),
+      })
+
+      assert.equal(response.status, 400)
+      const body = await response.json()
+      assert.equal(body.error.code, 'VALIDATION_ERROR')
+      assert.ok(body.error.fields.some((f: any) => f.path === 'startDate'))
+    }
+  })
+
+  test('rejects payload with invalid date relationships', async () => {
+    const invalidDatePairs = [
+      {
+        startDate: '2030-06-01T00:00:00.000Z',
+        endDate: '2030-01-01T00:00:00.000Z', // End before start
+      },
+      {
+        startDate: '2030-06-01T00:00:00.000Z',
+        endDate: '2030-06-01T00:00:00.000Z', // End equal to start
+      },
+    ]
+
+    for (const dates of invalidDatePairs) {
+      const response = await fetch(`${baseUrl}/api/vaults`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'authorization': `Bearer ${userToken}`,
+        },
+        body: JSON.stringify({ 
+          ...validPayload(), 
+          ...dates 
+        }),
+      })
+
+      assert.equal(response.status, 400)
+      const body = await response.json()
+      assert.equal(body.error.code, 'VALIDATION_ERROR')
+      assert.ok(body.error.fields.some((f: any) => f.path === 'endDate'))
+    }
+  })
+
+  test('rejects payload with invalid milestones', async () => {
+    const invalidMilestoneCases = [
+      [], // Empty array
+      [{ title: '', dueDate: '2030-02-01T00:00:00.000Z', amount: '100' }], // Empty title
+      [{ title: '   ', dueDate: '2030-02-01T00:00:00.000Z', amount: '100' }], // Whitespace title
+      [{ title: 'Test', dueDate: 'invalid-date', amount: '100' }], // Invalid date
+      [{ title: 'Test', dueDate: '2030-02-01T00:00:00.000Z', amount: '-100' }], // Negative amount
+      [{ title: 'Test', dueDate: '2030-02-01T00:00:00.000Z', amount: '0' }], // Zero amount
+      [{ title: 'Test', dueDate: '2030-02-01T00:00:00.000Z', amount: 'abc' }], // Non-numeric amount
+    ]
+
+    for (const milestones of invalidMilestoneCases) {
+      const response = await fetch(`${baseUrl}/api/vaults`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'authorization': `Bearer ${userToken}`,
+        },
+        body: JSON.stringify({ 
+          ...validPayload(), 
+          milestones 
+        }),
+      })
+
+      assert.equal(response.status, 400)
+      const body = await response.json()
+      assert.equal(body.error.code, 'VALIDATION_ERROR')
+      assert.ok(body.error.fields.length > 0)
+    }
+  })
+
+  test('rejects payload with milestone dates before start date', async () => {
+    const response = await fetch(`${baseUrl}/api/vaults`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'authorization': `Bearer ${userToken}`,
+      },
+      body: JSON.stringify({
+        ...validPayload(),
+        startDate: '2030-06-01T00:00:00.000Z',
+        milestones: [
+          {
+            title: 'Test Milestone',
+            dueDate: '2030-05-01T00:00:00.000Z', // Before start date
+            amount: '100',
+          },
+        ],
+      }),
+    })
+
+    assert.equal(response.status, 400)
+    const body = await response.json()
+    assert.equal(body.error.code, 'VALIDATION_ERROR')
+    assert.ok(body.error.fields.some((f: any) => f.path.startsWith('milestones.') && f.path.endsWith('.dueDate')))
+  })
+
+  test('rejects payload where milestone amounts exceed vault amount', async () => {
+    const response = await fetch(`${baseUrl}/api/vaults`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'authorization': `Bearer ${userToken}`,
+      },
+      body: JSON.stringify({
+        ...validPayload(),
+        amount: '1000',
+        milestones: [
+          { title: 'M1', dueDate: '2030-02-01T00:00:00.000Z', amount: '600' },
+          { title: 'M2', dueDate: '2030-03-01T00:00:00.000Z', amount: '500' }, // Total exceeds vault
+        ],
+      }),
+    })
+
+    assert.equal(response.status, 400)
+    const body = await response.json()
+    assert.equal(body.error.code, 'VALIDATION_ERROR')
+    assert.ok(body.error.fields.some((f: any) => f.path === 'milestones'))
+  })
+
+  test('rejects payload with invalid types', async () => {
+    const invalidTypeCases = [
+      { amount: null },
+      { amount: 123 }, // Should be string, but this is handled by preprocessing
+      { startDate: true },
+      { endDate: [] },
+      { verifier: 123 },
+      { destinations: 'not-an-object' },
+      { destinations: { success: 123, failure: stellar() } },
+      { milestones: 'not-an-array' },
+      { milestones: [null] },
+      { milestones: [{ title: 123, dueDate: '2030-02-01T00:00:00.000Z', amount: '100' }] },
+    ]
+
+    for (const invalidFields of invalidTypeCases) {
+      const response = await fetch(`${baseUrl}/api/vaults`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'authorization': `Bearer ${userToken}`,
+        },
+        body: JSON.stringify({ 
+          ...validPayload(), 
+          ...invalidFields 
+        }),
+      })
+
+      assert.equal(response.status, 400)
+      const body = await response.json()
+      assert.equal(body.error.code, 'VALIDATION_ERROR')
+    }
+  })
+
+  test('handles maliciously large payloads safely', async () => {
+    const largePayload = {
+      ...validPayload(),
+      milestones: Array.from({ length: 1000 }, (_, i) => ({
+        title: 'A'.repeat(1000) + ` Milestone ${i}`,
+        dueDate: `2030-${String(Math.floor(i / 31) + 1).padStart(2, '0')}-${String((i % 31) + 1).padStart(2, '0')}T00:00:00.000Z`,
+        amount: '1',
+        description: 'B'.repeat(5000), // Large description
+      })),
+    }
+
+    const start = Date.now()
+    const response = await fetch(`${baseUrl}/api/vaults`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'authorization': `Bearer ${userToken}`,
+      },
+      body: JSON.stringify(largePayload),
+    })
+    const duration = Date.now() - start
+
+    // Should respond quickly and reject the payload
+    assert.ok(duration < 5000, 'Should handle large payloads quickly')
+    assert.equal(response.status, 400)
+    const body = await response.json()
+    assert.equal(body.error.code, 'VALIDATION_ERROR')
+  })
+
+  test('provides consistent error format', async () => {
+    const response = await fetch(`${baseUrl}/api/vaults`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'authorization': `Bearer ${userToken}`,
+      },
+      body: JSON.stringify({
+        amount: '-100',
+        verifier: 'invalid',
+        startDate: 'invalid-date',
+      }),
+    })
+
+    assert.equal(response.status, 400)
+    const body = await response.json()
+    
+    // Check error envelope structure
+    assert.equal(body.error.code, 'VALIDATION_ERROR')
+    assert.ok(Array.isArray(body.error.fields))
+    assert.ok(body.error.fields.length > 0)
+    
+    // Check field error structure
+    body.error.fields.forEach((field: any) => {
+      assert.ok(typeof field.path === 'string')
+      assert.ok(typeof field.message === 'string')
+      assert.ok(field.path.length > 0)
+      assert.ok(field.message.length > 0)
+    })
+    
+    // Should have errors for each invalid field
+    const paths = body.error.fields.map((f: any) => f.path)
+    assert.ok(paths.includes('amount'))
+    assert.ok(paths.includes('verifier'))
+    assert.ok(paths.includes('startDate'))
+  })
+
+  test('rejects malformed JSON', async () => {
+    const response = await fetch(`${baseUrl}/api/vaults`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'authorization': `Bearer ${userToken}`,
+      },
+      body: '{"invalid": json}', // Malformed JSON
+    })
+
+    assert.equal(response.status, 400)
+  })
+
+  test('rejects non-JSON content type', async () => {
+    const response = await fetch(`${baseUrl}/api/vaults`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'text/plain',
+        'authorization': `Bearer ${userToken}`,
+      },
+      body: 'not json',
+    })
+
+    assert.equal(response.status, 400)
   })
 })
