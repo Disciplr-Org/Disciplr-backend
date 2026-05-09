@@ -1,5 +1,10 @@
 import { z } from 'zod'
 import { UserRole } from '../types/user.js'
+import {
+  hasTimezoneDesignator,
+  isValidISO8601,
+  parseAndNormalizeToUTC,
+} from '../utils/timestamps.js'
 
 export const registerSchema = z.object({
     email: z.string().email(),
@@ -19,6 +24,40 @@ export const refreshSchema = z.object({
 export type RegisterInput = z.infer<typeof registerSchema>
 export type LoginInput = z.infer<typeof loginSchema>
 export type RefreshInput = z.infer<typeof refreshSchema>
+
+export const utcTimestampSchema = z
+  .string({ error: 'required' })
+  .superRefine((value, ctx) => {
+    if (!hasTimezoneDesignator(value)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'must include timezone (Z or +/-HH:MM)',
+      })
+      return
+    }
+
+    if (!isValidISO8601(value)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'must be a valid ISO 8601 timestamp',
+      })
+    }
+  })
+  .transform((value, ctx) => {
+    if (!isValidISO8601(value)) {
+      return z.NEVER
+    }
+
+    try {
+      return parseAndNormalizeToUTC(value)
+    } catch (error) {
+      ctx.addIssue({
+        code: 'custom',
+        message: error instanceof Error ? error.message : 'Invalid ISO 8601 timestamp',
+      })
+      return z.NEVER
+    }
+  })
 
 /**
  * Security utility to prevent prototype pollution and other malicious query patterns

@@ -7,26 +7,13 @@ import { EnterpriseVault, EnterpriseMilestone } from '../types/enterprise.js';
  * Explicitly omits internal fields like 'created_at'.
  */
 export function toPublicVault(vault: Vault): EnterpriseVault {
-  // Use legacy compat fields if present, otherwise fall back to the DB columns.
-  // The Vault type carries startTimestamp/endTimestamp for in-memory compatibility;
-  // the DB schema (post fix_vault_schema migration) uses start_date/end_date.
-  const startTs: string =
-    vault.startTimestamp ??
-    (vault as any).start_date?.toISOString?.() ??
-    vault.created_at.toISOString();
-
-  const endTs: string =
-    vault.endTimestamp ??
-    (vault as any).end_date?.toISOString?.() ??
-    vault.deadline.toISOString();
-
   return {
     id: vault.id,
-    creator: vault.creator_address ?? vault.creator ?? '',
+    creator: vault.creator_address,
     amount: vault.amount,
-    status: vault.status as any,
-    startTimestamp: startTs,
-    endTimestamp: endTs,
+    status: vault.status as unknown as EnterpriseVault['status'],
+    startTimestamp: vault.created_at.toISOString(),
+    endTimestamp: vault.deadline.toISOString(),
     successDestination: vault.success_destination,
     failureDestination: vault.failure_destination,
   };
@@ -44,6 +31,6 @@ export function toPublicMilestone(milestone: Milestone): EnterpriseMilestone {
     targetAmount: milestone.targetAmount,
     currentAmount: milestone.currentAmount,
     deadline: milestone.deadline.toISOString(),
-    status: milestone.status as any,
+    status: milestone.status,
   };
 }

@@ -21,6 +21,48 @@ The `endTimestamp` field on `POST /api/vaults` is validated as follows:
 | Impossible date (`2025-02-30T00:00:00Z`) | 400 — invalid date |
 | Past date | 400 — must be future |
 
+## Request examples
+
+### Valid payloads (timezone required)
+
+```json
+{
+  "startDate": "2026-06-01T09:00:00Z",
+  "endDate": "2026-06-30T17:00:00+02:00",
+  "milestones": [
+    {
+      "title": "Kickoff",
+      "dueDate": "2026-06-07T12:00:00-04:00",
+      "amount": "100"
+    }
+  ]
+}
+```
+
+### Invalid payloads (missing timezone)
+
+```json
+{
+  "endDate": "2026-06-30T17:00:00"
+}
+```
+
+Expected error excerpt:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "fields": [
+      {
+        "path": "endDate",
+        "message": "must include timezone (Z or +/-HH:MM)"
+      }
+    ]
+  }
+}
+```
+
 ## Server-side utilities
 
 All timestamp operations are centralized in `src/utils/timestamps.ts`:

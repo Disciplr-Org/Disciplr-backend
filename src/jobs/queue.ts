@@ -92,6 +92,7 @@ const createEmptyTypeMetrics = (): Record<JobType, QueueTypeMetrics> => {
     'deadline.check': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0 },
     'oracle.call': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0 },
     'analytics.recompute': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0 },
+    'export.generate': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0 },
   }
 }
 

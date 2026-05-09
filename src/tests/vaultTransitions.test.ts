@@ -3,7 +3,7 @@ import { app } from '../app.js'
 import { describe, it, expect, beforeEach, jest } from '@jest/globals'
 import { UserRole } from '../types/user.js'
 import { vaults, setVaults, type Vault } from '../routes/vaults.js'
-import { resetMilestonesTable, createMilestone, verifyMilestone } from '../services/milestones.js'
+import { resetMilestonesTable, createMilestone, verifyMilestone, validateMilestone } from '../services/milestones.js'
 import {
   getTransitionError,
   completeVault,
@@ -146,6 +146,62 @@ describe('completeVault', () => {
     const result = completeVault(vault.id)
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/already 'completed'/)
+  })
+})
+
+// ─── validateMilestone ──────────────────────────────────────────────────
+
+describe('validateMilestone', () => {
+  beforeEach(() => {
+    resetMilestonesTable()
+  })
+
+  it('succeeds when correct verifier validates unvalidated milestone', () => {
+    const vault = makeVault({ verifier: 'verifier-123' })
+    vaults.push(vault)
+    const ms = createMilestone(vault.id, 'task 1', 'verifier-123')
+
+    const result = validateMilestone(ms.id, 'verifier-123')
+    expect(result.success).toBe(true)
+    expect(result.milestone!.verified).toBe(true)
+    expect(result.milestone!.verifiedBy).toBe('verifier-123')
+  })
+
+  it('fails when wrong verifier tries to validate', () => {
+    const vault = makeVault({ verifier: 'verifier-123' })
+    vaults.push(vault)
+    const ms = createMilestone(vault.id, 'task 1', 'verifier-123')
+
+    const result = validateMilestone(ms.id, 'wrong-verifier')
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('Unauthorized: only assigned verifier can validate')
+  })
+
+  it('fails when milestone is already validated', () => {
+    const vault = makeVault({ verifier: 'verifier-123' })
+    vaults.push(vault)
+    const ms = createMilestone(vault.id, 'task 1', 'verifier-123')
+    validateMilestone(ms.id, 'verifier-123') // First validation succeeds
+
+    const result = validateMilestone(ms.id, 'verifier-123') // Second fails
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('Milestone already validated')
+  })
+
+  it('succeeds when no specific verifier assigned (null)', () => {
+    const vault = makeVault()
+    vaults.push(vault)
+    const ms = createMilestone(vault.id, 'task 1', null)
+
+    const result = validateMilestone(ms.id, 'any-verifier')
+    expect(result.success).toBe(true)
+    expect(result.milestone!.verified).toBe(true)
+  })
+
+  it('fails when milestone not found', () => {
+    const result = validateMilestone('nonexistent', 'verifier-123')
+    expect(result.success).toBe(false)
+    expect(result.error).toBe('Milestone not found')
   })
 })
 

@@ -22,7 +22,7 @@ describe('AbuseMonitor Heuristics', () => {
   })
 
   it('should not leak plain-text PII in logs', () => {
-    const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
     const pii = 'user@example.com'
     
     monitor.record({ id: pii, type: 'auth_fail', weight: 100 })

@@ -74,7 +74,7 @@ export const createVerifierProfile = async (
     if (opts?.displayName !== undefined) changedFields.push('display_name')
     if (opts?.metadata !== undefined) changedFields.push('metadata')
 
-    const auditLog = createVerifierAuditLog({
+    const auditLog = await createVerifierAuditLog({
       action: 'verifier.created',
       context,
       targetId: after.userId,
@@ -134,7 +134,7 @@ export const updateVerifierProfile = async (
       throw new Error(`Missing verifier audit action for ${before.status} -> ${after.status}`)
     }
 
-    const auditLog = createVerifierAuditLog({
+    const auditLog = await createVerifierAuditLog({
       action,
       context,
       targetId: userId,
@@ -166,7 +166,7 @@ export const deleteVerifierProfile = async (
     const deletedCount = await trx('verifiers').where({ user_id: userId }).del()
     if (deletedCount === 0) return { deleted: false, before, auditLog: null }
 
-    const auditLog = createVerifierAuditLog({
+    const auditLog = await createVerifierAuditLog({
       action: 'verifier.deleted',
       context,
       targetId: userId,
@@ -297,7 +297,7 @@ function createVerifierAuditLog(input: {
   before: VerifierProfile | null
   after: VerifierProfile | null
   changedFields: string[]
-}): AuditLog {
+}): Promise<AuditLog> {
   return createAuditLog({
     actor_user_id: input.context.actorUserId,
     action: input.action,

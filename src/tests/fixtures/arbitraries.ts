@@ -3,7 +3,12 @@ import {
   ParsedEvent,
   VaultEventPayload,
   MilestoneEventPayload,
-  ValidationEventPayload
+  ValidationEventPayload,
+  ProcessedEvent,
+  FailedEvent,
+  ListenerState,
+  Milestone,
+  Validation
 } from '../../types/horizonSync.js'
 
 let arbLoggingEnabled = false

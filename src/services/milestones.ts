@@ -4,12 +4,14 @@ export interface Milestone {
   description: string
   verified: boolean
   verifiedAt: string | null
+  verifiedBy: string | null
+  verifierId: string | null
   createdAt: string
 }
 
 const milestonesTable: Milestone[] = []
 
-export const createMilestone = (vaultId: string, description: string): Milestone => {
+export const createMilestone = (vaultId: string, description: string, verifierId?: string | null): Milestone => {
   const id = `ms-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
   const milestone: Milestone = {
     id,
@@ -17,6 +19,8 @@ export const createMilestone = (vaultId: string, description: string): Milestone
     description,
     verified: false,
     verifiedAt: null,
+    verifiedBy: null,
+    verifierId: verifierId || null,
     createdAt: new Date().toISOString(),
   }
   milestonesTable.push(milestone)
@@ -38,6 +42,34 @@ export const verifyMilestone = (id: string): Milestone | null => {
   milestone.verified = true
   milestone.verifiedAt = new Date().toISOString()
   return milestone
+}
+
+export const validateMilestone = (id: string, validatorUserId: string): { success: boolean, milestone?: Milestone, error?: string } => {
+  const milestone = milestonesTable.find((m) => m.id === id)
+  if (!milestone) return { success: false, error: 'Milestone not found' }
+
+  if (milestone.verifierId && milestone.verifierId !== validatorUserId) {
+    return { success: false, error: 'Unauthorized: only assigned verifier can validate' }
+  }
+
+  if (milestone.verified) {
+    return { success: false, error: 'Milestone already validated' }
+  }
+
+  milestone.verified = true
+  milestone.verifiedAt = new Date().toISOString()
+  milestone.verifiedBy = validatorUserId
+
+  // Record validation event
+  addMilestoneEvent({
+    userId: validatorUserId,
+    vaultId: milestone.vaultId,
+    name: 'milestone.validated',
+    status: 'success',
+    timestamp: new Date().toISOString(),
+  })
+
+  return { success: true, milestone }
 }
 
 export const allMilestonesVerified = (vaultId: string): boolean => {

@@ -32,6 +32,7 @@ export interface PersistedMilestone {
   dueDate: string
   amount: string
   sortOrder: number
+  verifierUserId: string | null
   createdAt: string
 }
 

@@ -166,6 +166,14 @@ describe('deadline expiration correctness', () => {
     })
   })
 
+  it('expires exactly at the UTC deadline with offset input', async () => {
+    const vault = makeVault({ end_date: '2026-04-25T08:00:00-04:00' })
+    vaultRows.push(vault)
+
+    await expect(markVaultExpiries({ now: fixedNow })).resolves.toBe(1)
+    expect(vault.status).toBe('failed')
+  })
+
   it('expires just after the UTC deadline including offset timestamp inputs', async () => {
     const vault = makeVault({ end_date: '2026-04-25T07:59:59.999-04:00' })
     vaultRows.push(vault)

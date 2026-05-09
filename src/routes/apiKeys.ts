@@ -2,7 +2,12 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { requireUserAuth } from '../middleware/userAuth.js'
 import { apiKeyRateLimiter } from '../middleware/rateLimiter.js'
-import { createApiKey, listApiKeysForUser, revokeApiKey } from '../services/apiKeys.js'
+import {
+  createApiKey,
+  listApiKeysForUser,
+  revokeApiKey,
+  rotateApiKey,
+} from '../services/apiKeys.js'
 import { formatValidationError } from '../lib/validation.js'
 
 export const apiKeysRouter = Router()
@@ -15,14 +20,14 @@ const createApiKeySchema = z.object({
   orgId: z.string().trim().optional(),
 })
 
-apiKeysRouter.get('/', (req, res) => {
+apiKeysRouter.get('/', async (req, res) => {
   const userId = req.authUser!.userId
-  const apiKeys = listApiKeysForUser(userId).map(({ keyHash: _keyHash, ...publicRecord }) => publicRecord)
+  const apiKeys = (await listApiKeysForUser(userId)).map(({ keyHash: _keyHash, ...publicRecord }) => publicRecord)
 
   res.json({ apiKeys })
 })
 
-apiKeysRouter.post('/', apiKeyRateLimiter, (req, res) => {
+apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
   const userId = req.authUser!.userId
   const parseResult = createApiKeySchema.safeParse(req.body)
   if (!parseResult.success) {
@@ -32,7 +37,7 @@ apiKeysRouter.post('/', apiKeyRateLimiter, (req, res) => {
 
   const { label, scopes, orgId } = parseResult.data
 
-  const { apiKey, record } = createApiKey({
+  const { apiKey, record } = await createApiKey({
     userId,
     orgId: orgId?.trim() || undefined,
     label,
@@ -46,9 +51,28 @@ apiKeysRouter.post('/', apiKeyRateLimiter, (req, res) => {
   })
 })
 
-apiKeysRouter.post('/:id/revoke', (req, res) => {
+apiKeysRouter.post('/:id/rotate', apiKeyRateLimiter, async (req, res) => {
   const userId = req.authUser!.userId
-  const record = revokeApiKey(req.params.id, userId)
+  const rotated = await rotateApiKey({
+    apiKeyId: req.params.id,
+    userId,
+  })
+
+  if (!rotated) {
+    res.status(404).json({ error: 'API key not found.' })
+    return
+  }
+
+  const { keyHash: _keyHash, ...publicRecord } = rotated.record
+  res.status(200).json({
+    apiKey: rotated.apiKey,
+    apiKeyMeta: publicRecord,
+  })
+})
+
+apiKeysRouter.post('/:id/revoke', async (req, res) => {
+  const userId = req.authUser!.userId
+  const record = await revokeApiKey(req.params.id, userId)
 
   if (!record) {
     res.status(404).json({ error: 'API key not found.' })

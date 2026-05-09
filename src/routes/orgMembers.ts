@@ -38,7 +38,7 @@ orgMembersRouter.post(
   '/:orgId/members',
   authenticate,
   requireOrgAccess('owner', 'admin'),
-  (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const { orgId } = req.params
     const { userId, role } = req.body as { userId?: string; role?: string }
 
@@ -85,7 +85,7 @@ orgMembersRouter.delete(
   '/:orgId/members/:userId',
   authenticate,
   requireOrgAccess('owner', 'admin'),
-  (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const { orgId, userId } = req.params
 
     try {
@@ -118,7 +118,7 @@ orgMembersRouter.patch(
   '/:orgId/members/:userId/role',
   authenticate,
   requireOrgAccess('owner'),
-  (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const { orgId, userId } = req.params
     const { role } = req.body as { role?: string }
 

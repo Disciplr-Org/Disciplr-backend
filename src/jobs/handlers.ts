@@ -1,4 +1,5 @@
 import { NotificationService } from '../services/notifications/factory.js'
+import { processJob as processExportJob } from '../services/exportQueue.js'
 import type { JobHandler, JobType } from './types.js'
 import { markVaultExpiries } from '../services/vault.js'
 
@@ -49,6 +50,13 @@ export const defaultJobHandlers: JobHandlerRegistry = {
     logJob(
       'analytics.recompute',
       `scope=${payload.scope} entity=${entity} reason=${reason} attempt=${context.attempt}`,
+    )
+  },
+  'export.generate': async (payload, context) => {
+    await processExportJob(payload.exportJobId, undefined, context.attempt)
+    logJob(
+      'export.generate',
+      `exportJobId=${payload.exportJobId} attempt=${context.attempt}`,
     )
   },
 }

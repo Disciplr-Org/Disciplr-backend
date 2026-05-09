@@ -1,10 +1,12 @@
-import cors from "cors";
-import express from "express";
-import helmet from "helmet";
-import { corsOptions } from "./config/cors.js";
-import { privacyLogger } from "./middleware/privacy-logger.js";
+import cors from 'cors'
+import express from 'express'
+import helmet from 'helmet'
+import { config } from './config/index.js'
+import { privacyLogger } from './middleware/privacy-logger.js'
+import { adminRouter } from './routes/admin.js'
+import { notificationsRouter } from './routes/notifications.js'
 
-export const app = express();
+export const app = express()
 
 // ---------------------------------------------------------------------------
 // Helmet — API-only hardened configuration
@@ -80,13 +82,13 @@ app.use(
     crossOriginEmbedderPolicy: true,
 
     // COOP: same-origin — keep default.
-    crossOriginOpenerPolicy: { policy: "same-origin" },
+    crossOriginOpenerPolicy: { policy: 'same-origin' },
 
     // CORP: same-site allows same-domain micro-services without CORS preflight.
-    crossOriginResourcePolicy: { policy: "same-site" },
+    crossOriginResourcePolicy: { policy: 'same-site' },
 
     // Referrer: no-referrer — keep default.
-    referrerPolicy: { policy: "no-referrer" },
+    referrerPolicy: { policy: 'no-referrer' },
 
     // HSTS: 1-year max-age + includeSubDomains (preload-ready but not submitted).
     strictTransportSecurity: {
@@ -108,18 +110,52 @@ app.use(
     xFrameOptions: false,
 
     // Flash/PDF cross-domain block — keep default.
-    xPermittedCrossDomainPolicies: { permittedPolicies: "none" },
+    xPermittedCrossDomainPolicies: { permittedPolicies: 'none' },
   }),
-);
+)
 
-app.use(cors(corsOptions));
-app.use(express.json());
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, callback) => {
+    // Non-browser / server-to-server requests carry no Origin header — pass through
+    if (!origin) {
+      callback(null, true)
+      return
+    }
+
+    const allowed = config.corsOrigins
+    if (allowed === '*' || (Array.isArray(allowed) && allowed.includes(origin))) {
+      callback(null, true)
+    } else {
+      // Emit a structured log so rejected origins are observable in prod logs
+      console.log(
+        JSON.stringify({
+          level: 'warn',
+          event: 'security.cors_rejected',
+          service: 'disciplr-backend',
+          origin,
+          timestamp: new Date().toISOString(),
+        }),
+      )
+      callback(null, false)
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'idempotency-key'],
+  credentials: true,
+}
+
+app.use(cors(corsOptions))
+app.use(express.json())
 
 app.use((_req, res, next) => {
-  res.setHeader("X-Timezone", "UTC");
-  next();
-});
+  res.setHeader('X-Timezone', 'UTC')
+  next()
+})
 
-app.use(privacyLogger);
+app.use(privacyLogger)
 
-// Routes are mounted in index.ts
+// Core routes mounted here for test compatibility
+app.use('/api/admin', adminRouter)
+app.use('/api/notifications', notificationsRouter)
+
+// Additional routes are mounted in index.ts

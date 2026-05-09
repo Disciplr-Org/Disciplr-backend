@@ -1,4 +1,4 @@
-import { db } from '../db/index.js'
+import db from '../db/index.js'
 import { UserRole, UserStatus, User } from '../types/user.js'
 import { prisma } from '../lib/prisma.js'
 

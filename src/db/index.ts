@@ -27,4 +27,4 @@ export const pool = new pg.Pool({
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 })
 
-export default pool
+export default db

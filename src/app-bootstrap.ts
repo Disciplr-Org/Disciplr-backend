@@ -9,6 +9,8 @@ import { authRouter } from './routes/auth.js'
 import { analyticsRouter } from './routes/analytics.js'
 import { healthRateLimiter, vaultsRateLimiter } from './middleware/rateLimiter.js'
 import { createExportRouter } from './routes/exports.js'
+import { configureExportJobRepository, createKnexExportJobRepository } from './services/exportQueue.js'
+import { db } from './db/index.js'
 import { transactionsRouter } from './routes/transactions.js'
 import { privacyRouter } from './routes/privacy.js'
 import { milestonesRouter } from './routes/milestones.js'
@@ -27,6 +29,7 @@ import {
 
 export function bootstrapApp() {
   const jobSystem = new BackgroundJobSystem()
+  configureExportJobRepository(createKnexExportJobRepository(db))
 
   app.use(securityMetricsMiddleware)
   app.use(securityRateLimitMiddleware)
@@ -36,7 +39,7 @@ export function bootstrapApp() {
   app.use('/api/vaults', vaultsRateLimiter, vaultsRouter)
   app.use('/api/vaults/:vaultId/milestones', milestonesRouter)
   app.use('/api/auth', authRouter)
-  app.use('/api/exports', createExportRouter([]))
+  app.use('/api/exports', createExportRouter(jobSystem))
   app.use('/api/transactions', transactionsRouter)
   app.use('/api/analytics', analyticsRouter)
   app.use('/api/privacy', privacyRouter)

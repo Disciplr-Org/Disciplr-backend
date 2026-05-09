@@ -13,6 +13,8 @@
     "test:perf": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathPattern=performance --maxWorkers=1",
     "test:api-keys": "tsx --test src/routes/apiKeys.test.ts",
     "test:vaults": "tsx --test src/routes/vaults.test.ts",
+    "test:vault-validation": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/services/vaultValidation.test.ts",
+    "test:vaults-integration": "tsx --test src/routes/vaults.test.ts",
     "test:smoke": "tsx --test src/tests/smoke/api.smoke.test.ts",
     "migrate:make": "knex migrate:make --knexfile knexfile.cjs --migrations-directory db/migrations --extension cjs",
     "migrate:latest": "knex migrate:latest --knexfile knexfile.cjs",
@@ -26,7 +28,7 @@
     "@prisma/client": "^6.19.2",
     "@stellar/stellar-sdk": "^14.5.0",
     "bcryptjs": "^3.0.3",
-    "better-sqlite3": "^11.5.0",
+    "better-sqlite3": "^11.10.0",
     "cors": "^2.8.6",
     "csv-stringify": "^6.6.0",
     "date-fns": "^4.1.0",
@@ -35,7 +37,7 @@
     "express-rate-limit": "^8.2.1",
     "helmet": "^7.2.0",
     "jsonwebtoken": "^9.0.3",
-    "pg": "^8.13.1",
+    "pg": "^8.20.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

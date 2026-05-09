@@ -3,6 +3,7 @@ export const JOB_TYPES = [
   'deadline.check',
   'oracle.call',
   'analytics.recompute',
+  'export.generate',
 ] as const
 
 export type JobType = (typeof JOB_TYPES)[number]
@@ -31,11 +32,16 @@ export interface AnalyticsRecomputeJobPayload {
   reason?: string
 }
 
+export interface ExportGenerateJobPayload {
+  exportJobId: string
+}
+
 export interface JobPayloadByType {
   'notification.send': NotificationJobPayload
   'deadline.check': DeadlineCheckJobPayload
   'oracle.call': OracleCallJobPayload
   'analytics.recompute': AnalyticsRecomputeJobPayload
+  'export.generate': ExportGenerateJobPayload
 }
 
 export interface JobContext {
@@ -106,6 +112,8 @@ export const isPayloadForJobType = (
         isOptionalString(payload.entityId) &&
         isOptionalString(payload.reason)
       )
+    case 'export.generate':
+      return isNonEmptyString(payload.exportJobId)
     default:
       return false
   }

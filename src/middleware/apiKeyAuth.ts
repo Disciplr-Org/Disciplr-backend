@@ -2,7 +2,7 @@ import type { RequestHandler } from 'express'
 import { validateApiKey } from '../services/apiKeys.js'
 
 export const authenticateApiKey = (requiredScopes: string[] = []): RequestHandler => {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     const apiKey = req.header('x-api-key')
 
     if (!apiKey) {
@@ -10,7 +10,7 @@ export const authenticateApiKey = (requiredScopes: string[] = []): RequestHandle
       return
     }
 
-    const validation = validateApiKey(apiKey, requiredScopes)
+    const validation = await validateApiKey(apiKey, requiredScopes)
     if (!validation.valid) {
       if (validation.reason === 'forbidden') {
         res.status(403).json({ error: 'API key does not have the required scopes.' })

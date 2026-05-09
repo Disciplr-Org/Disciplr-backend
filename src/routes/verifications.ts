@@ -1,13 +1,13 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
-import { requireVerifier, requireAdmin, requireActiveVerifier } from '../middleware/rbac.js'
+import { requireVerifier, requireAdmin } from '../middleware/rbac.js'
 import { recordVerification, listVerifications } from '../services/verifiers.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { AppError } from '../middleware/errorHandler.js'
 
 export const verificationsRouter = Router()
 
-verificationsRouter.post('/', authenticate, requireVerifier, requireActiveVerifier, async (req: Request, res: Response, next: NextFunction) => {
+verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request, res: Response, next: NextFunction) => {
   const payload = req.user!
   const verifierUserId = payload.userId
   const { targetId, result, disputed } = req.body as {

@@ -68,14 +68,17 @@ export const hashToken = (token: string): string => {
 // --------------- JWT Generation ---------------
 
 export const generateAccessToken = (payload: { userId: string; role: string; jti?: string }): string => {
-    const jti = payload.jti || randomUUID()
-    const fullPayload = {
+    const fullPayload: Record<string, unknown> = {
         sub: payload.userId,
         role: payload.role,
-        jti,
         // Keep userId for backward compatibility with existing middleware/routes
         userId: payload.userId,
     }
+
+    if (payload.jti !== undefined) {
+        fullPayload.jti = payload.jti
+    }
+
     return jwt.sign(fullPayload, ACCESS_SECRET, {
         expiresIn: (process.env.JWT_ACCESS_EXPIRES_IN || '15m') as any,
         issuer: JWT_ISSUER,

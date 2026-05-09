@@ -21,29 +21,49 @@ testApp.use(requireAdmin)
 const getStringQuery = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value : undefined
 
-testApp.get('/api/admin/audit-logs', (req, res) => {
-  const logs = listAuditLogs({
-    actor_user_id: getStringQuery(req.query.actor_user_id),
-    action: getStringQuery(req.query.action),
-    target_type: getStringQuery(req.query.target_type),
-    target_id: getStringQuery(req.query.target_id),
-    limit: getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined,
-  })
-  res.status(200).json({ audit_logs: logs, count: logs.length })
+testApp.get('/api/admin/audit-logs', async (req, res) => {
+  try {
+    const limit = getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined
+    const offset = getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined
+    
+    const logs = await listAuditLogs({
+      actor_user_id: getStringQuery(req.query.actor_user_id),
+      action: getStringQuery(req.query.action),
+      target_type: getStringQuery(req.query.target_type),
+      target_id: getStringQuery(req.query.target_id),
+      limit,
+      offset,
+    })
+    
+    res.status(200).json({ 
+      audit_logs: logs, 
+      count: logs.length,
+      total: logs.length, // Simplified for tests
+      limit,
+      offset: offset || 0,
+      has_more: false // Simplified for tests
+    })
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch audit logs' })
+  }
 })
 
-testApp.get('/api/admin/audit-logs/:id', (req, res) => {
-  const log = getAuditLogById(req.params.id)
-  if (!log) {
-    res.status(404).json({ error: 'Audit log not found' })
-    return
+testApp.get('/api/admin/audit-logs/:id', async (req, res) => {
+  try {
+    const log = await getAuditLogById(req.params.id)
+    if (!log) {
+      res.status(404).json({ error: 'Audit log not found' })
+      return
+    }
+    res.status(200).json(log)
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch audit log' })
   }
-  res.status(200).json(log)
 })
 
 // Seed helper
-const seed = (overrides: Partial<Parameters<typeof createAuditLog>[0]> = {}) =>
-  createAuditLog({
+const seed = async (overrides: Partial<Parameters<typeof createAuditLog>[0]> = {}) =>
+  await createAuditLog({
     actor_user_id: 'admin-1',
     action: 'auth.login',
     target_type: 'user',
@@ -53,7 +73,7 @@ const seed = (overrides: Partial<Parameters<typeof createAuditLog>[0]> = {}) =>
   })
 
 describe('GET /api/admin/audit-logs', () => {
-  beforeEach(() => clearAuditLogs())
+  beforeEach(async () => await clearAuditLogs())
 
   // --- Auth ---
   it('returns 401 with no token', async () => {
@@ -74,7 +94,7 @@ describe('GET /api/admin/audit-logs', () => {
   })
 
   it('returns all logs with correct shape', async () => {
-    const log = seed()
+    const log = await seed()
     const res = await request(testApp).get('/api/admin/audit-logs').set(AUTH(adminToken))
     expect(res.status).toBe(200)
     expect(res.body.count).toBe(1)
@@ -91,9 +111,9 @@ describe('GET /api/admin/audit-logs', () => {
 
   // --- Sorting ---
   it('returns logs sorted by created_at descending', async () => {
-    seed({ action: 'auth.login' })
-    seed({ action: 'vault.created' })
-    seed({ action: 'vault.cancelled' })
+    await seed({ action: 'auth.login' })
+    await seed({ action: 'vault.created' })
+    await seed({ action: 'vault.cancelled' })
 
     const res = await request(testApp).get('/api/admin/audit-logs').set(AUTH(adminToken))
     expect(res.status).toBe(200)
@@ -104,8 +124,8 @@ describe('GET /api/admin/audit-logs', () => {
 
   // --- Filtering ---
   it('filters by actor_user_id', async () => {
-    seed({ actor_user_id: 'admin-1' })
-    seed({ actor_user_id: 'admin-2' })
+    await seed({ actor_user_id: 'admin-1' })
+    await seed({ actor_user_id: 'admin-2' })
 
     const res = await request(testApp)
       .get('/api/admin/audit-logs?actor_user_id=admin-1')
@@ -116,9 +136,9 @@ describe('GET /api/admin/audit-logs', () => {
   })
 
   it('filters by action', async () => {
-    seed({ action: 'auth.login' })
-    seed({ action: 'auth.role_changed' })
-    seed({ action: 'vault.created' })
+    await seed({ action: 'auth.login' })
+    await seed({ action: 'auth.role_changed' })
+    await seed({ action: 'vault.created' })
 
     const res = await request(testApp)
       .get('/api/admin/audit-logs?action=auth.login')
@@ -129,8 +149,8 @@ describe('GET /api/admin/audit-logs', () => {
   })
 
   it('filters by target_type', async () => {
-    seed({ target_type: 'user' })
-    seed({ target_type: 'vault' })
+    await seed({ target_type: 'user' })
+    await seed({ target_type: 'vault' })
 
     const res = await request(testApp)
       .get('/api/admin/audit-logs?target_type=vault')
@@ -141,8 +161,8 @@ describe('GET /api/admin/audit-logs', () => {
   })
 
   it('filters by target_id', async () => {
-    seed({ target_id: 'vault-abc' })
-    seed({ target_id: 'vault-xyz' })
+    await seed({ target_id: 'vault-abc' })
+    await seed({ target_id: 'vault-xyz' })
 
     const res = await request(testApp)
       .get('/api/admin/audit-logs?target_id=vault-abc')
@@ -153,7 +173,7 @@ describe('GET /api/admin/audit-logs', () => {
   })
 
   it('returns empty list when filter matches nothing', async () => {
-    seed({ action: 'auth.login' })
+    await seed({ action: 'auth.login' })
 
     const res = await request(testApp)
       .get('/api/admin/audit-logs?action=nonexistent.action')
@@ -164,9 +184,9 @@ describe('GET /api/admin/audit-logs', () => {
 
   // --- Limit ---
   it('respects limit parameter', async () => {
-    seed({ action: 'auth.login' })
-    seed({ action: 'vault.created' })
-    seed({ action: 'vault.cancelled' })
+    await seed({ action: 'auth.login' })
+    await seed({ action: 'vault.created' })
+    await seed({ action: 'vault.cancelled' })
 
     const res = await request(testApp)
       .get('/api/admin/audit-logs?limit=2')
@@ -190,7 +210,7 @@ describe('GET /api/admin/audit-logs', () => {
   // --- Multiple fixture actions ---
   it('returns logs for all audited action types', async () => {
     const actions = ['auth.login', 'auth.role_changed', 'vault.created', 'vault.cancelled', 'admin.override']
-    actions.forEach((action) => seed({ action }))
+    await Promise.all(actions.map((action) => seed({ action })))
 
     const res = await request(testApp).get('/api/admin/audit-logs').set(AUTH(adminToken))
     expect(res.status).toBe(200)
@@ -227,7 +247,7 @@ describe('GET /api/admin/audit-logs/:id', () => {
 
   // --- Success ---
   it('returns the correct log by id', async () => {
-    const log = seed({ action: 'vault.cancelled', target_type: 'vault', target_id: 'vault-99' })
+    const log = await seed({ action: 'vault.cancelled', target_type: 'vault', target_id: 'vault-99' })
 
     const res = await request(testApp)
       .get(`/api/admin/audit-logs/${log.id}`)
@@ -244,9 +264,9 @@ describe('GET /api/admin/audit-logs/:id', () => {
   })
 
   it('returns the correct log when multiple logs exist', async () => {
-    seed({ action: 'auth.login' })
-    const target = seed({ action: 'admin.override', target_id: 'vault-special' })
-    seed({ action: 'vault.created' })
+    await seed({ action: 'auth.login' })
+    const target = await seed({ action: 'admin.override', target_id: 'vault-special' })
+    await seed({ action: 'vault.created' })
 
     const res = await request(testApp)
       .get(`/api/admin/audit-logs/${target.id}`)

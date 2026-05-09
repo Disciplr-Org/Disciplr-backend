@@ -746,6 +746,84 @@ describe('GET /api/vaults/:id', () => {
 
     expect(getRes.body.id).toBe(id)
   })
+
+  it('returns vault from legacy in-memory fallback when DB is unavailable', async () => {
+    // Create a vault directly in the legacy in-memory storage
+    const legacyVault = {
+      id: 'legacy-vault-123',
+      creator: 'test-creator',
+      amount: '500',
+      status: 'active' as const,
+      startTimestamp: '2030-01-01T00:00:00.000Z',
+      endTimestamp: '2030-06-01T00:00:00.000Z',
+      successDestination: `G${'A'.repeat(55)}`,
+      failureDestination: `G${'B'.repeat(55)}`,
+      createdAt: '2023-01-01T00:00:00.000Z',
+    }
+    
+    // Set the vault in the legacy storage
+    setVaults([legacyVault])
+
+    const res = await request(testApp)
+      .get('/api/vaults/legacy-vault-123')
+      .set('Authorization', `Bearer ${userToken}`)
+      .expect(200)
+
+    expect(res.body.id).toBe('legacy-vault-123')
+    expect(res.body.amount).toBe('500')
+    expect(res.body.status).toBe('active')
+  })
+
+  it('returns 404 when vault is not found in either DB or legacy storage', async () => {
+    // Ensure legacy storage is empty
+    setVaults([])
+
+    const res = await request(testApp)
+      .get('/api/vaults/non-existent-vault')
+      .set('Authorization', `Bearer ${userToken}`)
+      .expect(404)
+
+    expect(res.body.error).toBe('Vault not found')
+  })
+
+  it('returns 404 for non-existent vault in legacy storage when DB fails', async () => {
+    // Set empty legacy storage - no vaults available
+    setVaults([])
+
+    const res = await request(testApp)
+      .get('/api/vaults/another-non-existent-vault')
+      .set('Authorization', `Bearer ${userToken}`)
+      .expect(404)
+
+    expect(res.body.error).toBe('Vault not found')
+  })
+
+  it('legacy fallback returns JSON response with correct content-type', async () => {
+    const legacyVault = {
+      id: 'legacy-json-test',
+      creator: 'json-test-creator',
+      amount: '1000',
+      status: 'completed' as const,
+      startTimestamp: '2030-01-01T00:00:00.000Z',
+      endTimestamp: '2030-12-01T00:00:00.000Z',
+      successDestination: `G${'C'.repeat(55)}`,
+      failureDestination: `G${'D'.repeat(55)}`,
+      createdAt: '2023-06-01T00:00:00.000Z',
+    }
+    
+    setVaults([legacyVault])
+
+    const res = await request(testApp)
+      .get('/api/vaults/legacy-json-test')
+      .set('Authorization', `Bearer ${userToken}`)
+      .expect(200)
+
+    // Verify response is properly formatted JSON
+    expect(res.headers['content-type']).toMatch(/application\/json/)
+    expect(typeof res.body).toBe('object')
+    expect(res.body.id).toBe('legacy-json-test')
+    expect(res.body.creator).toBe('json-test-creator')
+  })
 })
 
 describe('GET /api/vaults', () => {

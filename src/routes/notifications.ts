@@ -6,7 +6,6 @@ import type {
   NotificationSortField,
 } from '../types/notification.js'
 import {
-  archiveNotification,
   listUserNotifications,
   markAllAsRead,
   markAsRead,
@@ -38,14 +37,7 @@ notificationsRouter.get(
 
     const includeArchived = ['true', '1'].includes(String(req.query.includeArchived ?? '').toLowerCase())
 
-    const notifications = await listUserNotifications(req.user.userId, {
-      page: req.pagination?.page ?? 1,
-      pageSize: req.pagination?.pageSize ?? 20,
-      sortBy: (req.sort?.sortBy as NotificationSortField | undefined) ?? DEFAULT_SORT_BY,
-      sortOrder: req.sort?.sortOrder ?? DEFAULT_SORT_ORDER,
-      includeArchived,
-      readStatus: rawStatus,
-    })
+    const notifications = await listUserNotifications(req.user!.userId)
 
     res.json(notifications)
   },
@@ -74,19 +66,3 @@ notificationsRouter.post('/read-all', async (req: Request, res: Response, next: 
   res.json({ updated })
 })
 
-notificationsRouter.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
-  if (!req.user) {
-    return next(AppError.unauthorized('Unauthenticated'))
-  }
-
-  const notification = await archiveNotification(req.params.id, req.user.userId)
-
-  if (!notification) {
-    return next(AppError.notFound('Notification not found'))
-  }
-
-  res.json({
-    message: 'Notification archived',
-    notification,
-  })
-})

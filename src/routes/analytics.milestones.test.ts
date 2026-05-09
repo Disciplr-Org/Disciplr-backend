@@ -10,7 +10,7 @@ let baseUrl = ''
 let server: ReturnType<express.Express['listen']> | null = null
 
 beforeEach(async () => {
-  resetApiKeysTable()
+  await resetApiKeysTable()
   resetMilestones()
 
   const app = express()
@@ -39,8 +39,8 @@ afterEach(async () => {
   server = null
 })
 
-const createAnalyticsKey = () => {
-  const { apiKey } = createApiKey({
+const createAnalyticsKey = async () => {
+  const { apiKey } = await createApiKey({
     userId: 'user-1',
     orgId: 'org-1',
     label: 'analytics',
@@ -50,7 +50,7 @@ const createAnalyticsKey = () => {
 }
 
 test('returns milestone completion trends over time', async () => {
-  const apiKey = createAnalyticsKey()
+  const apiKey = await createAnalyticsKey()
   const base = new Date('2025-01-01T00:00:00.000Z')
 
   addMilestoneEvent({
@@ -94,7 +94,7 @@ test('returns milestone completion trends over time', async () => {
 })
 
 test('returns behavior score for a user', async () => {
-  const apiKey = createAnalyticsKey()
+  const apiKey = await createAnalyticsKey()
 
   addMilestoneEvent({
     userId: 'user-42',
@@ -133,7 +133,7 @@ test('returns behavior score for a user', async () => {
 })
 
 test('includes milestone events that fall exactly on the requested date boundaries', async () => {
-  const apiKey = createAnalyticsKey()
+  const apiKey = await createAnalyticsKey()
   const from = '2025-01-01T00:00:00.000Z'
   const middle = '2025-01-02T12:00:00.000Z'
   const to = '2025-01-03T23:59:59.999Z'
@@ -190,7 +190,7 @@ test('includes milestone events that fall exactly on the requested date boundari
 })
 
 test('returns empty milestone buckets when no events fall in the requested range', async () => {
-  const apiKey = createAnalyticsKey()
+  const apiKey = await createAnalyticsKey()
   const from = '2025-02-01T00:00:00.000Z'
   const to = '2025-02-02T23:59:59.999Z'
 
@@ -231,7 +231,7 @@ test('returns empty milestone buckets when no events fall in the requested range
 })
 
 test('rejects milestone trend requests when from is after to', async () => {
-  const apiKey = createAnalyticsKey()
+  const apiKey = await createAnalyticsKey()
 
   const res = await fetch(
     `${baseUrl}/api/analytics/milestones/trends?from=2025-02-03T00:00:00.000Z&to=2025-02-01T00:00:00.000Z&groupBy=day`,
@@ -246,7 +246,7 @@ test('rejects milestone trend requests when from is after to', async () => {
 })
 
 test('filters behavior score to the requested range and includes edge timestamps', async () => {
-  const apiKey = createAnalyticsKey()
+  const apiKey = await createAnalyticsKey()
   const from = '2025-04-10T00:00:00.000Z'
   const to = '2025-04-11T23:59:59.999Z'
 
@@ -305,7 +305,7 @@ test('filters behavior score to the requested range and includes edge timestamps
 })
 
 test('rejects behavior score requests without a userId', async () => {
-  const apiKey = createAnalyticsKey()
+  const apiKey = await createAnalyticsKey()
 
   const res = await fetch(`${baseUrl}/api/analytics/behavior`, {
     headers: { 'x-api-key': apiKey },
@@ -319,7 +319,7 @@ test('rejects behavior score requests without a userId', async () => {
 // ─── List Contract Tests for Analytics ─────────────────────────────────────
 
 test('validates date range filtering contract for trends', async () => {
-  const apiKey = createAnalyticsKey()
+  const apiKey = await createAnalyticsKey()
   const from = '2025-01-01T00:00:00.000Z'
   const to = '2025-01-07T00:00:00.000Z'
 
@@ -345,7 +345,7 @@ test('validates date range filtering contract for trends', async () => {
 })
 
 test('validates groupBy parameter contract (day and week)', async () => {
-  const apiKey = createAnalyticsKey()
+  const apiKey = await createAnalyticsKey()
   const base = new Date('2025-01-01T00:00:00.000Z')
 
   addMilestoneEvent({
@@ -380,7 +380,7 @@ test('validates groupBy parameter contract (day and week)', async () => {
 })
 
 test('validates date range filtering contract for behavior scores', async () => {
-  const apiKey = createAnalyticsKey()
+  const apiKey = await createAnalyticsKey()
   const from = '2025-03-01T00:00:00.000Z'
   const to = '2025-03-31T23:59:59.999Z'
 
@@ -431,7 +431,7 @@ test('requires authentication for analytics endpoints', async () => {
 })
 
 test('validates user isolation in analytics - cannot access other user events', async () => {
-  const apiKey = createAnalyticsKey()
+  const apiKey = await createAnalyticsKey()
 
   addMilestoneEvent({
     userId: 'user-a',

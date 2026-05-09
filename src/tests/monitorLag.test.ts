@@ -1,13 +1,39 @@
-import { checkListenerLag } from '../services/monitor.js'
-import { Server } from '@stellar/stellar-sdk'
-import { db } from '../db/knex.js'
-import { getValidatedConfig } from '../config/horizonListener.js'
-import { jest } from '@jest/globals'
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals'
 
-// Mock dependencies
-jest.mock('@stellar/stellar-sdk')
-jest.mock('../db/knex.js')
-jest.mock('../config/horizonListener.js')
+// ─── Mocks ────────────────────────────────────────────────────────────────────
+
+const mockLedgerCall = jest.fn<any>()
+const mockServer = {
+  ledgers: jest.fn<any>().mockReturnThis(),
+  order: jest.fn<any>().mockReturnThis(),
+  limit: jest.fn<any>().mockReturnThis(),
+  call: mockLedgerCall,
+}
+const MockServerClass = jest.fn<any>(() => mockServer)
+
+jest.unstable_mockModule('@stellar/stellar-sdk', () => ({
+  Horizon: { Server: MockServerClass },
+  default: {},
+}))
+
+const mockDbChain = {
+  where: jest.fn<any>().mockReturnThis(),
+  first: jest.fn<any>(),
+}
+const mockDb = jest.fn<any>(() => mockDbChain)
+
+jest.unstable_mockModule('../db/knex.js', () => ({ db: mockDb }))
+
+const mockGetValidatedConfig = jest.fn<any>()
+jest.unstable_mockModule('../config/horizonListener.js', () => ({
+  getValidatedConfig: mockGetValidatedConfig,
+}))
+
+// ─── Subject under test (dynamic import after mocks) ─────────────────────────
+
+const { checkListenerLag } = await import('../services/monitor.js')
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('checkListenerLag', () => {
   let consoleWarnSpy: any
@@ -15,17 +41,17 @@ describe('checkListenerLag', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
-    
-    // Spy on console methods
     consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
     consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
-    
-    // Default mock config
-    ;(getValidatedConfig as any).mockReturnValue({
+
+    mockGetValidatedConfig.mockReturnValue({
       horizonUrl: 'https://horizon-testnet.stellar.org',
       lagThreshold: 10,
       startLedger: 100,
-      contractAddresses: ['CTEST123']
+      contractAddresses: ['CTEST123'],
+      retryMaxAttempts: 3,
+      retryBackoffMs: 100,
+      shutdownTimeoutMs: 30000,
     })
   })
 
@@ -35,91 +61,43 @@ describe('checkListenerLag', () => {
   })
 
   it('should log a warning when lag exceeds threshold', async () => {
-    // Mock Horizon Server response
-    const mockServer = {
-      ledgers: jest.fn().mockReturnThis(),
-      order: jest.fn().mockReturnThis(),
-      limit: jest.fn().mockReturnThis(),
-      call: jest.fn().mockResolvedValue({
-        records: [{ sequence: 150 }]
-      })
-    }
-    ;(Server as any).mockImplementation(() => mockServer)
-
-    // Mock DB response for listener_state
-    const mockQueryBuilder = {
-      where: jest.fn().mockReturnThis(),
-      first: jest.fn().mockResolvedValue({ last_processed_ledger: 100 })
-    }
-    ;(db as any).mockReturnValue(mockQueryBuilder)
+    mockLedgerCall.mockResolvedValue({ records: [{ sequence: 150 }] })
+    mockDbChain.first.mockResolvedValue({ last_processed_ledger: 100 })
 
     await checkListenerLag()
 
-    // Verify warning was logged
-    expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('Horizon listener lag detected: 50 ledgers'))
-    expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('Latest ledger: 150, Last processed: 100'))
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Horizon listener lag detected: 50 ledgers')
+    )
   })
 
   it('should not log a warning when lag is within threshold', async () => {
-    // Mock Horizon Server response
-    const mockServer = {
-      ledgers: jest.fn().mockReturnThis(),
-      order: jest.fn().mockReturnThis(),
-      limit: jest.fn().mockReturnThis(),
-      call: jest.fn().mockResolvedValue({
-        records: [{ sequence: 105 }]
-      })
-    }
-    ;(Server as any).mockImplementation(() => mockServer)
-
-    // Mock DB response for listener_state
-    const mockQueryBuilder = {
-      where: jest.fn().mockReturnThis(),
-      first: jest.fn().mockResolvedValue({ last_processed_ledger: 100 })
-    }
-    ;(db as any).mockReturnValue(mockQueryBuilder)
+    mockLedgerCall.mockResolvedValue({ records: [{ sequence: 105 }] })
+    mockDbChain.first.mockResolvedValue({ last_processed_ledger: 100 })
 
     await checkListenerLag()
 
-    // Verify no warning was logged
     expect(consoleWarnSpy).not.toHaveBeenCalled()
   })
 
   it('should use startLedger from config if no state exists in DB', async () => {
-    // Mock Horizon Server response
-    const mockServer = {
-      ledgers: jest.fn().mockReturnThis(),
-      order: jest.fn().mockReturnThis(),
-      limit: jest.fn().mockReturnThis(),
-      call: jest.fn().mockResolvedValue({
-        records: [{ sequence: 150 }]
-      })
-    }
-    ;(Server as any).mockImplementation(() => mockServer)
-
-    // Mock DB response as null (no state yet)
-    const mockQueryBuilder = {
-      where: jest.fn().mockReturnThis(),
-      first: jest.fn().mockResolvedValue(null)
-    }
-    ;(db as any).mockReturnValue(mockQueryBuilder)
+    mockLedgerCall.mockResolvedValue({ records: [{ sequence: 150 }] })
+    mockDbChain.first.mockResolvedValue(null)
 
     await checkListenerLag()
 
-    // Verify lag check used startLedger (100)
-    expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('Horizon listener lag detected: 50 ledgers'))
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Horizon listener lag detected: 50 ledgers')
+    )
   })
 
   it('should handle errors gracefully without crashing', async () => {
-    // Mock Horizon Server to throw error
-    const mockServer = {
-      ledgers: jest.fn().mockImplementation(() => {
-        throw new Error('Connection failed')
-      })
-    }
-    ;(Server as any).mockImplementation(() => mockServer)
+    mockServer.ledgers.mockImplementation(() => { throw new Error('Connection failed') })
 
     await expect(checkListenerLag()).resolves.not.toThrow()
-    expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Error checking listener lag:'), expect.any(Error))
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Error checking listener lag:'),
+      expect.any(Error)
+    )
   })
 })

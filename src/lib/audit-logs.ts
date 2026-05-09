@@ -1,3 +1,5 @@
+import { db } from '../db/knex.js'
+
 export type AuditLogMetadata = Record<string, unknown>
 
 export type AuditLog = {
@@ -10,15 +12,14 @@ export type AuditLog = {
   created_at: string
 }
 
-type AuditLogFilters = {
+export type AuditLogFilters = {
   actor_user_id?: string
   action?: string
   target_type?: string
   target_id?: string
   limit?: number
+  offset?: number
 }
-
-const auditLogsTable: AuditLog[] = []
 
 const makeId = (): string => `audit-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 
@@ -72,7 +73,7 @@ const sanitizeMetadata = (metadata: Record<string, unknown> = {}): AuditLogMetad
   return normalized
 }
 
-export const createAuditLog = (entry: Omit<AuditLog, 'id' | 'created_at'>): AuditLog => {
+export const createAuditLog = async (entry: Omit<AuditLog, 'id' | 'created_at'>): Promise<AuditLog> => {
   if (!entry.actor_user_id || !entry.action || !entry.target_type || !entry.target_id) {
     throw new Error('Invalid audit log entry: missing required fields')
   }
@@ -94,27 +95,61 @@ export const createAuditLog = (entry: Omit<AuditLog, 'id' | 'created_at'>): Audi
     metadata: normalizedMetadata,
   }
 
-  auditLogsTable.push(auditLog)
-  return auditLog
+  // Insert into database
+  const [insertedLog] = await db('audit_logs')
+    .insert({
+      id: auditLog.id,
+      actor_user_id: auditLog.actor_user_id,
+      action: auditLog.action,
+      target_type: auditLog.target_type,
+      target_id: auditLog.target_id,
+      metadata: auditLog.metadata,
+      created_at: auditLog.created_at,
+    })
+    .returning('*')
+
+  return insertedLog
 }
 
-export const listAuditLogs = (filters: AuditLogFilters = {}): AuditLog[] => {
+export const listAuditLogs = async (filters: AuditLogFilters = {}): Promise<AuditLog[]> => {
   const parsedLimit = Number(filters.limit)
+  const parsedOffset = Number(filters.offset)
   const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.floor(parsedLimit) : 100
+  const offset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? Math.floor(parsedOffset) : 0
 
-  return auditLogsTable
-    .filter((log) => (filters.actor_user_id ? log.actor_user_id === filters.actor_user_id : true))
-    .filter((log) => (filters.action ? log.action === filters.action : true))
-    .filter((log) => (filters.target_type ? log.target_type === filters.target_type : true))
-    .filter((log) => (filters.target_id ? log.target_id === filters.target_id : true))
-    .sort((a, b) => b.created_at.localeCompare(a.created_at))
-    .slice(0, limit)
+  let query = db('audit_logs')
+    .select('*')
+    .orderBy('created_at', 'desc')
+    .limit(limit)
+    .offset(offset)
+
+  // Apply filters efficiently using indexes
+  if (filters.actor_user_id) {
+    query = query.where('actor_user_id', filters.actor_user_id)
+  }
+  if (filters.action) {
+    query = query.where('action', filters.action)
+  }
+  if (filters.target_type) {
+    query = query.where('target_type', filters.target_type)
+  }
+  if (filters.target_id) {
+    query = query.where('target_id', filters.target_id)
+  }
+
+  return await query
 }
 
-export const getAuditLogById = (id: string): AuditLog | undefined =>
-  auditLogsTable.find((log) => log.id === id)
+export const getAuditLogById = async (id: string): Promise<AuditLog | undefined> => {
+  const log = await db('audit_logs')
+    .select('*')
+    .where('id', id)
+    .first()
+  
+  return log || undefined
+}
 
-// Testing helper - keep audits in-memory and easily reset for test isolation
-export const clearAuditLogs = (): void => {
-  auditLogsTable.length = 0
+// Testing helper - clear audit logs for test isolation
+export const clearAuditLogs = async (): Promise<void> => {
+  await db('audit_logs').del()
 }

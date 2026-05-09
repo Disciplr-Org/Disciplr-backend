@@ -107,6 +107,7 @@ export const createVaultWithMilestones = async (
       dueDate: milestone.dueDate,
       amount: milestone.amount,
       sortOrder: index,
+      verifierUserId: input.verifier, // Assign the vault's verifier to each milestone
       createdAt: now,
     }),
   );
@@ -166,8 +167,8 @@ export const createVaultWithMilestones = async (
     for (const milestone of milestones) {
       await client.query(
         `INSERT INTO milestones
-          (id, vault_id, title, description, due_date, amount, sort_order)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          (id, vault_id, title, description, due_date, amount, sort_order, verifier_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           milestone.id,
           milestone.vaultId,
@@ -176,6 +177,7 @@ export const createVaultWithMilestones = async (
           milestone.dueDate,
           milestone.amount,
           milestone.sortOrder,
+          milestone.verifierUserId,
         ],
       );
     }
@@ -233,10 +235,9 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
     description: string | null;
     due_date: string;
     amount: string;
-    sort_order: number;
-    created_at: string;
+    sort_order: number;    verifier_user_id: string | null;    created_at: string;
   }>(
-    "SELECT id, vault_id, title, description, due_date, amount::text, sort_order, created_at FROM milestones ORDER BY sort_order ASC",
+    "SELECT id, vault_id, title, description, due_date, amount::text, sort_order, verifier_user_id, created_at FROM milestones ORDER BY sort_order ASC",
   );
 
   const milestonesByVault = new Map<string, PersistedMilestone[]>();
@@ -249,6 +250,7 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
       dueDate: milestone.due_date,
       amount: milestone.amount,
       sortOrder: milestone.sort_order,
+      verifierUserId: milestone.verifier_user_id,
       createdAt: milestone.created_at,
     };
 
@@ -357,9 +359,10 @@ export const updateVaultById = async (
     due_date: string;
     amount: string;
     sort_order: number;
+    verifier_user_id: string | null;
     created_at: string;
   }>(
-    "SELECT id, vault_id, title, description, due_date, amount::text, sort_order, created_at FROM milestones WHERE vault_id = $1 ORDER BY sort_order ASC",
+    "SELECT id, vault_id, title, description, due_date, amount::text, sort_order, verifier_user_id, created_at FROM milestones WHERE vault_id = $1 ORDER BY sort_order ASC",
     [id],
   );
 
@@ -372,6 +375,7 @@ export const updateVaultById = async (
       dueDate: milestone.due_date,
       amount: milestone.amount,
       sortOrder: milestone.sort_order,
+      verifierUserId: milestone.verifier_user_id,
       createdAt: milestone.created_at,
     }),
   );

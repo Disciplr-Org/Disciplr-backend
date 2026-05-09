@@ -144,17 +144,9 @@ export class ETLWorker {
     const { signal } = this.abortController
 
     this.activeRun = this.etlService
-      .runETL(signal, batchId)
-      .then((result: ETLBatchResult) => {
-        if (result.status === 'completed') {
-          console.log(
-            `[ETLWorker] Batch ${batchId} done – ` +
-              `inserted=${result.transactionsInserted} skipped=${result.transactionsSkipped} ` +
-              `duration=${result.durationMs}ms`,
-          )
-        } else if (result.status === 'failed') {
-          console.error(`[ETLWorker] Batch ${batchId} failed: ${result.error}`)
-        }
+      .runETL()
+      .then(() => {
+        console.log(`[ETLWorker] Batch ${batchId} completed`)
       })
       .catch((error: unknown) => {
         if (signal.aborted) {

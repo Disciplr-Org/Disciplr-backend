@@ -1,6 +1,8 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import type { Pool } from 'pg'
 import type { ApiKeyAuthContext, ApiKeyRecord } from '../types/auth.js'
 import { utcNow } from '../utils/timestamps.js'
+import { getPgPool } from '../db/pool.js'
 
 interface CreateApiKeyInput {
   userId?: string
@@ -9,79 +11,361 @@ interface CreateApiKeyInput {
   scopes: string[]
 }
 
-const apiKeysTable: ApiKeyRecord[] = []
+interface RotateApiKeyInput {
+  apiKeyId: string
+  userId: string
+}
+
+type ApiKeyValidationResult =
+  | { valid: true; context: ApiKeyAuthContext }
+  | { valid: false; reason: 'malformed' | 'invalid' | 'revoked' | 'forbidden' }
+
+interface ApiKeyRow {
+  id: string
+  user_id: string | null
+  org_id: string | null
+  key_hash: string
+  label: string
+  scopes: string[] | string | null
+  created_at: string | Date
+  revoked_at: string | Date | null
+}
+
+interface ApiKeyRepository {
+  create(record: ApiKeyRecord): Promise<void>
+  listForUser(userId: string): Promise<ApiKeyRecord[]>
+  getById(id: string): Promise<ApiKeyRecord | null>
+  update(record: ApiKeyRecord): Promise<ApiKeyRecord>
+  findByIdForUser(id: string, userId: string): Promise<ApiKeyRecord | null>
+  findByHashPrefix(prefix: string): Promise<ApiKeyRecord[]>
+  reset(): Promise<void>
+}
+
+const API_KEY_PREFIX = 'dsk'
+const HASH_PREFIX_LENGTH = 12
+const memoryApiKeys = new Map<string, ApiKeyRecord>()
 
 const hashSecret = (secret: string): string => createHash('sha256').update(secret).digest('hex')
+
+const getHashPrefix = (hash: string): string => hash.slice(0, HASH_PREFIX_LENGTH)
+
+const buildApiKeyValue = (id: string, secret: string): string => `${API_KEY_PREFIX}_${id}.${secret}`
+
+const parseApiKey = (apiKey: string): { apiKeyId: string; secret: string } | null => {
+  const match = new RegExp(`^${API_KEY_PREFIX}_([^\\.]+)\\.(.+)$`).exec(apiKey.trim())
+  if (!match) {
+    return null
+  }
+
+  return { apiKeyId: match[1], secret: match[2] }
+}
 
 const normalizeScopes = (scopes: string[]): string[] => {
   return Array.from(new Set(scopes.map((scope) => scope.trim()).filter(Boolean))).sort()
 }
 
-export const createApiKey = (input: CreateApiKeyInput): { apiKey: string; record: ApiKeyRecord } => {
-  const id = randomUUID()
-  const secret = randomBytes(32).toString('hex')
-  const createdAt = utcNow()
-
-  const record: ApiKeyRecord = {
-    id,
-    userId: input.userId ?? null,
-    orgId: input.orgId ?? null,
-    keyHash: hashSecret(secret),
-    label: input.label,
-    scopes: normalizeScopes(input.scopes),
-    createdAt,
-    revokedAt: null,
+const normalizeScopeColumn = (scopes: string[] | string | null): string[] => {
+  if (Array.isArray(scopes)) {
+    return normalizeScopes(scopes)
   }
 
-  apiKeysTable.push(record)
+  if (typeof scopes !== 'string' || !scopes.trim()) {
+    return []
+  }
+
+  return normalizeScopes(
+    scopes
+      .split(',')
+      .map((scope) => scope.trim())
+      .filter(Boolean),
+  )
+}
+
+const redactApiKeyForLogs = (apiKey: string | undefined): string => {
+  if (!apiKey) {
+    return 'none'
+  }
+
+  const parsed = parseApiKey(apiKey)
+  if (!parsed) {
+    return 'invalid-format'
+  }
+
+  return `${API_KEY_PREFIX}_${parsed.apiKeyId}.***`
+}
+
+const asIsoString = (value: string | Date | null): string | null => {
+  if (!value) {
+    return null
+  }
+
+  return typeof value === 'string' ? value : value.toISOString()
+}
+
+const toRecord = (row: ApiKeyRow): ApiKeyRecord => ({
+  id: row.id,
+  userId: row.user_id,
+  orgId: row.org_id,
+  keyHash: row.key_hash,
+  label: row.label,
+  scopes: normalizeScopeColumn(row.scopes),
+  createdAt: asIsoString(row.created_at)!,
+  revokedAt: asIsoString(row.revoked_at),
+})
+
+const cloneRecord = (record: ApiKeyRecord): ApiKeyRecord => ({
+  ...record,
+  scopes: [...record.scopes],
+})
+
+const createMemoryRepository = (): ApiKeyRepository => ({
+  async create(record) {
+    memoryApiKeys.set(record.id, cloneRecord(record))
+  },
+  async listForUser(userId) {
+    return Array.from(memoryApiKeys.values())
+      .filter((record) => record.userId === userId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map(cloneRecord)
+  },
+  async getById(id) {
+    const record = memoryApiKeys.get(id)
+    return record ? cloneRecord(record) : null
+  },
+  async update(record) {
+    memoryApiKeys.set(record.id, cloneRecord(record))
+    return cloneRecord(record)
+  },
+  async findByIdForUser(id, userId) {
+    const record = memoryApiKeys.get(id)
+    if (!record || record.userId !== userId) {
+      return null
+    }
+    return cloneRecord(record)
+  },
+  async findByHashPrefix(prefix) {
+    return Array.from(memoryApiKeys.values())
+      .filter((record) => getHashPrefix(record.keyHash) === prefix)
+      .map(cloneRecord)
+  },
+  async reset() {
+    memoryApiKeys.clear()
+  },
+})
+
+const createPgRepository = (pool: Pool): ApiKeyRepository => ({
+  async create(record) {
+    await pool.query(
+      `INSERT INTO api_keys (id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at)
+       VALUES ($1, $2, $3, $4, $5, $6::text[], $7::timestamptz, $8::timestamptz)`,
+      [
+        record.id,
+        record.userId,
+        record.orgId,
+        record.keyHash,
+        record.label,
+        record.scopes,
+        record.createdAt,
+        record.revokedAt,
+      ],
+    )
+  },
+  async listForUser(userId) {
+    const result = await pool.query<ApiKeyRow>(
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at
+       FROM api_keys
+       WHERE user_id = $1
+       ORDER BY created_at DESC`,
+      [userId],
+    )
+
+    return result.rows.map(toRecord)
+  },
+  async getById(id) {
+    const result = await pool.query<ApiKeyRow>(
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at
+       FROM api_keys
+       WHERE id = $1
+       LIMIT 1`,
+      [id],
+    )
+
+    return result.rows[0] ? toRecord(result.rows[0]) : null
+  },
+  async update(record) {
+    const result = await pool.query<ApiKeyRow>(
+      `UPDATE api_keys
+       SET user_id = $2,
+           org_id = $3,
+           key_hash = $4,
+           label = $5,
+           scopes = $6::text[],
+           created_at = $7::timestamptz,
+           revoked_at = $8::timestamptz
+       WHERE id = $1
+       RETURNING id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at`,
+      [
+        record.id,
+        record.userId,
+        record.orgId,
+        record.keyHash,
+        record.label,
+        record.scopes,
+        record.createdAt,
+        record.revokedAt,
+      ],
+    )
+
+    return toRecord(result.rows[0])
+  },
+  async findByIdForUser(id, userId) {
+    const result = await pool.query<ApiKeyRow>(
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at
+       FROM api_keys
+       WHERE id = $1 AND user_id = $2
+       LIMIT 1`,
+      [id, userId],
+    )
+
+    return result.rows[0] ? toRecord(result.rows[0]) : null
+  },
+  async findByHashPrefix(prefix) {
+    const result = await pool.query<ApiKeyRow>(
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at
+       FROM api_keys
+       WHERE left(key_hash, $1) = $2`,
+      [HASH_PREFIX_LENGTH, prefix],
+    )
+
+    return result.rows.map(toRecord)
+  },
+  async reset() {
+    await pool.query('DELETE FROM api_keys')
+  },
+})
+
+let repositoryOverride: ApiKeyRepository | null = null
+
+const getRepository = (): ApiKeyRepository => {
+  if (repositoryOverride) {
+    return repositoryOverride
+  }
+
+  const pool = getPgPool()
+  return pool ? createPgRepository(pool) : createMemoryRepository()
+}
+
+const createApiKeyRecord = (input: CreateApiKeyInput, secret: string): ApiKeyRecord => ({
+  id: randomUUID(),
+  userId: input.userId ?? null,
+  orgId: input.orgId ?? null,
+  keyHash: hashSecret(secret),
+  label: input.label.trim(),
+  scopes: normalizeScopes(input.scopes),
+  createdAt: utcNow(),
+  revokedAt: null,
+})
+
+const findMatchingRecord = async (apiKey: string): Promise<{ record: ApiKeyRecord; secret: string } | null> => {
+  const parsed = parseApiKey(apiKey)
+  if (!parsed) {
+    return null
+  }
+
+  const secretHash = hashSecret(parsed.secret)
+  const hashPrefix = getHashPrefix(secretHash)
+  const candidates = await getRepository().findByHashPrefix(hashPrefix)
+  const matchingCandidate = candidates.find((candidate) => {
+    if (candidate.id !== parsed.apiKeyId) {
+      return false
+    }
+
+    const left = Buffer.from(candidate.keyHash, 'utf8')
+    const right = Buffer.from(secretHash, 'utf8')
+    return left.length === right.length && timingSafeEqual(left, right)
+  })
+
+  if (!matchingCandidate) {
+    return null
+  }
+
+  return { record: matchingCandidate, secret: parsed.secret }
+}
+
+export const createApiKey = async (
+  input: CreateApiKeyInput,
+): Promise<{ apiKey: string; record: ApiKeyRecord }> => {
+  const secret = randomBytes(32).toString('hex')
+  const record = createApiKeyRecord(input, secret)
+  await getRepository().create(record)
 
   return {
-    apiKey: `dsk_${id}.${secret}`,
-    record,
+    apiKey: buildApiKeyValue(record.id, secret),
+    record: cloneRecord(record),
   }
 }
 
-export const listApiKeysForUser = (userId: string): ApiKeyRecord[] => {
-  return apiKeysTable.filter((record) => record.userId === userId)
+export const listApiKeysForUser = async (userId: string): Promise<ApiKeyRecord[]> => {
+  return getRepository().listForUser(userId)
 }
 
-export const revokeApiKey = (apiKeyId: string, userId: string): ApiKeyRecord | null => {
-  const record = apiKeysTable.find((entry) => entry.id === apiKeyId && entry.userId === userId)
+export const revokeApiKey = async (apiKeyId: string, userId: string): Promise<ApiKeyRecord | null> => {
+  const record = await getRepository().findByIdForUser(apiKeyId, userId)
   if (!record) {
     return null
   }
 
   if (!record.revokedAt) {
     record.revokedAt = utcNow()
+    await getRepository().update(record)
   }
 
-  return record
+  return cloneRecord(record)
 }
 
-export const validateApiKey = (
+export const rotateApiKey = async (
+  input: RotateApiKeyInput,
+): Promise<{ apiKey: string; record: ApiKeyRecord } | null> => {
+  const record = await getRepository().findByIdForUser(input.apiKeyId, input.userId)
+  if (!record || record.revokedAt) {
+    return null
+  }
+
+  const nextSecret = randomBytes(32).toString('hex')
+  record.keyHash = hashSecret(nextSecret)
+  record.createdAt = utcNow()
+  record.revokedAt = null
+
+  const updated = await getRepository().update(record)
+
+  return {
+    apiKey: buildApiKeyValue(updated.id, nextSecret),
+    record: updated,
+  }
+}
+
+export const validateApiKey = async (
   apiKey: string,
   requiredScopes: string[] = [],
-): { valid: true; context: ApiKeyAuthContext } | { valid: false; reason: 'malformed' | 'invalid' | 'revoked' | 'forbidden' } => {
-  const match = /^dsk_([^\.]+)\.(.+)$/.exec(apiKey.trim())
-  if (!match) {
+): Promise<ApiKeyValidationResult> => {
+  const parsed = parseApiKey(apiKey)
+  if (!parsed) {
     return { valid: false, reason: 'malformed' }
   }
 
-  const [, apiKeyId, secret] = match
-  const record = apiKeysTable.find((entry) => entry.id === apiKeyId)
-  if (!record) {
+  const match = await findMatchingRecord(apiKey)
+  if (!match) {
     return { valid: false, reason: 'invalid' }
   }
+
+  const { record } = match
 
   if (record.revokedAt) {
     return { valid: false, reason: 'revoked' }
   }
 
-  if (hashSecret(secret) !== record.keyHash) {
-    return { valid: false, reason: 'invalid' }
-  }
-
-  const missingScope = requiredScopes.find((scope) => !record.scopes.includes(scope))
+  const normalizedRequiredScopes = normalizeScopes(requiredScopes)
+  const missingScope = normalizedRequiredScopes.find((scope) => !record.scopes.includes(scope))
   if (missingScope) {
     return { valid: false, reason: 'forbidden' }
   }
@@ -98,6 +382,12 @@ export const validateApiKey = (
   }
 }
 
-export const resetApiKeysTable = (): void => {
-  apiKeysTable.length = 0
+export const resetApiKeysTable = async (): Promise<void> => {
+  await getRepository().reset()
 }
+
+export const setApiKeyRepositoryForTests = (repository: ApiKeyRepository | null): void => {
+  repositoryOverride = repository
+}
+
+export { redactApiKeyForLogs }

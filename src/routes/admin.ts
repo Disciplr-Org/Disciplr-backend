@@ -1,7 +1,6 @@
 import { Router, Request, Response } from 'express'
-import { authenticate } from '../middleware/auth.js'
-import { authorize } from '../middleware/auth.middleware.js'
 import { requireAdmin } from '../middleware/rbac.js'
+import { authorize } from '../middleware/auth.middleware.js'
 import { metricsRateLimiter } from '../middleware/rateLimiter.js'
 import { UserRole, UserStatus } from '../types/user.js'
 import { userService, DeleteResult } from '../services/user.service.js'
@@ -10,6 +9,7 @@ import { createAuditLog, getAuditLogById, listAuditLogs } from '../lib/audit-log
 import { cancelVaultById } from '../services/vaultStore.js'
 import { getDBHealthMetrics } from '../services/dbMetrics.js'
 import { pool } from '../db/index.js'
+import { db } from '../db/knex.js'
 
 export const adminRouter = Router()
 
@@ -53,7 +53,7 @@ const sanitizeReasonText = (reason: string): string => {
 }
 
 // Apply authentication to all admin routes
-adminRouter.use(authenticate)
+adminRouter.use(authorize)
 adminRouter.use(requireAdmin)
 
 /**
@@ -75,29 +75,67 @@ adminRouter.post('/users/:userId/revoke-sessions', async (req: Request, res: Res
 const getStringQuery = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value : undefined
 
-adminRouter.get('/audit-logs', (req, res) => {
-  const logs = listAuditLogs({
-    actor_user_id: getStringQuery(req.query.actor_user_id),
-    action: getStringQuery(req.query.action),
-    target_type: getStringQuery(req.query.target_type),
-    target_id: getStringQuery(req.query.target_id),
-    limit: getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined,
-  })
+adminRouter.get('/audit-logs', async (req, res) => {
+  try {
+    const limit = getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined
+    const offset = getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined
+    
+    const logs = await listAuditLogs({
+      actor_user_id: getStringQuery(req.query.actor_user_id),
+      action: getStringQuery(req.query.action),
+      target_type: getStringQuery(req.query.target_type),
+      target_id: getStringQuery(req.query.target_id),
+      limit,
+      offset,
+    })
 
-  res.status(200).json({
-    audit_logs: logs,
-    count: logs.length,
-  })
+    // Get total count for pagination metadata
+    let countQuery = db('audit_logs').count('* as total')
+    
+    if (req.query.actor_user_id) {
+      countQuery = countQuery.where('actor_user_id', getStringQuery(req.query.actor_user_id))
+    }
+    if (req.query.action) {
+      countQuery = countQuery.where('action', getStringQuery(req.query.action))
+    }
+    if (req.query.target_type) {
+      countQuery = countQuery.where('target_type', getStringQuery(req.query.target_type))
+    }
+    if (req.query.target_id) {
+      countQuery = countQuery.where('target_id', getStringQuery(req.query.target_id))
+    }
+    
+    const [{ total }] = await countQuery
+    const totalCount = parseInt(total as string)
+    const currentOffset = offset || 0
+
+    res.status(200).json({
+      audit_logs: logs,
+      count: logs.length,
+      total: totalCount,
+      limit,
+      offset: currentOffset,
+      has_more: currentOffset + logs.length < totalCount,
+    })
+  } catch (error) {
+    console.error('Error fetching audit logs:', error)
+    res.status(500).json({ error: 'Failed to fetch audit logs' })
+  }
 })
 
-adminRouter.get('/audit-logs/:id', (req, res) => {
-  const auditLog = getAuditLogById(req.params.id)
-  if (!auditLog) {
-    res.status(404).json({ error: 'Audit log not found' })
-    return
-  }
+adminRouter.get('/audit-logs/:id', async (req, res) => {
+  try {
+    const auditLog = await getAuditLogById(req.params.id)
+    if (!auditLog) {
+      res.status(404).json({ error: 'Audit log not found' })
+      return
+    }
 
-  res.status(200).json(auditLog)
+    res.status(200).json(auditLog)
+  } catch (error) {
+    console.error('Error fetching audit log by ID:', error)
+    res.status(500).json({ error: 'Failed to fetch audit log' })
+  }
 })
 
 adminRouter.post('/overrides/vaults/:id/cancel', async (req, res) => {
@@ -139,7 +177,7 @@ adminRouter.post('/overrides/vaults/:id/cancel', async (req, res) => {
   if ('error' in cancelResult) {
     if (cancelResult.error === 'already_cancelled') {
       // Record this for idempotency tracking even though no change occurred
-      const auditLog = createAuditLog({
+      const auditLog = await createAuditLog({
         actor_user_id: req.user!.userId,
         action: 'admin.override',
         target_type: 'vault',
@@ -181,7 +219,7 @@ adminRouter.post('/overrides/vaults/:id/cancel', async (req, res) => {
   const sanitizedReason = reason ? sanitizeReasonText(String(reason)) : undefined
 
   // 5. Create rich audit log with before/after diffs and request context
-  const auditLog = createAuditLog({
+  const auditLog = await createAuditLog({
     actor_user_id: req.user!.userId,
     action: 'admin.override',
     target_type: 'vault',
@@ -261,7 +299,7 @@ adminRouter.patch('/users/:id/role', async (req, res) => {
     if (!targetUser) return res.status(404).json({ error: 'User not found' })
 
     const updatedUser = await userService.updateUserRole(req.params.id, role)
-    createAuditLog({
+    await createAuditLog({
       actor_user_id: req.user!.userId,
       action: 'user.role.update',
       target_type: 'user',
@@ -284,7 +322,7 @@ adminRouter.patch('/users/:id/status', async (req, res) => {
     if (!targetUser) return res.status(404).json({ error: 'User not found' })
 
     const updatedUser = await userService.updateUserStatus(req.params.id, status)
-    createAuditLog({
+    await createAuditLog({
       actor_user_id: req.user!.userId,
       action: 'user.status.update',
       target_type: 'user',
@@ -329,7 +367,7 @@ adminRouter.delete('/users/:id', async (req, res) => {
       })
     }
 
-    const auditLog = createAuditLog({
+    const auditLog = await createAuditLog({
       actor_user_id: req.user!.userId,
       action: hard ? 'user.hard_delete' : 'user.soft_delete',
       target_type: 'user',
@@ -369,7 +407,7 @@ adminRouter.post('/users/:id/restore', async (req, res) => {
       return res.status(500).json({ error: 'Failed to restore user' })
     }
 
-    const auditLog = createAuditLog({
+    const auditLog = await createAuditLog({
       actor_user_id: req.user!.userId,
       action: 'user.restore',
       target_type: 'user',
@@ -395,7 +433,7 @@ adminRouter.post('/users/:id/restore', async (req, res) => {
  * GET /api/admin/db/metrics
  * Rate limited to 20 req/min for security and performance
  */
-adminRouter.get('/db/metrics', metricsRateLimiter, (req: Request, res: Response) => {
+adminRouter.get('/db/metrics', metricsRateLimiter, async (req: Request, res: Response) => {
   try {
     // Validate pool is available
     if (!pool) {
@@ -409,7 +447,7 @@ adminRouter.get('/db/metrics', metricsRateLimiter, (req: Request, res: Response)
     const metrics = getDBHealthMetrics(pool)
 
     // Log metrics access for audit trail
-    createAuditLog({
+    await createAuditLog({
       actor_user_id: req.user!.userId,
       action: 'admin.metrics.access',
       target_type: 'database',

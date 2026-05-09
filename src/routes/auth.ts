@@ -41,8 +41,7 @@ const upsertMockUser = (userId: string): MockUser => {
 
 // ------------- Endpoints -------------
 
-authRouter.post('/register', requireJson, async (req, res) => {
-authRouter.post('/register', async (req, res, next) => {
+authRouter.post('/register', requireJson, async (req, res, next) => {
     const result = registerSchema.safeParse(req.body)
     if (!result.success) {
         return next(AppError.validation('Validation failed', result.error.format()))
@@ -56,34 +55,33 @@ authRouter.post('/register', async (req, res, next) => {
     }
 })
 
-authRouter.post('/login', requireJson, async (req, res) => {
-authRouter.post('/login', async (req, res, next) => {
+authRouter.post('/login', requireJson, async (req, res, next) => {
     // Support mock login if only userId is provided (from audit-logs feature branch)
     if (req.body.userId && !req.body.email && !req.body.password) {
         const { userId } = req.body as { userId: string }
 
-    const now = new Date().toISOString();
-    const user = upsertMockUser(userId);
-    user.lastLoginAt = now;
+        const now = new Date().toISOString();
+        const user = upsertMockUser(userId);
+        user.lastLoginAt = now;
 
-    const auditLog = createAuditLog({
-      actor_user_id: user.id,
-      action: "auth.login",
-      target_type: "user",
-      target_id: user.id,
-      metadata: {
-        userAgent: req.header("user-agent") ?? "unknown",
-        ip: req.ip,
-      },
-    });
+        const auditLog = await createAuditLog({
+          actor_user_id: user.id,
+          action: "auth.login",
+          target_type: "user",
+          target_id: user.id,
+          metadata: {
+            userAgent: req.header("user-agent") ?? "unknown",
+            ip: req.ip,
+          },
+        });
 
-    res.status(200).json({
-      user,
-      token: `mock-token-${user.id}`,
-      auditLogId: auditLog.id,
-    });
-    return;
-  }
+        res.status(200).json({
+          user,
+          token: `mock-token-${user.id}`,
+          auditLogId: auditLog.id,
+        });
+        return;
+    }
 
     // Real login flow
     const result = loginSchema.safeParse(req.body)
@@ -99,8 +97,7 @@ authRouter.post('/login', async (req, res, next) => {
     }
 })
 
-authRouter.post('/refresh', requireJson, async (req, res) => {
-authRouter.post('/refresh', async (req, res, next) => {
+authRouter.post('/refresh', requireJson, async (req, res, next) => {
     const result = refreshSchema.safeParse(req.body)
     if (!result.success) {
         return next(AppError.validation('Validation failed', result.error.format()))
@@ -114,7 +111,6 @@ authRouter.post('/refresh', async (req, res, next) => {
     }
 })
 
-authRouter.post('/logout', authenticate, requireJson, async (req: Request, res: Response) => {
 authRouter.post(
   "/logout",
   authenticate,
@@ -139,20 +135,17 @@ authRouter.post(
   },
 );
 
-authRouter.post('/logout-all', authenticate, requireJson, async (req: Request, res: Response) => {
 authRouter.post('/logout-all', authenticate, async (req: Request, res: Response, next: NextFunction) => {
   const userId = req.user?.userId
   if (!userId) {
     return next(AppError.unauthorized('Unauthorized'))
   }
 
-    await revokeAllUserSessions(userId);
-    res.json({ message: "Successfully logged out from all devices" });
-  },
-);
+  await revokeAllUserSessions(userId);
+  res.json({ message: "Successfully logged out from all devices" });
+});
 
-authRouter.post('/users/:id/role', requireJson, (req, res) => {
-authRouter.post('/users/:id/role', (req, res, next) => {
+authRouter.post('/users/:id/role', async (req, res, next) => {
   const actorRole = req.header('x-user-role')
   const actorId = req.header('x-user-id')
 
@@ -173,7 +166,7 @@ authRouter.post('/users/:id/role', (req, res, next) => {
   const previousRole = user.role;
   user.role = role as UserRole;
 
-  const auditLog = createAuditLog({
+  const auditLog = await createAuditLog({
     actor_user_id: actorId,
     action: "auth.role_changed",
     target_type: "user",

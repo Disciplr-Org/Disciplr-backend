@@ -18,7 +18,7 @@ export interface HorizonListenerConfig {
   retryMaxAttempts: number
   retryBackoffMs: number
   shutdownTimeoutMs: number
-  lagThreshold: number
+  lagThreshold?: number
 }
 
 function parseNonNegativeInteger(value: string | undefined, fallback?: number): number | undefined {
@@ -61,7 +61,7 @@ export function loadHorizonListenerConfig(): HorizonListenerConfig {
     retryMaxAttempts,
     retryBackoffMs,
     shutdownTimeoutMs,
-    lagThreshold,
+    lagThreshold: lagThresholdRaw ? Number(lagThresholdRaw) : 30,
   }
 }
 
@@ -98,7 +98,8 @@ export function validateHorizonListenerConfig(config: HorizonListenerConfig): vo
     errors.push('HORIZON_SHUTDOWN_TIMEOUT_MS must be a positive integer')
   }
 
-  if (isNaN(config.lagThreshold) || config.lagThreshold < 0) {
+  const lagThreshold = config.lagThreshold;
+if (lagThreshold !== undefined && (isNaN(lagThreshold) || lagThreshold < 0)) {
     errors.push('HORIZON_LAG_THRESHOLD must be a non-negative integer')
   }
 

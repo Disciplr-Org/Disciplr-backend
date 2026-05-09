@@ -1,5 +1,6 @@
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
 import type { Request, Response } from 'express'
+import { redactApiKeyForLogs } from '../services/apiKeys.js'
 
 export interface RateLimitConfig {
   windowMs: number
@@ -18,7 +19,8 @@ const logRateLimitBreached = (req: Request): void => {
   const method = req.method
   const path = req.path
   const userAgent = req.headers['user-agent'] ?? 'unknown'
-  const apiKey = req.headers['x-api-key'] ?? 'none'
+  const apiKeyHeader = typeof req.headers['x-api-key'] === 'string' ? req.headers['x-api-key'] : undefined
+  const apiKey = redactApiKeyForLogs(apiKeyHeader)
 
   console.warn(`[RATE_LIMIT_BREACH] ${timestamp} | IP: ${clientIp} | API_KEY: ${apiKey} | ${method} ${path} | User-Agent: ${userAgent}`)
 }
@@ -85,6 +87,12 @@ export const metricsRateLimiter = createRateLimiter({
   windowMs: 60 * 1000,
   max: 20,
   message: 'Metrics endpoint rate limit exceeded. Please try again later.',
+})
+
+export const apiKeyRateLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: 'Too many API key management requests. Please try again later.',
 })
 
 export { createRateLimiter }

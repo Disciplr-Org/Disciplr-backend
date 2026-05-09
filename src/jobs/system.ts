@@ -1,6 +1,7 @@
 import { defaultJobHandlers } from './handlers.js'
 import { InMemoryJobQueue, type QueueMetrics, type QueuedJobReceipt } from './queue.js'
 import { type EnqueueOptions, type JobPayloadByType, type JobType } from './types.js'
+import { recoverPendingExportJobs } from '../services/exportQueue.js'
 
 const parsePositiveInteger = (value: string | undefined, fallback: number): number => {
   if (!value) {
@@ -32,6 +33,7 @@ export class BackgroundJobSystem {
     this.queue.registerHandler('deadline.check', defaultJobHandlers['deadline.check'])
     this.queue.registerHandler('oracle.call', defaultJobHandlers['oracle.call'])
     this.queue.registerHandler('analytics.recompute', defaultJobHandlers['analytics.recompute'])
+    this.queue.registerHandler('export.generate', defaultJobHandlers['export.generate'])
   }
 
   start(): void {
@@ -43,6 +45,10 @@ export class BackgroundJobSystem {
     this.shuttingDown = false
     this.queue.start()
     this.scheduleRecurringJobs()
+    void recoverPendingExportJobs(this).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`[jobs:export.generate] failed to recover pending exports: ${message}`)
+    })
   }
 
   async stop(): Promise<void> {

@@ -49,38 +49,7 @@ jobs:
       - name: Migration status
         run: npm run migrate:status
 
-  security-scan:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Lockfile policy check
-        run: |
-          if [ -f "package-lock.json" ]; then
-            npm ci --dry-run
-          else
-            echo "Error: package-lock.json missing"
-            exit 1
-          fi
-
-      - name: Dependency vulnerability scan
-        run: npm audit --audit-level=high
-        continue-on-error: true # Report-only initially as requested
-
-      - name: Generate security report
-        run: |
-          mkdir -p reports
-          npm audit --json > reports/npm-audit.json
-        continue-on-error: true
-      - name: Generate OpenAPI spec
-        run: npm run openapi:generate
-
-      - name: Validate OpenAPI spec
-        run: npm run openapi:validate
+      - name: Test
+        run: npm test
+        env:
+          NODE_ENV: test

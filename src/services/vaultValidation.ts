@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { utcTimestampSchema } from '../lib/validation.js'
 export { flattenZodErrors } from '../lib/validation.js'
 
 // ─── Soroban-aligned constants ───────────────────────────────────────────────
@@ -9,14 +10,19 @@ export const VAULT_AMOUNT_MIN = 1
 /** Maximum vault / milestone amount (inclusive). Maps to i128 practical upper-bound. */
 export const VAULT_AMOUNT_MAX = 1_000_000_000
 
+/** Minimum number of milestones in a vault. */
+export const VAULT_MILESTONES_MIN = 1
+
+/** Maximum number of milestones in a vault. This caps request size and enforces operational limits. */
+export const VAULT_MILESTONES_MAX = 20
+
 /** Stellar strkey G-address: 'G' + 55 base-32 chars (A-Z, 2-7). */
 const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/
 
 // ─── Reusable field schemas ──────────────────────────────────────────────────
 
-// Zod v4 uses { error: '...' } instead of { required_error: '...' }
 const stellarAddressSchema = z
-  .string({ error: 'required' })
+  .string({ message: 'required' })
   .regex(STELLAR_ADDRESS_RE, 'must be a valid Stellar public key')
 
 /**
@@ -27,7 +33,7 @@ const stellarAddressSchema = z
 const amountStringSchema = z.preprocess(
   (val) => (typeof val === 'number' ? String(val) : val),
   z
-    .string({ error: 'required' })
+    .string({ message: 'required' })
     .refine(
       (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 },
       'must be a positive number',
@@ -38,18 +44,14 @@ const amountStringSchema = z.preprocess(
     ),
 )
 
-const isoTimestampSchema = z
-  .string({ error: 'required' })
-  .refine((v) => !isNaN(Date.parse(v)), 'must be a valid ISO timestamp')
-
 // ─── Milestone schema ────────────────────────────────────────────────────────
 
 const milestoneSchema = z.object({
   title: z
-    .string({ error: 'is required' })
+    .string({ message: 'is required' })
     .refine((v) => v.trim().length > 0, 'is required'),
   description: z.string().optional(),
-  dueDate: isoTimestampSchema,
+  dueDate: utcTimestampSchema,
   amount: amountStringSchema,
 })
 
@@ -58,8 +60,8 @@ const milestoneSchema = z.object({
 export const createVaultSchema = z
   .object({
     amount: amountStringSchema,
-    startDate: isoTimestampSchema,
-    endDate: isoTimestampSchema,
+    startDate: utcTimestampSchema,
+    endDate: utcTimestampSchema,
     verifier: stellarAddressSchema,
     destinations: z.object({
       success: stellarAddressSchema,
@@ -67,7 +69,8 @@ export const createVaultSchema = z
     }),
     milestones: z
       .array(milestoneSchema)
-      .min(1, 'must contain at least one item'),
+      .min(VAULT_MILESTONES_MIN, 'must contain at least one item')
+      .max(VAULT_MILESTONES_MAX, `must contain at most ${VAULT_MILESTONES_MAX} items`),
     creator: stellarAddressSchema.optional(),
     onChain: z
       .object({

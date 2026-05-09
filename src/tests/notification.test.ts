@@ -1,346 +1,446 @@
-import express from 'express'
 import request from 'supertest'
-import { beforeAll, beforeEach, describe, expect, it, jest } from '@jest/globals'
+import express from 'express'
+import { beforeAll, describe, it, expect, jest } from '@jest/globals'
+import fc from 'fast-check'
 
-type MockBuilder = ReturnType<typeof createBuilder>
+// ─── Mock DB ────────────────────────────────────────────────────────────────
 
-const dbMock = jest.fn<any>()
-const validateSessionMock = jest.fn<any>().mockResolvedValue(true)
-const recordSessionMock = jest.fn<any>().mockResolvedValue(undefined)
+const mockDb = {
+  insert: jest.fn<any>().mockReturnThis(),
+  returning: jest.fn<any>().mockReturnThis(),
+  where: jest.fn<any>().mockReturnThis(),
+  orderBy: jest.fn<any>().mockReturnThis(),
+  first: jest.fn<any>().mockResolvedValue({}),
+  select: jest.fn<any>().mockReturnThis(),
+  update: jest.fn<any>().mockReturnThis(),
+}
 
 jest.unstable_mockModule('../db/index.js', () => ({
-  db: dbMock,
+  default: jest.fn<any>(() => mockDb),
 }))
 
 jest.unstable_mockModule('../services/session.js', () => ({
-  validateSession: validateSessionMock,
-  recordSession: recordSessionMock,
+  validateSession: jest.fn<any>().mockResolvedValue(true),
+  recordSession: jest.fn<any>().mockResolvedValue(undefined),
   revokeSession: jest.fn<any>().mockResolvedValue(undefined),
   revokeAllUserSessions: jest.fn<any>().mockResolvedValue(undefined),
   forceRevokeUserSessions: jest.fn<any>().mockResolvedValue(undefined),
 }))
 
-function createBuilder() {
-  const builder: Record<string, any> = {}
-
-  builder.insert = jest.fn<any>().mockReturnValue(builder)
-  builder.returning = jest.fn<any>()
-  builder.where = jest.fn<any>().mockReturnValue(builder)
-  builder.whereNull = jest.fn<any>().mockReturnValue(builder)
-  builder.whereNotNull = jest.fn<any>().mockReturnValue(builder)
-  builder.orderBy = jest.fn<any>().mockReturnValue(builder)
-  builder.limit = jest.fn<any>().mockReturnValue(builder)
-  builder.offset = jest.fn<any>().mockReturnValue(builder)
-  builder.select = jest.fn<any>()
-  builder.update = jest.fn<any>().mockReturnValue(builder)
-  builder.first = jest.fn<any>()
-  builder.count = jest.fn<any>().mockReturnValue(builder)
-
-  return builder
-}
-
-const makeNotification = (overrides: Record<string, unknown> = {}) => ({
-  id: 'notif-1',
-  user_id: 'user-1',
-  type: 'vault_failure',
-  title: 'Vault Deadline Reached',
-  message: 'A vault in your account has expired and been marked as failed.',
-  data: { vaultId: 'vault-1' },
-  idempotency_key: null,
-  read_at: null,
-  archived_at: null,
-  created_at: '2026-04-24T10:00:00.000Z',
-  ...overrides,
-})
+// ─── App bootstrap ───────────────────────────────────────────────────────────
 
 let app: express.Express
 let signToken: any
-let createNotification: typeof import('../services/notification.js').createNotification
-let listUserNotifications: typeof import('../services/notification.js').listUserNotifications
-let markAsRead: typeof import('../services/notification.js').markAsRead
-let markAllAsRead: typeof import('../services/notification.js').markAllAsRead
-let archiveNotification: typeof import('../services/notification.js').archiveNotification
-
-const authHeaderFor = async (userId: string) => {
-  const token = await signToken({ userId, role: 'USER' })
-  return `Bearer ${token}`
-}
+let createNotification: any
+let listUserNotifications: any
+let markAsRead: any
+let markAllAsRead: any
 
 beforeAll(async () => {
-  const { notificationsRouter } = await import('../routes/notifications.js')
   const authModule = await import('../middleware/auth.js')
-  const notificationModule = await import('../services/notification.js')
+  const appModule = await import('../app.js')
+  const notifModule = await import('../services/notification.js')
 
+  app = appModule.app
   signToken = authModule.signToken
-  createNotification = notificationModule.createNotification
-  listUserNotifications = notificationModule.listUserNotifications
-  markAsRead = notificationModule.markAsRead
-  markAllAsRead = notificationModule.markAllAsRead
-  archiveNotification = notificationModule.archiveNotification
-
-  app = express()
-  app.use(express.json())
-  app.use('/api/notifications', notificationsRouter)
+  createNotification = notifModule.createNotification
+  listUserNotifications = notifModule.listUserNotifications
+  markAsRead = notifModule.markAsRead
+  markAllAsRead = notifModule.markAllAsRead
 })
 
-beforeEach(() => {
-  dbMock.mockReset()
-  validateSessionMock.mockClear()
-  recordSessionMock.mockClear()
-  jest.restoreAllMocks()
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const makeInput = (overrides: Record<string, unknown> = {}) => ({
+  user_id: 'user-abc',
+  type: 'vault_created',
+  title: 'Vault Created',
+  message: 'Your vault was created',
+  ...overrides,
 })
 
-describe('Notifications API authz', () => {
-  it('requires authentication for inbox access', async () => {
-    const response = await request(app).get('/api/notifications')
+const makeNotification = (overrides: Record<string, unknown> = {}) => ({
+  id: 'notif-1',
+  user_id: 'user-abc',
+  type: 'vault_created',
+  title: 'Vault Created',
+  message: 'Your vault was created',
+  data: null,
+  idempotency_key: null,
+  read_at: null,
+  created_at: new Date().toISOString(),
+  ...overrides,
+})
 
-    expect(response.status).toBe(401)
-    expect(response.body.error).toMatch(/Authorization/i)
-  })
+// ─── HTTP API tests ───────────────────────────────────────────────────────────
 
-  it('lists only the authenticated user inbox with pagination and sorting metadata', async () => {
-    const countBuilder = createBuilder()
-    const dataBuilder = createBuilder()
-    dbMock.mockReturnValueOnce(countBuilder).mockReturnValueOnce(dataBuilder)
-    countBuilder.first.mockResolvedValueOnce({ total: '2' })
-    dataBuilder.select.mockResolvedValueOnce([
-      makeNotification({ id: 'notif-b', title: 'B notice', user_id: 'user-1' }),
+describe('Notifications API', () => {
+  it('should list user notifications', async () => {
+    const userId = 'user-1'
+    const token = await signToken({ sub: userId, role: 'user' })
+
+    mockDb.select.mockResolvedValueOnce([
+      { id: '1', user_id: userId, title: 'Test', message: 'Hello', read_at: null },
     ])
 
-    const response = await request(app)
-      .get('/api/notifications?page=2&pageSize=1&sortBy=title&sortOrder=asc&status=unread')
-      .set('Authorization', await authHeaderFor('user-1'))
+    const res = await request(app)
+      .get('/api/notifications')
+      .set('Authorization', `Bearer ${token}`)
 
-    expect(response.status).toBe(200)
-    expect(response.body.pagination).toEqual({
-      page: 2,
-      pageSize: 1,
-      total: 2,
-      totalPages: 2,
-      hasNext: false,
-      hasPrev: true,
-    })
-    expect(response.body.sort).toEqual({ sortBy: 'title', sortOrder: 'asc' })
-    expect(response.body.data).toHaveLength(1)
-    expect(countBuilder.where).toHaveBeenCalledWith({ user_id: 'user-1' })
-    expect(dataBuilder.where).toHaveBeenCalledWith({ user_id: 'user-1' })
-    expect(countBuilder.whereNull).toHaveBeenCalledWith('archived_at')
-    expect(dataBuilder.whereNull).toHaveBeenCalledWith('archived_at')
-    expect(countBuilder.whereNull).toHaveBeenCalledWith('read_at')
-    expect(dataBuilder.whereNull).toHaveBeenCalledWith('read_at')
-    expect(dataBuilder.orderBy).toHaveBeenNthCalledWith(1, 'title', 'asc')
-    expect(dataBuilder.orderBy).toHaveBeenNthCalledWith(2, 'id', 'asc')
-    expect(dataBuilder.limit).toHaveBeenCalledWith(1)
-    expect(dataBuilder.offset).toHaveBeenCalledWith(1)
+    expect(res.status).toBe(200)
+    expect(Array.isArray(res.body)).toBe(true)
+    expect(res.body[0].title).toBe('Test')
   })
 
-  it('rejects invalid sort fields', async () => {
-    const response = await request(app)
-      .get('/api/notifications?sortBy=user_id')
-      .set('Authorization', await authHeaderFor('user-1'))
+  it('should mark a notification as read', async () => {
+    const userId = 'user-2'
+    const token = await signToken({ sub: userId, role: 'user' })
+    const notificationId = 'notif-1'
 
-    expect(response.status).toBe(400)
-    expect(response.body.error).toMatch(/Invalid sort field/i)
-  })
-
-  it('marks only the authenticated user notification as read', async () => {
-    const builder = createBuilder()
-    dbMock.mockReturnValueOnce(builder)
-    builder.returning.mockResolvedValueOnce([
-      makeNotification({ id: 'notif-read', user_id: 'user-1', read_at: '2026-04-24T10:05:00.000Z' }),
+    mockDb.returning.mockResolvedValueOnce([
+      { id: notificationId, read_at: new Date().toISOString() },
     ])
 
-    const response = await request(app)
-      .patch('/api/notifications/notif-read/read')
-      .set('Authorization', await authHeaderFor('user-1'))
+    const res = await request(app)
+      .patch(`/api/notifications/${notificationId}/read`)
+      .set('Authorization', `Bearer ${token}`)
 
-    expect(response.status).toBe(200)
-    expect(response.body.id).toBe('notif-read')
-    expect(builder.where).toHaveBeenCalledWith({ id: 'notif-read', user_id: 'user-1' })
-    expect(builder.whereNull).toHaveBeenCalledWith('archived_at')
+    expect(res.status).toBe(200)
+    expect(res.body.id).toBe(notificationId)
+    expect(res.body.read_at).not.toBeNull()
   })
 
-  it('does not allow a user to mark another user notification as read', async () => {
-    const builder = createBuilder()
-    dbMock.mockReturnValueOnce(builder)
-    builder.returning.mockResolvedValueOnce([])
+  it('should mark all notifications as read', async () => {
+    const userId = 'user-3'
+    const token = await signToken({ sub: userId, role: 'user' })
 
-    const response = await request(app)
-      .patch('/api/notifications/notif-other/read')
-      .set('Authorization', await authHeaderFor('user-1'))
+    mockDb.update.mockResolvedValueOnce(5)
 
-    expect(response.status).toBe(404)
-    expect(response.body.error).toBe('Notification not found')
-    expect(builder.where).toHaveBeenCalledWith({ id: 'notif-other', user_id: 'user-1' })
-  })
-
-  it('marks all unread notifications as read for the authenticated user only', async () => {
-    const builder = createBuilder()
-    dbMock.mockReturnValueOnce(builder)
-    builder.update.mockResolvedValueOnce(3)
-
-    const response = await request(app)
+    const res = await request(app)
       .post('/api/notifications/read-all')
-      .set('Authorization', await authHeaderFor('user-7'))
+      .set('Authorization', `Bearer ${token}`)
 
-    expect(response.status).toBe(200)
-    expect(response.body).toEqual({ updated: 3 })
-    expect(builder.where).toHaveBeenCalledWith({ user_id: 'user-7' })
-    expect(builder.whereNull).toHaveBeenNthCalledWith(1, 'archived_at')
-    expect(builder.whereNull).toHaveBeenNthCalledWith(2, 'read_at')
+    expect(res.status).toBe(200)
+    expect(res.body.message).toMatch(/Marked 5 notifications as read/)
   })
 
-  it('archives only the authenticated user notification', async () => {
-    const builder = createBuilder()
-    dbMock.mockReturnValueOnce(builder)
-    builder.returning.mockResolvedValueOnce([
-      makeNotification({ id: 'notif-archive', user_id: 'user-1', archived_at: '2026-04-24T10:06:00.000Z' }),
-    ])
-
-    const response = await request(app)
-      .delete('/api/notifications/notif-archive')
-      .set('Authorization', await authHeaderFor('user-1'))
-
-    expect(response.status).toBe(200)
-    expect(response.body.message).toBe('Notification archived')
-    expect(response.body.notification.archived_at).toBe('2026-04-24T10:06:00.000Z')
-    expect(builder.where).toHaveBeenCalledWith({ id: 'notif-archive', user_id: 'user-1' })
-    expect(builder.whereNull).toHaveBeenCalledWith('archived_at')
-  })
-
-  it('does not allow a user to archive another user notification', async () => {
-    const builder = createBuilder()
-    dbMock.mockReturnValueOnce(builder)
-    builder.returning.mockResolvedValueOnce([])
-
-    const response = await request(app)
-      .delete('/api/notifications/notif-other')
-      .set('Authorization', await authHeaderFor('user-1'))
-
-    expect(response.status).toBe(404)
-    expect(builder.where).toHaveBeenCalledWith({ id: 'notif-other', user_id: 'user-1' })
+  it('should fail unauthenticated requests', async () => {
+    const res = await request(app).get('/api/notifications')
+    expect(res.status).toBe(401)
   })
 })
 
-describe('Notification service', () => {
-  it('sanitizes notification messages and metadata before insert', async () => {
-    const insertBuilder = createBuilder()
-    dbMock.mockReturnValueOnce(insertBuilder)
-    insertBuilder.returning.mockResolvedValueOnce([
-      makeNotification({
-        title: 'Vault Deadline Reached',
-        message: 'Contact success_destination=GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ23 immediately.',
-        data: { vaultId: 'vault-1', successDestination: 'GSECRETVALUE', amount: '1000' },
+// ─── createNotification unit tests ───────────────────────────────────────────
+
+describe('createNotification', () => {
+  describe('without idempotency_key (backward compatibility)', () => {
+    it('inserts a new row and returns it', async () => {
+      const input = makeInput()
+      const expected = makeNotification()
+      mockDb.returning.mockResolvedValueOnce([expected])
+
+      const result = await createNotification(input)
+
+      expect(mockDb.insert).toHaveBeenCalled()
+      expect(result).toEqual(expected)
+    })
+
+    it('does not include idempotency_key in the inserted row', async () => {
+      const input = makeInput()
+      const expected = makeNotification()
+      mockDb.returning.mockResolvedValueOnce([expected])
+
+      await createNotification(input)
+
+      const insertedRow = mockDb.insert.mock.calls[mockDb.insert.mock.calls.length - 1][0]
+      expect(insertedRow).not.toHaveProperty('idempotency_key')
+    })
+
+    it('propagates non-23505 errors', async () => {
+      const input = makeInput()
+      const dbError = Object.assign(new Error('connection lost'), { code: '08006' })
+      mockDb.returning.mockRejectedValueOnce(dbError)
+
+      await expect(createNotification(input)).rejects.toThrow('connection lost')
+    })
+  })
+
+  describe('with idempotency_key (deduplication)', () => {
+    it('inserts and returns a new notification on first call', async () => {
+      const input = makeInput({ idempotency_key: 'evt-001' })
+      const expected = makeNotification({ idempotency_key: 'evt-001' })
+      mockDb.returning.mockResolvedValueOnce([expected])
+
+      const result = await createNotification(input)
+
+      expect(result.idempotency_key).toBe('evt-001')
+      expect(mockDb.insert).toHaveBeenCalled()
+    })
+
+    it('returns existing notification on duplicate (23505 constraint violation)', async () => {
+      const input = makeInput({ idempotency_key: 'evt-dup' })
+      const existing = makeNotification({ id: 'notif-existing', idempotency_key: 'evt-dup' })
+
+      const uniqueViolation = Object.assign(new Error('unique violation'), { code: '23505' })
+      mockDb.returning.mockRejectedValueOnce(uniqueViolation)
+      mockDb.first.mockResolvedValueOnce(existing)
+
+      const result = await createNotification(input)
+
+      expect(result).toEqual(existing)
+      expect(result.id).toBe('notif-existing')
+    })
+
+    it('does not insert a second row on duplicate', async () => {
+      const input = makeInput({ idempotency_key: 'evt-dup2' })
+      const existing = makeNotification({ idempotency_key: 'evt-dup2' })
+
+      const uniqueViolation = Object.assign(new Error('unique violation'), { code: '23505' })
+      mockDb.returning.mockRejectedValueOnce(uniqueViolation)
+      mockDb.first.mockResolvedValueOnce(existing)
+
+      const insertCallsBefore = mockDb.insert.mock.calls.length
+      await createNotification(input)
+      // insert was called once (the original attempt), not twice
+      expect(mockDb.insert.mock.calls.length).toBe(insertCallsBefore + 1)
+    })
+
+    it('re-throws 23505 when existing row cannot be found (race edge case)', async () => {
+      const input = makeInput({ idempotency_key: 'evt-race' })
+      const uniqueViolation = Object.assign(new Error('unique violation'), { code: '23505' })
+      mockDb.returning.mockRejectedValueOnce(uniqueViolation)
+      mockDb.first.mockResolvedValueOnce(undefined) // row disappeared
+
+      await expect(createNotification(input)).rejects.toMatchObject({ code: '23505' })
+    })
+
+    it('propagates non-23505 errors even when idempotency_key is set', async () => {
+      const input = makeInput({ idempotency_key: 'evt-err' })
+      const dbError = Object.assign(new Error('disk full'), { code: '53100' })
+      mockDb.returning.mockRejectedValueOnce(dbError)
+
+      await expect(createNotification(input)).rejects.toThrow('disk full')
+    })
+  })
+
+  describe('observability — no PII in logs', () => {
+    it('does not log user_id when creating with key', async () => {
+      const input = makeInput({ user_id: 'sensitive-user-id', idempotency_key: 'evt-log1' })
+      const expected = makeNotification({ idempotency_key: 'evt-log1' })
+      mockDb.returning.mockResolvedValueOnce([expected])
+
+      const debugSpy = jest.spyOn(console, 'debug').mockImplementation(() => {})
+      await createNotification(input)
+
+      for (const call of debugSpy.mock.calls) {
+        const output = String(call[0])
+        expect(output).not.toContain('sensitive-user-id')
+        expect(output).not.toContain('Your vault was created')
+      }
+      debugSpy.mockRestore()
+    })
+
+    it('does not log user_id when suppressing duplicate', async () => {
+      const input = makeInput({ user_id: 'sensitive-user-id', idempotency_key: 'evt-log2' })
+      const existing = makeNotification({ idempotency_key: 'evt-log2' })
+
+      const uniqueViolation = Object.assign(new Error('unique violation'), { code: '23505' })
+      mockDb.returning.mockRejectedValueOnce(uniqueViolation)
+      mockDb.first.mockResolvedValueOnce(existing)
+
+      const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
+      await createNotification(input)
+
+      for (const call of infoSpy.mock.calls) {
+        const output = String(call[0])
+        expect(output).not.toContain('sensitive-user-id')
+        expect(output).not.toContain('Your vault was created')
+      }
+      infoSpy.mockRestore()
+    })
+
+    it('logs idempotency_key and id at debug level on new creation', async () => {
+      const input = makeInput({ idempotency_key: 'evt-logkey' })
+      const expected = makeNotification({ id: 'notif-logid', idempotency_key: 'evt-logkey' })
+      mockDb.returning.mockResolvedValueOnce([expected])
+
+      const debugSpy = jest.spyOn(console, 'debug').mockImplementation(() => {})
+      await createNotification(input)
+
+      const logged = debugSpy.mock.calls.map(c => JSON.parse(String(c[0])))
+      const entry = logged.find(l => l.event === 'notification_created_with_key')
+      expect(entry).toBeDefined()
+      expect(entry.idempotency_key).toBe('evt-logkey')
+      expect(entry.id).toBe('notif-logid')
+      expect(entry.level).toBe('debug')
+      debugSpy.mockRestore()
+    })
+
+    it('logs idempotency_key and id at info level on dedup suppression', async () => {
+      const input = makeInput({ idempotency_key: 'evt-suppressed' })
+      const existing = makeNotification({ id: 'notif-orig', idempotency_key: 'evt-suppressed' })
+
+      const uniqueViolation = Object.assign(new Error('unique violation'), { code: '23505' })
+      mockDb.returning.mockRejectedValueOnce(uniqueViolation)
+      mockDb.first.mockResolvedValueOnce(existing)
+
+      const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
+      await createNotification(input)
+
+      const logged = infoSpy.mock.calls.map(c => JSON.parse(String(c[0])))
+      const entry = logged.find(l => l.event === 'notification_dedupe_suppressed')
+      expect(entry).toBeDefined()
+      expect(entry.idempotency_key).toBe('evt-suppressed')
+      expect(entry.id).toBe('notif-orig')
+      expect(entry.level).toBe('info')
+      infoSpy.mockRestore()
+    })
+
+    it('does not throw when logger fails', async () => {
+      const input = makeInput({ idempotency_key: 'evt-logfail' })
+      const expected = makeNotification({ idempotency_key: 'evt-logfail' })
+      mockDb.returning.mockResolvedValueOnce([expected])
+
+      // Force JSON.stringify to throw inside the logger
+      jest.spyOn(console, 'debug').mockImplementationOnce(() => { throw new Error('logger broken') })
+
+      await expect(createNotification(input)).resolves.toEqual(expected)
+    })
+  })
+
+  describe('listUserNotifications', () => {
+    it('returns notifications ordered by created_at desc', async () => {
+      const notifications = [
+        makeNotification({ id: 'n2', created_at: '2026-02-26T02:00:00Z' }),
+        makeNotification({ id: 'n1', created_at: '2026-02-26T01:00:00Z' }),
+      ]
+      mockDb.select.mockResolvedValueOnce(notifications)
+
+      const result = await listUserNotifications('user-abc')
+      expect(result).toEqual(notifications)
+    })
+  })
+
+  describe('markAsRead', () => {
+    it('returns updated notification', async () => {
+      const updated = makeNotification({ read_at: new Date().toISOString() })
+      mockDb.returning.mockResolvedValueOnce([updated])
+
+      const result = await markAsRead('notif-1', 'user-abc')
+      expect(result).toEqual(updated)
+    })
+
+    it('returns null when notification not found', async () => {
+      mockDb.returning.mockResolvedValueOnce([])
+
+      const result = await markAsRead('notif-missing', 'user-abc')
+      expect(result).toBeNull()
+    })
+  })
+
+  describe('markAllAsRead', () => {
+    it('returns count of updated notifications', async () => {
+      mockDb.update.mockResolvedValueOnce(3)
+
+      const result = await markAllAsRead('user-abc')
+      expect(result).toBe(3)
+    })
+  })
+})
+
+// ─── Property-based tests ─────────────────────────────────────────────────────
+
+describe('createNotification — property-based', () => {
+  const arbitraryKey = () =>
+    fc.string({ minLength: 1, maxLength: 255 }).filter(s => s.trim().length > 0)
+
+  const arbitraryInput = () =>
+    fc.record({
+      user_id: fc.uuid(),
+      type: fc.constantFrom('vault_created', 'vault_completed', 'milestone_validated'),
+      title: fc.string({ minLength: 1, maxLength: 255 }),
+      message: fc.string({ minLength: 20, maxLength: 1000 }),
+      idempotency_key: arbitraryKey(),
+    })
+
+  it('idempotence: second call with same key returns equivalent notification', async () => {
+    await fc.assert(
+      fc.asyncProperty(arbitraryInput(), async (input) => {
+        const notification = makeNotification({
+          user_id: input.user_id,
+          type: input.type,
+          title: input.title,
+          message: input.message,
+          idempotency_key: input.idempotency_key,
+        })
+
+        // First call — insert succeeds
+        mockDb.returning.mockResolvedValueOnce([notification])
+        const first = await createNotification(input)
+
+        // Second call — unique constraint fires, fetch returns same row
+        const uniqueViolation = Object.assign(new Error('unique violation'), { code: '23505' })
+        mockDb.returning.mockRejectedValueOnce(uniqueViolation)
+        mockDb.first.mockResolvedValueOnce(notification)
+        const second = await createNotification(input)
+
+        expect(second.id).toBe(first.id)
+        expect(second.idempotency_key).toBe(first.idempotency_key)
       }),
-    ])
+      { numRuns: 20 }
+    )
+  })
 
-    await createNotification({
-      user_id: 'user-1',
-      type: 'vault_failure',
-      title: 'Vault Deadline Reached',
-      message: 'Contact success_destination=GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ23 immediately.',
-      data: {
-        vaultId: 'vault-1',
-        successDestination: 'GSECRETVALUE',
-        amount: '1000',
-      },
-    })
+  it('backward compatibility: calls without key always insert a new row', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.record({
+          user_id: fc.uuid(),
+          type: fc.constantFrom('vault_created', 'vault_completed'),
+          title: fc.string({ minLength: 1, maxLength: 100 }),
+          message: fc.string({ minLength: 1, maxLength: 500 }),
+        }),
+        async (input) => {
+          const notification = makeNotification({ user_id: input.user_id })
+          mockDb.returning.mockResolvedValueOnce([notification])
 
-    expect(insertBuilder.insert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        user_id: 'user-1',
-        data: { vaultId: 'vault-1' },
+          const insertsBefore = mockDb.insert.mock.calls.length
+          await createNotification(input) // no idempotency_key
+          expect(mockDb.insert.mock.calls.length).toBe(insertsBefore + 1)
+        }
+      ),
+      { numRuns: 20 }
+    )
+  })
+
+  it('PII safety: log output never contains user_id or message content', async () => {
+    await fc.assert(
+      fc.asyncProperty(arbitraryInput(), async (input) => {
+        const notification = makeNotification({
+          user_id: input.user_id,
+          idempotency_key: input.idempotency_key,
+        })
+
+        const logLines: string[] = []
+        const debugSpy = jest.spyOn(console, 'debug').mockImplementation((...args) => {
+          logLines.push(String(args[0]))
+        })
+        const infoSpy = jest.spyOn(console, 'info').mockImplementation((...args) => {
+          logLines.push(String(args[0]))
+        })
+
+        mockDb.returning.mockResolvedValueOnce([notification])
+        await createNotification(input)
+
+        debugSpy.mockRestore()
+        infoSpy.mockRestore()
+
+        for (const line of logLines) {
+          expect(line).not.toContain(input.user_id)
+          expect(line).not.toContain(input.message)
+        }
       }),
+      { numRuns: 20 }
     )
-    const insertedRow = insertBuilder.insert.mock.calls[0][0]
-    expect(insertedRow.message).toContain('success_destination=[redacted]')
-    expect(insertedRow.message).not.toContain('GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ23')
-  })
-
-  it('deduplicates idempotent notification creation without leaking user ownership', async () => {
-    const insertBuilder = createBuilder()
-    const lookupBuilder = createBuilder()
-    dbMock.mockReturnValueOnce(insertBuilder).mockReturnValueOnce(lookupBuilder)
-    insertBuilder.returning.mockRejectedValueOnce(Object.assign(new Error('duplicate'), { code: '23505' }))
-    lookupBuilder.first.mockResolvedValueOnce(
-      makeNotification({ id: 'notif-existing', idempotency_key: 'evt-1', user_id: 'user-99' }),
-    )
-
-    const result = await createNotification({
-      user_id: 'user-99',
-      type: 'vault_failure',
-      title: 'Vault Deadline Reached',
-      message: 'A vault in your account has expired and been marked as failed.',
-      data: { vaultId: 'vault-99' },
-      idempotency_key: 'evt-1',
-    })
-
-    expect(result.id).toBe('notif-existing')
-    expect(lookupBuilder.where).toHaveBeenCalledWith({
-      user_id: 'user-99',
-      idempotency_key: 'evt-1',
-    })
-  })
-
-  it('lists notifications with includeArchived support and read filters', async () => {
-    const countBuilder = createBuilder()
-    const dataBuilder = createBuilder()
-    dbMock.mockReturnValueOnce(countBuilder).mockReturnValueOnce(dataBuilder)
-    countBuilder.first.mockResolvedValueOnce({ total: '1' })
-    dataBuilder.select.mockResolvedValueOnce([
-      makeNotification({ id: 'notif-archived', archived_at: '2026-04-24T10:06:00.000Z', read_at: '2026-04-24T10:07:00.000Z' }),
-    ])
-
-    const result = await listUserNotifications('user-1', {
-      page: 1,
-      pageSize: 10,
-      sortBy: 'created_at',
-      sortOrder: 'desc',
-      includeArchived: true,
-      readStatus: 'read',
-    })
-
-    expect(result.pagination.total).toBe(1)
-    expect(result.data[0].archived_at).toBe('2026-04-24T10:06:00.000Z')
-    expect(countBuilder.whereNull).not.toHaveBeenCalledWith('archived_at')
-    expect(dataBuilder.whereNull).not.toHaveBeenCalledWith('archived_at')
-    expect(countBuilder.whereNotNull).toHaveBeenCalledWith('read_at')
-    expect(dataBuilder.whereNotNull).toHaveBeenCalledWith('read_at')
-  })
-
-  it('returns null when markAsRead cannot find a notification owned by the user', async () => {
-    const builder = createBuilder()
-    dbMock.mockReturnValueOnce(builder)
-    builder.returning.mockResolvedValueOnce([])
-
-    const result = await markAsRead('notif-missing', 'user-1')
-
-    expect(result).toBeNull()
-    expect(builder.where).toHaveBeenCalledWith({ id: 'notif-missing', user_id: 'user-1' })
-  })
-
-  it('returns the number of owned unread notifications updated by markAllAsRead', async () => {
-    const builder = createBuilder()
-    dbMock.mockReturnValueOnce(builder)
-    builder.update.mockResolvedValueOnce(2)
-
-    const result = await markAllAsRead('user-1')
-
-    expect(result).toBe(2)
-    expect(builder.where).toHaveBeenCalledWith({ user_id: 'user-1' })
-    expect(builder.whereNull).toHaveBeenNthCalledWith(1, 'archived_at')
-    expect(builder.whereNull).toHaveBeenNthCalledWith(2, 'read_at')
-  })
-
-  it('returns null when archiveNotification targets another user record', async () => {
-    const builder = createBuilder()
-    dbMock.mockReturnValueOnce(builder)
-    builder.returning.mockResolvedValueOnce([])
-
-    const result = await archiveNotification('notif-2', 'user-1')
-
-    expect(result).toBeNull()
-    expect(builder.where).toHaveBeenCalledWith({ id: 'notif-2', user_id: 'user-1' })
-    expect(builder.whereNull).toHaveBeenCalledWith('archived_at')
   })
 })

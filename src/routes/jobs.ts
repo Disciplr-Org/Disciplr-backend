@@ -9,17 +9,13 @@ import {
 } from '../jobs/types.js'
 import { parseEnqueueOptions } from '../jobs/enqueueOptions.js'
 import { authenticate, authorize } from '../middleware/auth.js'
+import { requireJson } from '../middleware/requireJson.js'
 import { strictRateLimiter } from '../middleware/rateLimiter.js'
 import { createAuditLog } from '../lib/audit-logs.js'
-import { requireJson } from '../middleware/requireJson.js'
-
-
-import { formatValidationError } from '../lib/validation.js'
+import { formatValidationError, utcTimestampSchema } from '../lib/validation.js'
 
 // Helpers
-
 const requiredString = (field: string) => z.string().trim().min(1, `${field} is required`)
-
 const enqueueOptionsSchema = {
   delayMs: z.number().finite().min(0, 'delayMs must be greater than or equal to 0').optional(),
   maxAttempts: z
@@ -45,7 +41,7 @@ const enqueueSchema = z.discriminatedUnion('type', [
     payload: z.object({
       triggerSource: z.enum(['manual', 'scheduler']),
       vaultId: z.string().optional(),
-      deadlineIso: z.string().optional(),
+      deadlineIso: utcTimestampSchema.optional(),
     }),
     ...enqueueOptionsSchema,
   }),
@@ -90,9 +86,8 @@ const enqueueTypedJob = (
 }
 
 // Router factory
-
 export interface JobsRouterOptions {
-  /** Override the rate limiter applied to POST /enqueue. Pass a no-op in tests. */
+  /** Override rate limiter applied to POST /enqueue. Pass a no-op in tests. */
   enqueueLimiter?: RequestHandler
 }
 
@@ -116,7 +111,7 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
     const totalExecutions = metrics.totals.executions
     const failureRate = totalExecutions > 0 ? metrics.totals.failed / totalExecutions : 0
     const status = !metrics.running ? 'down' : failureRate > 0.25 ? 'degraded' : 'ok'
-
+    
     res.status(status === 'down' ? 503 : 200).json({
       status,
       timestamp: new Date().toISOString(),
@@ -132,34 +127,6 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
 
   // POST /enqueue — manually trigger a background job (admin only, strict rate limit)
   jobsRouter.post('/enqueue', enqueueLimiter, requireJson, (req, res) => {
-    if (!isRecord(req.body)) {
-      res.status(400).json({ error: 'Body must be a JSON object' })
-      return
-    }
-
-    const type = req.body.type
-    if (!isJobType(type)) {
-      res.status(400).json({
-        error:
-          'Invalid or missing job type. Supported types: notification.send, deadline.check, oracle.call, analytics.recompute',
-      })
-      return
-    }
-
-    const payload = req.body.payload
-    if (!isPayloadForJobType(type, payload)) {
-      res.status(400).json({
-        error: `Invalid payload for job type: ${type}`,
-      })
-      return
-    }
-
-    const options = parseEnqueueOptions(req.body)
-    if (!options) {
-      res.status(400).json({
-        error: 'Invalid enqueue options. delayMs must be >= 0 and maxAttempts must be an integer from 1 to 10.',
-      })
-  jobsRouter.post('/enqueue', enqueueLimiter, (req, res) => {
     const parseResult = enqueueSchema.safeParse(req.body)
     if (!parseResult.success) {
       res.status(400).json(formatValidationError(parseResult.error))
@@ -168,12 +135,9 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
 
     try {
       const { payload, type } = parseResult.data
-      const options: EnqueueOptions = parseEnqueueOptions({
-        delayMs: parseResult.data.delayMs,
-        maxAttempts: parseResult.data.maxAttempts,
-      })
+      const options: EnqueueOptions = parseEnqueueOptions(parseResult.data)
       const queuedJob = enqueueTypedJob(jobSystem, type, payload as JobPayloadByType[JobType], options)
-
+      
       createAuditLog({
         actor_user_id: req.user!.userId,
         action: 'job.enqueue',

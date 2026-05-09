@@ -1,12 +1,10 @@
-import { Router, Request, Response, NextFunction } from 'express'
+import { Router, Request, Response } from 'express'
 import { queryParser } from '../middleware/queryParser.js'
-import { db } from '../db/index.js'
+import { applyFilters, applySort, paginateArray, encodeCursor, decodeCursor } from '../utils/pagination.js'
+import db from '../db/index.js'
 import { requireUserAuth } from '../middleware/userAuth.js'
-import { AppError } from '../middleware/errorHandler.js'
-import { TransactionRepository } from '../repositories/transactionRepository.js'
 
 export const transactionsRouter = Router()
-const transactionRepo = new TransactionRepository(db)
 
 // GET /api/transactions - Get user's transaction history
 transactionsRouter.get(
@@ -16,56 +14,142 @@ transactionsRouter.get(
     allowedSortFields: ['created_at', 'stellar_timestamp', 'amount', 'type', 'stellar_ledger'],
     allowedFilterFields: ['type', 'vault_id', 'date_from', 'date_to', 'amount_min', 'amount_max'],
   }),
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response) => {
     try {
       const userId = req.authUser!.userId
-      const limit = Math.min(100, req.cursorPagination?.limit || 20)
+      let query = db('transactions').where('user_id', userId)
+
+      // Apply filters
+      if (req.filters) {
+        // Type filter
+        if (req.filters.type) {
+          query = query.where('type', req.filters.type)
+        }
+
+        // Vault ID filter
+        if (req.filters.vault_id) {
+          query = query.where('vault_id', req.filters.vault_id)
+        }
+
+        // Date range filters
+        if (req.filters.date_from) {
+          const dateFrom = Array.isArray(req.filters.date_from) ? req.filters.date_from[0] : req.filters.date_from
+          query = query.where('stellar_timestamp', '>=', new Date(dateFrom))
+        }
+        if (req.filters.date_to) {
+          const dateTo = Array.isArray(req.filters.date_to) ? req.filters.date_to[0] : req.filters.date_to
+          query = query.where('stellar_timestamp', '<=', new Date(dateTo))
+        }
+
+        // Amount range filters
+        if (req.filters.amount_min) {
+          query = query.where('amount', '>=', req.filters.amount_min)
+        }
+        if (req.filters.amount_max) {
+          query = query.where('amount', '<=', req.filters.amount_max)
+        }
+      }
+
+      // Apply sorting
+      if (req.sort) {
+        const sortField = req.sort.sortBy || 'stellar_timestamp'
+        const sortDirection = req.sort.sortOrder === 'desc' ? 'desc' : 'asc'
+        query = query.orderBy(sortField, sortDirection)
+      } else {
+        // Default sort: newest first
+        query = query.orderBy('stellar_timestamp', 'desc')
+      }
+
+      // Get total count for pagination
+      const totalCount = await query.clone().count('* as total').first()
+      const total = parseInt(String(totalCount?.total || '0'))
+
+      // Apply pagination (Cursor-based)
+      const limit = Math.min(100, parseInt(String(req.cursorPagination?.limit || '20')))
       const cursor = req.cursorPagination?.cursor
-      
-      const filters = {
-        vaultId: (Array.isArray(req.filters?.vault_id) ? req.filters?.vault_id[0] : req.filters?.vault_id) as string,
-        type: (Array.isArray(req.filters?.type) ? req.filters?.type[0] : req.filters?.type) as string,
-        dateFrom: req.filters?.date_from ? new Date((Array.isArray(req.filters.date_from) ? req.filters.date_from[0] : req.filters.date_from) as string) : undefined,
-        dateTo: req.filters?.date_to ? new Date((Array.isArray(req.filters.date_to) ? req.filters.date_to[0] : req.filters.date_to) as string) : undefined,
-        amountMin: (Array.isArray(req.filters?.amount_min) ? req.filters?.amount_min[0] : req.filters?.amount_min) as string,
-        amountMax: (Array.isArray(req.filters?.amount_max) ? req.filters?.amount_max[0] : req.filters?.amount_max) as string,
+
+      if (cursor) {
+        try {
+          const { timestamp, id } = decodeCursor(cursor)
+          // Stable cursor condition: (timestamp < current) OR (timestamp = current AND id < current)
+          // This assumes DESCENDING order by timestamp then id.
+          query = query.where(function() {
+            this.where('stellar_timestamp', '<', timestamp)
+                .orWhere(function() {
+                  this.where('stellar_timestamp', '=', timestamp)
+                      .andWhere('id', '<', id)
+                })
+          })
+        } catch (err) {
+          res.status(400).json({ error: 'Invalid cursor' })
+          return
+        }
       }
 
-      // If page is provided explicitly, use page-based pagination
-      if (req.query.page) {
-        const page = Math.max(1, parseInt(req.query.page as string) || 1)
-        const offset = (page - 1) * limit
-        
-        const { data, total } = await transactionRepo.list(userId, limit, offset, filters)
-        
-        res.json({
-          data,
-          pagination: {
-            page,
-            limit,
-            total,
-            total_pages: Math.ceil(total / limit),
-            has_more: offset + limit < total
-          }
-        })
-        return
+      // Enforce stable ordering
+      query = query.orderBy('stellar_timestamp', 'desc').orderBy('id', 'desc')
+
+      // Fetch one extra item to determine if there's a next page
+      const transactions = await query.limit(limit + 1).select(
+        'id',
+        'vault_id',
+        'type',
+        'amount',
+        'asset_code',
+        'tx_hash',
+        'from_account',
+        'to_account',
+        'memo',
+        'created_at',
+        'stellar_ledger',
+        'stellar_timestamp',
+        'explorer_url'
+      )
+
+      const hasMore = transactions.length > limit
+      const results = transactions.slice(0, limit)
+
+      let nextCursor: string | undefined
+      if (hasMore && results.length > 0) {
+        const lastItem = results[results.length - 1]
+        nextCursor = encodeCursor(new Date(lastItem.stellar_timestamp), lastItem.id)
       }
 
-      // Otherwise use cursor-based
-      const result = await transactionRepo.listWithCursor(userId, limit, cursor, filters)
-      res.json(result)
-    } catch (error: any) {
-      if (error.message === 'Invalid cursor') {
-        return next(AppError.badRequest('Invalid cursor'))
+      const response = {
+        data: results.map(tx => ({
+          id: tx.id,
+          vault_id: tx.vault_id,
+          type: tx.type,
+          amount: tx.amount,
+          asset_code: tx.asset_code,
+          tx_hash: tx.tx_hash,
+          from_account: tx.from_account,
+          to_account: tx.to_account,
+          memo: tx.memo,
+          created_at: tx.created_at,
+          stellar_ledger: tx.stellar_ledger,
+          stellar_timestamp: tx.stellar_timestamp,
+          explorer_url: tx.explorer_url
+        })),
+        pagination: {
+          limit,
+          cursor,
+          next_cursor: nextCursor,
+          has_more: hasMore,
+          count: results.length
+        }
       }
+
+      res.json(response)
+    } catch (error) {
       console.error('Error fetching transactions:', error)
-      return next(AppError.internal('Internal server error'))
+      res.status(500).json({ error: 'Internal server error' })
     }
   }
 )
 
 // GET /api/transactions/:id - Get specific transaction
-transactionsRouter.get('/:id', requireUserAuth, async (req: Request, res: Response, next: NextFunction) => {
+transactionsRouter.get('/:id', requireUserAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.authUser!.userId
     const transactionId = req.params.id
@@ -76,13 +160,28 @@ transactionsRouter.get('/:id', requireUserAuth, async (req: Request, res: Respon
       .first()
 
     if (!transaction) {
-      return next(AppError.notFound('Transaction not found'))
+      res.status(404).json({ error: 'Transaction not found' })
+      return
     }
 
-    res.json(transaction)
+    res.json({
+      id: transaction.id,
+      vault_id: transaction.vault_id,
+      type: transaction.type,
+      amount: transaction.amount,
+      asset_code: transaction.asset_code,
+      tx_hash: transaction.tx_hash,
+      from_account: transaction.from_account,
+      to_account: transaction.to_account,
+      memo: transaction.memo,
+      created_at: transaction.created_at,
+      stellar_ledger: transaction.stellar_ledger,
+      stellar_timestamp: transaction.stellar_timestamp,
+      explorer_url: transaction.explorer_url
+    })
   } catch (error) {
     console.error('Error fetching transaction:', error)
-    return next(AppError.internal('Internal server error'))
+    res.status(500).json({ error: 'Internal server error' })
   }
 })
 
@@ -94,7 +193,7 @@ transactionsRouter.get(
     allowedSortFields: ['created_at', 'stellar_timestamp', 'amount', 'type'],
     allowedFilterFields: ['type', 'date_from', 'date_to', 'amount_min', 'amount_max'],
   }),
-  async (req: Request, res: Response, next: NextFunction) => {
+  async (req: Request, res: Response) => {
     try {
       const userId = req.authUser!.userId
       const vaultId = req.params.vaultId
@@ -106,29 +205,96 @@ transactionsRouter.get(
         .first()
 
       if (!vault) {
-        return next(AppError.notFound('Vault not found'))
+        res.status(404).json({ error: 'Vault not found' })
+        return
       }
 
-      const limit = Math.min(100, req.cursorPagination?.limit || 20)
+      let query = db('transactions')
+        .where('user_id', userId)
+        .where('vault_id', vaultId)
+
+      // Apply filters (same as main endpoint)
+      if (req.filters) {
+        if (req.filters.type) {
+          query = query.where('type', req.filters.type)
+        }
+        if (req.filters.date_from) {
+          const dateFrom = Array.isArray(req.filters.date_from) ? req.filters.date_from[0] : req.filters.date_from
+          query = query.where('stellar_timestamp', '>=', new Date(dateFrom))
+        }
+        if (req.filters.date_to) {
+          const dateTo = Array.isArray(req.filters.date_to) ? req.filters.date_to[0] : req.filters.date_to
+          query = query.where('stellar_timestamp', '<=', new Date(dateTo))
+        }
+        if (req.filters.amount_min) {
+          query = query.where('amount', '>=', req.filters.amount_min)
+        }
+        if (req.filters.amount_max) {
+          query = query.where('amount', '<=', req.filters.amount_max)
+        }
+      }
+
+      // Apply pagination (Cursor-based)
+      const limit = Math.min(100, parseInt(String(req.cursorPagination?.limit || '20')))
       const cursor = req.cursorPagination?.cursor
-      
-      const filters = {
-        vaultId: vaultId,
-        type: (Array.isArray(req.filters?.type) ? req.filters?.type[0] : req.filters?.type) as string,
-        dateFrom: req.filters?.date_from ? new Date((Array.isArray(req.filters.date_from) ? req.filters.date_from[0] : req.filters.date_from) as string) : undefined,
-        dateTo: req.filters?.date_to ? new Date((Array.isArray(req.filters.date_to) ? req.filters.date_to[0] : req.filters.date_to) as string) : undefined,
-        amountMin: (Array.isArray(req.filters?.amount_min) ? req.filters?.amount_min[0] : req.filters?.amount_min) as string,
-        amountMax: (Array.isArray(req.filters?.amount_max) ? req.filters?.amount_max[0] : req.filters?.amount_max) as string,
+
+      if (cursor) {
+        try {
+          const { timestamp, id } = decodeCursor(cursor)
+          query = query.where(function() {
+            this.where('stellar_timestamp', '<', timestamp)
+                .orWhere(function() {
+                  this.where('stellar_timestamp', '=', timestamp)
+                      .andWhere('id', '<', id)
+                })
+          })
+        } catch (err) {
+          res.status(400).json({ error: 'Invalid cursor' })
+          return
+        }
       }
 
-      const result = await transactionRepo.listWithCursor(userId, limit, cursor, filters)
-      res.json(result)
-    } catch (error: any) {
-      if (error.message === 'Invalid cursor') {
-        return next(AppError.badRequest('Invalid cursor'))
+      // Enforce stable ordering
+      query = query.orderBy('stellar_timestamp', 'desc').orderBy('id', 'desc')
+
+      const transactions = await query.limit(limit + 1).select(
+        'id',
+        'vault_id',
+        'type',
+        'amount',
+        'asset_code',
+        'tx_hash',
+        'from_account',
+        'to_account',
+        'memo',
+        'created_at',
+        'stellar_ledger',
+        'stellar_timestamp',
+        'explorer_url'
+      )
+
+      const hasMore = transactions.length > limit
+      const results = transactions.slice(0, limit)
+
+      let nextCursor: string | undefined
+      if (hasMore && results.length > 0) {
+        const lastItem = results[results.length - 1]
+        nextCursor = encodeCursor(new Date(lastItem.stellar_timestamp), lastItem.id)
       }
+
+      res.json({
+        data: results,
+        pagination: {
+          limit,
+          cursor,
+          next_cursor: nextCursor,
+          has_more: hasMore,
+          count: results.length
+        }
+      })
+    } catch (error) {
       console.error('Error fetching vault transactions:', error)
-      return next(AppError.internal('Internal server error'))
+      res.status(500).json({ error: 'Internal server error' })
     }
   }
 )

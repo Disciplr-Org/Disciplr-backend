@@ -10,7 +10,7 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
         return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' })
     }
 
-    const token = authHeader.split(' ')[1]
+    const token = authHeader?.split(' ')[1]
 
     try {
         const payload = verifyAccessToken(token)
@@ -18,7 +18,7 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
             userId: payload.userId,
             role: payload.role as UserRole,
         }
-        const isValid = await validateSession(payload.jti)
+        const isValid = await validateSession(payload.jti || '')
         if (!isValid) return res.status(401).json({ error: 'Unauthorized: Session revoked' })
         next()
     } catch (error) {
