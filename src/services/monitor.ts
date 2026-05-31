@@ -10,7 +10,10 @@ let monitorInterval: NodeJS.Timeout | null = null
 /**
  * Checks the lag between the latest ledger on Horizon and the last processed ledger.
  */
-export const checkListenerLag = async (): Promise<void> => {
+// Module-scoped variable to store the latest lag value (in ledgers)
+let latestLag: number | undefined = undefined;
+
+export const getLatestListenerLag = (): number | undefined => latestLag;
   try {
     const config = getValidatedConfig()
     const server = new HorizonServer(config.horizonUrl)
@@ -29,7 +32,8 @@ export const checkListenerLag = async (): Promise<void> => {
       .first()
     
     const lastProcessedLedger = state?.last_processed_ledger ?? config.startLedger ?? 0
-    const lag = latestLedger - lastProcessedLedger
+    const lag = latestLedger - lastProcessedLedger;
+    latestLag = lag; // Update the module-scoped variable
 
     if (config.lagThreshold !== undefined && lag > config.lagThreshold) {
       console.warn(`[Monitor] Horizon listener lag detected: ${lag} ledgers (Threshold: ${config.lagThreshold})`)

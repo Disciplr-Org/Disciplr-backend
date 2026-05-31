@@ -1,7 +1,8 @@
 import cors from 'cors'
 import express from 'express'
 import helmet from 'helmet'
-import { config } from './config/index.js'
+import { config } from './config/index.js';
+import { metricsRateLimiter } from './middleware/rateLimiter.js';
 import { privacyLogger } from './middleware/privacy-logger.js'
 import { adminRouter } from './routes/admin.js'
 import { notificationsRouter } from './routes/notifications.js'

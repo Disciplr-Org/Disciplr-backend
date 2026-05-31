@@ -56,5 +56,7 @@ export function bootstrapApp() {
   app.use(notFound)
   app.use(errorHandler)
 
+  app.locals.jobSystem = jobSystem
+
   return { app, jobSystem }
 }
