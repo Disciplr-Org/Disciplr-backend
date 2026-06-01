@@ -1,9 +1,21 @@
-import { checkExpiredVaults } from './vaultTransitions.js'
 import db from '../db/index.js'
+import { BackgroundJobSystem } from '../jobs/system.js'
+import { getIdempotentResponse, saveIdempotentResponse } from './idempotency.js'
 
 const BATCH_SIZE = 50
 
 let intervalId: ReturnType<typeof setInterval> | null = null
+
+// Module-level default job system instance.
+// Tests can inject a different instance via startExpirationChecker's jobSystem param.
+let _defaultJobSystem: BackgroundJobSystem | null = null
+
+const getDefaultJobSystem = (): BackgroundJobSystem => {
+  if (!_defaultJobSystem) {
+    _defaultJobSystem = new BackgroundJobSystem()
+  }
+  return _defaultJobSystem
+}
 
 const processExpiredVaultsBatch = async (): Promise<string[]> => {
   const failed: string[] = []
@@ -40,12 +52,33 @@ const processExpiredVaultsBatch = async (): Promise<string[]> => {
   return failed
 }
 
-export const startExpirationChecker = (intervalMs = 60_000): void => {
+const enqueueSlashJobs = async (expired: string[], jobSystem: BackgroundJobSystem): Promise<void> => {
+  for (const vaultId of expired) {
+    if (process.env.DRY_RUN === 'true') {
+      console.log(`[ExpirationChecker] DRY_RUN: skipping enqueue for vault ${vaultId}`)
+      continue
+    }
+    const idempotencyKey = `slash_on_miss:${vaultId}`
+    const hash = vaultId
+    const existing = await getIdempotentResponse(idempotencyKey, hash)
+    if (existing) continue
+    jobSystem.enqueue('deadline.check', {
+      vaultId,
+      triggerSource: 'expiration-scheduler',
+    }, { maxAttempts: 3 })
+    await saveIdempotentResponse(idempotencyKey, hash, vaultId, { enqueued: true })
+  }
+}
+
+export const startExpirationChecker = (intervalMs = 60_000, jobSystem?: BackgroundJobSystem): void => {
   if (intervalId) return
+
+  const resolvedJobSystem = jobSystem ?? getDefaultJobSystem()
 
   const runCheck = async () => {
     try {
-      await processExpiredVaultsBatch()
+      const expired = await processExpiredVaultsBatch()
+      await enqueueSlashJobs(expired, resolvedJobSystem)
     } catch (error) {
       console.error('[ExpirationChecker] Check failed:', error)
     }
@@ -53,7 +86,9 @@ export const startExpirationChecker = (intervalMs = 60_000): void => {
 
   runCheck()
 
-  intervalId = setInterval(runCheck, intervalMs)
+  intervalId = setInterval(async () => {
+    await runCheck()
+  }, intervalMs)
   intervalId.unref()
 }
 

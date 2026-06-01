@@ -26,6 +26,26 @@ export const ErrorCode = {
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode]
 
+// ─── Soroban Contract Error Catalog ──────────────────────────────────────────
+export const SorobanErrorCatalog: Record<number, { code: ErrorCode; message: string; status: number }> = {
+  1: { code: ErrorCode.CONFLICT, message: 'Already initialized', status: 409 },
+  2: { code: ErrorCode.NOT_FOUND, message: 'Not initialized', status: 404 },
+  3: { code: ErrorCode.VALIDATION_ERROR, message: 'Invalid amount', status: 400 },
+  4: { code: ErrorCode.VALIDATION_ERROR, message: 'Invalid deadline', status: 400 },
+  5: { code: ErrorCode.VALIDATION_ERROR, message: 'No milestones', status: 400 },
+  6: { code: ErrorCode.CONFLICT, message: 'Not draft status', status: 409 },
+  7: { code: ErrorCode.CONFLICT, message: 'Not active status', status: 409 },
+  8: { code: ErrorCode.UNAUTHORIZED, message: 'Unauthorized', status: 401 },
+  9: { code: ErrorCode.CONFLICT, message: 'Already staked', status: 409 },
+  10: { code: ErrorCode.VALIDATION_ERROR, message: 'Milestone index out of range', status: 400 },
+  11: { code: ErrorCode.CONFLICT, message: 'Milestone already verified', status: 409 },
+  12: { code: ErrorCode.CONFLICT, message: 'Deadline passed', status: 409 },
+  13: { code: ErrorCode.CONFLICT, message: 'Deadline not reached', status: 409 },
+  14: { code: ErrorCode.CONFLICT, message: 'Milestones incomplete', status: 409 },
+  15: { code: ErrorCode.CONFLICT, message: 'Nothing to withdraw', status: 409 },
+  16: { code: ErrorCode.VALIDATION_ERROR, message: 'Amount mismatch', status: 400 },
+}
+
 // ─── Uniform error response shape ────────────────────────────────────────────
 export interface ErrorResponse {
   error: {
@@ -84,6 +104,14 @@ export class AppError extends Error {
 
   static unprocessable(message: string) {
     return new AppError(422, ErrorCode.UNPROCESSABLE, message)
+  }
+
+  static rateLimited(message = 'Too many requests') {
+    return new AppError(429, ErrorCode.RATE_LIMITED, message)
+  }
+
+  static payloadTooLarge(message = 'Payload too large') {
+    return new AppError(413, ErrorCode.PAYLOAD_TOO_LARGE, message)
   }
 }
 

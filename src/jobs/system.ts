@@ -72,6 +72,21 @@ export class BackgroundJobSystem {
     return this.queue.enqueue(type, payload, options)
   }
 
+  getDeadLetters() {
+    return this.queue.getDeadLetters()
+  }
+
+  getDeadLetter(jobId: string) {
+    return this.queue.getDeadLetter(jobId)
+  }
+
+  replayDeadLetter(jobId: string): QueuedJobReceipt<JobType> {
+    if (this.shuttingDown) {
+      throw new Error('Cannot replay dead-letter job: system is shutting down')
+    }
+    return this.queue.replayDeadLetter(jobId)
+  }
+
   getMetrics(): QueueMetrics {
     return this.queue.getMetrics()
   }

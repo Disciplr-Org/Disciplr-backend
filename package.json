@@ -58,6 +58,7 @@
     "@typescript-eslint/parser": "^8.46.0",
     "dotenv": "^17.3.1",
     "eslint": "^9.13.0",
+    "fast-check": "^3.23.1",
     "jest": "^30.2.0",
     "knex": "^3.1.0",
     "prisma": "^6.19.2",

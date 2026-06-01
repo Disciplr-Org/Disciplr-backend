@@ -137,6 +137,11 @@ interface HorizonEvent {
 ### 2. Event ID Generation
 Event IDs are generated in the format: `{transactionHash}:{eventIndex}`
 
+### 2.1 Event-to-State Mapping
+- `vault_completed`, `vault_failed`, and `vault_cancelled` events are mapped to persisted vault status transitions.
+- `milestone_validated` events are stored in `validations`; approved validations also advance the referenced milestone to `completed`.
+- Event processing is idempotent using the generated event ID format.
+
 ### 3. Event Type Validation
 Only the following event types are supported:
 - `vault_created`

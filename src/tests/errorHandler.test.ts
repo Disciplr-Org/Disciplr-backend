@@ -82,6 +82,34 @@ describe('AppError factories', () => {
     expect(e.code).toBe(ErrorCode.UNPROCESSABLE)
     expect(e.message).toBe('cannot process')
   })
+
+  it('rateLimited produces 429 + RATE_LIMITED code', () => {
+    const e = AppError.rateLimited()
+    expect(e.status).toBe(429)
+    expect(e.code).toBe(ErrorCode.RATE_LIMITED)
+    expect(e.message).toBe('Too many requests')
+  })
+
+  it('rateLimited accepts a custom message', () => {
+    const e = AppError.rateLimited('slow down')
+    expect(e.status).toBe(429)
+    expect(e.code).toBe(ErrorCode.RATE_LIMITED)
+    expect(e.message).toBe('slow down')
+  })
+
+  it('payloadTooLarge produces 413 + PAYLOAD_TOO_LARGE code', () => {
+    const e = AppError.payloadTooLarge()
+    expect(e.status).toBe(413)
+    expect(e.code).toBe(ErrorCode.PAYLOAD_TOO_LARGE)
+    expect(e.message).toBe('Payload too large')
+  })
+
+  it('payloadTooLarge accepts a custom message', () => {
+    const e = AppError.payloadTooLarge('request body exceeds 1 MB limit')
+    expect(e.status).toBe(413)
+    expect(e.code).toBe(ErrorCode.PAYLOAD_TOO_LARGE)
+    expect(e.message).toBe('request body exceeds 1 MB limit')
+  })
 })
 
 // ─── errorHandler middleware ──────────────────────────────────────────────────
@@ -232,6 +260,28 @@ describe('errorHandler middleware', () => {
     expect(res.status).toBe(500)
     expect(res.body.error.code).toBe('INTERNAL_ERROR')
     expect(res.body.error.requestId).toBeUndefined()
+  })
+
+  it('returns 429 for AppError.rateLimited', async () => {
+    const app = buildApp((_req, _res, next) => {
+      next(AppError.rateLimited('slow down'))
+    })
+
+    const res = await request(app).get('/test')
+    expect(res.status).toBe(429)
+    expect(res.body.error.code).toBe('RATE_LIMITED')
+    expect(res.body.error.message).toBe('slow down')
+  })
+
+  it('returns 413 for AppError.payloadTooLarge', async () => {
+    const app = buildApp((_req, _res, next) => {
+      next(AppError.payloadTooLarge())
+    })
+
+    const res = await request(app).get('/test')
+    expect(res.status).toBe(413)
+    expect(res.body.error.code).toBe('PAYLOAD_TOO_LARGE')
+    expect(res.body.error.message).toBe('Payload too large')
   })
 })
 

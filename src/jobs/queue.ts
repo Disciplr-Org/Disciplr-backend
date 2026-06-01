@@ -33,6 +33,13 @@ interface FailedJobRecord {
   error: string
 }
 
+export interface DeadLetterJobRecord extends FailedJobRecord {
+  payload: JobPayloadByType[JobType]
+  createdAt: number
+  runAt: number
+  maxAttempts: number
+}
+
 export interface QueuedJobReceipt<T extends JobType = JobType> {
   id: string
   type: T
@@ -46,6 +53,7 @@ export interface QueueTypeMetrics {
   active: number
   completed: number
   failed: number
+  deadLetter: number
 }
 
 export interface QueueTotals {
@@ -64,6 +72,7 @@ export interface QueueMetrics {
   queueDepth: number
   delayedJobs: number
   activeJobs: number
+  deadLetterJobs: number
   totals: QueueTotals
   byType: Record<JobType, QueueTypeMetrics>
   recentFailures: FailedJobRecord[]
@@ -88,11 +97,11 @@ const sleep = async (ms: number): Promise<void> => {
 
 const createEmptyTypeMetrics = (): Record<JobType, QueueTypeMetrics> => {
   return {
-    'notification.send': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0 },
-    'deadline.check': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0 },
-    'oracle.call': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0 },
-    'analytics.recompute': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0 },
-    'export.generate': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0 },
+    'notification.send': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0, deadLetter: 0 },
+    'deadline.check': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0, deadLetter: 0 },
+    'oracle.call': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0, deadLetter: 0 },
+    'analytics.recompute': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0, deadLetter: 0 },
+    'export.generate': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0, deadLetter: 0 },
   }
 }
 
@@ -119,6 +128,7 @@ export class InMemoryJobQueue {
   private readonly activeJobs = new Map<string, InternalQueuedJob<JobType>>()
   private readonly completedJobs: CompletedJobRecord[] = []
   private readonly failedJobs: FailedJobRecord[] = []
+  private readonly deadLetterJobs: DeadLetterJobRecord[] = []
   private readonly totals: QueueTotals = {
     enqueued: 0,
     executions: 0,
@@ -246,9 +256,15 @@ export class InMemoryJobQueue {
 
     let queueDepth = 0
     let delayedJobs = 0
+    let deadLetterJobs = 0
     for (const type of JOB_TYPES) {
       queueDepth += byType[type].queued
       delayedJobs += byType[type].delayed
+    }
+
+    for (const deadLetter of this.deadLetterJobs) {
+      byType[deadLetter.type].deadLetter += 1
+      deadLetterJobs += 1
     }
 
     return {
@@ -259,6 +275,7 @@ export class InMemoryJobQueue {
       queueDepth,
       delayedJobs,
       activeJobs: this.activeJobs.size,
+      deadLetterJobs,
       totals: { ...this.totals },
       byType,
       recentFailures: this.failedJobs.slice(0, 10),
@@ -314,7 +331,7 @@ export class InMemoryJobQueue {
         this.pendingJobs.push(job)
         this.sortPendingJobs()
       } else {
-        this.recordFailedJob(job, message)
+        this.moveToDeadLetter(job, message)
       }
     } finally {
       this.activeJobs.delete(job.id)
@@ -336,7 +353,7 @@ export class InMemoryJobQueue {
     this.trimHistory(this.completedJobs)
   }
 
-  private recordFailedJob(job: InternalQueuedJob<JobType>, error: string): void {
+  private moveToDeadLetter(job: InternalQueuedJob<JobType>, error: string): void {
     this.totals.failed += 1
     this.failedJobs.unshift({
       jobId: job.id,
@@ -346,6 +363,36 @@ export class InMemoryJobQueue {
       error,
     })
     this.trimHistory(this.failedJobs)
+
+    this.deadLetterJobs.unshift({
+      jobId: job.id,
+      type: job.type,
+      failedAt: new Date().toISOString(),
+      attempts: job.attempt,
+      error,
+      payload: job.payload,
+      createdAt: job.createdAt,
+      runAt: job.runAt,
+      maxAttempts: job.maxAttempts,
+    })
+  }
+
+  getDeadLetters(): DeadLetterJobRecord[] {
+    return [...this.deadLetterJobs]
+  }
+
+  getDeadLetter(jobId: string): DeadLetterJobRecord | undefined {
+    return this.deadLetterJobs.find((entry) => entry.jobId === jobId)
+  }
+
+  replayDeadLetter(jobId: string): QueuedJobReceipt<JobType> {
+    const index = this.deadLetterJobs.findIndex((entry) => entry.jobId === jobId)
+    if (index === -1) {
+      throw new Error('Dead-letter job not found')
+    }
+
+    const entry = this.deadLetterJobs.splice(index, 1)[0]
+    return this.enqueue(entry.type, entry.payload, { maxAttempts: entry.maxAttempts })
   }
 
   private trimHistory(records: unknown[]): void {

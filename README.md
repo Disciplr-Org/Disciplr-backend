@@ -5,13 +5,16 @@ API and milestone engine for Disciplr: programmable time-locked capital vaults o
 ## What it does
 
 - **Health:** `GET /api/health` — service status and timestamp.
-- **Vaults:**  
-  - `GET /api/vaults` — list all vaults (in-memory placeholder).  
-  - `POST /api/vaults` — create a vault (body: `creator`, `amount`, `endTimestamp`, `successDestination`, `failureDestination`).  
+- **Vaults:**
+  - `GET /api/vaults` — list all vaults (in-memory placeholder).
+  - `POST /api/vaults` — create a vault (body: `creator`, `amount`, `endTimestamp`, `successDestination`, `failureDestination`).
   - `GET /api/vaults/:id` — get a vault by id.
 - **Background jobs (custom worker queue):**
   - `GET /api/jobs/health` — queue status (`ok`, `degraded`, `down`) and failure-rate snapshot.
-  - `GET /api/jobs/metrics` — detailed queue metrics by job type.
+  - `GET /api/jobs/metrics` — detailed queue metrics by job type, including dead-letter counts.
+  - `GET /api/jobs/deadletters` — inspect jobs that exhausted retry attempts.
+  - `GET /api/jobs/deadletters/:id` — inspect a single dead-letter job.
+  - `POST /api/jobs/deadletters/:id/replay` — replay a dead-letter job back into the queue.
   - `POST /api/jobs/enqueue` — enqueue a typed job.
 - **Health:** `GET /api/health` - service status and timestamp.
 - **Auth:**
@@ -86,6 +89,7 @@ The backend now includes a generic background processor built as a custom in-mem
 - Typed job registration and validation.
 - Configurable worker concurrency and polling interval.
 - Retry handling with exponential backoff.
+- Dead-letter queue for permanently failed jobs.
 - Queue health and metrics endpoints.
 - Recurring scheduled jobs for deadline checks and analytics recompute.
 
@@ -122,8 +126,27 @@ curl -X POST http://localhost:3000/api/jobs/enqueue \
 - `DEADLINE_CHECK_INTERVAL_MS` (default: `60000`)
 - `ANALYTICS_RECOMPUTE_INTERVAL_MS` (default: `300000`)
 - `MAX_JSON_BODY_SIZE` (default: `500kb`)
+- `SOROBAN_CONTRACT_ID`, `SOROBAN_NETWORK_PASSPHRASE`, `SOROBAN_SOURCE_ACCOUNT`, `SOROBAN_RPC_URL`, `SOROBAN_SECRET_KEY` enable `onChain.mode: "submit"` for vault creation when all are set.
+- `SOROBAN_SUBMIT_POLL_INTERVAL_MS` (default: `1000`) controls the delay between `getTransaction` polls.
+- `SOROBAN_SUBMIT_POLL_MAX_ATTEMPTS` (default: `30`) caps transaction-status polling.
+- `SOROBAN_RPC_TIMEOUT_MS` (default: `30000`) bounds each Soroban RPC call.
+- `RETRY_MAX_ATTEMPTS`, `RETRY_BACKOFF_MS`, and `SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS` tune jittered retry/backoff for transient Soroban RPC failures.
+
+### Soroban environment variables
+
+The backend can optionally submit vault creation transactions directly to Stellar's Soroban network. This feature is enabled dynamically at runtime when all of the following variables are correctly configured:
+
+- `SOROBAN_CONTRACT_ID`: The 56-character base32 contract ID starting with `C`.
+- `SOROBAN_NETWORK_PASSPHRASE`: The passphrase for the Stellar network (e.g. `Test SDF Network ; September 2015`).
+- `SOROBAN_SOURCE_ACCOUNT`: The public key starting with `G` for the transaction submitter account.
+- `SOROBAN_RPC_URL`: The HTTP/HTTPS endpoint for the Soroban RPC server.
+- `SOROBAN_SECRET_KEY`: The Stellar secret key starting with `S` (never printed to logs).
+
+#### Startup Validation
+These environment variables are validated at startup. If any variable is configured with an invalid format (e.g. invalid contract ID, secret key, or RPC URL), the application will abort startup to prevent runtime errors. If they are only partially configured, a clear warning is emitted and submit mode is automatically disabled.
 
 ### Example: create a vault
+
 - Node.js + TypeScript
 - Express
 - Helmet + CORS
@@ -147,41 +170,45 @@ API runs at `http://localhost:3000`.
 
 ## Scripts
 
-| Command | Description |
-|---|---|
-| `npm run dev` | Run with tsx watch |
-| `npm run build` | Compile TypeScript to `dist/` |
-| `npm run start` | Run compiled `dist/index.js` |
-| `npm run lint` | Run ESLint on `src` |
-| `npm run test` | Run Jest test suite |
-| `npm run test:watch` | Run Jest in watch mode |
-| `npm run test:api-keys` | Run API key route tests |
-| `npm run migrate:make <name>` | Create migration file in `db/migrations` |
-| `npm run migrate:latest` | Apply all pending migrations |
-| `npm run migrate:rollback` | Roll back the latest migration batch |
-| `npm run migrate:status` | Show migration status |
-| `npm run openapi:generate` | Regenerate OpenAPI specification from Zod schemas |
-| `npm run openapi:validate` | Validate the generated OpenAPI specification |
+| Command                       | Description                                       |
+| ----------------------------- | ------------------------------------------------- |
+| `npm run dev`                 | Run with tsx watch                                |
+| `npm run build`               | Compile TypeScript to `dist/`                     |
+| `npm run start`               | Run compiled `dist/index.js`                      |
+| `npm run lint`                | Run ESLint on `src`                               |
+| `npm run test`                | Run Jest test suite                               |
+| `npm run test:watch`          | Run Jest in watch mode                            |
+| `npm run test:api-keys`       | Run API key route tests                           |
+| `npm run migrate:make <name>` | Create migration file in `db/migrations`          |
+| `npm run migrate:latest`      | Apply all pending migrations                      |
+| `npm run migrate:rollback`    | Roll back the latest migration batch              |
+| `npm run migrate:status`      | Show migration status                             |
+| `npm run openapi:generate`    | Regenerate OpenAPI specification from Zod schemas |
+| `npm run openapi:validate`    | Validate the generated OpenAPI specification      |
 
 ## API Documentation
 
 The API is documented using OpenAPI 3.1. The specification is generated automatically from the Zod schemas used in the code.
 
 ### View Documentation
+
 The specification file is located at `docs/openapi.yaml`. You can view it using any OpenAPI/Swagger viewer (e.g., [Swagger Editor](https://editor.swagger.io/)).
 
 ### Generate Specification
+
 To regenerate the specification after making changes to the routes or schemas:
+
 ```bash
 npm run openapi:generate
 ```
 
 ### Validate Specification
+
 To validate the specification:
+
 ```bash
 npm run openapi:validate
 ```
-
 
 ## Abuse detection instrumentation
 
@@ -205,18 +232,18 @@ The backend includes abuse-oriented security instrumentation middleware.
 
 ### Thresholds (env-configurable)
 
-| Env var | Default | Meaning |
-|---|---|---|
-| `SECURITY_RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit lookback window |
-| `SECURITY_RATE_LIMIT_MAX_REQUESTS` | `120` | Max requests per IP in rate-limit window |
-| `SECURITY_SUSPICIOUS_WINDOW_MS` | `300000` | Lookback window for suspicious pattern checks |
-| `SECURITY_SUSPICIOUS_404_THRESHOLD` | `20` | 404 count threshold for endpoint scan detection |
-| `SECURITY_SUSPICIOUS_DISTINCT_PATH_THRESHOLD` | `12` | Distinct 404 path threshold for endpoint scan detection |
-| `SECURITY_SUSPICIOUS_BAD_REQUEST_THRESHOLD` | `30` | 400 count threshold for repeated bad request detection |
-| `SECURITY_SUSPICIOUS_HIGH_VOLUME_THRESHOLD` | `300` | Total request threshold for high-volume bursts |
-| `SECURITY_FAILED_LOGIN_WINDOW_MS` | `900000` | Lookback window for failed login burst checks |
-| `SECURITY_FAILED_LOGIN_BURST_THRESHOLD` | `5` | Failed login threshold per IP before alert |
-| `SECURITY_ALERT_COOLDOWN_MS` | `300000` | Minimum time between repeated alerts per IP/pattern |
+| Env var                                       | Default  | Meaning                                                 |
+| --------------------------------------------- | -------- | ------------------------------------------------------- |
+| `SECURITY_RATE_LIMIT_WINDOW_MS`               | `60000`  | Rate-limit lookback window                              |
+| `SECURITY_RATE_LIMIT_MAX_REQUESTS`            | `120`    | Max requests per IP in rate-limit window                |
+| `SECURITY_SUSPICIOUS_WINDOW_MS`               | `300000` | Lookback window for suspicious pattern checks           |
+| `SECURITY_SUSPICIOUS_404_THRESHOLD`           | `20`     | 404 count threshold for endpoint scan detection         |
+| `SECURITY_SUSPICIOUS_DISTINCT_PATH_THRESHOLD` | `12`     | Distinct 404 path threshold for endpoint scan detection |
+| `SECURITY_SUSPICIOUS_BAD_REQUEST_THRESHOLD`   | `30`     | 400 count threshold for repeated bad request detection  |
+| `SECURITY_SUSPICIOUS_HIGH_VOLUME_THRESHOLD`   | `300`    | Total request threshold for high-volume bursts          |
+| `SECURITY_FAILED_LOGIN_WINDOW_MS`             | `900000` | Lookback window for failed login burst checks           |
+| `SECURITY_FAILED_LOGIN_BURST_THRESHOLD`       | `5`      | Failed login threshold per IP before alert              |
+| `SECURITY_ALERT_COOLDOWN_MS`                  | `300000` | Minimum time between repeated alerts per IP/pattern     |
 
 ### Alert wiring guidance
 
@@ -241,6 +268,36 @@ Migration tooling is standardized with Knex and PostgreSQL.
 - Config: `knexfile.cjs`
 - Baseline migration: `db/migrations/20260225190000_initial_baseline.cjs`
 - Full process (authoring, rollout, rollback, CI/CD): `docs/database-migrations.md`
+
+### Soroban Smart Contract Integration
+
+The backend can submit transactions directly to Soroban smart contracts when configured with the following environment variables:
+
+- `SOROBAN_CONTRACT_ID` — The contract address for the accountability vault
+- `SOROBAN_NETWORK_PASSPHRASE` — Stellar network passphrase (e.g., "Test SDF Network ; September 2015")
+- `SOROBAN_SOURCE_ACCOUNT` — Source account public key for transactions
+- `SOROBAN_RPC_URL` — Soroban RPC endpoint URL
+- `SOROBAN_SECRET_KEY` — Secret key for signing transactions (keep secure)
+
+#### Vault Lifecycle Methods
+
+The `SorobanClient` provides the following methods to drive the full vault lifecycle:
+
+| Method | Arguments | Description |
+|---|---|---|
+| `submitVaultCreation` | `vaultId`, `amount`, `verifier`, `successDestination`, `failureDestination`, `milestones` | Creates a new accountability vault |
+| `submitStake` | `vaultId`, `amount` | Stakes tokens into an existing vault |
+| `submitCheckIn` | `vaultId`, `milestoneId` | Records completion of a milestone |
+| `submitSlash` | `vaultId`, `milestoneId` | Slashes funds for missed milestone |
+| `submitClaim` | `vaultId` | Claims released funds from completed vault |
+| `submitWithdraw` | `vaultId` | Withdraws remaining funds |
+
+All lifecycle methods return a `VaultLifecycleResponse` with:
+- `method`: The contract method called
+- `args`: The arguments passed
+- `submission`: Object containing `attempted`, `status` (`success`/`not_configured`/`error`), and optionally `txHash` or `error`
+
+The methods are feature-flagged: if Soroban is not fully configured, they return `status: 'not_configured'` instead of throwing errors.
 
 ```text
 disciplr-backend/

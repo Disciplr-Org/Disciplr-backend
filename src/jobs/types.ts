@@ -17,7 +17,7 @@ export interface NotificationJobPayload {
 export interface DeadlineCheckJobPayload {
   vaultId?: string
   deadlineIso?: string
-  triggerSource: 'manual' | 'scheduler'
+  triggerSource: 'manual' | 'scheduler' | 'expiration-scheduler'
 }
 
 export interface OracleCallJobPayload {
@@ -96,7 +96,7 @@ export const isPayloadForJobType = (
       )
     case 'deadline.check':
       return (
-        (payload.triggerSource === 'manual' || payload.triggerSource === 'scheduler') &&
+        (payload.triggerSource === 'manual' || payload.triggerSource === 'scheduler' || payload.triggerSource === 'expiration-scheduler') &&
         isOptionalString(payload.vaultId) &&
         isOptionalString(payload.deadlineIso)
       )

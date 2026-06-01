@@ -12,7 +12,7 @@ import {
   IdempotencyConflictError,
 } from '../services/idempotency.js'
 import { buildVaultCreationPayload } from '../services/soroban.js'
-import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById } from '../services/vaultStore.js'
+import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById, updateVaultById, getVaultRevisionById } from '../services/vaultStore.js'
 import { createVaultSchema, flattenZodErrors } from '../services/vaultValidation.js'
 import { queryParser } from '../middleware/queryParser.js'
 import { utcNow } from '../utils/timestamps.js'
@@ -144,6 +144,30 @@ vaultsRouter.get('/:id', authenticate, async (req: Request, res: Response) => {
   
   // Return the vault found in legacy in-memory storage
   res.json(vault)
+})
+
+// PATCH /api/vaults/:id — optimistic-lock update; requires X-Vault-Revision header
+vaultsRouter.patch('/:id', authenticate, async (req: Request, res: Response) => {
+  const revision = req.header('x-vault-revision') ?? ''
+  if (!revision) {
+    res.status(400).json({ error: 'X-Vault-Revision header is required' })
+    return
+  }
+
+  try {
+    const updated = await updateVaultById(req.params.id, revision, req.body)
+    res.json(updated)
+  } catch (err: any) {
+    if (err?.status === 409) {
+      res.status(409).json({ error: err.message ?? 'Vault update conflict' })
+      return
+    }
+    if (err?.status === 400) {
+      res.status(400).json({ error: err.message })
+      return
+    }
+    res.status(500).json({ error: 'Failed to update vault' })
+  }
 })
 
 // POST /api/vaults/:id/cancel

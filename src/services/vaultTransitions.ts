@@ -1,5 +1,6 @@
 import { vaults, type Vault } from '../routes/vaults.js';
 import { allMilestonesVerified } from './milestones.js';
+import { type Knex } from 'knex';
 
 type TerminalStatus = 'completed' | 'failed' | 'cancelled';
 
@@ -121,6 +122,35 @@ export const getAllowedNextStates = (vaultId: string): string[] => {
   const vault = findVault(vaultId);
   if (!vault) return [];
   return ALLOWED_TRANSITIONS[vault.status] || [];
+};
+
+export const transitionVaultStatus = async (
+  trx: Knex.Transaction,
+  vaultId: string,
+  targetStatus: TerminalStatus,
+): Promise<TransitionResult> => {
+  const vault = await trx('vaults').where({ id: vaultId }).first()
+  if (!vault) {
+    return { success: false, error: 'Vault not found' }
+  }
+
+  if (TERMINAL_STATUSES.has(vault.status)) {
+    return { success: false, error: `Vault is already '${vault.status}' and cannot transition` }
+  }
+
+  if (!isValidTransition(vault.status, targetStatus)) {
+    const allowed = ALLOWED_TRANSITIONS[vault.status]
+    return {
+      success: false,
+      error: `Invalid transition: '${vault.status}' -> '${targetStatus}'. Allowed: ${allowed?.join(', ') || 'none'}`
+    }
+  }
+
+  await trx('vaults')
+    .where({ id: vaultId })
+    .update({ status: targetStatus, updated_at: new Date() })
+
+  return { success: true }
 };
 
 export const activateVault = (vaultId: string): TransitionResult => {

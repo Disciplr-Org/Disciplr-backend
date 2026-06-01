@@ -1,7 +1,7 @@
 import * as StellarSdk from '@stellar/stellar-sdk'
 import { db } from '../db/knex.js'
 import { getValidatedConfig } from '../config/horizonListener.js'
-import { markVaultExpiries } from './vault.js'
+import { markVaultExpiries } from './vaultExpiry.service.js'
 
 const HorizonServer = (StellarSdk as any).Horizon?.Server ?? (StellarSdk as any).Server
 

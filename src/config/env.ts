@@ -89,9 +89,18 @@ export const envSchema = z
     RETRY_BACKOFF_MS: nonNegativeInt(100),
 
     // ── Soroban ─────────────────────────────────────────────────
-    SOROBAN_CONTRACT_ID: z.string().optional(),
+    SOROBAN_CONTRACT_ID: z.string().optional().refine(
+      (v) => !v || /^C[0-9A-Z]{55}$/.test(v),
+      'must be a valid Soroban contract ID (56-char base32 starting with C)'
+    ),
     SOROBAN_NETWORK_PASSPHRASE: z.string().optional(),
     SOROBAN_SOURCE_ACCOUNT: z.string().optional(),
+    SOROBAN_RPC_URL: httpUrl().optional(),
+    SOROBAN_SECRET_KEY: z.string().optional(),
+    SOROBAN_SUBMIT_POLL_INTERVAL_MS: positiveInt(1_000),
+    SOROBAN_SUBMIT_POLL_MAX_ATTEMPTS: positiveInt(30),
+    SOROBAN_RPC_TIMEOUT_MS: positiveInt(30_000),
+    SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS: positiveInt(5_000),
     STELLAR_NETWORK_PASSPHRASE: z.string().optional(),
 
     // ── Job system ──────────────────────────────────────────────
@@ -127,7 +136,8 @@ export const envSchema = z
     HORIZON_LAG_THRESHOLD: nonNegativeInt(10),
     HORIZON_SHUTDOWN_TIMEOUT_MS: positiveInt(30_000),
   })
-  .superRefine((data, ctx) => {
+    .superRefine((data, ctx) => {
+    // Existing CORS warning
     if (data.NODE_ENV === "production" && data.CORS_ORIGINS === "*") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -211,6 +221,33 @@ export function validateEnv(
       }
     }
   }
+
+    // Detect partially configured Soroban environment variables.
+    const sorobanVars = [
+      "SOROBAN_CONTRACT_ID",
+      "SOROBAN_NETWORK_PASSPHRASE",
+      "SOROBAN_SOURCE_ACCOUNT",
+      "SOROBAN_RPC_URL",
+      "SOROBAN_SECRET_KEY",
+    ];
+    const present = sorobanVars.filter((key) => validated[key as keyof Env] !== undefined && validated[key as keyof Env] !== "");
+    if (present.length > 0 && present.length < sorobanVars.length) {
+      const w: EnvWarning = {
+        variable: "SOROBAN_*",
+        message: "Partial Soroban configuration detected; submit mode will be disabled",
+      };
+      warnings.push(w);
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "config.partial_soroban_configuration",
+          service: "disciplr-backend",
+          variable: "SOROBAN_*",
+          message: w.message,
+          timestamp: new Date().toISOString(),
+        }),
+      );
+    }
 
   return { env: validated, warnings };
 }

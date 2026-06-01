@@ -129,7 +129,9 @@ export const healthService = {
 
   async checkHorizonListener(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<{
     status: string;
+    lastProcessedLedger?: number;
     lastProcessedAt?: string;
+    timeSinceLastEventMs?: number;
     error?: string;
   }> {
     const isEnabled = !!(process.env.HORIZON_URL && process.env.CONTRACT_ADDRESS);
@@ -137,12 +139,16 @@ export const healthService = {
       return { status: 'disabled' };
     }
 
+    // Degraded threshold: 5 minutes. Down threshold: 30 minutes.
+    const DEGRADED_THRESHOLD_MS = Number(process.env.LISTENER_DEGRADED_THRESHOLD_MS ?? 5 * 60 * 1000);
+    const DOWN_THRESHOLD_MS = Number(process.env.LISTENER_DOWN_THRESHOLD_MS ?? 30 * 60 * 1000);
+
     try {
       const state = await withTimeout(
         db('listener_state')
           .where({ service_name: 'horizon_listener' })
-          .select('last_processed_at')
-          .first() as Promise<{ last_processed_at: string | Date } | undefined>,
+          .select('last_processed_at', 'last_processed_ledger')
+          .first() as Promise<{ last_processed_at: string | Date; last_processed_ledger: number | null } | undefined>,
         timeoutMs,
         'Horizon listener check',
       );
@@ -152,18 +158,35 @@ export const healthService = {
       }
 
       const lastProcessedAt = new Date(state.last_processed_at);
-      const staleThresholdMs = 5 * 60 * 1000; // 5 minutes
-      const isStale = Date.now() - lastProcessedAt.getTime() > staleThresholdMs;
+      const timeSinceLastEventMs = Date.now() - lastProcessedAt.getTime();
+      const lastProcessedLedger = state.last_processed_ledger != null ? Number(state.last_processed_ledger) : undefined;
 
-      if (isStale) {
+      if (timeSinceLastEventMs > DOWN_THRESHOLD_MS) {
+        return {
+          status: 'down',
+          lastProcessedLedger,
+          lastProcessedAt: lastProcessedAt.toISOString(),
+          timeSinceLastEventMs,
+          error: 'Listener appears to be down (no events for over 30 minutes)',
+        };
+      }
+
+      if (timeSinceLastEventMs > DEGRADED_THRESHOLD_MS) {
         return {
           status: 'stale',
+          lastProcessedLedger,
           lastProcessedAt: lastProcessedAt.toISOString(),
+          timeSinceLastEventMs,
           error: 'Heartbeat is stale',
         };
       }
 
-      return { status: 'up', lastProcessedAt: lastProcessedAt.toISOString() };
+      return {
+        status: 'up',
+        lastProcessedLedger,
+        lastProcessedAt: lastProcessedAt.toISOString(),
+        timeSinceLastEventMs,
+      };
     } catch (error: any) {
       return { status: 'down', error: error.message };
     }
