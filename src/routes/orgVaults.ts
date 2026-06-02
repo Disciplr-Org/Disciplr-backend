@@ -1,3 +1,4 @@
+import { orgReadRateLimiter, orgWriteRateLimiter } from '../middleware/rateLimiter.js'
 import { Router, Request, Response } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireOrgAccess } from '../middleware/orgAuth.js'
@@ -11,6 +12,7 @@ orgVaultsRouter.get(
   '/:orgId/vaults',
   authenticate,
   requireOrgAccess('owner', 'admin', 'member'),
+  orgReadRateLimiter, 
   queryParser({
     allowedSortFields: ['createdAt', 'amount', 'endTimestamp', 'status'],
     allowedFilterFields: ['status', 'creator'],

@@ -1,7 +1,7 @@
 import { NotificationService } from '../services/notifications/factory.js'
 import { processJob as processExportJob } from '../services/exportQueue.js'
 import type { JobHandler, JobType } from './types.js'
-import { markVaultExpiries } from '../services/vault.js'
+import { markVaultExpiries } from '../services/vaultExpiry.service.js'
 
 type JobHandlerRegistry = {
   [K in JobType]: JobHandler<K>
@@ -34,6 +34,13 @@ export const defaultJobHandlers: JobHandlerRegistry = {
       'deadline.check',
       `checked target=${target} deadline=${deadline} expired=${expiredCount} source=${payload.triggerSource} attempt=${context.attempt}`,
     )
+    if (payload.vaultId) {
+      const sorobanPayload = buildSlashOnMissPayload(payload.vaultId)
+      logJob(
+        'deadline.check',
+        `slash_on_miss built vault=${payload.vaultId} status=${sorobanPayload.submission.status}`,
+      )
+    }
   },
   'oracle.call': async (payload, context) => {
     await sleep(60)

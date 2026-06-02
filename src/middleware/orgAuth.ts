@@ -28,6 +28,7 @@ export function requireOrgAccess(...allowedRoles: (OrgRole | string)[]) {
       res.status(404).json({ error: 'Organization not found' })
       return
     }
+      (req as any).orgId = orgId
 
     const role = lookupMemberRole(orgId, userId)
     if (!role) {

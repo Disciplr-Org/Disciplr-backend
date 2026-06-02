@@ -1,3 +1,4 @@
+import { orgAnalyticsRateLimiter } from '../middleware/rateLimiter.js'
 import { Router, Request, Response } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireOrgAccess } from '../middleware/orgAuth.js'
@@ -9,6 +10,7 @@ orgAnalyticsRouter.get(
   '/:orgId/analytics',
   authenticate,
   requireOrgAccess('owner', 'admin'),
+  orgAnalyticsRateLimiter, 
   (req: Request, res: Response) => {
     const { orgId } = req.params
     const orgVaults = vaults.filter((v) => v.orgId === orgId)

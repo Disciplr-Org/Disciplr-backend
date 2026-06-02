@@ -27,6 +27,7 @@ export interface VerificationRecord {
   verifierUserId: string
   targetId: string
   result: VerificationResult
+  evidenceHash: string | null
   disputed: boolean
   timestamp: string
 }
@@ -206,6 +207,7 @@ export const recordVerification = async (
   targetId: string,
   result: VerificationResult,
   disputed = false,
+  evidenceHash?: string,
 ): Promise<VerificationRecord> => {
   const existing = await db('verifications')
     .where({
@@ -228,6 +230,7 @@ export const recordVerification = async (
       target_id: targetId,
       result,
       disputed,
+      evidence_hash: evidenceHash ?? null,
     })
     .returning('*')
 
@@ -372,7 +375,194 @@ function mapVerificationRow(row: any): VerificationRecord {
     verifierUserId: row.verifier_user_id,
     targetId: row.target_id,
     result: row.result,
+    evidenceHash: row.evidence_hash ?? null,
     disputed: !!row.disputed,
     timestamp: row.timestamp?.toISOString?.() ?? row.timestamp,
+  }
+}
+
+// ============================================================================
+// Multi-Verifier Milestone Approval Functions
+// ============================================================================
+
+export type MilestoneApprovalStatus = 'pending' | 'approved' | 'rejected'
+
+export interface MilestoneApproval {
+  id: string
+  milestoneId: string
+  verifierUserId: string
+  approvalStatus: MilestoneApprovalStatus
+  createdAt: string
+  updatedAt: string
+}
+
+export class DuplicateVerifierVoteError extends Error {
+  constructor(milestoneId: string, verifierUserId: string) {
+    super(`Verifier ${verifierUserId} has already voted on milestone ${milestoneId}`)
+    this.name = 'DuplicateVerifierVoteError'
+  }
+}
+
+/**
+ * Record a milestone approval vote from a verifier.
+ * Throws DuplicateVerifierVoteError if verifier has already voted.
+ */
+export const recordMilestoneApproval = async (
+  milestoneId: string,
+  verifierUserId: string,
+  approvalStatus: MilestoneApprovalStatus,
+): Promise<MilestoneApproval> => {
+  // Check if verifier has already voted
+  const existing = await db('milestone_approvals')
+    .where({
+      milestone_id: milestoneId,
+      verifier_user_id: verifierUserId,
+    })
+    .first()
+
+  if (existing) {
+    throw new DuplicateVerifierVoteError(milestoneId, verifierUserId)
+  }
+
+  const [record] = await db('milestone_approvals')
+    .insert({
+      milestone_id: milestoneId,
+      verifier_user_id: verifierUserId,
+      approval_status: approvalStatus,
+    })
+    .returning('*')
+
+  return mapMilestoneApprovalRow(record)
+}
+
+/**
+ * Get all approvals for a milestone, grouped by approval status.
+ */
+export const getMilestoneApprovals = async (
+  milestoneId: string,
+): Promise<{
+  approved: MilestoneApproval[]
+  rejected: MilestoneApproval[]
+  pending: MilestoneApproval[]
+}> => {
+  const rows = await db('milestone_approvals')
+    .where({ milestone_id: milestoneId })
+    .orderBy('created_at', 'asc')
+
+  const grouped = {
+    approved: [] as MilestoneApproval[],
+    rejected: [] as MilestoneApproval[],
+    pending: [] as MilestoneApproval[],
+  }
+
+  rows.forEach((row) => {
+    const mapped = mapMilestoneApprovalRow(row)
+    grouped[row.approval_status].push(mapped)
+  })
+
+  return grouped
+}
+
+/**
+ * Get count of approved verifiers for a milestone.
+ */
+export const getApprovedVerifiersCount = async (milestoneId: string): Promise<number> => {
+  const result = await db('milestone_approvals')
+    .where({
+      milestone_id: milestoneId,
+      approval_status: 'approved',
+    })
+    .count<{ count: string }>('id as count')
+    .first()
+
+  return Number(result?.count ?? 0)
+}
+
+/**
+ * Get all distinct verifier votes for a milestone.
+ */
+export const getAllMilestoneVotes = async (milestoneId: string): Promise<MilestoneApproval[]> => {
+  const rows = await db('milestone_approvals')
+    .where({ milestone_id: milestoneId })
+    .orderBy('created_at', 'asc')
+
+  return rows.map(mapMilestoneApprovalRow)
+}
+
+/**
+ * Check if a verifier has already voted on a milestone.
+ */
+export const hasVerifierVoted = async (
+  milestoneId: string,
+  verifierUserId: string,
+): Promise<boolean> => {
+  const record = await db('milestone_approvals')
+    .where({
+      milestone_id: milestoneId,
+      verifier_user_id: verifierUserId,
+    })
+    .first()
+
+  return !!record
+}
+
+/**
+ * Check if a milestone has met its approval threshold.
+ */
+export const hasMilestoneMetThreshold = async (
+  milestoneId: string,
+  approvalThreshold: number,
+): Promise<boolean> => {
+  const approvedCount = await getApprovedVerifiersCount(milestoneId)
+  return approvedCount >= approvalThreshold
+}
+
+/**
+ * Get approval progress for a milestone (X of Y approvals).
+ */
+export const getMilestoneApprovalProgress = async (
+  milestoneId: string,
+  approvalThreshold: number,
+): Promise<{
+  approved: number
+  rejected: number
+  pending: number
+  required: number
+  isComplete: boolean
+  isRejected: boolean
+}> => {
+  const approvals = await getMilestoneApprovals(milestoneId)
+  const approved = approvals.approved.length
+  const rejected = approvals.rejected.length
+  const pending = approvals.pending.length
+
+  return {
+    approved,
+    rejected,
+    pending,
+    required: approvalThreshold,
+    isComplete: approved >= approvalThreshold,
+    isRejected: rejected > 0, // Reject if any verifier rejects
+  }
+}
+
+/**
+ * Reset milestone approvals (for testing).
+ */
+export const resetMilestoneApprovals = async (): Promise<void> => {
+  await db('milestone_approvals').del()
+}
+
+/**
+ * Map database row to MilestoneApproval interface.
+ */
+function mapMilestoneApprovalRow(row: any): MilestoneApproval {
+  return {
+    id: row.id,
+    milestoneId: row.milestone_id,
+    verifierUserId: row.verifier_user_id,
+    approvalStatus: row.approval_status,
+    createdAt: row.created_at?.toISOString?.() ?? row.created_at,
+    updatedAt: row.updated_at?.toISOString?.() ?? row.updated_at,
   }
 }

@@ -2,6 +2,30 @@
 
 This document describes the consistent patterns used across the Disciplr API, including list endpoint contracts, pagination strategies, and query parameter handling.
 
+## Cursor Pagination
+
+Transaction endpoints support cursor-based pagination.
+
+Example:
+
+GET /api/transactions?limit=20&cursor=<opaque_cursor>
+
+Response:
+
+{
+  "pagination": {
+    "limit": 20,
+    "cursor": "...",
+    "next_cursor": "...",
+    "has_more": true
+  }
+}
+
+Notes:
+- Cursors are opaque base64url encoded values
+- Ordering uses stellar_timestamp + id for stability
+- Clients should only use next_cursor returned by the API
+
 ## List Endpoint Contract
 
 All list endpoints in the API share a consistent query contract for pagination, sorting, and filtering.

@@ -17,6 +17,10 @@ The `EventProcessor` service is responsible for consuming parsed blockchain even
 | `vault_failed` | Updates vault status to `failed`. | |
 | `vault_cancelled` | Updates vault status to `cancelled`. | |
 
+### Implementation Note
+- Vault status events (`vault_completed`, `vault_failed`, `vault_cancelled`) are applied through `src/services/vaultTransitions.ts`, which centralizes transition rules and updates the persisted vault row.
+- Validation events (`milestone_validated`) are recorded in `validations`; `approved` validations also advance the milestone to `completed`.
+
 ## Out-of-Order Events
 
 Blockchain events may occasionally arrive out of order (e.g., a milestone creation event processed before its parent vault creation event).

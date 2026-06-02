@@ -41,14 +41,11 @@ const createRateLimiter = (config: Partial<RateLimitConfig> = {}) => {
     skipSuccessfulRequests: config.skipSuccessfulRequests ?? false,
     keyGenerator: config.keyGenerator ?? ((req) => {
       const apiKey = req.headers['x-api-key'] as string | undefined
+      const orgId = (req as any).orgId
+      if (orgId) {
+        return `org:${orgId}:${apiKey ?? normalizeIp(req)}`
+      }
       return apiKey ?? normalizeIp(req)
-    }),
-    handler: config.handler ?? ((req, res) => {
-      logRateLimitBreached(req)
-      res.status(429).json({
-        error: config.message ?? 'Too many requests, please try again later.',
-        retryAfter: Math.ceil(windowMs / 1000),
-      })
     }),
   })
 }

@@ -1,20 +1,27 @@
 import { jest } from '@jest/globals';
+import express from 'express';
+import request from 'supertest';
 
-// Use dynamic imports as seen in other project tests to handle ES modules correctly with Jest
-const { app } = await import('../app.js');
+// Import just what we need for this test, avoiding full app import that pulls in Prisma
 const { errorHandler, ErrorCode } = await import('../middleware/errorHandler.js');
-const request = (await import('supertest')).default;
-
-// Add a test route and the error handler to the app instance for this test
-// We add it to the existing app instance which already has express.json() configured
-app.post('/test-body-limit', (req, res) => {
-  res.status(200).json({ status: 'ok', size: JSON.stringify(req.body).length });
-});
-
-// We need to add the error handler AFTER the route
-app.use(errorHandler);
 
 describe('JSON Body Size Limits', () => {
+  let app: express.Application;
+
+  beforeEach(() => {
+    // Create a minimal test app
+    app = express();
+    app.use(express.json({ limit: '500kb' }));
+
+    // Add a test route
+    app.post('/test-body-limit', (req: express.Request, res: express.Response) => {
+      res.status(200).json({ status: 'ok', size: JSON.stringify(req.body).length });
+    });
+
+    // Add the error handler
+    app.use(errorHandler);
+  });
+
   it('should accept payloads within the default 500kb limit', async () => {
     // Generate a payload that is ~10kb
     const normalPayload = {
