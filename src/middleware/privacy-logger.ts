@@ -1,135 +1,155 @@
 import { Request, Response, NextFunction } from 'express'
-import { logger, withCorrelationId, getOrGenerateCorrelationId } from './logger.js'
-import { utcNow } from '../utils/timestamps.js'
 
-const SENSITIVE_FIELDS = new Set([
-    'email',
-    'password',
-    'token',
-    'accesstoken',
-    'refreshtoken',
-    'apikey',
-    'api_key',
-    'secret',
-    'clientsecret',
-    'creator',
-    'successdestination',
-    'failuredestination',
-    'authorization',
-    'cookie',
-    'x-api-key'
+export const REDACTED = '[REDACTED]'
+
+const SENSITIVE_KEYS = new Set([
+  'password',
+  'passwordhash',
+  'token',
+  'accesstoken',
+  'refreshtoken',
+  'apikey',
+  'api_key',
+  'secret',
+  'authorization',
+  'x-api-key',
+  'x-auth-token',
+  'credential',
+  'credentials',
+  'ssn',
+  'creditcard',
+  'credit_card',
+  'cvv',
+  'pin',
+  'cookie',
+  // legacy / extra fields
+  'clientsecret',
+  'email',
+  'creator',
+  'successdestination',
+  'failuredestination',
 ])
 
+const EMAIL_RE = /[^@\s]+@[^@\s]+\.[^@\s]+/
+const JWT_RE = /^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$/
+
+/** Returns true when a field name should always be redacted. */
 export function shouldRedact(key: string): boolean {
-    return SENSITIVE_FIELDS.has(key.toLowerCase())
-}
-
-export function redact(value: any, seen = new WeakSet()): any {
-    if (value === null || value === undefined) {
-        return value
-    }
-    
-    // Primitive values
-    if (typeof value !== 'object') {
-        return value
-    }
-
-    // Circular reference check
-    if (seen.has(value)) {
-        return '[Circular]'
-    }
-    seen.add(value)
-    
-    if (Array.isArray(value)) {
-        return value.map(item => redact(item, seen))
-    }
-
-    // Handle common objects that are not plain objects
-    if (value instanceof Date) {
-        return value.toISOString()
-    }
-    if (value instanceof RegExp) {
-        return value.toString()
-    }
-    if (Buffer.isBuffer(value)) {
-        return '[Buffer]'
-    }
-    
-    const result: Record<string, any> = {}
-    for (const [k, v] of Object.entries(value)) {
-        if (shouldRedact(k)) {
-            result[k] = '***REDACTED***'
-        } else {
-            result[k] = redact(v, seen)
-        }
-    }
-    return result
+  return SENSITIVE_KEYS.has(key.toLowerCase())
 }
 
 /**
- * Privacy logger middleware using Pino for structured JSON output.
- *
- * Masks PII in logs by:
- * - Masking IP addresses (partial redaction)
- * - Redacting sensitive fields in request bodies and headers
- * - Emitting structured JSON for log aggregators
- *
- * Note: Pino's built-in redaction (configured in logger.ts) also handles
- * sensitive field redaction automatically. This middleware adds additional
- * IP masking and structured event logging.
+ * Pure recursive redactor. Deep-copies input and replaces:
+ * - values under sensitive field names, and
+ * - string values matching email or JWT patterns
+ * with REDACTED. Never mutates the original.
  */
-export const privacyLogger = (req: Request, _res: Response, next: NextFunction) => {
-    const correlationId = getOrGenerateCorrelationId(req)
-    const privacyLog = withCorrelationId(logger, correlationId)
+export function redact<T>(value: T, seen = new WeakSet()): T {
+  if (value === null || value === undefined) return value
+  if (typeof value !== 'object') {
+    // Pattern-match primitive strings
+    if (typeof value === 'string') {
+      if (EMAIL_RE.test(value) || JWT_RE.test(value)) return REDACTED as unknown as T
+    }
+    return value
+  }
 
-    const ip = req.ip || req.socket.remoteAddress || 'unknown'
-    const maskedIp = maskIp(ip)
+  if (seen.has(value as object)) return REDACTED as unknown as T
+  seen.add(value as object)
 
-    const timestamp = utcNow()
-    const method = req.method
-    const url = req.url
+  if (Array.isArray(value)) {
+    return value.map((item) => redact(item, seen)) as unknown as T
+  }
 
-    // Store correlation ID and logger on request for downstream handlers
-    ;(req as any).correlationId = correlationId
-    ;(req as any).logger = privacyLog
+  if (value instanceof Date) return value.toISOString() as unknown as T
+  if (value instanceof RegExp) return value.toString() as unknown as T
+  if (Buffer.isBuffer(value)) return '[Buffer]' as unknown as T
 
-    // Redact sensitive fields before logging
-    // (Pino will also redact based on its configuration, but we do it here
-    // for explicit control and compatibility with existing tests)
-    const sanitizedBody = redact(req.body)
-    const sanitizedHeaders = redact(req.headers)
-
-    // Emit structured privacy event log
-    privacyLog.debug(
-        {
-            event: 'privacy.request_logged',
-            ip: {
-                original: ip,
-                masked: maskedIp,
-            },
-            request: {
-                method,
-                url,
-                headers: sanitizedHeaders,
-                body: sanitizedBody,
-            },
-            timestamp,
-        },
-        `Privacy-logged: ${method} ${url}`,
-    )
-
-    next()
+  const result: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    result[k] = shouldRedact(k) ? REDACTED : redact(v, seen)
+  }
+  return result as unknown as T
 }
 
+/** Mask IPv4 to a.b.x.x, IPv6 to first three groups + xxxx segments. */
 export function maskIp(ip: string): string {
-    if (ip.includes(':')) {
-        // IPv6
-        return ip.split(':').slice(0, 3).join(':') + ':xxxx:xxxx:xxxx:xxxx:xxxx'
+  if (!ip) return 'unknown'
+  if (ip.includes(':')) {
+    const groups = ip.split(':')
+    return groups.slice(0, 3).join(':') + ':xxxx:xxxx:xxxx:xxxx:xxxx'
+  }
+  const parts = ip.split('.')
+  if (parts.length === 4) return `${parts[0]}.${parts[1]}.x.x`
+  return 'unknown'
+}
+
+interface LogLine {
+  timestamp: string
+  level: 'info'
+  event: 'http.request'
+  service: 'disciplr-backend'
+  method: string
+  url: string
+  status: number
+  durationMs: number
+  ip: string
+  body: Record<string, unknown> | null
+  query: Record<string, unknown> | null
+  headers: Record<string, unknown>
+}
+
+/**
+ * Privacy-hardened request logger middleware.
+ *
+ * Emits exactly one structured JSON line per request (on response finish)
+ * via console.log. All PII is redacted before emission.
+ * Never mutates req/res. Always calls next().
+ */
+export const privacyLogger = (req: Request, res: Response, next: NextFunction): void => {
+  const start = Date.now()
+
+  res.on('finish', () => {
+    try {
+      const rawIp = req.ip ?? req.socket?.remoteAddress ?? ''
+      const rawBody = req.body
+      const rawQuery = req.query as Record<string, unknown>
+
+      const line: LogLine = {
+        timestamp: new Date().toISOString(),
+        level: 'info',
+        event: 'http.request',
+        service: 'disciplr-backend',
+        method: req.method,
+        url: req.url,
+        status: res.statusCode,
+        durationMs: Date.now() - start,
+        ip: rawIp ? maskIp(rawIp) : 'unknown',
+        body:
+          rawBody !== null &&
+          rawBody !== undefined &&
+          typeof rawBody === 'object' &&
+          !Array.isArray(rawBody)
+            ? redact(rawBody as Record<string, unknown>)
+            : null,
+        query:
+          rawQuery && Object.keys(rawQuery).length > 0
+            ? redact(rawQuery)
+            : null,
+        headers: redact(req.headers as Record<string, unknown>),
+      }
+
+      console.log(JSON.stringify(line))
+    } catch {
+      console.log(
+        JSON.stringify({
+          level: 'error',
+          event: 'privacy-logger.serialization-failure',
+          timestamp: new Date().toISOString(),
+        }),
+      )
     }
-    // IPv4
-    const parts = ip.split('.')
-    if (parts.length === 4) {
-        return `${parts[0]}.${parts[1]}.x.x`
-    }
-    return 'x.x.x.x'
+  })
+
+  next()
 }
