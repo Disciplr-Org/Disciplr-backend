@@ -10,6 +10,10 @@ export interface PerformanceThresholds {
   maxResponseTime: number
   /** Maximum acceptable query count (if available) */
   maxQueryCount?: number
+  /** Indexes expected to appear in representative EXPLAIN plans */
+  expectedIndexes?: readonly string[]
+  /** Allow sequential scans for tiny aggregate queries where indexes are not useful */
+  allowSequentialScan?: boolean
 }
 
 export interface PerformanceResult {
@@ -23,39 +27,135 @@ export interface PerformanceResult {
   violations: string[]
 }
 
+export interface EndpointPerformanceBudget extends PerformanceThresholds {
+  /** Human-readable route or query shape covered by the budget */
+  endpoint: string
+  /** Query scenario covered by this budget */
+  scenario: string
+}
+
+export interface QueryPlanAnalysis {
+  nodeTypes: string[]
+  usedIndexes: string[]
+  sequentialScanTables: string[]
+}
+
+export const PERFORMANCE_BUDGETS = {
+  'vaults.list': {
+    endpoint: 'GET /api/vaults',
+    scenario: 'first page with default ordering',
+    maxResponseTime: 1200,
+    maxQueryCount: 5,
+    allowSequentialScan: true
+  },
+  'vaults.filteredByStatus': {
+    endpoint: 'GET /api/vaults?status=active&sortBy=endTimestamp',
+    scenario: 'status filter with deadline ordering',
+    maxResponseTime: 1500,
+    maxQueryCount: 6,
+    expectedIndexes: ['idx_vaults_status_end_date']
+  },
+  'vaults.deepPage': {
+    endpoint: 'GET /api/vaults?page=10&pageSize=50&sortBy=endTimestamp',
+    scenario: 'deep offset page with deadline ordering',
+    maxResponseTime: 2000,
+    maxQueryCount: 6,
+    expectedIndexes: ['idx_vaults_end_date']
+  },
+  'transactions.list': {
+    endpoint: 'GET /api/transactions',
+    scenario: 'first cursor page with newest ordering',
+    maxResponseTime: 1200,
+    maxQueryCount: 5,
+    expectedIndexes: ['idx_transactions_stellar_timestamp']
+  },
+  'transactions.filteredByType': {
+    endpoint: 'GET /api/transactions?type=deposit&sortBy=created_at',
+    scenario: 'type filter with created-at ordering',
+    maxResponseTime: 1500,
+    maxQueryCount: 6,
+    expectedIndexes: ['idx_transactions_type_created_at']
+  },
+  'transactions.byVault': {
+    endpoint: 'GET /api/transactions/vault/:vaultId',
+    scenario: 'vault-specific transaction list',
+    maxResponseTime: 1200,
+    maxQueryCount: 5,
+    expectedIndexes: ['idx_transactions_vault_id']
+  },
+  'analytics.summary': {
+    endpoint: 'GET /api/analytics/summary',
+    scenario: 'aggregate summary',
+    maxResponseTime: 750,
+    maxQueryCount: 4,
+    allowSequentialScan: true
+  },
+  'analytics.vaults': {
+    endpoint: 'GET /api/analytics/vaults',
+    scenario: 'vault analytics rollup',
+    maxResponseTime: 1000,
+    maxQueryCount: 5,
+    allowSequentialScan: true
+  },
+  'analytics.milestoneTrends': {
+    endpoint: 'GET /api/analytics/milestones/trends',
+    scenario: 'date-range milestone trend query',
+    maxResponseTime: 1500,
+    maxQueryCount: 6,
+    allowSequentialScan: true
+  }
+} as const satisfies Record<string, EndpointPerformanceBudget>
+
+export type PerformanceBudgetName = keyof typeof PERFORMANCE_BUDGETS
+
+export function getPerformanceBudget(name: PerformanceBudgetName): EndpointPerformanceBudget {
+  return PERFORMANCE_BUDGETS[name]
+}
+
+export function evaluatePerformanceThresholds(
+  responseTime: number,
+  thresholds: PerformanceThresholds,
+  queryCount?: number
+): PerformanceResult {
+  const violations: string[] = []
+
+  if (responseTime > thresholds.maxResponseTime) {
+    violations.push(
+      `Response time ${responseTime}ms exceeded threshold ${thresholds.maxResponseTime}ms`
+    )
+  }
+
+  if (queryCount !== undefined && thresholds.maxQueryCount !== undefined && queryCount > thresholds.maxQueryCount) {
+    violations.push(
+      `Query count ${queryCount} exceeded threshold ${thresholds.maxQueryCount}`
+    )
+  }
+
+  return {
+    responseTime,
+    queryCount,
+    passed: violations.length === 0,
+    violations
+  }
+}
+
 /**
  * Measure response time for an async operation
  * @param operation - The async operation to measure
  * @returns Performance result with timing information
  */
 export async function measurePerformance(
-  operation: () => Promise<any>,
+  operation: () => Promise<unknown>,
   thresholds: PerformanceThresholds
 ): Promise<PerformanceResult> {
   const startTime = Date.now()
-  
-  try {
-    await operation()
-  } catch (error) {
-    throw error
-  }
-  
+
+  await operation()
+
   const endTime = Date.now()
   const responseTime = endTime - startTime
-  
-  const violations: string[] = []
-  
-  if (responseTime > thresholds.maxResponseTime) {
-    violations.push(
-      `Response time ${responseTime}ms exceeded threshold ${thresholds.maxResponseTime}ms`
-    )
-  }
-  
-  return {
-    responseTime,
-    passed: violations.length === 0,
-    violations
-  }
+
+  return evaluatePerformanceThresholds(responseTime, thresholds)
 }
 
 /**
@@ -67,7 +167,7 @@ export async function measurePerformance(
  */
 export async function trackQueries(
   db: Knex,
-  operation: () => Promise<any>
+  operation: () => Promise<unknown>
 ): Promise<number> {
   let queryCount = 0
   
@@ -85,6 +185,119 @@ export async function trackQueries(
   }
   
   return queryCount
+}
+
+export async function explainQueryPlan(
+  db: Knex,
+  sql: string,
+  bindings: readonly unknown[] = []
+): Promise<unknown> {
+  const result = await db.raw(`EXPLAIN (FORMAT JSON) ${sql}`, bindings)
+  return result.rows ?? result
+}
+
+export function analyseQueryPlan(plan: unknown): QueryPlanAnalysis {
+  const analysis: QueryPlanAnalysis = {
+    nodeTypes: [],
+    usedIndexes: [],
+    sequentialScanTables: []
+  }
+
+  visitPlanNode(plan, analysis)
+
+  return {
+    nodeTypes: unique(analysis.nodeTypes),
+    usedIndexes: unique(analysis.usedIndexes),
+    sequentialScanTables: unique(analysis.sequentialScanTables)
+  }
+}
+
+export function assertIndexedQueryPlan(
+  plan: unknown,
+  thresholds: PerformanceThresholds,
+  testName: string
+): QueryPlanAnalysis {
+  const analysis = analyseQueryPlan(plan)
+  const violations: string[] = []
+
+  if (!thresholds.allowSequentialScan && analysis.sequentialScanTables.length > 0) {
+    violations.push(
+      `Sequential scan detected on ${analysis.sequentialScanTables.join(', ')}`
+    )
+  }
+
+  for (const expectedIndex of thresholds.expectedIndexes ?? []) {
+    if (!analysis.usedIndexes.includes(expectedIndex)) {
+      violations.push(`Expected index ${expectedIndex} was not used`)
+    }
+  }
+
+  if (violations.length > 0) {
+    throw new Error(`Performance query plan "${testName}" failed: ${violations.join(', ')}`)
+  }
+
+  return analysis
+}
+
+function visitPlanNode(plan: unknown, analysis: QueryPlanAnalysis): void {
+  if (Array.isArray(plan)) {
+    for (const item of plan) {
+      visitPlanNode(item, analysis)
+    }
+    return
+  }
+
+  if (typeof plan === 'string') {
+    visitTextPlan(plan, analysis)
+    return
+  }
+
+  if (!plan || typeof plan !== 'object') {
+    return
+  }
+
+  const node = plan as Record<string, unknown>
+  const nodeType = stringValue(node['Node Type'])
+  if (nodeType) {
+    analysis.nodeTypes.push(nodeType)
+  }
+
+  const indexName = stringValue(node['Index Name'])
+  if (indexName) {
+    analysis.usedIndexes.push(indexName)
+  }
+
+  if (nodeType?.toLowerCase() === 'seq scan') {
+    analysis.sequentialScanTables.push(stringValue(node['Relation Name']) ?? 'unknown')
+  }
+
+  visitPlanNode(node['QUERY PLAN'], analysis)
+  visitPlanNode(node.Plan, analysis)
+  visitPlanNode(node.Plans, analysis)
+}
+
+function visitTextPlan(plan: string, analysis: QueryPlanAnalysis): void {
+  for (const line of plan.split(/\r?\n/)) {
+    const seqScan = line.match(/\bSeq Scan on\s+([^\s]+)/i)
+    if (seqScan) {
+      analysis.nodeTypes.push('Seq Scan')
+      analysis.sequentialScanTables.push(seqScan[1])
+    }
+
+    const indexScan = line.match(/\bIndex(?: Only)? Scan using\s+([^\s]+)/i)
+    if (indexScan) {
+      analysis.nodeTypes.push(line.includes('Index Only Scan') ? 'Index Only Scan' : 'Index Scan')
+      analysis.usedIndexes.push(indexScan[1])
+    }
+  }
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)]
 }
 
 /**
@@ -209,6 +422,19 @@ export function assertPerformance(result: PerformanceResult, testName: string): 
       `Performance test "${testName}" failed: ${violationMessages}. ` +
       `Response time: ${result.responseTime}ms`
     )
+  }
+}
+
+export function assertQueryCount(
+  queryCount: number,
+  thresholds: PerformanceThresholds,
+  testName: string
+): void {
+  const result = evaluatePerformanceThresholds(0, thresholds, queryCount)
+  const queryViolations = result.violations.filter((violation) => violation.startsWith('Query count'))
+
+  if (queryViolations.length > 0) {
+    throw new Error(`Performance test "${testName}" failed: ${queryViolations.join(', ')}`)
   }
 }
 

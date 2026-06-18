@@ -49,13 +49,22 @@ These volumes are realistic for smoke testing while keeping test execution time 
 
 ## Performance Thresholds
 
-### Current Thresholds
+### Current Budgets
 
-| Endpoint Type | Max Response Time | Max Query Count |
-|--------------|-------------------|-----------------|
-| Vaults | 2000ms | 10 queries |
-| Transactions | 2000ms | 10 queries |
-| Analytics | 1000ms | N/A |
+The canonical budgets live in `PERFORMANCE_BUDGETS` in `src/tests/helpers/performanceHelpers.ts`.
+Use `getPerformanceBudget()` in endpoint tests instead of copying literal thresholds.
+
+| Budget key | Endpoint scenario | Max response time | Max query count | Index expectation |
+|------------|-------------------|-------------------|-----------------|-------------------|
+| `vaults.list` | first page with default ordering | 1200ms | 5 queries | Sequential scan allowed for unfiltered smoke coverage |
+| `vaults.filteredByStatus` | status filter with deadline ordering | 1500ms | 6 queries | `idx_vaults_status_end_date` |
+| `vaults.deepPage` | deep page with deadline ordering | 2000ms | 6 queries | `idx_vaults_end_date` |
+| `transactions.list` | first cursor page with newest ordering | 1200ms | 5 queries | `idx_transactions_stellar_timestamp` |
+| `transactions.filteredByType` | type filter with created-at ordering | 1500ms | 6 queries | `idx_transactions_type_created_at` |
+| `transactions.byVault` | vault-specific transaction list | 1200ms | 5 queries | `idx_transactions_vault_id` |
+| `analytics.summary` | aggregate summary | 750ms | 4 queries | Sequential scan allowed for small aggregate table |
+| `analytics.vaults` | vault analytics rollup | 1000ms | 5 queries | Sequential scan allowed until this endpoint reads persisted rollups |
+| `analytics.milestoneTrends` | date-range milestone trend query | 1500ms | 6 queries | Sequential scan allowed while milestone events are in memory |
 
 ### Threshold Philosophy
 
@@ -70,16 +79,13 @@ If tests become flaky or too lenient:
 
 1. **Analyze actual performance**: Run tests locally and review logs
 2. **Check for regressions**: Compare current vs. historical performance
-3. **Adjust thresholds**: Update in test files under `src/tests/performance/`
+3. **Adjust thresholds**: Update `PERFORMANCE_BUDGETS` in `src/tests/helpers/performanceHelpers.ts`
 4. **Document changes**: Update this file with rationale
 
 Example threshold adjustment:
 
 ```typescript
-const thresholds: PerformanceThresholds = {
-  maxResponseTime: 1500, // Reduced from 2000ms
-  maxQueryCount: 8       // Reduced from 10
-}
+const thresholds = getPerformanceBudget('transactions.filteredByType')
 ```
 
 ## Running Performance Tests
@@ -133,6 +139,40 @@ const result = await measurePerformance(
   },
   { maxResponseTime: 2000 }
 )
+```
+
+#### `getPerformanceBudget(name)`
+
+Returns the named endpoint budget from `PERFORMANCE_BUDGETS`.
+
+```typescript
+const thresholds = getPerformanceBudget('vaults.filteredByStatus')
+```
+
+#### `assertQueryCount(queryCount, thresholds, testName)`
+
+Fails when the measured query count exceeds the endpoint budget.
+
+```typescript
+const queryCount = await trackQueries(db, async () => {
+  await request(app).get('/api/transactions?type=deposit').expect(200)
+})
+
+assertQueryCount(queryCount, getPerformanceBudget('transactions.filteredByType'), 'transactions_filtered_by_type')
+```
+
+#### `assertIndexedQueryPlan(plan, thresholds, testName)`
+
+Parses PostgreSQL `EXPLAIN (FORMAT JSON)` output or copied text plans and verifies that representative filtered/sorted queries use the expected indexes.
+
+```typescript
+const plan = await explainQueryPlan(
+  db,
+  'SELECT * FROM transactions WHERE type = ? ORDER BY created_at DESC LIMIT 20',
+  ['deposit']
+)
+
+assertIndexedQueryPlan(plan, getPerformanceBudget('transactions.filteredByType'), 'transactions_filtered_by_type_plan')
 ```
 
 #### `seedLargeDataset(db, tableName, count, recordFactory)`
@@ -202,6 +242,7 @@ Performance tests validate that appropriate indexes exist. Current indexes:
 CREATE INDEX idx_vaults_creator_id ON vaults(creator_id);
 CREATE INDEX idx_vaults_status ON vaults(status);
 CREATE INDEX idx_vaults_end_date ON vaults(end_date);
+CREATE INDEX idx_vaults_status_end_date ON vaults(status, end_date);
 ```
 
 ### Transactions Table
@@ -211,18 +252,18 @@ CREATE INDEX idx_transactions_user_id ON transactions(user_id);
 CREATE INDEX idx_transactions_vault_id ON transactions(vault_id);
 CREATE INDEX idx_transactions_stellar_timestamp ON transactions(stellar_timestamp);
 CREATE INDEX idx_transactions_type ON transactions(type);
-CREATE INDEX idx_transactions_cursor ON transactions(stellar_timestamp, id);
+CREATE INDEX idx_transactions_type_created_at ON transactions(type, created_at);
 ```
 
 ### Validating Indexes
 
-To verify indexes are being used, check query plans:
+To verify indexes are being used, check query plans manually or use `assertIndexedQueryPlan()` in performance tests:
 
 ```sql
-EXPLAIN ANALYZE 
+EXPLAIN (ANALYZE, FORMAT JSON)
 SELECT * FROM vaults 
-WHERE creator_id = 'user-123' 
-ORDER BY created_at DESC 
+WHERE status = 'active'
+ORDER BY end_date DESC
 LIMIT 20;
 ```
 
@@ -319,14 +360,14 @@ import { db } from '../../db/index.js'
 import {
   measurePerformance,
   assertPerformance,
+  assertIndexedQueryPlan,
+  explainQueryPlan,
+  getPerformanceBudget,
   logPerformanceMetrics
 } from '../helpers/performanceHelpers.js'
 
 describe('GET /api/new-endpoint - Performance Smoke Tests', () => {
-  const thresholds = {
-    maxResponseTime: 2000,
-    maxQueryCount: 10
-  }
+  const thresholds = getPerformanceBudget('vaults.filteredByStatus')
 
   beforeAll(async () => {
     // Seed test data
@@ -347,6 +388,16 @@ describe('GET /api/new-endpoint - Performance Smoke Tests', () => {
     
     logPerformanceMetrics('new_endpoint', result)
     assertPerformance(result, 'new_endpoint')
+  })
+
+  it('should use the expected index for filtered queries', async () => {
+    const plan = await explainQueryPlan(
+      db,
+      'SELECT * FROM vaults WHERE status = ? ORDER BY end_date DESC LIMIT 20',
+      ['active']
+    )
+
+    assertIndexedQueryPlan(plan, thresholds, 'new_endpoint_plan')
   })
 })
 ```

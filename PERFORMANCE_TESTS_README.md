@@ -102,7 +102,7 @@ Error: relation "vaults" does not exist
 Response time 3456ms exceeded threshold 2000ms
 ```
 **Solution**: 
-1. Check database indexes with `EXPLAIN ANALYZE`
+1. Check database indexes with `EXPLAIN (ANALYZE, FORMAT JSON)`
 2. Review query patterns for N+1 problems
 3. Consider adjusting thresholds if environment is consistently slower
 
@@ -110,13 +110,10 @@ Response time 3456ms exceeded threshold 2000ms
 
 If tests are consistently failing or passing with too much margin:
 
-1. **Edit test files** in `src/tests/performance/`
-2. **Adjust thresholds**:
+1. **Edit the shared budget table** in `src/tests/helpers/performanceHelpers.ts`
+2. **Adjust the named endpoint budget**:
    ```typescript
-   const thresholds: PerformanceThresholds = {
-     maxResponseTime: 1500, // Adjust this value
-     maxQueryCount: 8       // Adjust this value
-   }
+   const thresholds = getPerformanceBudget('transactions.filteredByType')
    ```
 3. **Document changes** in `docs/performance-testing.md`
 
@@ -144,13 +141,13 @@ Use these logs to:
 
 ## Validating Indexes
 
-To verify indexes are being used:
+To verify indexes are being used manually or with `assertIndexedQueryPlan()`:
 
 ```sql
-EXPLAIN ANALYZE 
+EXPLAIN (ANALYZE, FORMAT JSON)
 SELECT * FROM vaults 
-WHERE creator_id = 'user-123' 
-ORDER BY created_at DESC 
+WHERE status = 'active'
+ORDER BY end_date DESC
 LIMIT 20;
 ```
 
