@@ -4,6 +4,53 @@
 
 The multi-verifier milestone approval system enables vault creators to define M-of-N approval thresholds for milestone validation. Instead of requiring a single designated verifier to approve a milestone, the system allows multiple verifiers to vote on milestone completion, with the milestone being marked as verified only when the threshold is reached.
 
+## Veto Semantics (Rejection-Quorum Settlement)
+
+A milestone transitions to **irrevocably rejected** as soon as it becomes mathematically impossible to ever reach the approval threshold — not only when all verifiers have explicitly rejected.
+
+### Veto Math
+
+Given:
+- **M** = `approvalThreshold` (approvals required)
+- **N** = total verifiers in the pool
+- **approved** = votes cast as `approved`
+- **rejected** = votes cast as `rejected`
+- **remaining** = `N - (approved + rejected)` (verifiers yet to vote)
+
+**maxPossibleApprovals** = `approved + remaining`
+
+A milestone is **vetoed** (`isRejected = true`) when:
+
+```
+maxPossibleApprovals < M
+```
+
+Equivalently: `rejected > N - M` (rejection budget exceeded).
+
+### Examples
+
+| Threshold (M) | Pool (N) | Approved | Rejected | maxPossible | isRejected |
+|:---:|:---:|:---:|:---:|:---:|:---:|
+| 2 | 3 | 0 | 1 | 2 | ❌ not yet |
+| 2 | 3 | 0 | 2 | 1 | ✅ vetoed |
+| 2 | 3 | 2 | 1 | 2 | ❌ complete (not vetoed) |
+| 3 | 5 | 0 | 3 | 2 | ✅ vetoed |
+| 1 | 1 | 0 | 1 | 0 | ✅ vetoed |
+
+### Late-Vote Rejection (Settled State)
+
+The `/approve` endpoint checks settlement state **before** recording a vote. If a milestone is already `isComplete` or `isRejected`, the endpoint returns `409 Conflict` — no vote is recorded. `DuplicateVerifierVoteError` is still enforced at the DB layer regardless.
+
+### Legacy / No-N Mode
+
+When `totalVerifiers` (N) is not provided, the system falls back to **any-rejection-vetoes** semantics (`isRejected = rejected > 0`). This preserves backward compatibility with single-verifier milestones (threshold 1).
+
+### `isComplete` vs `isRejected`
+
+- `isComplete = true` requires: `approved >= M` **and** `isRejected = false`
+- Both can be false simultaneously (voting still in progress)
+- Once `isRejected = true`, it cannot be reversed (votes are immutable)
+
 ## Architecture
 
 ### Core Concepts
@@ -197,7 +244,8 @@ Determines if a milestone has received enough approvals to meet its threshold.
 ```typescript
 getMilestoneApprovalProgress(
   milestoneId: string,
-  approvalThreshold: number
+  approvalThreshold: number,
+  totalVerifiers?: number,   // N — enables veto math when provided
 ): Promise<{
   approved: number
   rejected: number
@@ -209,9 +257,7 @@ getMilestoneApprovalProgress(
 }>
 ```
 
-Returns comprehensive approval progress including completion status. A milestone is considered:
-- **Complete**: `approved >= required` AND `rejected === 0`
-- **Rejected**: `rejected > 0` (any rejection fails the milestone)
+Returns comprehensive approval progress. When `totalVerifiers` is supplied, `isRejected` uses veto math (`maxPossibleApprovals < M`). Without it, any rejection vetoes (legacy). `approvalPercentage` = `approved / totalVoted * 100`.
 
 ## Security Considerations
 

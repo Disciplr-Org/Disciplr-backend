@@ -56,7 +56,6 @@ export class EventProcessor {
    */
   async processEvent(event: ParsedEvent): Promise<ProcessingResult> {
     const startTime = Date.now()
-    let retryCount = 0
 
     try {
       await retryWithBackoff(
@@ -93,7 +92,7 @@ export class EventProcessor {
           eventId: event.eventId,
           eventType: event.eventType,
           timestamp: new Date().toISOString(),
-          data: event.payload as Record<string, unknown>,
+          data: event.payload as unknown as Record<string, unknown>,
         }).catch((err) => {
           console.error('[EventProcessor] webhook dispatch error:', err?.message)
         })
@@ -192,12 +191,15 @@ export class EventProcessor {
         .ignore() // Use ignore instead of merge to prevent overwriting if vault_created arrives late
     } else {
       const status = event.eventType.replace('vault_', '') as 'completed' | 'failed' | 'cancelled'
-      const transition = await transitionVaultStatus(trx, payload.vaultId, status)
-      if (!transition.success) {
-        if (transition.error?.includes('not found')) {
-          throw new DependencyNotFoundError(`Vault not found for update: ${payload.vaultId}`)
-        }
-        throw new Error(transition.error || 'Vault status transition failed')
+      const updated = await trx('vaults')
+        .where({ id: payload.vaultId })
+        .update({
+          status,
+          updated_at: new Date()
+        })
+
+      if (updated === 0) {
+        throw new DependencyNotFoundError(`Vault not found for update: ${payload.vaultId}`)
       }
     }
   }
@@ -269,17 +271,28 @@ export class EventProcessor {
     retryCount: number
   ): Promise<void> {
     try {
-      await this.db('failed_events')
-        .insert({
-          event_id: event.eventId,
-          event_payload: JSON.stringify(event),
-          error_message: errorMessage,
-          retry_count: retryCount,
-          failed_at: new Date(),
-          created_at: new Date()
-        })
-        .onConflict('event_id')
-        .merge()
+      const failedEvent = {
+        event_id: event.eventId,
+        event_payload: event,
+        error_message: errorMessage,
+        retry_count: retryCount,
+        failed_at: new Date(),
+        created_at: new Date()
+      }
+      const existing = await this.db('failed_events').where({ event_id: event.eventId }).first()
+
+      if (existing) {
+        await this.db('failed_events')
+          .where({ event_id: event.eventId })
+          .update({
+            event_payload: failedEvent.event_payload,
+            error_message: failedEvent.error_message,
+            retry_count: failedEvent.retry_count,
+            failed_at: failedEvent.failed_at
+          })
+      } else {
+        await this.db('failed_events').insert(failedEvent)
+      }
     } catch (error) {
       console.error('Failed to insert into dead letter queue:', error)
     }
@@ -291,7 +304,9 @@ export class EventProcessor {
       return { success: false, eventId: failedEventId, error: 'Failed event not found' }
     }
 
-    const event: ParsedEvent = JSON.parse(failedEvent.event_payload)
+    const event: ParsedEvent = typeof failedEvent.event_payload === 'string'
+      ? JSON.parse(failedEvent.event_payload)
+      : failedEvent.event_payload
     const result = await this.processEvent(event)
 
     if (result.success) {

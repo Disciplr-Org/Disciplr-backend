@@ -327,6 +327,7 @@ RBAC correctness is verified by comprehensive test suites that achieve 95%+ cove
 
 ### Core Security Tests
 - **[src/tests/rbac.test.ts](../src/tests/rbac.test.ts):** Core RBAC middleware tests including security header bypass prevention, property-based security tests, and authentication precedence invariants.
+- **[src/tests/rbac.precedence.test.ts](../src/tests/rbac.precedence.test.ts):** Dedicated unit and integration tests to verify the authentication precedence invariant (401-before-403) across all protected routes (admin, verifier, milestones, metrics) and CORS preflight handling.
 
 ### Admin Endpoint Coverage
 - **[src/tests/admin.rbac.test.ts](../src/tests/admin.rbac.test.ts):** Comprehensive admin endpoint RBAC coverage including user management, audit logs, and system overrides.

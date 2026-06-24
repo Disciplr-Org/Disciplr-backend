@@ -46,10 +46,12 @@ export function shouldRedact(key: string): boolean {
  */
 export function redact<T>(value: T, seen = new WeakSet()): T {
   if (value === null || value === undefined) return value
+
   if (typeof value !== 'object') {
-    // Pattern-match primitive strings
     if (typeof value === 'string') {
-      if (EMAIL_RE.test(value) || JWT_RE.test(value)) return REDACTED as unknown as T
+      if (EMAIL_RE.test(value) || JWT_RE.test(value)) {
+        return REDACTED as unknown as T
+      }
     }
     return value
   }
@@ -66,21 +68,26 @@ export function redact<T>(value: T, seen = new WeakSet()): T {
   if (Buffer.isBuffer(value)) return '[Buffer]' as unknown as T
 
   const result: Record<string, unknown> = {}
+
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
     result[k] = shouldRedact(k) ? REDACTED : redact(v, seen)
   }
+
   return result as unknown as T
 }
 
 /** Mask IPv4 to a.b.x.x, IPv6 to first three groups + xxxx segments. */
 export function maskIp(ip: string): string {
   if (!ip) return 'unknown'
+
   if (ip.includes(':')) {
     const groups = ip.split(':')
     return groups.slice(0, 3).join(':') + ':xxxx:xxxx:xxxx:xxxx:xxxx'
   }
+
   const parts = ip.split('.')
   if (parts.length === 4) return `${parts[0]}.${parts[1]}.x.x`
+
   return 'unknown'
 }
 
@@ -106,7 +113,11 @@ interface LogLine {
  * via console.log. All PII is redacted before emission.
  * Never mutates req/res. Always calls next().
  */
-export const privacyLogger = (req: Request, res: Response, next: NextFunction): void => {
+export const privacyLogger = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void => {
   const start = Date.now()
 
   res.on('finish', () => {

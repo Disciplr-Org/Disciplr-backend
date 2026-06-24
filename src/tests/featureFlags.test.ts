@@ -39,7 +39,7 @@ import {
 } from '../services/featureFlags'
 
 // Mock auth middleware for admin routes
-jest.mock('../middleware/auth.middleware', () => ({
+jest.mock('../middleware/auth.js', () => ({
   authorize: (req: any, res: any, next: any) => {
     req.user = {
       userId: 'test-admin-user',

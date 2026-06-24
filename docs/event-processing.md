@@ -40,6 +40,10 @@ Every event has a unique `eventId` formatted as `{transaction_hash}:{event_index
 3. If not, the event is processed within a database transaction.
 4. Upon success, the `eventId` is recorded in `processed_events` before committing.
 
+This means replaying the same ordered vault and milestone event sequence is expected to be a no-op after the first successful pass.
+Events from the same transaction remain distinct when their `event_index` values differ, because the stored idempotency key includes both the transaction hash and event index.
+The DB-backed replay coverage lives in `src/tests/eventProcessor.idempotency.test.ts`.
+
 ## Error Handling & Dead Letter Queue
 
 If an event fails after exhausting all retry attempts (default: 3), it is moved to the `failed_events` table (Dead Letter Queue).

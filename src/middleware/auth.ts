@@ -18,7 +18,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
      const authHeader = req.headers.authorization
 
      if (!authHeader || !authHeader.startsWith('Bearer ')) {
-          res.status(401).json({ error: 'Missing or malformed Authorization header' })
+          res.status(401).json({ error: 'Unauthorized: Missing or malformed Authorization header' })
           return
      }
 
@@ -30,7 +30,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
           // Reject tokens with iat too far in the future (beyond clock tolerance)
           const iat = (payload as any).iat as number | undefined
           if (iat && iat > Math.floor(Date.now() / 1000) + 30) {
-               res.status(401).json({ error: 'Invalid token' })
+               res.status(401).json({ error: 'Unauthorized: Invalid token' })
                return
           }
 
@@ -38,7 +38,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
                const isValid = await validateSession(payload.jti)
 
                if (!isValid) {
-                    res.status(401).json({ error: 'Session revoked or expired' })
+                    res.status(401).json({ error: 'Unauthorized: Session revoked or expired' })
                     return
                }
           }
@@ -47,9 +47,9 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
           next()
      } catch (err) {
           if (err instanceof jwt.TokenExpiredError) {
-               res.status(401).json({ error: 'Token expired' })
+               res.status(401).json({ error: 'Unauthorized: Token expired' })
           } else {
-               res.status(401).json({ error: 'Invalid token' })
+               res.status(401).json({ error: 'Unauthorized: Invalid token' })
           }
      }
 }
@@ -77,8 +77,12 @@ export function requireAdmin(
     res: Response,
     next: NextFunction,
 ): void {
-    if (req.user?.role !== 'ADMIN') {
-        res.status(403).json({ error: 'Admin role required' })
+    if (!req.user) {
+        res.status(401).json({ error: 'Unauthorized: Authentication required' })
+        return
+    }
+    if (req.user.role !== 'ADMIN') {
+        res.status(403).json({ error: 'Forbidden: Admin role required' })
         return
     }
     next()

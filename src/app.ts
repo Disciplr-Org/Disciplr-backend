@@ -162,10 +162,11 @@ app.use(privacyLogger)
 // Core routes mounted here for test compatibility
 app.use('/api/admin', adminRouter)
 import { metricsRouter } from './routes/metrics.js';
+import { authenticate } from './middleware/auth.js'
 import { requireAdmin } from './middleware/rbac.js'
 import { metricsRateLimiter } from './middleware/rateLimiter.js'
 
 // Register metrics endpoint with admin guard and rate limiter
-app.use('/api/metrics', requireAdmin, metricsRateLimiter, metricsRouter);
+app.use('/api/metrics', authenticate, requireAdmin, metricsRateLimiter, metricsRouter);
 
 // Additional routes are mounted in index.ts

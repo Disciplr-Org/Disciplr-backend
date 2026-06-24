@@ -49,13 +49,26 @@ These volumes are realistic for smoke testing while keeping test execution time 
 
 ## Performance Thresholds
 
-### Current Thresholds
+### Current Per-Endpoint Budgets
 
-| Endpoint Type | Max Response Time | Max Query Count |
-|--------------|-------------------|-----------------|
-| Vaults | 2000ms | 10 queries |
-| Transactions | 2000ms | 10 queries |
-| Analytics | 1000ms | N/A |
+Budgets are defined in `src/tests/helpers/performanceHelpers.ts` as
+`ENDPOINT_PERFORMANCE_BUDGETS`. Endpoint tests should call `getPerformanceBudget()`
+instead of duplicating threshold literals.
+
+| Endpoint scenario | Max response time | Max query count | Expected index coverage |
+| --- | ---: | ---: | --- |
+| `vaults.list` | 750ms | 4 | `idx_vaults_status_end_date`, `idx_vaults_end_date` |
+| `vaults.deepPagination` | 1200ms | 6 | `idx_vaults_status_end_date` |
+| `vaults.combinedSortFilter` | 900ms | 5 | `idx_vaults_status_end_date` |
+| `transactions.list` | 900ms | 5 | `idx_transactions_stellar_timestamp` |
+| `transactions.cursorPagination` | 1000ms | 5 | `idx_transactions_stellar_timestamp` |
+| `transactions.byVault` | 900ms | 5 | `idx_transactions_stellar_timestamp` |
+| `transactions.combinedSortFilter` | 1100ms | 6 | `idx_transactions_type_created_at`, `idx_transactions_stellar_timestamp` |
+| `analytics.summary` | 350ms | 2 | constant-time summary path |
+| `analytics.overview` | 250ms | 1 | no DB read expected |
+| `analytics.vaults` | 350ms | 2 | `idx_vaults_status_end_date` |
+| `analytics.milestoneTrends` | 650ms | 3 | in-memory milestone event scan |
+| `analytics.behavior` | 650ms | 3 | in-memory milestone event scan |
 
 ### Threshold Philosophy
 
@@ -70,16 +83,15 @@ If tests become flaky or too lenient:
 
 1. **Analyze actual performance**: Run tests locally and review logs
 2. **Check for regressions**: Compare current vs. historical performance
-3. **Adjust thresholds**: Update in test files under `src/tests/performance/`
+3. **Adjust thresholds**: Update `ENDPOINT_PERFORMANCE_BUDGETS` in `src/tests/helpers/performanceHelpers.ts`
 4. **Document changes**: Update this file with rationale
 
 Example threshold adjustment:
 
 ```typescript
-const thresholds: PerformanceThresholds = {
-  maxResponseTime: 1500, // Reduced from 2000ms
-  maxQueryCount: 8       // Reduced from 10
-}
+const thresholds = getPerformanceBudget('transactions.combinedSortFilter', {
+  maxResponseTime: 950, // tightened after observing stable CI p95
+})
 ```
 
 ## Running Performance Tests
@@ -133,6 +145,41 @@ const result = await measurePerformance(
   },
   { maxResponseTime: 2000 }
 )
+```
+
+#### `measureEndpointPerformance(db, operation, thresholds)`
+
+Measures response time and counts Knex `query` events during the same operation.
+Use this helper for list endpoints where `maxQueryCount` is part of the budget.
+
+```typescript
+const budget = getPerformanceBudget('transactions.cursorPagination')
+const result = await measureEndpointPerformance(
+  db,
+  async () => {
+    await request(app).get('/api/transactions?limit=20').expect(200)
+  },
+  budget,
+)
+
+assertPerformance(result, budget.label)
+```
+
+#### `assertIndexedPlan(plan, options)`
+
+Parses PostgreSQL `EXPLAIN (FORMAT JSON)` output and fails when a representative
+query uses `Seq Scan` unexpectedly or misses one of the configured indexes.
+
+```typescript
+const plan = await explainQueryPlan(
+  db,
+  'SELECT * FROM transactions WHERE type = ? ORDER BY stellar_timestamp DESC LIMIT 20',
+  ['deposit'],
+)
+
+assertIndexedPlan(plan, {
+  expectedIndexes: getPerformanceBudget('transactions.combinedSortFilter').expectedIndexes,
+})
 ```
 
 #### `seedLargeDataset(db, tableName, count, recordFactory)`

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Horizon Listener is a long-running service that connects to the Stellar Horizon API, streams Soroban contract events for the configured contract addresses, and writes them into the application database.
+The Horizon Listener is a long-running service that connects to the Stellar Horizon API, streams Soroban contract events for the configured contract addresses, and writes them into the application database. This listener is a key component of the event processing pipeline (see [Event Processing Guide](event-processing.md) for context on how these events are subsequently handled).
 
 Key properties:
 

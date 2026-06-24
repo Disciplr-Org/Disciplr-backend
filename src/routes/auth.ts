@@ -6,6 +6,7 @@ import { createAuditLog } from '../lib/audit-logs.js'
 import { authenticate } from '../middleware/auth.js'
 import { revokeSession, revokeAllUserSessions } from '../services/session.js'
 import { requireJson } from '../middleware/requireJson.js'
+import { AUTH_JSON_MAX_BYTES } from '../middleware/requestBodyLimits.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { prisma } from '../lib/prisma.js'
 import { UserRole } from '../types/user.js'
@@ -158,8 +159,11 @@ authRouter.post('/logout-all', authenticate, async (req: Request, res: Response,
 });
 
 authRouter.post('/users/:id/role', requireJson, authenticate, async (req, res, next) => {
-  if (req.user?.role !== UserRole.ADMIN) {
-    return next(AppError.forbidden('Only admin users can change roles'))
+  if (!req.user) {
+    return next(AppError.unauthorized('Unauthorized'))
+  }
+  if (req.user.role !== UserRole.ADMIN) {
+    return next(AppError.forbidden('Forbidden: Only admin users can change roles'))
   }
 
   const paramsResult = userIdParamSchema.safeParse(req.params)

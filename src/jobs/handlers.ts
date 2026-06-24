@@ -74,4 +74,4 @@ export const createDefaultJobHandlers = (
       `deleted=${deleted} batchSize=${batchSize} attempt=${context.attempt}`,
     )
   },
-}
+})

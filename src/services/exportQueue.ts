@@ -1,8 +1,10 @@
 import crypto from 'node:crypto'
+import { Buffer } from 'node:buffer'
 import { stringify as csvStringify } from 'csv-stringify/sync'
 import type { Knex } from 'knex'
 import type { BackgroundJobSystem } from '../jobs/system.js'
 import { resolveS3Config, uploadToS3 } from './exportS3.js'
+import { maskPii, sanitizePrivacyPayload, sanitizePrivacyString } from '../utils/privacy.js'
 
 export type ExportFormat = 'csv' | 'json'
 export type ExportScope = 'vaults' | 'transactions' | 'analytics' | 'all'
@@ -144,6 +146,28 @@ const hashExportRequest = (input: Pick<EnqueueExportJobInput, 'targetUserId' | '
     }))
     .digest('hex')
 }
+
+const exportPiiValues = (job: Pick<ExportJob, 'userId' | 'targetUserId'>): string[] =>
+  [job.userId, job.targetUserId].filter((value): value is string => typeof value === 'string' && value.length > 0)
+
+const exportUserTokens = (job: Pick<ExportJob, 'userId' | 'targetUserId'>): {
+  requesterUserToken: string
+  targetUserToken?: string
+} => ({
+  requesterUserToken: maskPii(job.userId),
+  ...(job.targetUserId ? { targetUserToken: maskPii(job.targetUserId) } : {}),
+})
+
+const sanitizeExportTelemetry = (
+  payload: Record<string, unknown>,
+  job: Pick<ExportJob, 'userId' | 'targetUserId'>,
+): Record<string, unknown> => sanitizePrivacyPayload(
+  {
+    ...payload,
+    ...exportUserTokens(job),
+  },
+  exportPiiValues(job),
+) as Record<string, unknown>
 
 const sanitizeCsvValue = (value: unknown): string | number => {
   if (value === null || value === undefined) {
@@ -589,7 +613,7 @@ export async function processJob(
     })
 
     console.info(
-      JSON.stringify({
+      JSON.stringify(sanitizeExportTelemetry({
         level: 'info',
         event: 'exports.job_completed',
         jobId: job.id,
@@ -599,10 +623,11 @@ export async function processJob(
         bytes: buffer.length,
         s3: s3Key ? true : false,
         completedAt: new Date().toISOString(),
-      }),
+      }, job)),
     )
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    const sanitizedMessage = sanitizePrivacyString(message, exportPiiValues(job))
     const retryable = nextAttempt < job.maxAttempts
 
     await exportJobRepository.update({
@@ -610,13 +635,13 @@ export async function processJob(
       status: retryable ? 'pending' : 'failed',
       attempts: nextAttempt,
       completedAt: retryable ? undefined : new Date().toISOString(),
-      error: message,
+      error: sanitizedMessage,
       result: undefined,
       filename: undefined,
     })
 
     console.error(
-      JSON.stringify({
+      JSON.stringify(sanitizeExportTelemetry({
         level: 'error',
         event: 'exports.job_failed',
         jobId: job.id,
@@ -625,10 +650,12 @@ export async function processJob(
         attempt: nextAttempt,
         retryable,
         error: message,
-      }),
+      }, job)),
     )
 
-    throw error
+    const sanitizedError = new Error(sanitizedMessage)
+    sanitizedError.name = error instanceof Error ? error.name : 'Error'
+    throw sanitizedError
   }
 }
 

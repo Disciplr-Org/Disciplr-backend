@@ -1,6 +1,7 @@
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
-import type { Request, Response } from 'express'
+import type { Request, Response, NextFunction } from 'express'
 import { redactApiKeyForLogs } from '../services/apiKeys.js'
+import { getEnv } from '../config/index.js'
 
 export interface RateLimitConfig {
   windowMs: number
@@ -91,5 +92,71 @@ export const apiKeyRateLimiter = createRateLimiter({
   max: 20,
   message: 'Too many API key management requests. Please try again later.',
 })
+
+let orgRead: any
+export const orgReadRateLimiter = (req: Request, res: Response, next: NextFunction) => {
+  if (!orgRead) {
+    let max = 200
+    let windowMs = 60000
+    try {
+      const env = getEnv()
+      max = env.ORG_RATE_LIMIT_MAX
+      windowMs = env.ORG_RATE_LIMIT_WINDOW_MS
+    } catch {
+      max = process.env.ORG_RATE_LIMIT_MAX ? Number(process.env.ORG_RATE_LIMIT_MAX) : 200
+      windowMs = process.env.ORG_RATE_LIMIT_WINDOW_MS ? Number(process.env.ORG_RATE_LIMIT_WINDOW_MS) : 60000
+    }
+    orgRead = createRateLimiter({
+      windowMs,
+      max,
+      message: 'Organization read rate limit exceeded.',
+    })
+  }
+  return orgRead(req, res, next)
+}
+
+let orgWrite: any
+export const orgWriteRateLimiter = (req: Request, res: Response, next: NextFunction) => {
+  if (!orgWrite) {
+    let max = 200
+    let windowMs = 60000
+    try {
+      const env = getEnv()
+      max = env.ORG_RATE_LIMIT_MAX
+      windowMs = env.ORG_RATE_LIMIT_WINDOW_MS
+    } catch {
+      max = process.env.ORG_RATE_LIMIT_MAX ? Number(process.env.ORG_RATE_LIMIT_MAX) : 200
+      windowMs = process.env.ORG_RATE_LIMIT_WINDOW_MS ? Number(process.env.ORG_RATE_LIMIT_WINDOW_MS) : 60000
+    }
+    orgWrite = createRateLimiter({
+      windowMs,
+      max,
+      message: 'Organization write rate limit exceeded.',
+    })
+  }
+  return orgWrite(req, res, next)
+}
+
+let orgAnalytics: any
+export const orgAnalyticsRateLimiter = (req: Request, res: Response, next: NextFunction) => {
+  if (!orgAnalytics) {
+    let max = 200
+    let windowMs = 60000
+    try {
+      const env = getEnv()
+      max = env.ORG_RATE_LIMIT_MAX
+      windowMs = env.ORG_RATE_LIMIT_WINDOW_MS
+    } catch {
+      max = process.env.ORG_RATE_LIMIT_MAX ? Number(process.env.ORG_RATE_LIMIT_MAX) : 200
+      windowMs = process.env.ORG_RATE_LIMIT_WINDOW_MS ? Number(process.env.ORG_RATE_LIMIT_WINDOW_MS) : 60000
+    }
+    orgAnalytics = createRateLimiter({
+      windowMs,
+      max,
+      message: 'Organization analytics rate limit exceeded.',
+    })
+  }
+  return orgAnalytics(req, res, next)
+}
 
 export { createRateLimiter }

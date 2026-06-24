@@ -1,31 +1,75 @@
+/* global describe, it, expect, beforeEach, afterEach, Buffer */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { jest } from '@jest/globals'
+import fc from 'fast-check'
 import { Request, Response, NextFunction } from 'express'
-import { privacyLogger, redact, maskIp, shouldRedact } from '../middleware/privacy-logger.js'
+import {
+    privacyLogger,
+    redact,
+    maskIp,
+    shouldRedact,
+    REDACTION_MARKER,
+    SENSITIVE_KEYS,
+} from '../middleware/privacy-logger.js'
 import * as loggerModule from '../middleware/logger.js'
 
-// Mock the logger module
-jest.mock('../middleware/logger.js', () => ({
-    logger: {
-        debug: jest.fn(),
-        info: jest.fn(),
-        warn: jest.fn(),
-        error: jest.fn(),
-        child: jest.fn(function(this: any) {
-            return this
-        }),
-    },
-    withCorrelationId: jest.fn((log, cid) => ({
-        ...log,
-        child: jest.fn(function() {
-            return this
-        }),
-        debug: jest.fn(),
-        info: jest.fn(),
-        warn: jest.fn(),
-        error: jest.fn(),
-    })),
-    getOrGenerateCorrelationId: jest.fn((req) => req.headers['x-correlation-id'] || 'default-cid'),
-}))
+const PROPERTY_RUNS = { numRuns: 100 }
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const JWT_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/
+const KEY_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_'.split('')
+const BASE64URL_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-'.split('')
+
+const safeKeyArb = fc
+    .array(fc.constantFrom(...KEY_CHARS), { minLength: 1, maxLength: 12 })
+    .map(chars => chars.join(''))
+    .filter(key => !SENSITIVE_KEYS.has(key.toLowerCase()))
+
+const safeStringArb = fc
+    .string({ maxLength: 40 })
+    .filter(value => !EMAIL_PATTERN.test(value) && !JWT_PATTERN.test(value))
+
+const safePrimitiveArb = fc.oneof(
+    safeStringArb,
+    fc.integer(),
+    fc.boolean(),
+    fc.constant(null),
+)
+
+const safeJsonArb: fc.Arbitrary<unknown> = fc.letrec(tie => ({
+    value: fc.oneof(
+        safePrimitiveArb,
+        fc.array(tie('value'), { maxLength: 3 }),
+        fc.dictionary(safeKeyArb, tie('value'), { maxKeys: 4 }),
+    ),
+})).value
+
+const safeObjectArb = fc.dictionary(safeKeyArb, safeJsonArb, { maxKeys: 4 })
+
+const jwtArb = fc
+    .tuple(
+        fc.array(fc.constantFrom(...BASE64URL_CHARS), { minLength: 1, maxLength: 16 }),
+        fc.array(fc.constantFrom(...BASE64URL_CHARS), { minLength: 1, maxLength: 16 }),
+        fc.array(fc.constantFrom(...BASE64URL_CHARS), { minLength: 1, maxLength: 16 }),
+    )
+    .map(parts => parts.map(chars => chars.join('')).join('.'))
+
+const ipv4Arb = fc
+    .tuple(
+        fc.integer({ min: 0, max: 255 }),
+        fc.integer({ min: 0, max: 255 }),
+        fc.integer({ min: 0, max: 255 }),
+        fc.integer({ min: 0, max: 255 }),
+    )
+    .map(parts => parts.join('.'))
+
+const ipv6Arb = fc
+    .array(fc.integer({ min: 0, max: 0xffff }), { minLength: 8, maxLength: 8 })
+    .map(groups => groups.map(group => group.toString(16).padStart(4, '0')).join(':'))
+
+function cloneJson<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value))
+}
 
 describe('Privacy Logger', () => {
     describe('Redaction Engine', () => {
@@ -136,6 +180,161 @@ describe('Privacy Logger', () => {
         })
     })
 
+    describe('Property-based privacy invariants', () => {
+        it('redacts every sensitive key at arbitrary nesting depths', () => {
+            // Feature: privacy-logger, Property 1: sensitive keys are redacted at every depth.
+            fc.assert(
+                fc.property(
+                    fc.constantFrom(...Array.from(SENSITIVE_KEYS)),
+                    safePrimitiveArb,
+                    fc.integer({ min: 0, max: 5 }),
+                    (sensitiveKey, sensitiveValue, depth) => {
+                        const wrappers = Array.from({ length: depth }, (_, index) => `level${index}`)
+                        let input: Record<string, unknown> = { [sensitiveKey]: sensitiveValue }
+
+                        for (const wrapper of [...wrappers].reverse()) {
+                            input = { [wrapper]: input }
+                        }
+
+                        let output: any = redact(input)
+                        for (const wrapper of wrappers) {
+                            output = output[wrapper]
+                        }
+
+                        expect(output[sensitiveKey]).toBe(REDACTION_MARKER)
+                    },
+                ),
+                PROPERTY_RUNS,
+            )
+        })
+
+        it('preserves safe objects without sensitive keys or PII-pattern values', () => {
+            // Feature: privacy-logger, Property 2: safe values are preserved deep-equal.
+            fc.assert(
+                fc.property(safeObjectArb, safeObject => {
+                    expect(redact(safeObject)).toEqual(safeObject)
+                }),
+                PROPERTY_RUNS,
+            )
+        })
+
+        it('does not mutate its input object', () => {
+            // Feature: privacy-logger, Property 3: redact is immutable.
+            fc.assert(
+                fc.property(safeObjectArb, safeObject => {
+                    const before = cloneJson(safeObject)
+                    redact(safeObject)
+                    expect(safeObject).toEqual(before)
+                }),
+                PROPERTY_RUNS,
+            )
+        })
+
+        it('redacts email-shaped string values regardless of key name', () => {
+            // Feature: privacy-logger, Property 4: email-pattern values are redacted.
+            fc.assert(
+                fc.property(safeKeyArb, fc.emailAddress(), (key, email) => {
+                    expect(redact({ [key]: email })).toEqual({ [key]: REDACTION_MARKER })
+                }),
+                PROPERTY_RUNS,
+            )
+        })
+
+        it('redacts JWT-shaped string values regardless of key name', () => {
+            // Feature: privacy-logger, Property 5: JWT-pattern values are redacted.
+            fc.assert(
+                fc.property(safeKeyArb, jwtArb, (key, jwt) => {
+                    expect(redact({ [key]: jwt })).toEqual({ [key]: REDACTION_MARKER })
+                }),
+                PROPERTY_RUNS,
+            )
+        })
+
+        it('redacts array elements recursively into a new array', () => {
+            // Feature: privacy-logger, Property 6: array elements are recursively redacted.
+            fc.assert(
+                fc.property(
+                    fc.array(
+                        fc.record({
+                            safeKey: safeKeyArb,
+                            sensitiveKey: fc.constantFrom(...Array.from(SENSITIVE_KEYS)),
+                            value: safePrimitiveArb,
+                        }),
+                        { minLength: 1, maxLength: 8 },
+                    ),
+                    entries => {
+                        const input = entries.map(entry => ({
+                            [entry.safeKey]: 'safe-value',
+                            nested: { [entry.sensitiveKey]: entry.value },
+                        }))
+
+                        const output = redact(input)
+
+                        expect(output).not.toBe(input)
+                        output.forEach((item: any, index: number) => {
+                            expect(item).not.toBe(input[index])
+                            expect(item.nested[entries[index].sensitiveKey]).toBe(REDACTION_MARKER)
+                        })
+                    },
+                ),
+                PROPERTY_RUNS,
+            )
+        })
+
+        it('emits only the documented structured log keys', () => {
+            // Feature: privacy-logger, Property 7: emitted log line has the required key set only.
+            fc.assert(
+                fc.property(
+                    fc.constantFrom('GET', 'POST', 'PUT', 'PATCH', 'DELETE'),
+                    fc.webPath(),
+                    safeObjectArb,
+                    safeObjectArb,
+                    (method, url, body, headers) => {
+                        const mockLogger = {
+                            debug: jest.fn(),
+                            info: jest.fn(),
+                            warn: jest.fn(),
+                            error: jest.fn(),
+                        }
+                        const next = jest.fn()
+                        const childSpy = jest
+                            .spyOn(loggerModule.logger, 'child')
+                            .mockReturnValue(mockLogger as any)
+
+                        try {
+                            privacyLogger(
+                                {
+                                    ip: '203.0.113.42',
+                                    method,
+                                    url,
+                                    body,
+                                    headers,
+                                    socket: {} as any,
+                                } as Request,
+                                {} as Response,
+                                next,
+                            )
+
+                            const logObject = mockLogger.debug.mock.calls[0][0]
+                            expect(Object.keys(logObject).sort()).toEqual(['event', 'ip', 'request', 'timestamp'])
+                            expect(Object.keys(logObject.ip).sort()).toEqual(['masked', 'original'])
+                            expect(Object.keys(logObject.request).sort()).toEqual([
+                                'body',
+                                'headers',
+                                'method',
+                                'url',
+                            ])
+                            expect(next).toHaveBeenCalledTimes(1)
+                        } finally {
+                            childSpy.mockRestore()
+                        }
+                    },
+                ),
+                PROPERTY_RUNS,
+            )
+        })
+    })
+
     describe('IP Masking', () => {
         it('should mask IPv4 address', () => {
             expect(maskIp('192.168.1.1')).toBe('192.168.x.x')
@@ -147,6 +346,30 @@ describe('Privacy Logger', () => {
 
         it('should mask IPv6 address', () => {
             expect(maskIp('2001:0db8:85a3:0000:0000:8a2e:0370:7334')).toBe('2001:0db8:85a3:xxxx:xxxx:xxxx:xxxx:xxxx')
+        })
+
+        it('masks arbitrary IPv4 and IPv6 values into stable shapes', () => {
+            // Feature: privacy-logger, Property 8: IP masking keeps only the allowed prefix.
+            fc.assert(
+                fc.property(ipv4Arb, ip => {
+                    expect(maskIp(ip)).toMatch(/^\d+\.\d+\.x\.x$/)
+                }),
+                PROPERTY_RUNS,
+            )
+
+            fc.assert(
+                fc.property(ipv6Arb, ip => {
+                    const masked = maskIp(ip)
+                    const maskedGroups = masked.split(':')
+
+                    expect(maskedGroups).toHaveLength(8)
+                    expect(maskedGroups.slice(0, 3)).toEqual(ip.split(':').slice(0, 3))
+                    expect(maskedGroups.slice(3)).toEqual(['xxxx', 'xxxx', 'xxxx', 'xxxx', 'xxxx'])
+                }),
+                PROPERTY_RUNS,
+            )
+
+            expect(maskIp('2001:db8::1')).toBe('2001:db8:0:xxxx:xxxx:xxxx:xxxx:xxxx')
         })
     })
 
@@ -181,8 +404,7 @@ describe('Privacy Logger', () => {
             res = {}
             next = jest.fn()
 
-            // Mock withCorrelationId to return our mock logger
-            ;(loggerModule.withCorrelationId as jest.Mock).mockReturnValue(mockLogger)
+            jest.spyOn(loggerModule.logger, 'child').mockReturnValue(mockLogger as any)
         })
 
         afterEach(() => {
@@ -237,7 +459,7 @@ describe('Privacy Logger', () => {
         it('should handle correlation IDs from request headers', () => {
             privacyLogger(req as Request, res as Response, next)
             
-            expect(loggerModule.getOrGenerateCorrelationId).toHaveBeenCalledWith(req)
+            expect((req as any).correlationId).toBe('test-corr-id')
         })
 
         it('should ensure regression against PII leakage in structured logs', () => {
@@ -294,7 +516,7 @@ describe('Privacy Logger', () => {
             res = {}
             next = jest.fn()
 
-            ;(loggerModule.withCorrelationId as jest.Mock).mockReturnValue(mockLogger)
+            jest.spyOn(loggerModule.logger, 'child').mockReturnValue(mockLogger as any)
         })
 
         it('should emit complete and valid JSON structure', () => {
@@ -321,4 +543,3 @@ describe('Privacy Logger', () => {
         })
     })
 })
-

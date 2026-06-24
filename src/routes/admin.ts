@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { requireAdmin } from '../middleware/rbac.js'
 import { queryParser } from '../middleware/queryParser.js'
-import { authorize } from '../middleware/auth.js'
+import { authenticate } from '../middleware/auth.js'
 import { metricsRateLimiter } from '../middleware/rateLimiter.js'
 import { UserRole, UserStatus } from '../types/user.js'
 import { userService, DeleteResult } from '../services/user.service.js'
@@ -62,7 +62,7 @@ const sanitizeReasonText = (reason: string): string => {
 }
 
 // Apply authentication to all admin routes
-adminRouter.use(authorize)
+adminRouter.use(authenticate)
 adminRouter.use(requireAdmin)
 
 /**
@@ -511,6 +511,6 @@ adminRouter.get('/db/metrics', metricsRateLimiter, async (req: Request, res: Res
  * Returns per-category abuse event counts (brute-force, enumeration, payload-anomaly, rate-limit-trip).
  * Admin only.
  */
-adminRouter.get('/abuse/category-counts', authorize, requireAdmin, (req: Request, res: Response) => {
+adminRouter.get('/abuse/category-counts', (req: Request, res: Response) => {
   res.status(200).json({ data: getAbuseCategoryCounts() })
 })

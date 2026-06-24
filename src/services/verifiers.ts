@@ -522,10 +522,22 @@ export const hasMilestoneMetThreshold = async (
 
 /**
  * Get approval progress for a milestone (X of Y approvals).
+ *
+ * Veto math (when totalVerifiers N is provided):
+ *   A milestone is irrevocably rejected once it is impossible for approvals
+ *   to ever reach the threshold M:
+ *     isRejected = (approved + remaining) < M
+ *   where remaining = N - totalVoted.
+ *
+ *   Equivalently: rejected > N - M  (more rejections than the veto budget).
+ *
+ * When totalVerifiers is omitted (legacy / N unknown), any single rejection
+ * marks the milestone rejected (conservative default).
  */
 export const getMilestoneApprovalProgress = async (
   milestoneId: string,
   approvalThreshold: number,
+  totalVerifiers?: number,
 ): Promise<{
   approved: number
   rejected: number
@@ -533,19 +545,35 @@ export const getMilestoneApprovalProgress = async (
   required: number
   isComplete: boolean
   isRejected: boolean
+  approvalPercentage: number
 }> => {
   const approvals = await getMilestoneApprovals(milestoneId)
   const approved = approvals.approved.length
   const rejected = approvals.rejected.length
   const pending = approvals.pending.length
+  const totalVoted = approved + rejected + pending
+
+  // Veto math: can we still reach threshold?
+  let isRejected: boolean
+  if (totalVerifiers !== undefined && totalVerifiers > 0) {
+    const remaining = totalVerifiers - totalVoted
+    const maxPossibleApprovals = approved + Math.max(remaining, 0)
+    isRejected = maxPossibleApprovals < approvalThreshold
+  } else {
+    // Legacy: any rejection vetoes
+    isRejected = rejected > 0
+  }
+
+  const approvalPercentage = totalVoted === 0 ? 0 : Math.min((approved / totalVoted) * 100, 100)
 
   return {
     approved,
     rejected,
     pending,
     required: approvalThreshold,
-    isComplete: approved >= approvalThreshold,
-    isRejected: rejected > 0, // Reject if any verifier rejects
+    isComplete: approved >= approvalThreshold && !isRejected,
+    isRejected,
+    approvalPercentage,
   }
 }
 

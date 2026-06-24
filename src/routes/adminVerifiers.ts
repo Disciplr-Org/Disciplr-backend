@@ -159,6 +159,45 @@ adminVerifiersRouter.post('/:userId/suspend', async (req: Request, res: Response
   await createOrGetAndTransitionStatus(req, res, req.params.userId, 'suspended')
 })
 
+// POST /api/admin/verifiers/:userId/reinstate
+// Restores a verifier back to their prior active state:
+// - if they were previously approved, restore to approved
+// - otherwise restore to pending
+adminVerifiersRouter.post('/:userId/reinstate', async (req: Request, res: Response) => {
+  try {
+    const verifier = await getVerifierProfile(req.params.userId)
+    if (!verifier) {
+      res.status(404).json({ error: 'verifier not found' })
+      return
+    }
+
+
+    const nextStatus: VerifierStatus = verifier.approvedAt ? 'approved' : 'pending'
+
+    const updated = await transitionVerifier(req.params.userId, nextStatus, { actorUserId: req.user!.userId })
+
+
+    if (!updated) {
+      res.status(404).json({ error: 'verifier not found' })
+      return
+    }
+
+    res.json({
+      profile: updated.after,
+      stats: await getVerifierStats(req.params.userId),
+      auditLogId: updated.auditLog?.id ?? null,
+      changedFields: updated.changedFields,
+    })
+  } catch (error) {
+    if (error instanceof InvalidVerifierStatusTransitionError) {
+      res.status(409).json({ error: error.message })
+      return
+    }
+
+    res.status(500).json({ error: 'internal server error' })
+  }
+})
+
 adminVerifiersRouter.post('/:userId/deactivate', async (req: Request, res: Response) => {
   await transitionStatus(req, res, req.params.userId, 'deactivated')
 })
@@ -184,6 +223,7 @@ const isDuplicateError = (error: unknown): boolean => {
     || maybeErr.constraint === 'verifiers_pkey'
     || maybeErr.message?.toLowerCase().includes('unique') === true
 }
+
 const transitionStatus = async (req: Request, res: Response, userId: string, status: VerifierStatus): Promise<void> => {
   try {
     const updated = await transitionVerifier(userId, status, { actorUserId: req.user!.userId })
@@ -217,3 +257,4 @@ const createOrGetAndTransitionStatus = async (req: Request, res: Response, userI
 
   await transitionStatus(req, res, userId, status)
 }
+

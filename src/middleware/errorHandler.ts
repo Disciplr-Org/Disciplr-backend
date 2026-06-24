@@ -119,6 +119,20 @@ export class AppError extends Error {
   static payloadTooLarge(message = 'Payload too large') {
     return new AppError(413, ErrorCode.PAYLOAD_TOO_LARGE, message)
   }
+
+  /** Parses an unknown error from Soroban RPC into an AppError if it contains a recognized contract error code */
+  static fromContractError(err: unknown): AppError | null {
+    const message = err instanceof Error ? err.message : String(err)
+    // Matches Soroban Error(Contract, 4) or similar representations
+    const match = message.match(/Error\(Contract,\s*(\d+)\)/i) || message.match(/ContractError\((\d+)\)/i)
+    if (!match) return null
+
+    const codeInt = parseInt(match[1], 10)
+    const mapping = SorobanErrorCatalog[codeInt]
+    if (!mapping) return null
+
+    return new AppError(mapping.status, mapping.code, mapping.message, { contractErrorCode: codeInt })
+  }
 }
 
 /**

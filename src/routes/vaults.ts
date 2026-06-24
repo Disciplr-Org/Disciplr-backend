@@ -1,5 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from 'express'
-import { authenticate } from '../middleware/auth.middleware.js'
+import { authenticate } from '../middleware/auth.js'
 import { requireScopes } from '../middleware/apiKeyAuth.js'
 import { ApiScope } from '../types/auth.js'
 import { UserRole } from '../types/user.js'

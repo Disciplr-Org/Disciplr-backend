@@ -125,6 +125,16 @@ export class AbuseMonitor {
   }
 
   /**
+   * Reset all state (scores and category counts). Used in tests.
+   */
+  public reset(): void {
+    this.scores.clear()
+    for (const key of Object.keys(this.categoryCounts)) {
+      delete this.categoryCounts[key]
+    }
+  }
+
+  /**
    * Clean up old records to prevent memory leaks.
    */
   public cleanup(): void {

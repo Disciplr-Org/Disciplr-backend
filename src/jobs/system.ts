@@ -36,12 +36,12 @@ export class BackgroundJobSystem {
       notificationService ?? createNotificationService(process.env.NOTIFICATION_PROVIDER ?? 'console')
     const handlers = createDefaultJobHandlers(resolvedNotificationService)
 
-    this.queue.registerHandler('notification.send', defaultJobHandlers['notification.send'])
-    this.queue.registerHandler('deadline.check', defaultJobHandlers['deadline.check'])
-    this.queue.registerHandler('oracle.call', defaultJobHandlers['oracle.call'])
-    this.queue.registerHandler('analytics.recompute', defaultJobHandlers['analytics.recompute'])
-    this.queue.registerHandler('export.generate', defaultJobHandlers['export.generate'])
-    this.queue.registerHandler('sessions.cleanup', defaultJobHandlers['sessions.cleanup'])
+    this.queue.registerHandler('notification.send', handlers['notification.send'])
+    this.queue.registerHandler('deadline.check', handlers['deadline.check'])
+    this.queue.registerHandler('oracle.call', handlers['oracle.call'])
+    this.queue.registerHandler('analytics.recompute', handlers['analytics.recompute'])
+    this.queue.registerHandler('export.generate', handlers['export.generate'])
+    this.queue.registerHandler('sessions.cleanup', handlers['sessions.cleanup'])
   }
 
   start(): void {
