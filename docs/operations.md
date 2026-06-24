@@ -2,6 +2,8 @@
 
 This document describes how to manage the Disciplr-backend service in production.
 
+For major data-loss or region-loss events, follow the [Disaster Recovery Runbook](runbooks/disaster-recovery.md) before re-enabling writes.
+
 ## Graceful Shutdown
 
 Disciplr-backend implements a graceful shutdown procedure to ensure that no data is lost and all resources are cleaned up correctly.
