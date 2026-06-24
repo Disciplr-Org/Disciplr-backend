@@ -41,6 +41,8 @@ All list endpoints support consistent query parameters for pagination (`page`, `
 
 Data is stored in memory for now. Production would use PostgreSQL, a Horizon listener for on-chain events, and a proper milestone/verification engine.
 
+Operational recovery is covered in the [Disaster Recovery Runbook](docs/runbooks/disaster-recovery.md), including backup cadence, RPO/RTO targets, Horizon replay, and quarterly restore drills.
+
 ## Milestone validation behavior
 
 - Enforces verifier role via `x-user-role: verifier` header.
