@@ -16,7 +16,10 @@ describe('evidence service', () => {
   })
 
   test('validates AWS v4 signed object-storage URL expiry', () => {
-    const url = 'https://s3.example.com/object.txt?X-Amz-Date=20260527T000000Z&X-Amz-Expires=3600&X-Amz-Signature=abc'
+    const signedAt = new Date(Date.now() + 60_000).toISOString()
+      .replace(/[-:]/g, '')
+      .replace(/\.\d{3}Z$/, 'Z')
+    const url = `https://s3.example.com/object.txt?X-Amz-Date=${signedAt}&X-Amz-Expires=3600&X-Amz-Signature=abc`
     const expiry = validateSignedObjectStorageUrl(url)
     expect(expiry.getTime()).toBeGreaterThan(Date.now())
   })
@@ -29,6 +32,11 @@ describe('evidence service', () => {
   test('rejects signed object-storage URLs missing expiry parameters', () => {
     const url = 'https://s3.example.com/object.txt?X-Amz-Signature=abc'
     expect(() => validateSignedObjectStorageUrl(url)).toThrow('missing expiry parameter')
+  })
+
+  test('rejects signed object-storage URLs missing signature parameters', () => {
+    const url = 'https://s3.example.com/object.txt?Expires=32503680000'
+    expect(() => validateSignedObjectStorageUrl(url)).toThrow('missing signature parameter')
   })
 
   test('persists evidence references via Prisma raw SQL', async () => {

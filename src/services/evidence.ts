@@ -1,3 +1,4 @@
+import { URL } from 'node:url'
 import { prisma } from '../lib/prisma.js'
 
 export class EvidenceReferenceValidationError extends Error {
@@ -14,6 +15,13 @@ export interface EvidenceReference {
   referenceUrl: string
   expiresAt: string
   createdAt: string
+}
+
+export interface SignedObjectStorageUrlValidationOptions {
+  now?: Date | number
+  expectedKey?: string
+  expectedOrgId?: string
+  signatureVerifier?: (url: URL) => boolean
 }
 
 const EVIDENCE_HASH_PATTERN = /^[A-Za-z0-9_-]{32,128}$/
@@ -62,18 +70,29 @@ function parseExpiryParam(value: string): Date {
   throw new EvidenceReferenceValidationError('Signed URL expiry parameter must be a valid numeric timestamp')
 }
 
-function getSignedUrlExpiry(referenceUrl: string): Date {
-  let url: URL
+function parseReferenceUrl(referenceUrl: string): URL {
   try {
-    url = new URL(referenceUrl)
+    const url = new URL(referenceUrl)
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      throw new EvidenceReferenceValidationError('evidenceReferenceUrl must use http or https')
+    }
+    return url
   } catch (error) {
+    if (error instanceof EvidenceReferenceValidationError) throw error
     throw new EvidenceReferenceValidationError('evidenceReferenceUrl must be a valid URL')
   }
+}
 
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    throw new EvidenceReferenceValidationError('evidenceReferenceUrl must use http or https')
-  }
+function getObjectKey(url: URL): string {
+  return decodeURIComponent(url.pathname.replace(/^\/+/, ''))
+}
 
+function getSignature(url: URL): string | null {
+  const params = url.searchParams
+  return params.get('X-Amz-Signature') ?? params.get('Signature') ?? params.get('signature')
+}
+
+function getSignedUrlExpiry(url: URL): Date {
   const params = url.searchParams
   const rawXAmzExpires = params.get('X-Amz-Expires')
   const rawExpires = params.get('Expires')
@@ -105,11 +124,40 @@ function getSignedUrlExpiry(referenceUrl: string): Date {
   throw new EvidenceReferenceValidationError('Signed object-storage URL missing expiry parameter')
 }
 
-export function validateSignedObjectStorageUrl(referenceUrl: string): Date {
-  const expiry = getSignedUrlExpiry(referenceUrl)
-  if (expiry.getTime() <= Date.now()) {
+export function validateSignedObjectStorageUrl(
+  referenceUrl: string,
+  options: SignedObjectStorageUrlValidationOptions = {},
+): Date {
+  const url = parseReferenceUrl(referenceUrl)
+  const signature = getSignature(url)
+  if (!signature?.trim()) {
+    throw new EvidenceReferenceValidationError('Signed object-storage URL missing signature parameter')
+  }
+
+  const expiry = getSignedUrlExpiry(url)
+  const now = typeof options.now === 'number'
+    ? options.now
+    : options.now instanceof Date
+      ? options.now.getTime()
+      : Date.now()
+
+  if (expiry.getTime() <= now) {
     throw new EvidenceReferenceValidationError('Signed object-storage URL has already expired')
   }
+
+  const objectKey = getObjectKey(url)
+  if (options.expectedKey && objectKey !== options.expectedKey) {
+    throw new EvidenceReferenceValidationError('Signed object-storage URL object key does not match expected evidence key')
+  }
+
+  if (options.expectedOrgId && !objectKey.startsWith(`orgs/${options.expectedOrgId}/`)) {
+    throw new EvidenceReferenceValidationError('Signed object-storage URL is outside the expected organization scope')
+  }
+
+  if (options.signatureVerifier && !options.signatureVerifier(url)) {
+    throw new EvidenceReferenceValidationError('Signed object-storage URL signature verification failed')
+  }
+
   return expiry
 }
 
