@@ -165,6 +165,12 @@ Prerequisites:
 - Node.js 18+
 - npm
 
+Configuration:
+
+- Use `.env.example` as the starting template.
+- See [Configuration Reference](docs/configuration.md) for every supported
+  environment variable, default, requiredness, and sensitivity.
+
 Install and run:
 
 ```bash
