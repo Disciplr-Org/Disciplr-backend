@@ -4,6 +4,10 @@ All endpoints mounted under `/api/organizations/:orgId` enforce strict per-organ
 data isolation. This document defines the contract that every current and future
 org-scoped endpoint must uphold.
 
+For a narrower threat-model-to-test map across route params, filters, GraphQL,
+exports, webhooks, and caches, see
+[docs/security/tenant-isolation-threat-model.md](security/tenant-isolation-threat-model.md).
+
 ## Core isolation rules
 
 1. **Org existence check** — the middleware resolves the org from the in-memory store
