@@ -70,6 +70,29 @@ instead of duplicating threshold literals.
 | `analytics.milestoneTrends` | 650ms | 3 | in-memory milestone event scan |
 | `analytics.behavior` | 650ms | 3 | in-memory milestone event scan |
 
+### Org-Scoped List Index Audit
+
+`src/tests/performance/orgListPlans.perf.test.ts` enumerates the hot
+tenant/user-scoped list queries that must stay on composite indexes. The audit
+is separate from the existing global vault/transaction budgets so it does not
+duplicate `idx_vaults_status_end_date` or the broad transaction timestamp
+coverage.
+
+| Hot path | Predicate and order | Required index |
+| --- | --- | --- |
+| Org vault list | `organization_id` ordered by `created_at DESC, id DESC` | `idx_vaults_org_created_id` |
+| Org vault status filter | `organization_id`, `status` ordered by `created_at DESC, id DESC` | `idx_vaults_org_status_created_id` |
+| Org vault creator filter | `organization_id`, `creator` ordered by `created_at DESC, id DESC` | `idx_vaults_org_creator_created_id` |
+| User transactions | `user_id` ordered by `stellar_timestamp DESC, id DESC` | `idx_transactions_user_stellar_id` |
+| User vault transactions | `user_id`, `vault_id` ordered by `stellar_timestamp DESC, id DESC` | `idx_transactions_user_vault_stellar_id` |
+| User transaction type filter | `user_id`, `type` ordered by `stellar_timestamp DESC, id DESC` | `idx_transactions_user_type_stellar_id` |
+| User notifications | `user_id` ordered by `created_at DESC, id DESC` | `idx_notifications_user_created_id` |
+| Org audit logs | `organization_id` ordered by `created_at DESC, id DESC` | `idx_audit_logs_org_created_id` |
+
+The migration `db/migrations/20260627000000_add_org_list_composite_indexes.cjs`
+uses idempotent `CREATE INDEX IF NOT EXISTS` statements and a down migration that
+drops only those added composite indexes.
+
 ### Threshold Philosophy
 
 Thresholds are set conservatively to:
