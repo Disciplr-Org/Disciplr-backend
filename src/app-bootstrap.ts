@@ -66,6 +66,7 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
   app.use('/api/privacy', privacyRouter)
   app.use('/api/organizations', orgVaultsRouter)
   app.use('/api/organizations', orgAnalyticsRouter)
+  app.use('/api/orgs', orgAnalyticsRouter)
   app.use('/api/organizations', orgMembersRouter)
   app.use('/api/orgs', orgMembersRouter)
   app.use('/api/organizations/:orgId/graphql', graphqlRouter)

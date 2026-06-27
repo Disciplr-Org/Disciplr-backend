@@ -7,8 +7,136 @@ import {
   getTimeRangeFilter
 } from '../db/database.js'
 import type { VaultAnalytics, VaultAnalyticsWithPeriod } from '../types/vault.js'
-import { utcNow } from '../utils/timestamps.js'
+import { parseAndNormalizeToUTC, utcNow } from '../utils/timestamps.js'
 import { getOrSet, invalidate } from '../lib/cache.js'
+
+export interface OrgRiskAnalyticsVault {
+  id?: string
+  orgId?: string
+  amount?: string | number | null
+  status?: string | null
+  createdAt?: string | null
+  startTimestamp?: string | null
+  endTimestamp?: string | null
+  stakedAmount?: string | number | null
+  netStakedAmount?: string | number | null
+  resolution?: string | null
+  finalStatus?: string | null
+  outcome?: string | null
+  result?: string | null
+  terminationReason?: string | null
+  statusReason?: string | null
+  [key: string]: unknown
+}
+
+export interface OrgRiskAnalyticsResponse {
+  orgId: string
+  generatedAt: string
+  range: {
+    startDate: string
+    endDate: string
+  }
+  analytics: {
+    totalVaults: number
+    activeVaults: number
+    resolvedVaults: number
+    slashedVaults: number
+    slashRate: number
+    capitalAtRisk: string
+  }
+}
+
+function normalizeOrgRiskRange(startDate?: string, endDate?: string): { startDate: string; endDate: string } {
+  const normalizedStart = startDate ? parseAndNormalizeToUTC(startDate) : new Date(0).toISOString()
+  const normalizedEnd = endDate ? parseAndNormalizeToUTC(endDate) : utcNow()
+
+  if (new Date(normalizedStart).getTime() > new Date(normalizedEnd).getTime()) {
+    throw new Error('startDate must be before or equal to endDate')
+  }
+
+  return { startDate: normalizedStart, endDate: normalizedEnd }
+}
+
+function readNumericAmount(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+  return 0
+}
+
+function getVaultAmount(vault: OrgRiskAnalyticsVault): number {
+  const candidates = [
+    vault.stakedAmount,
+    vault.netStakedAmount,
+    vault.amount,
+  ]
+
+  for (const candidate of candidates) {
+    const value = readNumericAmount(candidate)
+    if (value > 0) return value
+  }
+
+  return 0
+}
+
+function isInRange(vault: OrgRiskAnalyticsVault, startDate: string, endDate: string): boolean {
+  const anchor = vault.createdAt ?? vault.startTimestamp ?? vault.endTimestamp
+  if (!anchor) return true
+
+  const normalizedAnchor = parseAndNormalizeToUTC(anchor)
+  return normalizedAnchor >= startDate && normalizedAnchor <= endDate
+}
+
+function isSlashOutcome(vault: OrgRiskAnalyticsVault): boolean {
+  const candidates = [
+    vault.resolution,
+    vault.finalStatus,
+    vault.outcome,
+    vault.result,
+    vault.terminationReason,
+    vault.statusReason,
+  ]
+
+  for (const candidate of candidates) {
+    const normalized = String(candidate ?? '').trim().toLowerCase()
+    if (normalized === 'slash_on_miss' || normalized === 'slashed' || normalized === 'slash') {
+      return true
+    }
+  }
+
+  return vault.status === 'failed'
+}
+
+export function getOrgRiskAnalytics(
+  orgId: string,
+  vaults: OrgRiskAnalyticsVault[],
+  options: { startDate?: string; endDate?: string } = {},
+): OrgRiskAnalyticsResponse {
+  const { startDate, endDate } = normalizeOrgRiskRange(options.startDate, options.endDate)
+  const scopedVaults = vaults.filter((vault) => vault.orgId === orgId && isInRange(vault, startDate, endDate))
+
+  const activeVaults = scopedVaults.filter((vault) => vault.status === 'active')
+  const resolvedVaults = scopedVaults.filter((vault) => vault.status === 'completed' || vault.status === 'failed')
+  const slashedVaults = resolvedVaults.filter((vault) => isSlashOutcome(vault))
+  const capitalAtRisk = activeVaults.reduce((sum, vault) => sum + getVaultAmount(vault), 0)
+  const slashRate = resolvedVaults.length > 0 ? slashedVaults.length / resolvedVaults.length : 0
+
+  return {
+    orgId,
+    generatedAt: utcNow(),
+    range: { startDate, endDate },
+    analytics: {
+      totalVaults: scopedVaults.length,
+      activeVaults: activeVaults.length,
+      resolvedVaults: resolvedVaults.length,
+      slashedVaults: slashedVaults.length,
+      slashRate,
+      capitalAtRisk: capitalAtRisk.toString(),
+    },
+  }
+}
 
 export async function getOverallAnalytics(): Promise<VaultAnalytics> {
   return getOrSet('analytics:overall', 300, async () => {

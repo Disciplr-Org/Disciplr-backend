@@ -14,6 +14,13 @@ This document describes the calculations and assumptions used by the analytics e
   - Query: userId (required), windowDays=30, baseScorePerSuccess=5, penaltyPerFailure=2, streakBonusPerDay=1
   - Response: per-user metrics and a behaviorScore
 
+- GET /api/orgs/:orgId/analytics/risk
+  - Query: startDate, endDate (ISO 8601, inclusive, UTC)
+  - Response: slash-rate and capital-at-risk for the requested org and window
+    - slashRate: resolved vaults that ended in slash_on_miss divided by all resolved vaults in the range
+    - capitalAtRisk: sum of the net-staked amount for active vaults in the range
+    - resolvedVaults, slashedVaults, activeVaults, totalVaults: supporting counts
+
 ## Data Model
 
 In-memory milestone events:
