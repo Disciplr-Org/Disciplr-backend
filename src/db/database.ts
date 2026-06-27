@@ -12,6 +12,19 @@ type AnalyticsStatsRow = {
   active_capital: number | null
 }
 
+export type VaultMilestoneAnalyticsRow = {
+  vault_id: string
+  organization_id: string | null
+  vault_status: string | null
+  vault_amount: string
+  milestone_count: number
+  completed_milestones: number
+  failed_milestones: number
+  pending_milestones: number
+  total_milestone_amount: string
+  completed_milestone_amount: string
+}
+
 export type AnalyticsSummaryRow = {
   total_vaults: number
   active_vaults: number
@@ -26,7 +39,13 @@ export type AnalyticsSummaryRow = {
 const analyticsStorage = (process.env.ANALYTICS_STORAGE ?? '').toLowerCase()
 const shouldUsePostgres = analyticsStorage === 'postgres'
 
-const getPool = (): Pool => getPgPool()
+const getPool = (): Pool => {
+  const pool = getPgPool()
+  if (!pool) {
+    throw new Error('PostgreSQL pool is not configured')
+  }
+  return pool
+}
 
 const initializePostgresSchema = async (pool: Pool): Promise<void> => {
   await pool.query(`
@@ -210,6 +229,61 @@ export async function queryVaultStatusBreakdownAllTime(): Promise<Array<{ status
     'SELECT status, COUNT(*)::text as count FROM vaults GROUP BY status',
   )
   return rows.map((r) => ({ status: r.status, count: Number(r.count) }))
+}
+
+export async function queryVaultMilestoneAnalyticsBatch(
+  vaultIds: readonly string[],
+  organizationId?: string | null,
+): Promise<VaultMilestoneAnalyticsRow[]> {
+  const uniqueVaultIds = Array.from(new Set(vaultIds.filter((id) => typeof id === 'string' && id.length > 0)))
+  if (uniqueVaultIds.length === 0) return []
+
+  const params: unknown[] = [uniqueVaultIds]
+  const organizationFilter = organizationId
+    ? 'AND v.organization_id::text = $2'
+    : ''
+
+  if (organizationId) {
+    params.push(organizationId)
+  }
+
+  const pool = getPool()
+  const { rows } = await pool.query<VaultMilestoneAnalyticsRow>(
+    `SELECT
+        v.id AS vault_id,
+        v.organization_id::text AS organization_id,
+        v.status::text AS vault_status,
+        v.amount::text AS vault_amount,
+        COUNT(m.id)::int AS milestone_count,
+        COALESCE(SUM(CASE WHEN m.status = 'completed' THEN 1 ELSE 0 END), 0)::int AS completed_milestones,
+        COALESCE(SUM(CASE WHEN m.status = 'failed' THEN 1 ELSE 0 END), 0)::int AS failed_milestones,
+        COALESCE(
+          SUM(CASE WHEN m.id IS NOT NULL AND m.status NOT IN ('completed', 'failed') THEN 1 ELSE 0 END),
+          0
+        )::int AS pending_milestones,
+        COALESCE(SUM(CAST(m.amount AS numeric)), 0)::text AS total_milestone_amount,
+        COALESCE(
+          SUM(CASE WHEN m.status = 'completed' THEN CAST(m.amount AS numeric) ELSE 0 END),
+          0
+        )::text AS completed_milestone_amount
+      FROM vaults v
+      LEFT JOIN milestones m ON m.vault_id = v.id
+      WHERE v.id = ANY($1::text[])
+      ${organizationFilter}
+      GROUP BY v.id, v.organization_id, v.status, v.amount`,
+    params,
+  )
+
+  return rows.map((row) => ({
+    ...row,
+    milestone_count: Number(row.milestone_count ?? 0),
+    completed_milestones: Number(row.completed_milestones ?? 0),
+    failed_milestones: Number(row.failed_milestones ?? 0),
+    pending_milestones: Number(row.pending_milestones ?? 0),
+    vault_amount: String(row.vault_amount ?? '0'),
+    total_milestone_amount: String(row.total_milestone_amount ?? '0'),
+    completed_milestone_amount: String(row.completed_milestone_amount ?? '0'),
+  }))
 }
 
 export async function backfillAnalyticsStorage(): Promise<void> {

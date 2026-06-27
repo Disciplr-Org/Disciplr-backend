@@ -1,13 +1,104 @@
 import { 
   queryVaultStatsByPeriod,
+  queryVaultMilestoneAnalyticsBatch,
   queryVaultStatusBreakdownAllTime,
   queryVaultStatusBreakdownByPeriod,
   readAnalyticsSummary,
   updateAnalyticsSummary as dbUpdateSummary,
-  getTimeRangeFilter
+  getTimeRangeFilter,
+  type VaultMilestoneAnalyticsRow,
 } from '../db/database.js'
+import DataLoader from 'dataloader'
 import type { VaultAnalytics, VaultAnalyticsWithPeriod } from '../types/vault.js'
 import { utcNow } from '../utils/timestamps.js'
+
+export interface VaultMilestoneAnalytics {
+  vaultId: string
+  organizationId: string | null
+  vaultStatus: string | null
+  vaultAmount: string
+  milestoneCount: number
+  completedMilestones: number
+  failedMilestones: number
+  pendingMilestones: number
+  totalMilestoneAmount: string
+  completedMilestoneAmount: string
+}
+
+export type VaultMilestoneAnalyticsBatchQuery = (
+  vaultIds: readonly string[],
+  organizationId?: string | null,
+) => Promise<VaultMilestoneAnalyticsRow[]>
+
+export interface AnalyticsBatchLoaderOptions {
+  organizationId?: string | null
+  cache?: boolean
+  queryVaultMilestoneAnalytics?: VaultMilestoneAnalyticsBatchQuery
+}
+
+export interface AnalyticsBatchLoaders {
+  organizationId: string | null
+  vaultMilestoneAnalytics: DataLoader<string, VaultMilestoneAnalytics>
+}
+
+const emptyVaultMilestoneAnalytics = (vaultId: string, organizationId: string | null): VaultMilestoneAnalytics => ({
+  vaultId,
+  organizationId,
+  vaultStatus: null,
+  vaultAmount: '0',
+  milestoneCount: 0,
+  completedMilestones: 0,
+  failedMilestones: 0,
+  pendingMilestones: 0,
+  totalMilestoneAmount: '0',
+  completedMilestoneAmount: '0',
+})
+
+const mapVaultMilestoneAnalyticsRow = (row: VaultMilestoneAnalyticsRow): VaultMilestoneAnalytics => ({
+  vaultId: row.vault_id,
+  organizationId: row.organization_id,
+  vaultStatus: row.vault_status,
+  vaultAmount: String(row.vault_amount ?? '0'),
+  milestoneCount: Number(row.milestone_count ?? 0),
+  completedMilestones: Number(row.completed_milestones ?? 0),
+  failedMilestones: Number(row.failed_milestones ?? 0),
+  pendingMilestones: Number(row.pending_milestones ?? 0),
+  totalMilestoneAmount: String(row.total_milestone_amount ?? '0'),
+  completedMilestoneAmount: String(row.completed_milestone_amount ?? '0'),
+})
+
+export function createAnalyticsBatchLoaders(options: AnalyticsBatchLoaderOptions = {}): AnalyticsBatchLoaders {
+  const organizationId = options.organizationId ?? null
+  const queryVaultMilestoneAnalytics = options.queryVaultMilestoneAnalytics ?? queryVaultMilestoneAnalyticsBatch
+
+  return {
+    organizationId,
+    vaultMilestoneAnalytics: new DataLoader<string, VaultMilestoneAnalytics>(
+      async (vaultIds) => {
+        const uniqueVaultIds = Array.from(new Set(vaultIds))
+        const rows = await queryVaultMilestoneAnalytics(uniqueVaultIds, organizationId)
+        const byVaultId = new Map(rows.map((row) => [row.vault_id, mapVaultMilestoneAnalyticsRow(row)]))
+
+        return vaultIds.map((vaultId) => (
+          byVaultId.get(vaultId) ?? emptyVaultMilestoneAnalytics(vaultId, organizationId)
+        ))
+      },
+      { cache: options.cache ?? true },
+    ),
+  }
+}
+
+export async function getVaultMilestoneAnalytics(
+  vaultIds: readonly string[],
+  loaders: AnalyticsBatchLoaders = createAnalyticsBatchLoaders(),
+): Promise<VaultMilestoneAnalytics[]> {
+  const results = await loaders.vaultMilestoneAnalytics.loadMany(vaultIds)
+
+  return results.map((result) => {
+    if (result instanceof Error) throw result
+    return result
+  })
+}
 
 export async function getOverallAnalytics(): Promise<VaultAnalytics> {
   const summary = await readAnalyticsSummary()

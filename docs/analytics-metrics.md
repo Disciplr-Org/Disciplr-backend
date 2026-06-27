@@ -58,6 +58,26 @@ Steps:
 - Partial data: empty periods are omitted from the response. Clients may expand to full ranges as needed.
 - Storage: events are in-memory for now; replace with a database or event store in production.
 
+## Vault/Milestone Batch Resolver
+
+`src/services/analytics.service.ts` exposes request-scoped analytics loaders via
+`createAnalyticsBatchLoaders({ organizationId })`. The vault/milestone loader
+coalesces same-tick per-vault reads into one keyed SQL query and relies on a
+fresh loader instance per request, so cached analytics never cross tenant or
+request boundaries.
+
+The batch query returns one aggregate per vault id:
+
+- vault status and amount
+- milestone count
+- completed, failed, and pending milestone counts
+- total milestone amount
+- completed milestone amount
+
+Repeated vault ids are deduplicated within a request. Missing or out-of-tenant
+vault ids resolve to zero-valued aggregates for that key, preserving response
+shape without leaking whether another tenant owns the id.
+
 ## Examples
 
 Trends example bucket:
