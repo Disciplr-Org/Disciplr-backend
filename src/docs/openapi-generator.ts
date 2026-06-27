@@ -301,6 +301,58 @@ registry.registerPath({
   },
 })
 
+// GET /api/jobs/depth
+registry.registerPath({
+  method: 'get',
+  path: '/api/jobs/depth',
+  summary: 'Get queue depth grouped by job type and state',
+  tags: ['Jobs'],
+  security: [{ bearerAuth: [] }],
+  responses: {
+    200: {
+      description: 'Queue depth report',
+      content: {
+        'application/json': {
+          schema: z.object({
+            generatedAt: z.string().datetime(),
+            totals: z.object({
+              queued: z.number(),
+              delayed: z.number(),
+              active: z.number(),
+              deadLetter: z.number(),
+            }),
+            byType: z.record(z.string(), z.any()),
+          }),
+        },
+      },
+    },
+  },
+})
+
+// POST /api/jobs/sweep-stuck
+registry.registerPath({
+  method: 'post',
+  path: '/api/jobs/sweep-stuck',
+  summary: 'Sweep stuck active jobs back to ready queue or dead letter',
+  tags: ['Jobs'],
+  security: [{ bearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({
+            staleAfterMs: z.number().int().positive().optional(),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    202: { description: 'Stuck-job sweep completed' },
+    400: { description: 'Invalid staleAfterMs' },
+  },
+})
+
 // GET /api/jobs/deadletters
 registry.registerPath({
   method: 'get',

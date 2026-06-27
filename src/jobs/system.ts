@@ -1,5 +1,12 @@
 import { createDefaultJobHandlers } from './handlers.js'
-import { InMemoryJobQueue, type QueueMetrics, type QueuedJobReceipt } from './queue.js'
+import {
+  InMemoryJobQueue,
+  type QueueDepthReport,
+  type QueueMetrics,
+  type QueuedJobReceipt,
+  type StuckJobSweepOptions,
+  type StuckJobSweepResult,
+} from './queue.js'
 import { type EnqueueOptions, type JobPayloadByType, type JobType } from './types.js'
 import { recoverPendingExportJobs } from '../services/exportQueue.js'
 import {
@@ -104,6 +111,14 @@ export class BackgroundJobSystem {
 
   getMetrics(): QueueMetrics {
     return this.queue.getMetrics()
+  }
+
+  getDepthReport(): QueueDepthReport {
+    return this.queue.getDepthReport()
+  }
+
+  sweepStuckJobs(options: StuckJobSweepOptions = {}): StuckJobSweepResult {
+    return this.queue.sweepStuckJobs(options)
   }
 
   private scheduleRecurringJobs(): void {

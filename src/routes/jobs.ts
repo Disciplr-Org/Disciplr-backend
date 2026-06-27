@@ -3,6 +3,8 @@ import { z } from 'zod'
 import { UserRole } from '../types/user.js'
 import type { BackgroundJobSystem } from '../jobs/system.js'
 import {
+  isJobType,
+  isPayloadForJobType,
   type EnqueueOptions,
   type JobPayloadByType,
   type JobType,
@@ -17,6 +19,15 @@ import { createAuditLog } from '../lib/audit-logs.js'
 import { enqueueJobSchema } from '../lib/validation.js'
 
 const jobsJson = requireJson({ maxBytes: JOBS_JSON_MAX_BYTES })
+const MAX_STALE_AFTER_MS = 86_400_000
+
+const sweepStuckJobsSchema = z.object({
+  staleAfterMs: z.coerce.number().int().positive().max(MAX_STALE_AFTER_MS).optional(),
+})
+
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === 'object' && value !== null
+}
 
 // Helpers
 const enqueueTypedJob = (
@@ -57,6 +68,42 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
   // GET /metrics — internal queue metrics (admin only)
   jobsRouter.get('/metrics', (_req, res) => {
     res.json(jobSystem.getMetrics())
+  })
+
+  // GET /depth — queue depth grouped by job type and state (admin only)
+  jobsRouter.get('/depth', (_req, res) => {
+    res.json(jobSystem.getDepthReport())
+  })
+
+  // POST /sweep-stuck — reclaim jobs whose active lease exceeded staleAfterMs
+  jobsRouter.post('/sweep-stuck', (req, res) => {
+    const input = sweepStuckJobsSchema.safeParse({
+      staleAfterMs: isRecord(req.body) && req.body.staleAfterMs !== undefined
+        ? req.body.staleAfterMs
+        : req.query.staleAfterMs,
+    })
+    if (!input.success) {
+      res.status(400).json({
+        error: 'Invalid staleAfterMs. It must be a positive integer no greater than 86400000.',
+      })
+      return
+    }
+
+    const result = jobSystem.sweepStuckJobs(input.data)
+    createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: 'job.sweep_stuck',
+      target_type: 'job_queue',
+      target_id: 'in-memory',
+      metadata: {
+        staleAfterMs: result.staleAfterMs,
+        scannedActive: result.scannedActive,
+        reclaimed: result.reclaimed,
+        deadLettered: result.deadLettered,
+      },
+    })
+
+    res.status(202).json({ swept: true, result })
   })
 
   // GET /deadletters — inspect failed jobs that exhausted retries

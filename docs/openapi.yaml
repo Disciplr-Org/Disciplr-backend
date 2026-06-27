@@ -518,6 +518,68 @@ paths:
                   - delayedJobs
                   - activeJobs
                   - totals
+  /api/jobs/depth:
+    get:
+      summary: Get queue depth grouped by job type and state
+      tags:
+        - Jobs
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Queue depth report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  generatedAt:
+                    type: string
+                    format: date-time
+                  totals:
+                    type: object
+                    properties:
+                      queued:
+                        type: number
+                      delayed:
+                        type: number
+                      active:
+                        type: number
+                      deadLetter:
+                        type: number
+                    required:
+                      - queued
+                      - delayed
+                      - active
+                      - deadLetter
+                  byType:
+                    type: object
+                    additionalProperties: {}
+                required:
+                  - generatedAt
+                  - totals
+                  - byType
+  /api/jobs/sweep-stuck:
+    post:
+      summary: Sweep stuck active jobs back to ready queue or dead letter
+      tags:
+        - Jobs
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                staleAfterMs:
+                  type: integer
+                  exclusiveMinimum: 0
+      responses:
+        "202":
+          description: Stuck-job sweep completed
+        "400":
+          description: Invalid staleAfterMs
   /api/jobs/deadletters:
     get:
       summary: List dead-letter jobs
