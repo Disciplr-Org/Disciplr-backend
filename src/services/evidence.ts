@@ -1,4 +1,9 @@
 import { prisma } from '../lib/prisma.js'
+import {
+  S3ObjectValidationError,
+  validateObjectStorageResponseContentType,
+  validateObjectStorageUrlPath,
+} from './exportS3.js'
 
 export class EvidenceReferenceValidationError extends Error {
   constructor(message: string) {
@@ -107,6 +112,16 @@ function getSignedUrlExpiry(referenceUrl: string): Date {
 
 export function validateSignedObjectStorageUrl(referenceUrl: string): Date {
   const expiry = getSignedUrlExpiry(referenceUrl)
+  try {
+    validateObjectStorageUrlPath(referenceUrl)
+    validateObjectStorageResponseContentType(referenceUrl)
+  } catch (error) {
+    if (error instanceof S3ObjectValidationError) {
+      throw new EvidenceReferenceValidationError(error.message)
+    }
+    throw error
+  }
+
   if (expiry.getTime() <= Date.now()) {
     throw new EvidenceReferenceValidationError('Signed object-storage URL has already expired')
   }

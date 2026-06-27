@@ -21,11 +21,19 @@ This service stores signed object-storage references for verification evidence w
 - `POST /api/verifications` now accepts `evidenceHash` and `evidenceReferenceUrl`.
 - `evidenceHash` must be a non-empty alphanumeric-hyphen-underscore string between 32 and 128 characters.
 - `evidenceReferenceUrl` must be an HTTP/HTTPS signed object-storage URL.
+- Object-storage paths are rejected when they contain leading empty segments, `.` or `..` path traversal segments, backslashes, null bytes, or line breaks. Percent-encoded variants such as `%2e%2e` and `%00` are decoded before validation.
+- Signed URL response content-type overrides, when present, must use the storage allowlist. Unsafe browser-executable types such as `text/html` and JavaScript content types are rejected.
 - URL expiry is validated by parsing one of:
   - `X-Amz-Expires` with `X-Amz-Date`
   - `Expires`
   - `expires`
 - Expired URLs are rejected.
+
+## Export object keys
+
+S3 export uploads use tenant-scoped keys in the form `exports/<requesting-user-id>/<job-id>/<filename>`.
+Each path segment is validated before upload or pre-signing so a caller cannot overwrite a sibling tenant's object with `../`, leading slash, absolute filesystem path, encoded traversal, or null-byte input.
+Export uploads also enforce a content-type allowlist for CSV, JSON, NDJSON, gzip, PDF/image/text evidence-style objects. HTML, opaque binary, and executable/script MIME types are intentionally excluded.
 
 ## Persistence
 

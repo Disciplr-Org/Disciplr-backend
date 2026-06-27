@@ -159,7 +159,7 @@ describe('Export S3 integration', () => {
     const completed = await import('../services/exportQueue.js').then((m) => m.getJob(job.id))
 
     expect(completed?.status).toBe('done')
-    expect(completed?.s3Key).toMatch(/^exports\/[a-f0-9-]+\/export-.*\.csv$/)
+    expect(completed?.s3Key).toMatch(/^exports\/user-s3\/[a-f0-9-]+\/export-.*\.csv$/)
     expect(completed?.result).toBeUndefined()
     expect(completed?.filename).toContain('.csv')
 
