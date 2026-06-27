@@ -177,7 +177,18 @@ All subscriber queries are scoped by `organization_id`. When dispatching events,
 
 Creates a new webhook subscriber. The URL is validated against the SSRF allowlist (`isUrlAllowed`). Returns the created subscriber.
 
+`events` is an array of event type strings the subscriber wants to receive. An empty array (`[]`) acts as a wildcard and subscribes to all events. Each event type is validated against `KNOWN_EVENT_TYPES`; unknown types are rejected.
+
 Optional `schemaVersion` selects the payload envelope version (default `1`). Must be a supported version (see Payload Schema Versioning).
+
+### `KNOWN_EVENT_TYPES`
+
+The set of all event types the system can produce:
+
+```
+vault_created, vault_completed, vault_failed, vault_cancelled,
+milestone_created, milestone_validated, settlement_summary
+```
 
 ### `removeSubscriber(id)`
 

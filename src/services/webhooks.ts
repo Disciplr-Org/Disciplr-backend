@@ -116,6 +116,17 @@ export const VAULT_LIFECYCLE_EVENTS = new Set([
   'vault_cancelled',
 ])
 
+/** All event types the system can produce. Used to validate subscriber event-type filters. */
+export const KNOWN_EVENT_TYPES = new Set([
+  'vault_created',
+  'vault_completed',
+  'vault_failed',
+  'vault_cancelled',
+  'milestone_created',
+  'milestone_validated',
+  'settlement_summary',
+])
+
 const repo = new WebhookSubscriberRepository(db)
 
 // ── Circuit breaker config ────────────────────────────────────────────────────
@@ -395,6 +406,14 @@ export const addSubscriber = async (
 ): Promise<WebhookSubscriber> => {
   if (!isUrlAllowed(url)) {
     throw new Error(`Webhook URL not permitted: ${url}`)
+  }
+
+  const unknownEvent = events.find((e) => !KNOWN_EVENT_TYPES.has(e))
+  if (unknownEvent) {
+    throw new Error(
+      `Unknown event type: "${unknownEvent}". ` +
+      `Known types: ${[...KNOWN_EVENT_TYPES].join(', ')}`,
+    )
   }
 
   if (!SUPPORTED_SCHEMA_VERSIONS.has(schemaVersion)) {
