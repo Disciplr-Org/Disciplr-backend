@@ -20,7 +20,8 @@ You must provide a valid `Authorization: Bearer <token>` header, and you must be
 ## Query Restrictions
 To prevent abusive queries:
 1. **Depth Limiting**: Queries are restricted to a maximum depth of 5. Nested queries beyond this depth will be rejected.
-2. **Read-Only**: Only queries are supported. Mutations must be performed through the REST API.
+2. **Complexity Limiting**: Queries are restricted to a maximum of 40 non-introspection field selections. Broad alias-heavy queries beyond this budget will be rejected.
+3. **Read-Only**: Only queries are supported. Mutations must be performed through the REST API.
 
 ## Example Query
 

@@ -7,7 +7,9 @@ import {
   GraphQLFloat,
   GraphQLInt,
   GraphQLBoolean,
+  GraphQLError,
 } from 'graphql'
+import type { ASTVisitor, ValidationContext } from 'graphql'
 import { createHandler } from 'graphql-http/lib/use/express'
 import depthLimit from 'graphql-depth-limit'
 import DataLoader from 'dataloader'
@@ -16,6 +18,77 @@ import { getVaultById, listVaults } from '../services/vaultStore.js'
 import { getAnalyticsByPeriod } from '../services/analytics.service.js'
 import { listVerifications, VerificationRecord } from '../services/verifiers.js'
 import { authenticate } from '../middleware/auth.js'
+
+const MAX_QUERY_DEPTH = 5
+const MAX_QUERY_COMPLEXITY = 40
+
+const operationDepthLimit = (maxDepth: number) => {
+  return (context: ValidationContext): ASTVisitor => {
+    let depth = 0
+    let introspectionDepth = 0
+
+    return {
+      Field: {
+        enter(node) {
+          if (node.name.value.startsWith('__') || introspectionDepth > 0) {
+            introspectionDepth += 1
+            return
+          }
+
+          depth += 1
+          if (depth > maxDepth) {
+            context.reportError(
+              new GraphQLError(`Query exceeds maximum depth of ${maxDepth}`, {
+                nodes: node,
+              }),
+            )
+            return false
+          }
+        },
+        leave(node) {
+          if (node.name.value.startsWith('__') || introspectionDepth > 0) {
+            introspectionDepth = Math.max(0, introspectionDepth - 1)
+            return
+          }
+          depth = Math.max(0, depth - 1)
+        },
+      },
+    }
+  }
+}
+
+const complexityLimit = (maxComplexity: number) => {
+  return (context: ValidationContext): ASTVisitor => {
+    let fieldCount = 0
+    let introspectionDepth = 0
+
+    return {
+      Field: {
+        enter(node) {
+          if (node.name.value.startsWith('__') || introspectionDepth > 0) {
+            introspectionDepth += 1
+            return
+          }
+
+          fieldCount += 1
+          if (fieldCount > maxComplexity) {
+            context.reportError(
+              new GraphQLError(`Query exceeds maximum complexity of ${maxComplexity}`, {
+                nodes: node,
+              }),
+            )
+            return false
+          }
+        },
+        leave(node) {
+          if (node.name.value.startsWith('__') || introspectionDepth > 0) {
+            introspectionDepth = Math.max(0, introspectionDepth - 1)
+          }
+        },
+      },
+    }
+  }
+}
 
 // --- DataLoaders ---
 // To avoid N+1 queries, we batch fetching verifications by targetId
@@ -174,6 +247,10 @@ graphqlRouter.use(
         loaders: createLoaders(),
       }
     },
-    validationRules: [depthLimit(5)], // Bound query depth to prevent abusive nested queries
+    validationRules: [
+      operationDepthLimit(MAX_QUERY_DEPTH),
+      depthLimit(MAX_QUERY_DEPTH),
+      complexityLimit(MAX_QUERY_COMPLEXITY),
+    ], // Bound query shape to prevent abusive nested or broad reads
   })
 )
