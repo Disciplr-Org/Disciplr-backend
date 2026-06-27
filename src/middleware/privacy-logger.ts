@@ -30,21 +30,70 @@ const SENSITIVE_KEYS = new Set([
   'failuredestination',
 ])
 
+export const SAFE_LOG_KEYS = new Set([
+  'accept',
+  'content-type',
+  'correlationid',
+  'cursor',
+  'durationms',
+  'event',
+  'host',
+  'id',
+  'ip',
+  'level',
+  'limit',
+  'method',
+  'page',
+  'pagesize',
+  'path',
+  'requestid',
+  'request_id',
+  'route',
+  'service',
+  'sortby',
+  'sortorder',
+  'status',
+  'statuscode',
+  'timestamp',
+  'type',
+  'url',
+  'user-agent',
+  'x-correlation-id',
+  'x-request-id',
+])
+
 const EMAIL_RE = /[^@\s]+@[^@\s]+\.[^@\s]+/
 const JWT_RE = /^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$/
+
+export interface RedactOptions {
+  allowlistMode?: boolean
+  allowedKeys?: Iterable<string>
+}
 
 /** Returns true when a field name should always be redacted. */
 export function shouldRedact(key: string): boolean {
   return SENSITIVE_KEYS.has(key.toLowerCase())
 }
 
+/** Returns true when a field name is safe to keep in allowlist-mode logs. */
+export function isSafeLogKey(key: string, allowedKeys: Iterable<string> = SAFE_LOG_KEYS): boolean {
+  const normalized = new Set(Array.from(allowedKeys, (allowedKey) => allowedKey.toLowerCase()))
+  return normalized.has(key.toLowerCase())
+}
+
 /**
  * Pure recursive redactor. Deep-copies input and replaces:
  * - values under sensitive field names, and
  * - string values matching email or JWT patterns
- * with REDACTED. Never mutates the original.
+ * with REDACTED. In allowlist mode, non-sensitive keys are only kept when they
+ * are explicitly allowlisted. Never mutates the original.
  */
-export function redact<T>(value: T, seen = new WeakSet()): T {
+export function redact<T>(value: T, options: RedactOptions = {}): T {
+  const allowedKeys = new Set(Array.from(options.allowedKeys ?? SAFE_LOG_KEYS, (key) => key.toLowerCase()))
+  return redactValue(value, options.allowlistMode === true, allowedKeys, new WeakSet())
+}
+
+function redactValue<T>(value: T, allowlistMode: boolean, allowedKeys: Set<string>, seen: WeakSet<object>): T {
   if (value === null || value === undefined) return value
 
   if (typeof value !== 'object') {
@@ -60,7 +109,7 @@ export function redact<T>(value: T, seen = new WeakSet()): T {
   seen.add(value as object)
 
   if (Array.isArray(value)) {
-    return value.map((item) => redact(item, seen)) as unknown as T
+    return value.map((item) => redactValue(item, allowlistMode, allowedKeys, seen)) as unknown as T
   }
 
   if (value instanceof Date) return value.toISOString() as unknown as T
@@ -70,7 +119,11 @@ export function redact<T>(value: T, seen = new WeakSet()): T {
   const result: Record<string, unknown> = {}
 
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    result[k] = shouldRedact(k) ? REDACTED : redact(v, seen)
+    if (shouldRedact(k) || (allowlistMode && !allowedKeys.has(k.toLowerCase()))) {
+      result[k] = REDACTED
+      continue
+    }
+    result[k] = redactValue(v, allowlistMode, allowedKeys, seen)
   }
 
   return result as unknown as T
@@ -141,13 +194,13 @@ export const privacyLogger = (
           rawBody !== undefined &&
           typeof rawBody === 'object' &&
           !Array.isArray(rawBody)
-            ? redact(rawBody as Record<string, unknown>)
+            ? redact(rawBody as Record<string, unknown>, { allowlistMode: true })
             : null,
         query:
           rawQuery && Object.keys(rawQuery).length > 0
-            ? redact(rawQuery)
+            ? redact(rawQuery, { allowlistMode: true })
             : null,
-        headers: redact(req.headers as Record<string, unknown>),
+        headers: redact(req.headers as Record<string, unknown>, { allowlistMode: true }),
       }
 
       console.log(JSON.stringify(line))

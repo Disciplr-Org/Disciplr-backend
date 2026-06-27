@@ -15,6 +15,17 @@ Every log line has exactly these top-level keys — no more, no less.
 
 ## Redaction Policy
 
+### Allowlist Mode for Structured Request Logs
+
+The HTTP privacy logger runs body, query, and header payloads in **allowlist mode** before writing the structured JSON line. In this mode:
+
+- Keys in `SENSITIVE_KEYS` are always redacted, even if they also appear in the allowlist.
+- Keys not present in `SAFE_LOG_KEYS` are redacted by default.
+- Operational fields such as `requestId`, `route`, `method`, `url`, `status`, `durationMs`, pagination fields, and safe request headers remain available for debugging.
+- Nested objects are processed recursively only through allowlisted parent keys; unknown nested fields are redacted fail-closed.
+
+This means newly added fields such as webhook signing secrets, API-key material, WebAuthn challenges, or JWT payload fragments do not need to be known ahead of time to be protected in request logs.
+
 ### Export Queue DLQ and Metrics Events
 Export job failure records and export queue structured events pass through the shared privacy sanitizer before they are persisted or emitted.
 The sanitizer replaces `userId`, `targetUserId`, Stellar account addresses, emails, `creator`, `successDestination`, and `failureDestination` with deterministic 8-character SHA-256 tokens.
@@ -200,6 +211,12 @@ Update the snapshot after changing the set:
 npx jest src/tests/privacy-logger.redaction.test.ts --updateSnapshot
 ```
 
+## Adding New Safe Log Fields
+
+Only add a key to `SAFE_LOG_KEYS` when the value is operationally useful and guaranteed not to contain user content, credentials, PII, raw wallet addresses, JWT claims, webhook secrets, API-key material, or WebAuthn challenge data.
+
+After adding a safe key, add or update an allowlist-mode test in `src/tests/privacy-logger.allowlist.test.ts`.
+
 ## Testing
 
 ```bash
@@ -211,6 +228,7 @@ npx jest src/tests/privacy-logger.redaction.test.ts --updateSnapshot
 
 npm test -- src/tests/privacy-logger.test.ts
 npm test -- src/tests/exportQueue.pii.test.ts
+bun test src/tests/privacy-logger.allowlist.test.ts
 ```
 
 Test coverage includes:
@@ -227,6 +245,7 @@ Test coverage includes:
 - Middleware schema (exact top-level keys)
 - `null` body and `null` query
 - Header redaction (`authorization`, `x-api-key`, `x-auth-token`, `cookie`)
+- Allowlist-mode redaction of unknown body, query, and header fields
 - Serialization-failure fallback
 - Snapshot of a representative request
 
