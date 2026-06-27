@@ -27,6 +27,16 @@ This service stores signed object-storage references for verification evidence w
   - `expires`
 - Expired URLs are rejected.
 
+## SSRF protection
+
+Evidence references are treated as outbound object-storage URLs and are validated before they are persisted.
+
+- Only `http` and `https` schemes are accepted.
+- `localhost`, `.localhost`, `localtest.me`, loopback, RFC1918, link-local, unique-local IPv6, and cloud metadata IPs are blocked.
+- DNS names are resolved and every returned address is checked, so DNS rebinding to a private/internal address is rejected.
+- `EVIDENCE_ALLOWED_HOSTS` can restrict evidence references to specific hosts or subdomains.
+- When `EVIDENCE_ALLOWED_HOSTS` is not set, the service falls back to `WEBHOOK_ALLOWED_HOSTS` so outbound webhook and evidence URL policy can be managed together.
+
 ## Persistence
 
 A new `evidence_references` table stores evidence metadata.

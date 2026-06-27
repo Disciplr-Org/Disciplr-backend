@@ -1,3 +1,5 @@
+import { lookup } from 'node:dns/promises'
+import { isIP } from 'node:net'
 import { prisma } from '../lib/prisma.js'
 
 export class EvidenceReferenceValidationError extends Error {
@@ -17,6 +19,127 @@ export interface EvidenceReference {
 }
 
 const EVIDENCE_HASH_PATTERN = /^[A-Za-z0-9_-]{32,128}$/
+const METADATA_IP = '169.254.169.254'
+
+export interface DnsLookupAddress {
+  address: string
+  family: number
+}
+
+export type EvidenceDnsResolver = (
+  hostname: string,
+  options: { all: true; verbatim: true },
+) => Promise<DnsLookupAddress[]>
+
+function getEvidenceAllowedHosts(): string[] {
+  return (process.env.EVIDENCE_ALLOWED_HOSTS ?? process.env.WEBHOOK_ALLOWED_HOSTS ?? '')
+    .split(',')
+    .map((host) => host.trim().replace(/\.$/, '').toLowerCase())
+    .filter(Boolean)
+}
+
+function normalizeHostname(hostname: string): string {
+  return hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase()
+}
+
+function normalizeIpv4MappedAddress(address: string): string {
+  const normalized = normalizeHostname(address)
+  const dottedMatch = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i)
+  if (dottedMatch) return dottedMatch[1]
+
+  const hexMatch = normalized.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i)
+  if (!hexMatch) return normalized
+
+  const high = Number.parseInt(hexMatch[1], 16)
+  const low = Number.parseInt(hexMatch[2], 16)
+  return [
+    String((high >> 8) & 255),
+    String(high & 255),
+    String((low >> 8) & 255),
+    String(low & 255),
+  ].join('.')
+}
+
+function isBlockedIpAddress(address: string): boolean {
+  const normalized = normalizeIpv4MappedAddress(address)
+
+  if (isIP(normalized) === 4) {
+    return (
+      normalized === METADATA_IP ||
+      /^0\./.test(normalized) ||
+      /^10\./.test(normalized) ||
+      /^127\./.test(normalized) ||
+      /^169\.254\./.test(normalized) ||
+      /^172\.(1[6-9]|2[0-9]|3[01])\./.test(normalized) ||
+      /^192\.168\./.test(normalized)
+    )
+  }
+
+  if (isIP(normalized) === 6) {
+    if (normalized === '::1') return true
+    const firstGroup = Number.parseInt(normalized.split(':')[0] || '0', 16)
+    return (firstGroup & 0xfe00) === 0xfc00 || (firstGroup & 0xffc0) === 0xfe80
+  }
+
+  return false
+}
+
+function isAllowedEvidenceHost(hostname: string, allowedHosts = getEvidenceAllowedHosts()): boolean {
+  if (allowedHosts.length === 0) return true
+  return allowedHosts.some((host) => hostname === host || hostname.endsWith(`.${host}`))
+}
+
+export async function validateEvidenceReferenceUrlSafety(
+  referenceUrl: string,
+  resolver: EvidenceDnsResolver = lookup,
+): Promise<void> {
+  let url: URL
+  try {
+    url = new URL(referenceUrl)
+  } catch {
+    throw new EvidenceReferenceValidationError('evidenceReferenceUrl must be a valid URL')
+  }
+
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw new EvidenceReferenceValidationError('evidenceReferenceUrl must use http or https')
+  }
+
+  const hostname = normalizeHostname(url.hostname)
+  if (
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    /(?:^|\.)localtest\.me$/.test(hostname)
+  ) {
+    throw new EvidenceReferenceValidationError('evidenceReferenceUrl host is not permitted')
+  }
+
+  if (!isAllowedEvidenceHost(hostname)) {
+    throw new EvidenceReferenceValidationError('evidenceReferenceUrl host is not allowlisted')
+  }
+
+  if (isIP(hostname) !== 0) {
+    if (isBlockedIpAddress(hostname)) {
+      throw new EvidenceReferenceValidationError('evidenceReferenceUrl resolves to a private or internal address')
+    }
+    return
+  }
+
+  let resolved: DnsLookupAddress[]
+  try {
+    resolved = await resolver(hostname, { all: true, verbatim: true })
+  } catch {
+    throw new EvidenceReferenceValidationError('evidenceReferenceUrl host did not resolve')
+  }
+  if (resolved.length === 0) {
+    throw new EvidenceReferenceValidationError('evidenceReferenceUrl host did not resolve')
+  }
+
+  for (const record of resolved) {
+    if (isBlockedIpAddress(record.address)) {
+      throw new EvidenceReferenceValidationError('evidenceReferenceUrl resolves to a private or internal address')
+    }
+  }
+}
 
 function normalizeEvidenceHash(input: unknown): string {
   if (typeof input !== 'string') {
@@ -119,7 +242,9 @@ export async function createEvidenceReference(
   evidenceReferenceUrl: string,
 ): Promise<EvidenceReference> {
   const normalizedHash = normalizeEvidenceHash(evidenceHash)
-  const expiresAt = validateSignedObjectStorageUrl(evidenceReferenceUrl.trim())
+  const normalizedReferenceUrl = evidenceReferenceUrl.trim()
+  const expiresAt = validateSignedObjectStorageUrl(normalizedReferenceUrl)
+  await validateEvidenceReferenceUrlSafety(normalizedReferenceUrl)
   const now = new Date()
 
   const rows = await prisma.$queryRaw<
@@ -141,7 +266,7 @@ export async function createEvidenceReference(
     ) VALUES (
       ${verificationId},
       ${normalizedHash},
-      ${evidenceReferenceUrl.trim()},
+      ${normalizedReferenceUrl},
       ${expiresAt},
       ${now}
     )
