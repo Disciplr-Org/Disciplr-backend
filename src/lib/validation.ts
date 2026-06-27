@@ -40,6 +40,36 @@ export function formatValidationError(error: ZodError) {
   return buildValidationError(flattenZodErrors(error))
 }
 
+const UNSAFE_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+export function isUnsafeObjectKey(key: string): boolean {
+  return UNSAFE_OBJECT_KEYS.has(key)
+}
+
+export function sanitizeObject<T>(input: T): T {
+  if (Array.isArray(input)) {
+    return input.map((value) => sanitizeObject(value)) as T
+  }
+
+  if (input === null || typeof input !== 'object') {
+    return input
+  }
+
+  const output: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (isUnsafeObjectKey(key)) {
+      throw new Error(`Unsafe query key rejected: ${key}`)
+    }
+    output[key] = sanitizeObject(value)
+  }
+
+  return output as T
+}
+
+export function isValidField(field: string, allowedFields: readonly string[]): boolean {
+  return typeof field === 'string' && !isUnsafeObjectKey(field) && allowedFields.includes(field)
+}
+
 export const utcTimestampSchema = z
   .string({ message: 'required' })
   .refine(

@@ -87,7 +87,7 @@ export class QueryParser {
         if (!isValidField(column, this.allowedColumns)) {
           this.logger?.warn('QueryParser: Restricted column access attempted', { column });
           this.metricsHook?.({ event: 'restricted_column_access', column });
-          continue;
+          throw new Error(`Invalid filter field: ${column}`);
         }
 
         if (typeof filterValue === 'object' && filterValue !== null) {
@@ -101,6 +101,7 @@ export class QueryParser {
             } else {
               this.logger?.warn('QueryParser: Invalid operator attempted', { column, op });
               this.metricsHook?.({ event: 'invalid_operator_attempt', column, operator: op });
+              throw new Error(`Invalid filter operator: ${op}`);
             }
           }
         } else {
@@ -135,6 +136,7 @@ export class QueryParser {
       } else {
         this.logger?.warn('QueryParser: Restricted column sort attempted', { column: col });
         this.metricsHook?.({ event: 'restricted_sort_access', column: col });
+        throw new Error(`Invalid sort field: ${col}`);
       }
     }
 
