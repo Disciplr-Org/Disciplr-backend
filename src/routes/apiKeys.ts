@@ -95,7 +95,7 @@ apiKeysRouter.post('/:id/rotate', apiKeyRateLimiter, async (req, res) => {
   })
 })
 
-apiKeysRouter.post('/:id/revoke', requireStepUp(), async (req, res) => {
+apiKeysRouter.post('/:id/revoke', requireStepUp(300, 'api_keys.revoke'), async (req, res) => {
   const userId = req.authUser!.userId
   const record = await revokeApiKey(req.params.id, userId)
 

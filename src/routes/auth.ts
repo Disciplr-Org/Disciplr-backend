@@ -164,17 +164,23 @@ authRouter.post('/webauthn/challenge', authenticate, async (req, res, next) => {
     return next(AppError.unauthorized('Unauthorized'))
   }
 
-  const challenge = await AuthService.issueStepUpChallenge(req.user.userId)
+  const action = typeof req.body?.action === 'string' ? req.body.action : undefined
+  const challenge = await AuthService.issueStepUpChallenge(req.user.userId, action)
   res.status(200).json(challenge)
 })
 
 authRouter.post('/webauthn/assert', authenticate, async (req, res, next) => {
-  const { nonce, credentialId, publicKey } = req.body as { nonce?: string; credentialId?: string; publicKey?: string }
+  const { nonce, credentialId, publicKey, action } = req.body as {
+    nonce?: string
+    credentialId?: string
+    publicKey?: string
+    action?: string
+  }
   if (!req.user?.userId || !nonce || !credentialId || !publicKey) {
     return next(AppError.badRequest('Missing WebAuthn assertion data'))
   }
 
-  const recorded = await AuthService.recordStepUpAssertion(nonce, req.user.userId)
+  const recorded = await AuthService.recordStepUpAssertion(nonce, req.user.userId, action)
   if (!recorded) {
     return next(AppError.unauthorized('Invalid or expired step-up assertion'))
   }
@@ -183,7 +189,7 @@ authRouter.post('/webauthn/assert', authenticate, async (req, res, next) => {
   res.status(200).json({ success: true })
 })
 
-authRouter.post('/users/:id/role', requireJson, authenticate, requireStepUp(), async (req, res, next) => {
+authRouter.post('/users/:id/role', requireJson, authenticate, requireStepUp(300, 'auth.users.role.update'), async (req, res, next) => {
   if (!req.user) {
     return next(AppError.unauthorized('Unauthorized'))
   }

@@ -1,13 +1,16 @@
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals'
 import { AuthService } from '../services/auth.service.js'
 
 describe('AuthService step-up challenge flow', () => {
   beforeEach(() => {
+    AuthService.clearStepUpSessionsForTesting()
     jest.useFakeTimers()
     jest.setSystemTime(new Date('2026-06-26T00:00:00.000Z'))
   })
 
   afterEach(() => {
     jest.useRealTimers()
+    AuthService.clearStepUpSessionsForTesting()
   })
 
   it('issues a challenge, consumes it once, and rejects replays', async () => {

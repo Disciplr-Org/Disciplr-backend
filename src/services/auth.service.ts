@@ -6,7 +6,12 @@ import { randomUUID } from 'node:crypto'
 import { recordSession, revokeAllUserSessions } from './session.js'
 
 const STEP_UP_TTL_SECONDS = 5 * 60
-const STEP_UP_NONCES = new Map<string, { userId: string; expiresAt: number; used: boolean }>()
+const STEP_UP_NONCES = new Map<string, { userId: string; action?: string; expiresAt: number; used: boolean }>()
+
+const normalizeStepUpAction = (action?: string | null): string | undefined => {
+    const normalized = action?.trim()
+    return normalized ? normalized : undefined
+}
 
 export class AuthService {
     static async register(input: RegisterInput) {
@@ -149,22 +154,31 @@ export class AuthService {
         await revokeAllUserSessions(userId)
     }
 
-    static async issueStepUpChallenge(userId: string) {
+    static async issueStepUpChallenge(userId: string, action?: string) {
         const nonce = randomUUID()
         const expiresAt = Date.now() + STEP_UP_TTL_SECONDS * 1000
-        STEP_UP_NONCES.set(nonce, { userId, expiresAt, used: false })
+        const normalizedAction = normalizeStepUpAction(action)
+        STEP_UP_NONCES.set(nonce, { userId, action: normalizedAction, expiresAt, used: false })
 
         return {
             nonce,
             expiresAt,
             ttlSeconds: STEP_UP_TTL_SECONDS,
             challenge: 'webauthn-step-up',
+            action: normalizedAction,
         }
     }
 
-    static async recordStepUpAssertion(nonce: string, userId: string) {
+    static async recordStepUpAssertion(nonce: string, userId: string, action?: string) {
         const entry = STEP_UP_NONCES.get(nonce)
-        if (!entry || entry.used || entry.expiresAt < Date.now() || entry.userId !== userId) {
+        const expectedAction = normalizeStepUpAction(action)
+        if (
+            !entry
+            || entry.used
+            || entry.expiresAt < Date.now()
+            || entry.userId !== userId
+            || ((entry.action || expectedAction) && entry.action !== expectedAction)
+        ) {
             return false
         }
 
@@ -173,9 +187,22 @@ export class AuthService {
         return true
     }
 
-    static async validateStepUpSession(sessionId: string, maxAgeSeconds = STEP_UP_TTL_SECONDS) {
+    static async validateStepUpSession(
+        sessionId: string,
+        maxAgeSeconds = STEP_UP_TTL_SECONDS,
+        expected?: string | { userId?: string; action?: string },
+    ) {
         const entry = STEP_UP_NONCES.get(sessionId)
         if (!entry || entry.used || entry.expiresAt < Date.now()) {
+            return null
+        }
+
+        const expectedUserId = typeof expected === 'object' ? expected.userId : undefined
+        const expectedAction = normalizeStepUpAction(typeof expected === 'string' ? expected : expected?.action)
+        if (expectedUserId && entry.userId !== expectedUserId) {
+            return null
+        }
+        if ((entry.action || expectedAction) && entry.action !== expectedAction) {
             return null
         }
 
@@ -187,7 +214,11 @@ export class AuthService {
 
         entry.used = true
         STEP_UP_NONCES.delete(sessionId)
-        return { userId: entry.userId, sessionId }
+        return { userId: entry.userId, sessionId, action: entry.action }
+    }
+
+    static clearStepUpSessionsForTesting() {
+        STEP_UP_NONCES.clear()
     }
 
     static async registerWebAuthnCredential(userId: string, credentialId: string, publicKey: string) {
