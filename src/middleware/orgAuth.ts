@@ -64,6 +64,8 @@ export const requireOrgRole = (roles: (OrgRole | string)[]) => {
         res.status(403).json({ error: `Forbidden: requires organization role ${roles.join(' or ')}` })
         return
       }
+      ;(req as any).orgId = orgId
+      ;(req as any).orgRole = membership.role
       next()
     } catch {
       res.status(403).json({ error: `Forbidden: requires organization role ${roles.join(' or ')}` })

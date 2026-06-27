@@ -8,6 +8,7 @@ vi.mock('../services/vaultStore.js', () => ({
   listVaults: vi.fn().mockResolvedValue([
     {
       id: 'vault-1',
+      organizationId: 'org-1',
       amount: '1000',
       status: 'active',
       milestones: [
@@ -22,6 +23,7 @@ vi.mock('../services/vaultStore.js', () => ({
   ]),
   getVaultById: vi.fn().mockResolvedValue({
     id: 'vault-1',
+    organizationId: 'org-1',
     amount: '1000',
     status: 'active',
     milestones: [
@@ -60,7 +62,10 @@ vi.mock('../services/verifiers.js', () => ({
 }))
 
 vi.mock('../middleware/orgAuth.js', () => ({
-  requireOrgRole: vi.fn(() => (req: any, res: any, next: any) => next())
+  requireOrgRole: vi.fn(() => (req: any, res: any, next: any) => {
+    req.orgId = req.params.orgId
+    next()
+  })
 }))
 
 vi.mock('../middleware/auth.js', () => ({
@@ -122,8 +127,8 @@ describe('GraphQL Read API', () => {
       amount: '1000',
       status: 'active',
       analytics: {
-        totalVaults: 10,
-        successRate: 0.85
+        totalVaults: 1,
+        successRate: 0
       },
       milestones: [
         {
