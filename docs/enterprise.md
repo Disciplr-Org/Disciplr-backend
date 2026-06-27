@@ -16,6 +16,19 @@ Enterprise access is managed through the `enterpriseGuard` middleware. Eligibili
 - **Unauthenticated Requests**: Receive a `401 Unauthorized` response.
 - **Unauthorized Access Attempts**: Logged to the security audit trail with the `security.enterprise_denied` event.
 
+### Enterprise Guard Decision Matrix
+
+| Auth Context | Enterprise Context | Expected Result |
+|---|---|---|
+| Missing or invalid bearer token | Not evaluated | `401 Unauthorized` |
+| Authenticated user | `isEnterprise` missing or `false` | `403 Forbidden` |
+| Authenticated user | `isEnterprise: true` without `enterpriseId` | `403 Forbidden` |
+| Authenticated user | `isEnterprise: true` with `enterpriseId` | Request continues |
+| Org member passes `orgAuth` | Non-enterprise context | `403 Forbidden` from `enterpriseGuard` |
+| Org member passes `orgAuth` | Enterprise context with `enterpriseId` | Request continues |
+| User lacks required org membership | Any enterprise context | `403 Forbidden` from `orgAuth` before `enterpriseGuard` |
+| User lacks required RBAC role | Any enterprise context | `403 Forbidden` from RBAC before `enterpriseGuard` |
+
 ## Exposure Controls
 The Enterprise API implements strict data exposure controls to prevent leakage of internal metadata:
 1. **PII Masking**: Sensitive identifiers (e.g., creator addresses) are masked using deterministic hashing for observability.
