@@ -11,22 +11,33 @@ const DEFAULT_PAGE = 1
 const DEFAULT_PAGE_SIZE = 20
 const MAX_PAGE_SIZE = 100
 
+function parsePositiveInteger(value: unknown, fieldName: string): number {
+  if (value === undefined || value === null || value === '') {
+    return DEFAULT_PAGE_SIZE
+  }
+
+  if (Array.isArray(value)) {
+    throw new Error(`Invalid ${fieldName}`)
+  }
+
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`Invalid ${fieldName}`)
+  }
+
+  return parsed
+}
+
 export function parsePaginationParams(req: Request): PaginationParams {
-  const page = Math.max(1, parseInt(req.query.page as string) || DEFAULT_PAGE)
-  const pageSize = Math.min(
-    MAX_PAGE_SIZE,
-    Math.max(1, parseInt(req.query.pageSize as string) || DEFAULT_PAGE_SIZE)
-  )
+  const page = parsePositiveInteger(req.query.page, 'page')
+  const pageSize = Math.min(MAX_PAGE_SIZE, parsePositiveInteger(req.query.pageSize, 'pageSize'))
 
   return { page, pageSize }
 }
 
 export function parseCursorPaginationParams(req: Request): CursorPaginationParams {
   const cursor = req.query.cursor as string
-  const limit = Math.min(
-    MAX_PAGE_SIZE,
-    Math.max(1, parseInt(req.query.limit as string) || DEFAULT_PAGE_SIZE)
-  )
+  const limit = Math.min(MAX_PAGE_SIZE, parsePositiveInteger(req.query.limit, 'limit'))
 
   return { cursor, limit }
 }
@@ -48,8 +59,17 @@ export function decodeCursor(cursor: string): { timestamp: Date; id: string } {
 }
 
 export function parseSortParams(req: Request, allowedFields: string[]): SortParams {
-  const sortBy = req.query.sortBy as string
-  const sortOrder = (req.query.sortOrder as string)?.toLowerCase() === 'desc' ? 'desc' : 'asc'
+  const sortBy = req.query.sortBy as string | undefined
+  const sortOrderValue = req.query.sortOrder as string | undefined
+  const sortOrder = sortOrderValue?.toLowerCase() === 'desc'
+    ? 'desc'
+    : sortOrderValue?.toLowerCase() === 'asc'
+      ? 'asc'
+      : 'asc'
+
+  if (sortOrderValue && !['asc', 'desc'].includes(sortOrderValue.toLowerCase())) {
+    throw new Error('Invalid sort order')
+  }
 
   if (sortBy && !allowedFields.includes(sortBy)) {
     throw new Error(`Invalid sort field. Allowed fields: ${allowedFields.join(', ')}`)
