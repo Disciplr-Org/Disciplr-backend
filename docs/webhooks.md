@@ -14,13 +14,27 @@ Subscribers are stored in-memory (same pattern as API keys). Each subscriber has
 - `events` – event types to subscribe to (empty = wildcard)
 - `active` – delivery flag
 
+### Event Filters
+
+Subscribers may pass an `events` array to receive only selected vault lifecycle events.
+The current supported event types are:
+
+- `vault_created`
+- `vault_completed`
+- `vault_failed`
+- `vault_cancelled`
+
+An empty `events` array means wildcard delivery for all supported event types. Unknown
+event names are rejected before the subscriber is stored, so invalid filters cannot
+silently create a subscriber that never receives events.
+
 ### SSRF Protection
 
 `isUrlAllowed()` blocks loopback, link-local, and RFC-1918 addresses. If `WEBHOOK_ALLOWED_HOSTS` is set, the target hostname must also match.
 
 ## Delivery
 
-`dispatchWebhookEvent()` sends a payload to all eligible active subscribers. Each delivery is retried with exponential backoff (max 3 attempts).
+`dispatchWebhookEvent()` sends a payload to all eligible active subscribers. Each delivery is retried with exponential backoff (max 3 attempts). Subscribers whose `events` list does not include the payload event type are filtered out before signing or HTTP delivery.
 
 ### Headers
 
@@ -133,7 +147,7 @@ All subscriber queries are scoped by `organization_id`. When dispatching events,
 
 ### `addSubscriber(organizationId, url, secret, events)`
 
-Creates a new webhook subscriber. The URL is validated against the SSRF allowlist (`isUrlAllowed`). Returns the created subscriber.
+Creates a new webhook subscriber. The URL is validated against the SSRF allowlist (`isUrlAllowed`), and event filters are validated against the supported vault lifecycle event list. Duplicate event names are deduplicated before storage. Returns the created subscriber.
 
 ### `removeSubscriber(id)`
 
@@ -145,7 +159,7 @@ Returns all active subscribers for an organization.
 
 ### `dispatchWebhookEvent(payload)`
 
-Delivers an event to all eligible active subscribers for the organization specified in `payload.organizationId`. Uses exponential-backoff retry (max 3 attempts). Failures are collected per-subscriber.
+Delivers an event to all eligible active subscribers for the organization specified in `payload.organizationId`. Uses exponential-backoff retry (max 3 attempts). Failures are collected per-subscriber. Subscribers with a non-empty `events` list only receive matching event types; subscribers with an empty list receive all supported event types.
 
 ---
 

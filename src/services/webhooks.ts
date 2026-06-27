@@ -54,6 +54,20 @@ export const VAULT_LIFECYCLE_EVENTS = new Set([
 
 const repo = new WebhookSubscriberRepository(db)
 
+export const validateSubscriberEvents = (events: string[]): string[] => {
+  if (!Array.isArray(events)) {
+    throw new Error('Webhook events must be an array')
+  }
+
+  const uniqueEvents = Array.from(new Set(events))
+  const unsupported = uniqueEvents.filter((event) => !VAULT_LIFECYCLE_EVENTS.has(event))
+  if (unsupported.length > 0) {
+    throw new Error(`Unsupported webhook event type(s): ${unsupported.join(', ')}`)
+  }
+
+  return uniqueEvents
+}
+
 /**
  * Returns true when a URL is safe to deliver to.
  *
@@ -147,7 +161,7 @@ export const addSubscriber = async (
     throw new Error(`Webhook URL not permitted: ${url}`)
   }
 
-  return repo.create({ organizationId, url, secret, events })
+  return repo.create({ organizationId, url, secret, events: validateSubscriberEvents(events) })
 }
 
 export const removeSubscriber = async (id: string): Promise<boolean> => repo.remove(id)
