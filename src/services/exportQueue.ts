@@ -114,6 +114,11 @@ const CSV_UTF8_BOM = '\uFEFF'
 const RETRYABLE_EXPORT_JOB_STATUSES: JobStatus[] = ['pending', 'running']
 const EXPORT_SECTION_ORDER: Array<keyof ExportData> = ['vaults', 'transactions', 'analytics']
 const DEFAULT_MAX_ATTEMPTS = 3
+export const DEFAULT_NDJSON_EXPORT_CHUNK_ROWS = 256
+
+interface SerializeExportOptions {
+  ndjsonChunkRows?: number
+}
 
 const CSV_SCHEMAS: Record<keyof ExportData, ExportSectionSchema> = {
   vaults: {
@@ -602,15 +607,36 @@ const buildExportDataFromDatabase = async (
   return { vaults, transactions, analytics }
 }
 
-function ndjsonGzipReadable(data: ExportData): Readable {
+function normalizeNdjsonChunkRows(chunkRows: number | undefined): number {
+  if (!Number.isFinite(chunkRows) || !chunkRows || chunkRows < 1) {
+    return DEFAULT_NDJSON_EXPORT_CHUNK_ROWS
+  }
+  return Math.floor(chunkRows)
+}
+
+function ndjsonGzipReadable(data: ExportData, chunkRows?: number): Readable {
+  const rowsPerChunk = normalizeNdjsonChunkRows(chunkRows)
   const generator = async function* () {
+    let bufferedLines: string[] = []
+
+    const flush = function* () {
+      if (bufferedLines.length === 0) return
+      yield bufferedLines.join('')
+      bufferedLines = []
+    }
+
     for (const sectionName of EXPORT_SECTION_ORDER) {
       const rows = data[sectionName]
       if (!rows) continue
       for (const row of rows) {
-        yield JSON.stringify(row) + '\n'
+        bufferedLines.push(JSON.stringify(row) + '\n')
+        if (bufferedLines.length >= rowsPerChunk) {
+          yield* flush()
+        }
       }
     }
+
+    yield* flush()
   }
   const source = Readable.from(generator())
   return source.pipe(createGzip())
@@ -619,6 +645,7 @@ function ndjsonGzipReadable(data: ExportData): Readable {
 export function serializeExportData(
   data: ExportData,
   format: ExportFormat,
+  options: SerializeExportOptions = {},
 ): { buffer?: Buffer; filename: string; readable?: Readable } {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
 
@@ -631,7 +658,7 @@ export function serializeExportData(
 
   if (format === 'ndjson') {
     const filename = `export-${timestamp}.ndjson.gz`
-    const readable = ndjsonGzipReadable(data)
+    const readable = ndjsonGzipReadable(data, options.ndjsonChunkRows)
     return { filename, readable }
   }
 
