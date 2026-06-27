@@ -190,17 +190,65 @@ export class AuthService {
         return { userId: entry.userId, sessionId }
     }
 
-    static async registerWebAuthnCredential(userId: string, credentialId: string, publicKey: string) {
-        await getPrisma().$executeRaw`
-            INSERT INTO "webauthn_credentials" ("user_id", "credential_id", "public_key")
-            VALUES (${userId}, ${credentialId}, ${publicKey})
-            ON CONFLICT ("credential_id") DO UPDATE SET
-                "public_key" = EXCLUDED."public_key",
-                "updated_at" = CURRENT_TIMESTAMP,
-                "last_used_at" = CURRENT_TIMESTAMP
+    static async registerWebAuthnCredential(userId: string, credentialId: string, publicKey: string, signCount = 0) {
+        if (!Number.isSafeInteger(signCount) || signCount < 0) {
+            throw new Error('WebAuthn signature counter must be a non-negative integer')
+        }
+
+        const existing = await getPrisma().$queryRaw<Array<{ credential_id: string }>>`
+            SELECT "credential_id"
+            FROM "webauthn_credentials"
+            WHERE "credential_id" = ${credentialId}
+            LIMIT 1
         `
 
-        return { userId, credentialId, publicKey }
+        if (existing.length > 0) {
+            throw new Error('WebAuthn credential already registered')
+        }
+
+        await getPrisma().$executeRaw`
+            INSERT INTO "webauthn_credentials" ("user_id", "credential_id", "public_key", "sign_count")
+            VALUES (${userId}, ${credentialId}, ${publicKey}, ${signCount})
+        `
+
+        return { userId, credentialId, publicKey, signCount }
+    }
+
+    static async verifyWebAuthnAssertionCounter(credentialId: string, signCount: number) {
+        const [credential] = await getPrisma().$queryRaw<Array<{
+            user_id: string
+            credential_id: string
+            sign_count: number
+        }>>`
+            SELECT "user_id", "credential_id", "sign_count"
+            FROM "webauthn_credentials"
+            WHERE "credential_id" = ${credentialId}
+            LIMIT 1
+        `
+
+        if (!credential) {
+            throw new Error('WebAuthn credential not found')
+        }
+
+        const storedSignCount = Number(credential.sign_count)
+        if (!Number.isSafeInteger(signCount) || signCount <= storedSignCount) {
+            throw new Error('WebAuthn signature counter rollback detected')
+        }
+
+        await getPrisma().$executeRaw`
+            UPDATE "webauthn_credentials"
+            SET "sign_count" = ${signCount},
+                "last_used_at" = CURRENT_TIMESTAMP,
+                "updated_at" = CURRENT_TIMESTAMP
+            WHERE "credential_id" = ${credentialId}
+        `
+
+        return {
+            userId: credential.user_id,
+            credentialId: credential.credential_id,
+            previousSignCount: storedSignCount,
+            signCount,
+        }
     }
 }
 
