@@ -12,6 +12,49 @@ export interface NearestNeighborResult {
   distance: number
 }
 
+export interface MilestoneQueryOptions {
+  includeDeleted?: boolean
+}
+
+export interface MilestoneRecord {
+  id: string
+  vaultId: string
+  title: string
+  description: string | null
+  dueDate: string
+  amount: string
+  sortOrder: number
+  verifierUserId: string | null
+  createdAt: string
+  deletedAt: string | null
+}
+
+type MilestoneRow = {
+  id: string
+  vault_id: string
+  title: string
+  description: string | null
+  due_date: string
+  amount: string
+  sort_order: number
+  verifier_user_id: string | null
+  created_at: string
+  deleted_at: string | null
+}
+
+const mapMilestoneRow = (row: MilestoneRow): MilestoneRecord => ({
+  id: row.id,
+  vaultId: row.vault_id,
+  title: row.title,
+  description: row.description,
+  dueDate: row.due_date,
+  amount: row.amount,
+  sortOrder: row.sort_order,
+  verifierUserId: row.verifier_user_id,
+  createdAt: row.created_at,
+  deletedAt: row.deleted_at,
+})
+
 /**
  * Repository for milestone embedding operations backed by pgvector.
  *
@@ -20,6 +63,61 @@ export interface NearestNeighborResult {
  */
 export class MilestoneRepository {
   constructor(private readonly db: Knex) {}
+
+  private selectMilestones() {
+    return this.db<MilestoneRow>('milestones').select(
+      'id',
+      'vault_id',
+      'title',
+      'description',
+      'due_date',
+      this.db.raw('amount::text AS amount'),
+      'sort_order',
+      'verifier_user_id',
+      'created_at',
+      'deleted_at',
+    )
+  }
+
+  /**
+   * List milestones for a vault, excluding soft-deleted rows by default.
+   */
+  async listByVaultId(
+    vaultId: string,
+    options: MilestoneQueryOptions = {},
+  ): Promise<MilestoneRecord[]> {
+    const query = this.selectMilestones()
+      .where({ vault_id: vaultId })
+      .orderBy('sort_order', 'asc')
+      .orderBy('created_at', 'asc')
+
+    if (!options.includeDeleted) {
+      query.whereNull('deleted_at')
+    }
+
+    const rows = await query
+    return (rows as unknown as MilestoneRow[]).map(mapMilestoneRow)
+  }
+
+  /**
+   * List milestones assigned to a verifier, excluding soft-deleted rows by default.
+   */
+  async listByVerifierUserId(
+    verifierUserId: string,
+    options: MilestoneQueryOptions = {},
+  ): Promise<MilestoneRecord[]> {
+    const query = this.selectMilestones()
+      .where({ verifier_user_id: verifierUserId })
+      .orderBy('created_at', 'asc')
+      .orderBy('sort_order', 'asc')
+
+    if (!options.includeDeleted) {
+      query.whereNull('deleted_at')
+    }
+
+    const rows = await query
+    return (rows as unknown as MilestoneRow[]).map(mapMilestoneRow)
+  }
 
   /**
    * Upsert an embedding for a milestone.
