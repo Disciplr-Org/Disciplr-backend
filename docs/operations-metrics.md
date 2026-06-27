@@ -4,6 +4,8 @@
 
 The Admin DB Metrics endpoint provides real-time database pool health monitoring and slow query sampling for operational insights and debugging. This document covers usage, security, and integration details.
 
+For paging thresholds, escalation, and alert silencing guidance that combines DB pool, background job, and Horizon listener signals, see the [on-call SLO runbook](./runbooks/on-call-slo.md).
+
 **Endpoint:** `GET /api/admin/db/metrics`  
 **Authentication:** Required (Bearer token)  
 **Authorization:** Admin only  
