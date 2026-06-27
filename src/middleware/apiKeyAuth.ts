@@ -18,8 +18,7 @@ export const authenticateApiKey = (requiredScopes: ApiScope[] = []): RequestHand
         return
       }
 
-      const reasonLabel = validation.reason === 'revoked' ? 'revoked' : 'invalid'
-      res.status(401).json({ error: `API key is ${reasonLabel}.` })
+      res.status(401).json({ error: 'API key is invalid.' })
       return
     }
 

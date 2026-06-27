@@ -4,7 +4,6 @@ import type { Pool } from 'pg'
 import type { ApiKeyAuthContext, ApiKeyRecord, ApiScope } from '../types/auth.js'
 import { utcNow } from '../utils/timestamps.js'
 import { getPgPool } from '../db/pool.js'
-import * as argon2 from 'argon2'
 
 interface CreateApiKeyInput {
   userId?: string
@@ -45,6 +44,7 @@ interface ApiKeyRepository {
 
 const API_KEY_PREFIX = 'dsk'
 const HASH_PREFIX_LENGTH = 12
+const DUMMY_FINGERPRINT = '0'.repeat(64)
 const memoryApiKeys = new Map<string, ApiKeyRecord>()
 
 const hashSecret = (secret: string): string => createHash('sha256').update(secret).digest('hex')
@@ -70,11 +70,24 @@ const parseApiKey = (apiKey: string): { apiKeyId: string; secret: string } | nul
   return { apiKeyId: match[1], secret: match[2] }
 }
 
-const normalizeScopes = (scopes: string[]): string[] => {
-  return Array.from(new Set(scopes.map((scope) => scope.trim()).filter(Boolean))).sort()
+const constantTimeEqual = (left: string, right: string): boolean => {
+  const leftBuffer = Buffer.from(left)
+  const rightBuffer = Buffer.from(right)
+  const maxLength = Math.max(leftBuffer.length, rightBuffer.length, 1)
+  const paddedLeft = Buffer.alloc(maxLength)
+  const paddedRight = Buffer.alloc(maxLength)
+
+  leftBuffer.copy(paddedLeft)
+  rightBuffer.copy(paddedRight)
+
+  return timingSafeEqual(paddedLeft, paddedRight) && leftBuffer.length === rightBuffer.length
 }
 
-const normalizeScopeColumn = (scopes: string[] | string | null): string[] => {
+const normalizeScopes = (scopes: readonly string[]): ApiScope[] => {
+  return Array.from(new Set(scopes.map((scope) => scope.trim()).filter(Boolean))).sort() as ApiScope[]
+}
+
+const normalizeScopeColumn = (scopes: string[] | string | null): ApiScope[] => {
   if (Array.isArray(scopes)) {
     return normalizeScopes(scopes)
   }
@@ -291,9 +304,14 @@ const findMatchingRecord = async (apiKey: string): Promise<{ record: ApiKeyRecor
   const secretHash = hashSecret(parsed.secret)
   const hashPrefix = getHashPrefix(secretHash)
   const candidates = await getRepository().findByHashPrefix(hashPrefix)
+  let comparedFingerprint = false
 
   for (const candidate of candidates) {
-    if (candidate.id !== parsed.apiKeyId) continue
+    if (candidate.id !== parsed.apiKeyId) {
+      constantTimeEqual(DUMMY_FINGERPRINT, secretHash)
+      comparedFingerprint = true
+      continue
+    }
 
     const stored = candidate.keyHash
 
@@ -303,7 +321,8 @@ const findMatchingRecord = async (apiKey: string): Promise<{ record: ApiKeyRecor
       const fingerprintPart = parts[0]
       const argonPart = parts.slice(1).join('$argon2id$')
 
-      if (fingerprintPart === secretHash) {
+      comparedFingerprint = true
+      if (constantTimeEqual(fingerprintPart, secretHash)) {
         try {
           const ok = await argon2.verify(argonPart, parsed.secret)
           if (ok) return { record: candidate, secret: parsed.secret }
@@ -315,7 +334,8 @@ const findMatchingRecord = async (apiKey: string): Promise<{ record: ApiKeyRecor
     }
 
     // Legacy store: plain sha256 fingerprint
-    if (stored === secretHash) {
+    comparedFingerprint = true
+    if (constantTimeEqual(stored, secretHash)) {
       // Rolling re-hash: create argon2 and persist combined format
       const argonHash = await argon2.hash(parsed.secret, ARGON2_OPTIONS)
       candidate.keyHash = `${secretHash}$argon2id$${argonHash}`
@@ -328,6 +348,10 @@ const findMatchingRecord = async (apiKey: string): Promise<{ record: ApiKeyRecor
 
       return { record: candidate, secret: parsed.secret }
     }
+  }
+
+  if (!comparedFingerprint) {
+    constantTimeEqual(DUMMY_FINGERPRINT, secretHash)
   }
 
   return null
@@ -407,7 +431,7 @@ export const validateApiKey = async (
     return { valid: false, reason: 'revoked' }
   }
 
-  const normalizedRequiredScopes = normalizeScopes(requiredScopes as unknown as string[])
+  const normalizedRequiredScopes = normalizeScopes(requiredScopes)
   const missingScope = normalizedRequiredScopes.find((scope) => !record.scopes.includes(scope))
   if (missingScope) {
     return { valid: false, reason: 'forbidden' }
@@ -433,4 +457,4 @@ export const setApiKeyRepositoryForTests = (repository: ApiKeyRepository | null)
   repositoryOverride = repository
 }
 
-export { redactApiKeyForLogs }
+export { constantTimeEqual as constantTimeEqualForTests, redactApiKeyForLogs }

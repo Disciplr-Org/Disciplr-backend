@@ -8,6 +8,8 @@ This backend supports scoped API keys for server-to-server access. Keys are inte
 - Clients receive the full key value only at create time and rotate time.
 - Stored records keep only a SHA-256 hash of the secret plus metadata.
 - Revocation is soft-state through `revoked_at`, so revoked keys remain auditable.
+- Verification compares stored fingerprints with `crypto.timingSafeEqual` to avoid early-exit timing leaks.
+- Malformed, unknown, and revoked keys all receive the same public `401` failure shape: `API key is invalid.`
 - If both `x-api-key` and user auth headers are present, `x-api-key` takes precedence on API-key protected routes. An invalid API key is rejected even if a bearer token is also present.
 
 ## Endpoints
