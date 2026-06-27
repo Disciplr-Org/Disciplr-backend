@@ -11,9 +11,11 @@ use soroban_sdk::{
 struct Setup {
     env: Env,
     contract: AccountabilityVaultClient<'static>,
+    contract_id: Address,
     token: Address,
     creator: Address,
     verifier: Address,
+    success: Address,
     failure: Address,
     vault_id: String,
 }
@@ -91,12 +93,55 @@ fn setup_with_oracle(
     Setup {
         env,
         contract,
+        contract_id,
         token,
         creator,
         verifier,
+        success,
         failure,
         vault_id,
     }
+}
+
+fn verify_all_milestones(s: &Setup, count: u32) {
+    for index in 0..count {
+        s.contract.check_in(
+            &s.vault_id,
+            &s.verifier,
+            &index,
+            &evidence_hash(&s.env, index as u8 + 1),
+        );
+    }
+}
+
+fn claim_and_assert_solvency(s: &Setup, claim_order: &[u32], amounts: &[i128]) {
+    let token_client = token::Client::new(&s.env, &s.token);
+    let total: i128 = amounts.iter().sum();
+    let mut expected_staked = total;
+    let mut expected_paid = 0i128;
+
+    assert_eq!(token_client.balance(&s.contract_id), total);
+    assert_eq!(s.contract.get_vault(&s.vault_id).staked, total);
+
+    for index in claim_order {
+        let payout = amounts[*index as usize];
+        s.contract.claim_milestone(&s.vault_id, &s.verifier, index);
+
+        expected_staked -= payout;
+        expected_paid += payout;
+
+        let vault = s.contract.get_vault(&s.vault_id);
+        assert_eq!(vault.staked, expected_staked);
+        assert!(vault.staked >= 0);
+        assert_eq!(token_client.balance(&s.contract_id), expected_staked);
+        assert_eq!(token_client.balance(&s.success), expected_paid);
+    }
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.status, VaultStatus::Completed);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(token_client.balance(&s.contract_id), 0);
+    assert_eq!(token_client.balance(&s.success), total);
 }
 
 #[test]
@@ -207,6 +252,107 @@ fn test_verifier_check_in_still_works_with_oracle_configured() {
     let vault = s.contract.get_vault(&s.vault_id);
     assert!(vault.milestones.get(0).unwrap().verified);
     assert_eq!(vault.status, VaultStatus::Active);
+}
+
+#[test]
+fn test_partial_payout_rejects_zero_amount_boundaries() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    let success = Address::generate(&env);
+    let failure = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token, _) = create_token(&env, &token_admin);
+    let contract_id = env.register(AccountabilityVault, ());
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+    let verifier_set = VerifierSet {
+        verifiers: vec![&env, verifier],
+        threshold: 1,
+    };
+
+    let mut zero_total_milestones = vec![&env];
+    zero_total_milestones.push_back(Milestone {
+        title: String::from_str(&env, "zero"),
+        amount: 0,
+        due_date: 1_100,
+        verified: false,
+        released: false,
+    });
+    let zero_total = contract.try_create_vault(
+        &String::from_str(&env, "zero-total"),
+        &creator,
+        &verifier_set,
+        &None,
+        &token,
+        &0,
+        &success,
+        &failure,
+        &1_100,
+        &zero_total_milestones,
+    );
+    assert!(matches!(zero_total, Err(Ok(Error::InvalidAmount))));
+
+    let mut zero_milestone = vec![&env];
+    zero_milestone.push_back(Milestone {
+        title: String::from_str(&env, "zero"),
+        amount: 0,
+        due_date: 1_100,
+        verified: false,
+        released: false,
+    });
+    zero_milestone.push_back(Milestone {
+        title: String::from_str(&env, "one"),
+        amount: 1,
+        due_date: 1_100,
+        verified: false,
+        released: false,
+    });
+    let zero_partial = contract.try_create_vault(
+        &String::from_str(&env, "zero-partial"),
+        &creator,
+        &verifier_set,
+        &None,
+        &token,
+        &1,
+        &success,
+        &failure,
+        &1_100,
+        &zero_milestone,
+    );
+    assert!(matches!(zero_partial, Err(Ok(Error::InvalidAmount))));
+}
+
+#[test]
+fn test_partial_payout_unit_amounts_keep_escrow_solvency() {
+    let amounts = [1, 1, 1];
+    let s = setup(&[10, 20, 30], &amounts);
+    s.contract.stake(&s.vault_id, &s.creator);
+    verify_all_milestones(&s, amounts.len() as u32);
+
+    claim_and_assert_solvency(&s, &[0, 1, 2], &amounts);
+}
+
+#[test]
+fn test_partial_payout_uneven_amounts_keep_exact_remainders() {
+    let amounts = [333, 333, 334];
+    let s = setup(&[10, 20, 30], &amounts);
+    s.contract.stake(&s.vault_id, &s.creator);
+    verify_all_milestones(&s, amounts.len() as u32);
+
+    claim_and_assert_solvency(&s, &[2, 0, 1], &amounts);
+}
+
+#[test]
+fn test_partial_payout_i128_max_boundary_does_not_overflow_or_overdraw() {
+    let amounts = [i128::MAX - 2, 1, 1];
+    let s = setup(&[10, 20, 30], &amounts);
+    s.contract.stake(&s.vault_id, &s.creator);
+    verify_all_milestones(&s, amounts.len() as u32);
+
+    claim_and_assert_solvency(&s, &[1, 2, 0], &amounts);
 }
 
 #[test]

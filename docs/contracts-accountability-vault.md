@@ -14,3 +14,12 @@ Notes for backend developers:
 - `src/services/soroban.ts` builds the call args expecting `vaultId` first.
 - `src/services/eventParser.ts` validates that incoming events include a
   `vaultId`/`vault_id` string that matches UUID format.
+
+## Partial milestone payout boundaries
+
+`claim_milestone` releases the exact `Milestone.amount` value that was accepted
+at `create_vault` time. Zero or negative totals and milestone amounts are
+rejected before a vault can be funded, and the milestone amount sum must match
+the declared vault amount. Boundary tests cover unit-sized releases, uneven
+amount splits, and an `i128::MAX` total to ensure partial claims do not round,
+overflow, or draw the contract escrow below the remaining `Vault.staked` value.
