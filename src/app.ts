@@ -6,6 +6,7 @@ import { privacyLogger } from './middleware/privacy-logger.js'
 import { AUTH_JSON_MAX_BYTES, JOBS_JSON_MAX_BYTES } from './middleware/requestBodyLimits.js'
 import { adminRouter } from './routes/admin.js'
 import { notificationsRouter } from './routes/notifications.js'
+import { authenticate, csrfProtection } from './middleware/auth.js'
 
 export const app = express()
 
@@ -141,7 +142,7 @@ const corsOptions: cors.CorsOptions = {
     }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'idempotency-key'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'idempotency-key', 'x-csrf-token'],
   credentials: true,
 }
 
@@ -151,6 +152,7 @@ app.use(cors(corsOptions))
 app.use('/api/auth', express.json({ limit: AUTH_JSON_MAX_BYTES }))
 app.use('/api/jobs/enqueue', express.json({ limit: JOBS_JSON_MAX_BYTES }))
 app.use(express.json())
+app.use(csrfProtection)
 
 app.use((_req, res, next) => {
   res.setHeader('X-Timezone', 'UTC')
@@ -162,7 +164,6 @@ app.use(privacyLogger)
 // Core routes mounted here for test compatibility
 app.use('/api/admin', adminRouter)
 import { metricsRouter } from './routes/metrics.js';
-import { authenticate } from './middleware/auth.js'
 import { requireAdmin } from './middleware/rbac.js'
 import { metricsRateLimiter } from './middleware/rateLimiter.js'
 

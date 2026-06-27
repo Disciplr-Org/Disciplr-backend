@@ -134,6 +134,23 @@ Request headers such as `x-user-role`, `x-requested-role`, or any other role-bea
 
 The only trusted source of role information is `req.user.role`, which is set only after cryptographic JWT verification.
 
+### CSRF Protection for Cookie Auth
+
+State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) that carry cookies and do not use `Authorization: Bearer ...` or `x-api-key` must pass CSRF validation before route handlers run.
+
+Accepted CSRF proofs:
+
+- Double-submit token: `csrf_token` cookie matches the `x-csrf-token` header.
+- Same-origin browser request: `Origin` or `Referer` matches the request host/protocol.
+
+Bearer-token and API-key requests are exempt because browsers do not attach those credentials automatically cross-site. Cookie-authenticated requests that fail CSRF validation return:
+
+```json
+{
+  "error": "CSRF validation failed."
+}
+```
+
 ### Authentication Before Authorization
 
 The middleware chain enforces **authentication before authorization**:

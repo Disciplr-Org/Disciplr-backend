@@ -13,6 +13,103 @@ export type Role = 'user' | 'verifier' | 'admin'
 export type JwtPayload = JWTPayload & { jti?: string }
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production'
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+const CSRF_COOKIE_NAME = 'csrf_token'
+const CSRF_HEADER_NAME = 'x-csrf-token'
+
+function parseCookieHeader(cookieHeader: string | undefined): Map<string, string> {
+    const cookies = new Map<string, string>()
+    if (!cookieHeader) return cookies
+
+    for (const part of cookieHeader.split(';')) {
+        const separatorIndex = part.indexOf('=')
+        if (separatorIndex === -1) continue
+        const name = part.slice(0, separatorIndex).trim()
+        const value = part.slice(separatorIndex + 1).trim()
+        if (name) cookies.set(name, value)
+    }
+
+    return cookies
+}
+
+function timingSafeStringEqual(left: string, right: string): boolean {
+    const leftBuffer = Buffer.from(left)
+    const rightBuffer = Buffer.from(right)
+    const maxLength = Math.max(leftBuffer.length, rightBuffer.length, 1)
+    const paddedLeft = Buffer.alloc(maxLength)
+    const paddedRight = Buffer.alloc(maxLength)
+
+    leftBuffer.copy(paddedLeft)
+    rightBuffer.copy(paddedRight)
+
+    return crypto.timingSafeEqual(paddedLeft, paddedRight) && leftBuffer.length === rightBuffer.length
+}
+
+function hasBearerAuth(req: Request): boolean {
+    return req.header('authorization')?.startsWith('Bearer ') ?? false
+}
+
+function hasApiKeyAuth(req: Request): boolean {
+    return Boolean(req.header('x-api-key'))
+}
+
+function normalizeOrigin(value: string | undefined): string | null {
+    if (!value) return null
+    try {
+        const url = new URL(value)
+        return `${url.protocol}//${url.host}`.toLowerCase()
+    } catch {
+        return null
+    }
+}
+
+function getRequestOrigin(req: Request): string | null {
+    const forwardedHost = req.header('x-forwarded-host')?.split(',')[0]?.trim()
+    const host = forwardedHost || req.header('host')
+    if (!host) return null
+
+    const forwardedProto = req.header('x-forwarded-proto')?.split(',')[0]?.trim()
+    const protocol = forwardedProto || req.protocol || (req.secure ? 'https' : 'http')
+    return `${protocol}://${host}`.toLowerCase()
+}
+
+function isSameOrigin(req: Request): boolean {
+    const suppliedOrigin = normalizeOrigin(req.header('origin') || req.header('referer'))
+    const requestOrigin = getRequestOrigin(req)
+    return Boolean(suppliedOrigin && requestOrigin && suppliedOrigin === requestOrigin)
+}
+
+function hasValidDoubleSubmitToken(req: Request): boolean {
+    const cookies = parseCookieHeader(req.header('cookie'))
+    const cookieToken = cookies.get(CSRF_COOKIE_NAME)
+    const headerToken = req.header(CSRF_HEADER_NAME)
+
+    return Boolean(cookieToken && headerToken && timingSafeStringEqual(cookieToken, headerToken))
+}
+
+export function csrfProtection(req: Request, res: Response, next: NextFunction): void {
+    if (!MUTATING_METHODS.has(req.method.toUpperCase())) {
+        next()
+        return
+    }
+
+    if (hasBearerAuth(req) || hasApiKeyAuth(req)) {
+        next()
+        return
+    }
+
+    if (!req.header('cookie')) {
+        next()
+        return
+    }
+
+    if (hasValidDoubleSubmitToken(req) || isSameOrigin(req)) {
+        next()
+        return
+    }
+
+    res.status(403).json({ error: 'CSRF validation failed.' })
+}
 
 export async function authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
      const authHeader = req.headers.authorization
