@@ -23,12 +23,12 @@ import { setVaults } from './vaults.js'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-// auth.ts uses JWT_SECRET (defaults to 'change-me-in-production')
-const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production'
+// authenticate() validates signature plus aud/iss.
+const JWT_SECRET = process.env.JWT_ACCESS_SECRET ?? process.env.JWT_SECRET ?? 'fallback-access-secret'
 const verifierToken = jwt.sign(
   { userId: 'verifier-1', role: UserRole.VERIFIER },
   JWT_SECRET,
-  { expiresIn: '1h' },
+  { expiresIn: '1h', issuer: 'disciplr', audience: 'disciplr-api' },
 )
 
 /** Returns an ISO string offset from now by `deltaMs` milliseconds. */

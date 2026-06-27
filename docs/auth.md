@@ -114,7 +114,7 @@ Disciplr defines three primary user roles with a hierarchical access model: **US
 The enforcement model follows a **token-driven trust hierarchy**:
 
 1. **Token Verification:** All protected routes require an `Authorization: Bearer <JWT>` header.
-2. **Role Extraction:** The JWT token is cryptographically verified using `JWT_ACCESS_SECRET`.
+2. **Role Extraction:** The JWT token is cryptographically verified using `JWT_ACCESS_SECRET`, and its `iss`/`aud` claims must match `JWT_ISSUER` and `JWT_AUDIENCE`.
 3. **Role Assignment:** After verification, the token payload is extracted and `req.user.role` is set by the `authenticate` middleware.
 4. **Authorization Check:** The `authorize()` or `enforceRBAC()` middleware reads **exclusively** from `req.user.role`.
 5. **Deny by Default:** If `req.user.role` is not in the whitelist for a protected route, the request is rejected with `403 Forbidden`.
@@ -153,6 +153,7 @@ Returned when:
 - The `Authorization` header does not start with `Bearer `.
 - The JWT token is malformed or has an invalid signature.
 - The JWT token has expired.
+- The JWT token is missing `iss`/`aud` or carries values for another service or environment.
 
 **Response body:**
 ```json

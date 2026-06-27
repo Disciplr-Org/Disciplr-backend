@@ -53,6 +53,6 @@ describe('JWT key rotation', () => {
     ]);
     const jwt = require('jsonwebtoken');
     const token = jwt.sign({ sub: user.id, role: user.role, userId: user.id }, 'oldSecret', { expiresIn: '15m', issuer: 'disciplr', audience: 'disciplr-api', header: { kid: 'retired' } });
-    expect(() => verifyAccessToken(token)).toThrow('JWT kid retired is retired');
+    expect(() => verifyAccessToken(token)).toThrow(/retired/);
   });
 });

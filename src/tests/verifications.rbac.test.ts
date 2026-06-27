@@ -68,7 +68,7 @@ function tokenFor(role: UserRole, userId = `test-${role.toLowerCase()}`): string
       email: `${userId}@example.test`,
     },
     process.env.JWT_SECRET!,
-    { expiresIn: '1h' },
+    { expiresIn: '1h', issuer: 'disciplr', audience: 'disciplr-api' },
   )
 }
 
@@ -79,7 +79,7 @@ function expiredTokenFor(role: UserRole): string {
       role,
     },
     process.env.JWT_SECRET!,
-    { expiresIn: '-1h' },
+    { expiresIn: '-1h', issuer: 'disciplr', audience: 'disciplr-api' },
   )
 }
 

@@ -9,8 +9,10 @@ import { Response } from 'supertest'
  * and validation utilities for comprehensive RBAC testing.
  */
 
-// JWT Secret handling - matches production authentication
-const JWT_SECRET = process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET || "change-me-in-production"
+// JWT settings - match production authentication defaults.
+const JWT_SECRET = process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET || "fallback-access-secret"
+const JWT_ISSUER = process.env.JWT_ISSUER || "disciplr"
+const JWT_AUDIENCE = process.env.JWT_AUDIENCE || "disciplr-api"
 
 export { UserRole }
 
@@ -58,7 +60,9 @@ export function generateValidToken(options: TokenGenerationOptions): string {
   }
   
   return jwt.sign(payload, JWT_SECRET, { 
-    expiresIn: options.expiresIn || '1h' 
+    expiresIn: options.expiresIn || '1h',
+    issuer: JWT_ISSUER,
+    audience: JWT_AUDIENCE,
   } as jwt.SignOptions)
 }
 
@@ -74,13 +78,21 @@ export function generateInvalidToken(type: 'malformed' | 'expired' | 'wrong-secr
       return jwt.sign(
         { userId: 'test-user', role: UserRole.USER },
         JWT_SECRET,
-        { expiresIn: '-1h' } // Expired 1 hour ago
+        {
+          expiresIn: '-1h',
+          issuer: JWT_ISSUER,
+          audience: JWT_AUDIENCE,
+        } // Expired 1 hour ago
       )
     
     case 'wrong-secret':
       return jwt.sign(
         { userId: 'test-user', role: UserRole.USER },
-        'wrong-secret-key'
+        'wrong-secret-key',
+        {
+          issuer: JWT_ISSUER,
+          audience: JWT_AUDIENCE,
+        }
       )
     
     default:

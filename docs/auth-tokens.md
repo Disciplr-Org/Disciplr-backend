@@ -14,8 +14,8 @@ Short-lived token used for authenticating API requests.
 | `userId` | `string` | User ID (backward compatibility alias) |
 | `role` | `string` | User role: `USER`, `VERIFIER`, or `ADMIN` |
 | `jti` | `string` | Unique token identifier (UUID v4) — used for session tracking |
-| `iss` | `string` | Issuer — always `disciplr` |
-| `aud` | `string` | Audience — always `disciplr-api` |
+| `iss` | `string` | Issuer — defaults to `disciplr`, configured by `JWT_ISSUER` |
+| `aud` | `string` | Audience — defaults to `disciplr-api`, configured by `JWT_AUDIENCE` |
 | `iat` | `number` | Issued-at timestamp (seconds since epoch) |
 | `exp` | `number` | Expiration timestamp (default: 15 minutes after `iat`) |
 
@@ -28,6 +28,8 @@ Longer-lived token used to obtain new access/refresh token pairs.
 | Claim | Type | Description |
 |-------|------|-------------|
 | `userId` | `string` | User ID |
+| `iss` | `string` | Issuer — defaults to `disciplr`, configured by `JWT_ISSUER` |
+| `aud` | `string` | Audience — defaults to `disciplr-api`, configured by `JWT_AUDIENCE` |
 | `iat` | `number` | Issued-at timestamp |
 | `exp` | `number` | Expiration timestamp (default: 7 days after `iat`) |
 
@@ -86,6 +88,13 @@ Revokes **all** sessions and refresh tokens for the user:
 
 3. **Old tokens die immediately.** The revocation happens _before_ new tokens are issued — there is no window where both old and new tokens are valid.
 
+## Audience and Issuer Validation
+
+- `JWT_ISSUER` and `JWT_AUDIENCE` are validated at startup through `src/config/env.ts`.
+- Access-token and refresh-token verification require matching `iss` and `aud` claims.
+- Tokens with missing or mismatched `iss`/`aud` are rejected even when the signature and `kid` are otherwise valid.
+- `kid`-based key rotation is preserved: the verifier still selects the signing key from the JWT header, then applies the same `iss`/`aud` checks to the selected key.
+
 ## Revocation Semantics
 
 ### Access Token Revocation
@@ -115,6 +124,8 @@ Revokes **all** sessions and refresh tokens for the user:
 |---------------------|---------|-------------|
 | `JWT_ACCESS_SECRET` | `fallback-access-secret` | Secret for signing access tokens |
 | `JWT_REFRESH_SECRET` | `fallback-refresh-secret` | Secret for signing refresh tokens |
+| `JWT_ISSUER` | `disciplr` | Required `iss` claim for access and refresh token verification |
+| `JWT_AUDIENCE` | `disciplr-api` | Required `aud` claim for access and refresh token verification |
 | `JWT_ACCESS_EXPIRES_IN` | `15m` | Access token lifetime |
 | `JWT_REFRESH_EXPIRES_IN` | `7d` | Refresh token lifetime |
 | `SESSIONS_CLEANUP_INTERVAL_MS` | `86400000` (24 h) | How often the cleanup job runs |

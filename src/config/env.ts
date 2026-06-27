@@ -66,6 +66,11 @@ export const envSchema = z
       .string()
       .min(16, "must be at least 16 characters")
       .default("fallback-refresh-secret"),
+    JWT_ISSUER: z.string().min(1, "JWT_ISSUER is required").default("disciplr"),
+    JWT_AUDIENCE: z
+      .string()
+      .min(1, "JWT_AUDIENCE is required")
+      .default("disciplr-api"),
     JWT_ACCESS_EXPIRES_IN: z
       .string()
       .regex(/^\d+[smhd]$/, "invalid duration format")
@@ -178,7 +183,6 @@ export const envSchema = z
 
     // ── Misc / Limits ───────────────────────────────────────
     MAX_JSON_BODY_SIZE: z.string().default("500kb"),
-    NOTIFICATION_PROVIDER: z.string().optional(),
     HORIZON_LAG_THRESHOLD: nonNegativeInt(10),
     HORIZON_SHUTDOWN_TIMEOUT_MS: positiveInt(30_000),
 
@@ -238,7 +242,7 @@ export const envSchema = z
 
 export type Env = z.infer<typeof envSchema>;
 export type JwtKey = { kid: string; secret: string; retiredAt?: Date };
-export type EnvWarning = { field: string; message: string };
+export type EnvWarning = { field?: string; variable?: string; message: string };
 
 let _validated: Env | undefined;
 
