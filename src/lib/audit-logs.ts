@@ -77,6 +77,7 @@ const sanitizeMetadata = (metadata: Record<string, unknown> = {}): AuditLogMetad
 
 export const createAuditLog = async (
   entry: Omit<AuditLog, 'id' | 'created_at'> & { organization_id?: string },
+  trx?: Knex.Transaction,
 ): Promise<AuditLog> => {
   if (!entry.actor_user_id || !entry.action || !entry.target_type || !entry.target_id) {
     throw new Error('Invalid audit log entry: missing required fields')
@@ -115,7 +116,7 @@ export const createAuditLog = async (
     insertPayload.organization_id = auditLog.organization_id
   }
 
-  const [insertedLog] = await db('audit_logs').insert(insertPayload).returning('*')
+  const [insertedLog] = await (trx ?? db)('audit_logs').insert(insertPayload).returning('*')
 
   return insertedLog
 }

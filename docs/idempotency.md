@@ -2,7 +2,7 @@
 
 ## Overview
 
-POST `/api/vaults` supports client-controlled idempotency via the `idempotency-key` request header. Sending the same key with an identical payload returns the original response without creating a duplicate vault. Sending the same key with a *different* payload returns a 409 to signal a conflict.
+POST `/api/vaults` and POST `/api/verifications` support client-controlled idempotency via the `idempotency-key` request header. Sending the same key with an identical payload returns the original response without creating a duplicate vault or verification decision. Sending the same key with a *different* payload returns a 409 to signal a conflict.
 
 ---
 
@@ -40,6 +40,7 @@ idempotency-key: <256 chars>             # exceeds maximum length
 | Valid key, repeated request, **same** payload | 200 | Cached response replayed; `idempotency.replayed: true` |
 | Valid key, repeated request, **different** payload | 409 | Conflict; no side effects |
 | Invalid key format | 400 | Key rejected before any business logic |
+| Valid key expires after TTL | 201 | Request may execute again after the server-side idempotency TTL elapses |
 
 ---
 
@@ -51,6 +52,16 @@ idempotency-key: <256 chars>             # exceeds maximum length
 {
   "vault": { "id": "...", "milestones": [...], ... },
   "onChain": { "payload": { "method": "create_vault", ... } },
+  "idempotency": { "key": "my-key", "replayed": false }
+}
+```
+
+For verification decisions, the same envelope is used with verification fields:
+
+```json
+{
+  "verification": { "id": "ver-1", "targetId": "milestone-1", ... },
+  "evidenceReference": { "id": "ev-1", "verificationId": "ver-1", ... },
   "idempotency": { "key": "my-key", "replayed": false }
 }
 ```
@@ -98,7 +109,7 @@ Same body as the original 201, with `idempotency.replayed` set to `true`:
 3. **On 5xx or timeout**: retry with the **same** key and **same** payload. The server will deduplicate.
 4. **On 409**: do **not** retry. A different payload was already submitted under this key. Inspect the original request and generate a new key for a new operation.
 5. **On 400 (`INVALID_IDEMPOTENCY_KEY`)**: fix the key format before retrying.
-6. **On 200 (replay)**: treat this identically to a 201. The `vault.id` in the body is the canonical resource identifier.
+6. **On 200 (replay)**: treat this identically to a 201. The `vault.id` or `verification.id` in the body is the canonical resource identifier.
 
 ---
 
@@ -120,9 +131,13 @@ Idempotency keys are scoped to the authenticated user. User A and User B can eac
 
 The value stored in the idempotency cache is always server-generated (never derived from request data). A client cannot influence the cached response content beyond choosing the idempotency key.
 
+### Concurrent same-key submissions
+
+Concurrent submissions with the same key and same payload share the same in-flight server operation. The first request performs the side effect and subsequent in-flight requests wait for that generated response instead of submitting a second verification or vault creation.
+
 ### Scope of deduplication
 
-The idempotency guarantee covers a single endpoint: `POST /api/vaults`. Other endpoints are not covered and should not be passed this header.
+The idempotency guarantee covers `POST /api/vaults` and `POST /api/verifications`. Keys are scoped by endpoint operation and authenticated user, so the same client key can be safely reused for unrelated endpoint families without collision.
 
 ---
 
@@ -132,7 +147,7 @@ The idempotency guarantee covers a single endpoint: `POST /api/vaults`. Other en
 |-----------|----------|
 | Key validation | `src/services/idempotency.ts` → `validateIdempotencyKey` |
 | Payload hashing | `src/services/idempotency.ts` → `hashRequestPayload` |
-| Store read/write | `src/services/idempotency.ts` → `getIdempotentResponse` / `saveIdempotentResponse` |
-| Route integration | `src/routes/vaults.ts` → `POST /` handler |
+| Store read/write | `src/services/idempotency.ts` → `getIdempotentResponse` / `saveIdempotentResponse` / `runIdempotentRequest` |
+| Route integration | `src/routes/vaults.ts` and `src/routes/verifications.ts` → `POST /` handlers |
 | Unit tests | `src/tests/eventIdempotency.test.ts` (describe blocks: `validateIdempotencyKey`, `hashRequestPayload`, `idempotency store`) |
-| Route-level tests | `tests/vaults.test.ts` and `src/routes/vaults.test.ts` |
+| Route-level tests | `tests/vaults.test.ts`, `src/routes/vaults.test.ts`, and `src/tests/verifications.idempotency.test.ts` |

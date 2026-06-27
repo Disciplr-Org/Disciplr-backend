@@ -7,6 +7,12 @@ import { AppError } from '../middleware/errorHandler.js'
 import { createEvidenceReference, EvidenceReferenceValidationError } from '../services/evidence.js'
 import { db } from '../db/knex.js'
 import { retryWithBackoff } from '../utils/retry.js'
+import {
+  hashRequestPayload,
+  IdempotencyConflictError,
+  runIdempotentRequest,
+  validateIdempotencyKey,
+} from '../services/idempotency.js'
 
 export const verificationsRouter = Router()
 
@@ -49,55 +55,97 @@ verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request
     return next(AppError.badRequest('evidenceReferenceUrl is required'))
   }
 
+  const clientIdempotencyKey = req.header('idempotency-key')?.trim()
+  if (clientIdempotencyKey !== undefined && !validateIdempotencyKey(clientIdempotencyKey)) {
+    return next(AppError.badRequest(
+      'Idempotency key must be 1-255 characters and contain only letters, digits, hyphens, and underscores.',
+    ))
+  }
+
   try {
     const cleanTargetId = targetId.trim()
+    const cleanEvidenceReferenceUrl = evidenceReferenceUrl.trim()
+    const requestFingerprint = {
+      targetId: cleanTargetId,
+      result,
+      disputed: !!disputed,
+      evidenceHash: cleanEvidenceHash,
+      evidenceReferenceUrl: cleanEvidenceReferenceUrl,
+    }
 
-    // Wrap recordVerification + createAuditLog in a single Knex transaction so
-    // a crash between the two writes cannot leave the verification row without
-    // an audit trail.  createEvidenceReference uses Prisma and cannot join the
-    // Knex transaction; it is idempotent (ON CONFLICT DO UPDATE) so it is safe
-    // to call after the Knex tx commits.
-    const rec = await retryWithBackoff(
-      () =>
-        db.transaction(async (trx) => {
-          const verification = await recordVerification(
-            verifierUserId,
-            cleanTargetId,
-            result,
-            !!disputed,
-            cleanEvidenceHash,
-            trx,
-          )
+    const recordDecision = async () => {
+      // Wrap recordVerification + createAuditLog in a single Knex transaction so
+      // a crash between the two writes cannot leave the verification row without
+      // an audit trail.  createEvidenceReference uses Prisma and cannot join the
+      // Knex transaction; it is idempotent (ON CONFLICT DO UPDATE) so it is safe
+      // to call after the Knex tx commits.
+      const rec = await retryWithBackoff(
+        () =>
+          db.transaction(async (trx) => {
+            const verification = await recordVerification(
+              verifierUserId,
+              cleanTargetId,
+              result,
+              !!disputed,
+              cleanEvidenceHash,
+              trx,
+            )
 
-          await createAuditLog(
-            {
-              actor_user_id: verifierUserId,
-              action: 'verification.decision.recorded',
-              target_type: 'verification',
-              target_id: cleanTargetId,
-              metadata: {
-                result,
-                disputed: !!disputed,
-                evidence_hash: cleanEvidenceHash,
+            await createAuditLog(
+              {
+                actor_user_id: verifierUserId,
+                action: 'verification.decision.recorded',
+                target_type: 'verification',
+                target_id: cleanTargetId,
+                metadata: {
+                  result,
+                  disputed: !!disputed,
+                  evidence_hash: cleanEvidenceHash,
+                },
               },
-            },
-            trx,
-          )
+              trx,
+            )
 
-          return verification
-        }),
-      undefined,
-      isSerializationError,
-    )
+            return verification
+          }),
+        undefined,
+        isSerializationError,
+      )
 
-    const evidenceReference = await createEvidenceReference(
-      rec.id,
-      evidenceHash.trim(),
-      evidenceReferenceUrl.trim(),
-    )
+      const evidenceReference = await createEvidenceReference(
+        rec.id,
+        cleanEvidenceHash,
+        cleanEvidenceReferenceUrl,
+      )
 
-    res.status(201).json({ verification: rec, evidenceReference })
+      return { verification: rec, evidenceReference }
+    }
+
+    if (clientIdempotencyKey) {
+      const scopedKey = `verification:${verifierUserId}:${clientIdempotencyKey}`
+      const hash = hashRequestPayload(requestFingerprint)
+      const { response, replayed } = await runIdempotentRequest(
+        scopedKey,
+        hash,
+        recordDecision,
+      )
+
+      res.status(replayed ? 200 : 201).json({
+        ...response,
+        idempotency: {
+          key: clientIdempotencyKey,
+          replayed,
+        },
+      })
+      return
+    }
+
+    res.status(201).json(await recordDecision())
   } catch (error: any) {
+    if (error instanceof IdempotencyConflictError || error?.name === 'IdempotencyConflictError') {
+      return next(AppError.conflict('Idempotency key has already been used with a different payload.'))
+    }
+
     if (error?.name === 'VerificationConflictError') {
       return next(AppError.conflict('conflicting verification decision already exists'))
     }

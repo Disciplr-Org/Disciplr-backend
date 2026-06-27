@@ -10,15 +10,52 @@ export class IdempotencyConflictError extends Error {
 }
 
 // In-memory store for idempotent responses (replaces DB for now)
-const idempotencyStore = new Map<string, { hash: string; response: unknown }>()
+const idempotencyStore = new Map<string, { hash: string; response: unknown; expiresAt: number }>()
+const inFlightRequests = new Map<string, { hash: string; promise: Promise<unknown> }>()
+const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9_-]{1,255}$/
+const DEFAULT_IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000
 
-export function hashRequestPayload(body: unknown): string {
-  return createHash('sha256').update(JSON.stringify(body)).digest('hex')
+const resolveDefaultTtlMs = (): number => {
+  const configured = Number(process.env.IDEMPOTENCY_TTL_MS)
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.floor(configured)
+  }
+  return DEFAULT_IDEMPOTENCY_TTL_MS
 }
 
-export async function getIdempotentResponse<T>(key: string, hash: string): Promise<T | null> {
+const canonicalize = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalize(item))
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalize(item)]),
+    )
+  }
+  return value
+}
+
+export function validateIdempotencyKey(key: string): boolean {
+  return IDEMPOTENCY_KEY_RE.test(key)
+}
+
+export function hashRequestPayload(body: unknown): string {
+  return createHash('sha256').update(JSON.stringify(canonicalize(body))).digest('hex')
+}
+
+export async function getIdempotentResponse<T>(
+  key: string,
+  hash: string,
+  now: number = Date.now(),
+): Promise<T | null> {
   const entry = idempotencyStore.get(key)
   if (!entry) return null
+  if (entry.expiresAt <= now) {
+    idempotencyStore.delete(key)
+    return null
+  }
   if (entry.hash !== hash) throw new IdempotencyConflictError()
   return entry.response as T
 }
@@ -27,13 +64,49 @@ export async function saveIdempotentResponse(
   key: string,
   hash: string,
   _id: string,
-  response: unknown
+  response: unknown,
+  ttlMs: number = resolveDefaultTtlMs(),
 ): Promise<void> {
-  idempotencyStore.set(key, { hash, response })
+  idempotencyStore.set(key, { hash, response, expiresAt: Date.now() + ttlMs })
+}
+
+export async function runIdempotentRequest<T>(
+  key: string,
+  hash: string,
+  producer: () => Promise<T>,
+): Promise<{ response: T; replayed: boolean }> {
+  const stored = await getIdempotentResponse<T>(key, hash)
+  if (stored) {
+    return { response: stored, replayed: true }
+  }
+
+  const inFlight = inFlightRequests.get(key)
+  if (inFlight) {
+    if (inFlight.hash !== hash) {
+      throw new IdempotencyConflictError()
+    }
+    return { response: await inFlight.promise as T, replayed: true }
+  }
+
+  const promise = (async () => {
+    const response = await producer()
+    await saveIdempotentResponse(key, hash, key, response)
+    return response
+  })()
+  inFlightRequests.set(key, { hash, promise })
+
+  try {
+    return { response: await promise, replayed: false }
+  } finally {
+    if (inFlightRequests.get(key)?.promise === promise) {
+      inFlightRequests.delete(key)
+    }
+  }
 }
 
 export function resetIdempotencyStore(): void {
   idempotencyStore.clear()
+  inFlightRequests.clear()
 }
 
 /**
