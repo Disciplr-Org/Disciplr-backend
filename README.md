@@ -160,6 +160,8 @@ The `email` provider includes bounded retries with exponential backoff for trans
 
 ## Local setup
 
+For a full contributor path covering Bun, PostgreSQL, migrations, local seed data, backend tests, and Soroban contract checks, see [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
+
 Prerequisites:
 
 - Node.js 18+
