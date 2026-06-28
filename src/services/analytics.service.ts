@@ -1,6 +1,81 @@
 import { db, getTimeRangeFilter, updateAnalyticsSummary } from '../db/database.js'
 import type { VaultAnalytics, VaultAnalyticsWithPeriod } from '../types/vault.js'
 import { utcNow } from '../utils/timestamps.js'
+import { createAnalyticsBatchLoader, type DbLike } from './analyticsBatchLoader.js'
+
+export interface OrgVaultAnalytics {
+  totalVaults: number
+  activeVaults: number
+  completedVaults: number
+  failedVaults: number
+  totalLockedCapital: string
+  successRate: number
+  totalMilestones: number
+  completedMilestones: number
+}
+
+/**
+ * Compute analytics for a set of vault IDs belonging to a single org/tenant using
+ * a request-scoped batch loader. All vault and milestone reads are coalesced into
+ * at most two queries (one per entity type) regardless of how many vault IDs are
+ * supplied, eliminating the N+1 pattern.
+ *
+ * @param vaultIds - IDs of vaults owned by the org. Must all belong to the same
+ *                   tenant; never mix IDs across orgs to preserve isolation.
+ * @param dbOverride - Optional DB instance; defaults to the module-level singleton.
+ *                     Inject a test database to keep unit tests hermetic.
+ */
+export function getOrgAnalyticsBatched(vaultIds: string[], dbOverride?: DbLike): OrgVaultAnalytics {
+  if (vaultIds.length === 0) {
+    return {
+      totalVaults: 0,
+      activeVaults: 0,
+      completedVaults: 0,
+      failedVaults: 0,
+      totalLockedCapital: '0',
+      successRate: 0,
+      totalMilestones: 0,
+      completedMilestones: 0,
+    }
+  }
+
+  const loader = createAnalyticsBatchLoader(dbOverride)
+  const vaultMap = loader.loadVaults(vaultIds)
+  const milestoneMap = loader.loadMilestones(vaultIds)
+
+  let activeVaults = 0
+  let completedVaults = 0
+  let failedVaults = 0
+  let totalCapital = 0
+
+  for (const agg of vaultMap.values()) {
+    if (agg.status === 'active') activeVaults++
+    else if (agg.status === 'completed') completedVaults++
+    else if (agg.status === 'failed') failedVaults++
+    totalCapital += parseFloat(agg.amount ?? '0')
+  }
+
+  let totalMilestones = 0
+  let completedMilestones = 0
+  for (const agg of milestoneMap.values()) {
+    totalMilestones += agg.milestoneCount
+    completedMilestones += agg.completedMilestones
+  }
+
+  const resolved = completedVaults + failedVaults
+  const successRate = resolved > 0 ? completedVaults / resolved : 0
+
+  return {
+    totalVaults: vaultMap.size,
+    activeVaults,
+    completedVaults,
+    failedVaults,
+    totalLockedCapital: totalCapital.toString(),
+    successRate,
+    totalMilestones,
+    completedMilestones,
+  }
+}
 
 /**
  * Get overall vault analytics summary (all-time)
