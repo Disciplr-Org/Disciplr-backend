@@ -3,6 +3,7 @@ import express from 'express'
 import helmet from 'helmet'
 import { config } from './config/index.js'
 import { privacyLogger } from './middleware/privacy-logger.js'
+import { csrfProtection } from './middleware/auth.js'
 import { AUTH_JSON_MAX_BYTES, JOBS_JSON_MAX_BYTES } from './middleware/requestBodyLimits.js'
 import { adminRouter } from './routes/admin.js'
 import { notificationsRouter } from './routes/notifications.js'
@@ -146,6 +147,8 @@ const corsOptions: cors.CorsOptions = {
 }
 
 app.use(cors(corsOptions))
+
+app.use(csrfProtection)
 // Route-specific parsers must run before the global parser so tighter limits
 // still apply to chunked requests that omit Content-Length.
 app.use('/api/auth', express.json({ limit: AUTH_JSON_MAX_BYTES }))
