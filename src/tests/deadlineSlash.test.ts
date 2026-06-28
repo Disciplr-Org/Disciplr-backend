@@ -5,7 +5,7 @@
  *   expirationScheduler → jobSystem.enqueue (with idempotency)
  *   deadline.check handler → buildSlashOnMissPayload
  */
-import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals'
+import { describe, it, expect, jest, beforeEach, afterEach, mock } from 'bun:test'
 import { resetIdempotencyStore } from '../services/idempotency.js'
 
 // ─── Shared mock state ────────────────────────────────────────────────────────
@@ -13,7 +13,7 @@ import { resetIdempotencyStore } from '../services/idempotency.js'
 const mockEnqueue = jest.fn<any>()
 
 // Mock BackgroundJobSystem so the scheduler never touches the real queue
-jest.unstable_mockModule('../jobs/system.js', () => ({
+mock.module('../jobs/system.js', () => ({
   BackgroundJobSystem: jest.fn<any>().mockImplementation(() => ({
     enqueue: mockEnqueue,
     start: jest.fn<any>(),
@@ -33,12 +33,12 @@ mockDbChain.where.mockReturnValue(mockDbChain)
 mockDbChain.limit.mockImplementation(async () => expiredVaults)
 mockDbChain.update.mockResolvedValue(1)
 
-jest.unstable_mockModule('../db/index.js', () => ({
+mock.module('../db/index.js', () => ({
   default: jest.fn<any>().mockReturnValue(mockDbChain),
 }))
 
 // Mock markVaultExpiries used in the handler
-jest.unstable_mockModule('../services/vault.js', () => ({
+mock.module('../services/vault.js', () => ({
   markVaultExpiries: jest.fn<any>().mockResolvedValue(0),
 }))
 
@@ -55,7 +55,7 @@ const mockBuildSlashOnMissPayload = jest.fn<any>().mockImplementation((vaultId: 
   submission: { attempted: true, status: 'not_configured' as const },
 }))
 
-jest.unstable_mockModule('../services/soroban.js', () => ({
+mock.module('../services/soroban.js', () => ({
   buildSlashOnMissPayload: mockBuildSlashOnMissPayload,
   buildVaultCreationPayload: jest.fn<any>(),
   getSorobanConfig: jest.fn<any>().mockReturnValue(null),

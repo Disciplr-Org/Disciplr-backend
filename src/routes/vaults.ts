@@ -216,6 +216,31 @@ vaultsRouter.patch('/:id', authenticate, async (req: Request, res: Response) => 
   }
 })
 
+// GET /api/vaults/:id/timeline
+vaultsRouter.get('/:id/timeline', authenticate, async (req, res, next) => {
+  const { id } = req.params
+  const actorUserId = req.user!.userId
+  const actorRole = req.user!.role
+
+  try {
+    const vault = await getVaultById(id)
+    if (!vault) {
+      return next(AppError.notFound('Vault not found'))
+    }
+
+    // Authorization: only vault creator or an admin can view the timeline
+    if (actorUserId !== vault.creator && actorRole !== UserRole.ADMIN) {
+      return next(AppError.forbidden('You do not have permission to view this vault timeline.'))
+    }
+
+    const timeline = await VaultService.getVaultTimeline(id)
+    res.json({ timeline })
+  } catch (error) {
+    console.error(`Failed to fetch timeline for vault ${id}:`, error)
+    return next(AppError.internal('Failed to fetch vault timeline.'))
+  }
+})
+
 // POST /api/vaults/:id/cancel
 vaultsRouter.post('/:id/cancel', authenticate, async (req, res) => {
   const actorUserId = req.user!.userId

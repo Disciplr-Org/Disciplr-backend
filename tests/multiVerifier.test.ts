@@ -2,7 +2,7 @@
  * Multi-verifier milestone approval system tests.
  * Uses an in-memory knex mock — no real DB required.
  */
-import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals'
+import { describe, it, expect, jest, beforeEach, afterEach, mock } from 'bun:test'
 
 // ---------------------------------------------------------------------------
 // In-memory store
@@ -92,12 +92,12 @@ function buildQuery(table: string) {
   return q
 }
 
-jest.unstable_mockModule('../src/db/knex.js', () => {
+mock.module('../src/db/knex.js', () => {
   function db(table: string) { return buildQuery(table) }
   db.fn = { now: () => new Date() }
   db.transaction = async (cb: any) => cb(db)
-  return { db, closeDatabase: jest.fn() }
-})
+  return { db, closeDatabase: () => {} }
+});
 
 // ---------------------------------------------------------------------------
 // Imports must come after mock registration

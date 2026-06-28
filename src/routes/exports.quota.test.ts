@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, jest } from '@jest/globals'
-import type { Request, Response } from 'express'
+import { beforeEach, describe, expect, it, jest, mock } from 'bun:test'
+import type { Request, Response, NextFunction } from 'express'
 import {
   checkAndIncrementExportQuota,
   configureOrgQuotaRepository,
@@ -10,8 +10,11 @@ import {
 import { resetExportJobs } from '../services/exportQueue.js'
 import { initEnv, _resetEnvForTesting } from '../config/index.js'
 
+// Set a dummy DATABASE_URL before env validation runs to prevent fatal error
+process.env.DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://dummy:dummy@dummy/dummy'
+
 // ── auth mock ──────────────────────────────────────────────────────────────
-jest.unstable_mockModule('../middleware/auth.js', () => ({
+mock.module('../middleware/auth.js', () => ({
   authenticate: (_req: Request, _res: Response, next: () => void) => next(),
   requireAdmin: (_req: Request, _res: Response, next: () => void) => next(),
   signDownloadToken: () => 'mock-token',
@@ -60,7 +63,7 @@ const getHandler = (
   const layer = router.stack.find(
     (e) => (e.route as any)?.path === path && Boolean((e.route as any)?.methods?.[method]),
   )
-  if (!layer?.route?.stack?.length) throw new Error(`Handler not found: ${method.toUpperCase()} ${path}`)
+  if (!layer?.route?.stack?.length) throw new Error(`Handler not found: ${method.toUpperCase()} ${path}`);
   return {
     jobSystem,
     handle: layer.route.stack[layer.route.stack.length - 1].handle as (
@@ -215,7 +218,7 @@ describe('POST /me quota enforcement', () => {
     const original = env.EXPORT_DAILY_QUOTA_LIMIT
     ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = 1
 
-    const res1 = mockRes()
+    const res1 = mockRes();
     await handle(makeReq('user-quota-x'), res1 as unknown as Response)
     expect(res1.statusCode).toBe(202)
 
@@ -227,7 +230,7 @@ describe('POST /me quota enforcement', () => {
     expect((res2.jsonBody as any).error).toMatch(/quota exceeded/i)
     expect((res2.jsonBody as any).retryAfter).toBeGreaterThan(0)
 
-    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = original
+    (env as any).EXPORT_DAILY_QUOTA_LIMIT = original;
   })
 
   it('uses orgId from request when present', async () => {
@@ -244,7 +247,7 @@ describe('POST /me quota enforcement', () => {
       orgId: 'shared-org',
     } as unknown as Request
 
-    const res1 = mockRes()
+    const res1 = mockRes();
     await handle(reqWithOrg, res1 as unknown as Response)
     expect(res1.statusCode).toBe(202)
 
@@ -261,11 +264,11 @@ describe('POST /me quota enforcement', () => {
       orgId: 'other-org',
     } as unknown as Request
 
-    const res3 = mockRes()
+    const res3 = mockRes();
     await handle(reqOtherOrg, res3 as unknown as Response)
     expect(res3.statusCode).toBe(202)
 
-    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = original
+    (env as any).EXPORT_DAILY_QUOTA_LIMIT = original;
   })
 
   it('does not enqueue job when quota is exceeded', async () => {
@@ -274,12 +277,12 @@ describe('POST /me quota enforcement', () => {
     const original = env.EXPORT_DAILY_QUOTA_LIMIT
     ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = 0
 
-    const res = mockRes()
+    const res = mockRes();
     await handle(makeReq('user-no-enqueue'), res as unknown as Response)
     expect(res.statusCode).toBe(429)
     expect(jobSystem.enqueue).not.toHaveBeenCalled()
 
-    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = original
+    (env as any).EXPORT_DAILY_QUOTA_LIMIT = original;
   })
 })
 
@@ -289,7 +292,7 @@ describe('POST /me quota enforcement', () => {
 describe('POST /admin quota enforcement', () => {
   it('returns 202 when under quota', async () => {
     const { handle } = getHandler('/admin', 'post')
-    const res = mockRes()
+    const res = mockRes();
     await handle(
       {
         query: { format: 'json', scope: 'all' },
@@ -313,16 +316,16 @@ describe('POST /admin quota enforcement', () => {
       header: () => undefined,
     } as unknown as Request
 
-    const res1 = mockRes()
+    const res1 = mockRes();
     await handle(req, res1 as unknown as Response)
     expect(res1.statusCode).toBe(202)
 
-    const res2 = mockRes()
+    const res2 = mockRes();
     await handle(req, res2 as unknown as Response)
     expect(res2.statusCode).toBe(429)
     expect(res2.headers['Retry-After']).toBeDefined()
 
-    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = original
+    (env as any).EXPORT_DAILY_QUOTA_LIMIT = original;
   })
 })
 
@@ -348,19 +351,19 @@ describe('Quota isolation between users', () => {
       header: () => undefined,
     } as unknown as Request
 
-    const res1a = mockRes()
+    const res1a = mockRes();
     await handle(req1, res1a as unknown as Response)
     expect(res1a.statusCode).toBe(202)
 
     // user-1 exhausted, user-2 still allowed
-    const res1b = mockRes()
+    const res1b = mockRes();
     await handle(req1, res1b as unknown as Response)
     expect(res1b.statusCode).toBe(429)
 
-    const res2a = mockRes()
+    const res2a = mockRes();
     await handle(req2, res2a as unknown as Response)
     expect(res2a.statusCode).toBe(202)
 
-    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = original
+    (env as any).EXPORT_DAILY_QUOTA_LIMIT = original;
   })
 })
