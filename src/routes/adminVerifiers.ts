@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, type NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireAdmin } from '../middleware/rbac.js'
 import {
@@ -13,6 +13,8 @@ import {
   transitionVerifier,
   updateVerifierProfile,
 } from '../services/verifiers.js'
+import { isValidStellarAddress } from '../services/vaultValidation.js'
+import { AppError } from '../middleware/errorHandler.js'
 
 export const adminVerifiersRouter = Router()
 
@@ -34,7 +36,7 @@ adminVerifiersRouter.get('/:userId', async (req: Request, res: Response) => {
   res.json({ profile: p, stats: await getVerifierStats(userId) })
 })
 
-adminVerifiersRouter.post('/', async (req: Request, res: Response) => {
+adminVerifiersRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
   const { userId, displayName, metadata, status } = req.body as {
     userId?: unknown
     displayName?: unknown
@@ -45,6 +47,15 @@ adminVerifiersRouter.post('/', async (req: Request, res: Response) => {
   if (typeof userId !== 'string' || userId.trim().length === 0) {
     res.status(400).json({ error: 'userId is required' })
     return
+  }
+
+  // If userId appears to be a Stellar address, ensure checksum is valid
+  try {
+    if (userId && typeof userId === 'string' && !(await isValidStellarAddress(userId.trim()))) {
+      return next(AppError.validation('invalid Stellar public key', { field: 'userId' }))
+    }
+  } catch (err) {
+    return next(AppError.internal('address validation failed'))
   }
 
   if (displayName !== undefined && displayName !== null && typeof displayName !== 'string') {
@@ -148,6 +159,45 @@ adminVerifiersRouter.post('/:userId/suspend', async (req: Request, res: Response
   await createOrGetAndTransitionStatus(req, res, req.params.userId, 'suspended')
 })
 
+// POST /api/admin/verifiers/:userId/reinstate
+// Restores a verifier back to their prior active state:
+// - if they were previously approved, restore to approved
+// - otherwise restore to pending
+adminVerifiersRouter.post('/:userId/reinstate', async (req: Request, res: Response) => {
+  try {
+    const verifier = await getVerifierProfile(req.params.userId)
+    if (!verifier) {
+      res.status(404).json({ error: 'verifier not found' })
+      return
+    }
+
+
+    const nextStatus: VerifierStatus = verifier.approvedAt ? 'approved' : 'pending'
+
+    const updated = await transitionVerifier(req.params.userId, nextStatus, { actorUserId: req.user!.userId })
+
+
+    if (!updated) {
+      res.status(404).json({ error: 'verifier not found' })
+      return
+    }
+
+    res.json({
+      profile: updated.after,
+      stats: await getVerifierStats(req.params.userId),
+      auditLogId: updated.auditLog?.id ?? null,
+      changedFields: updated.changedFields,
+    })
+  } catch (error) {
+    if (error instanceof InvalidVerifierStatusTransitionError) {
+      res.status(409).json({ error: error.message })
+      return
+    }
+
+    res.status(500).json({ error: 'internal server error' })
+  }
+})
+
 adminVerifiersRouter.post('/:userId/deactivate', async (req: Request, res: Response) => {
   await transitionStatus(req, res, req.params.userId, 'deactivated')
 })
@@ -173,6 +223,7 @@ const isDuplicateError = (error: unknown): boolean => {
     || maybeErr.constraint === 'verifiers_pkey'
     || maybeErr.message?.toLowerCase().includes('unique') === true
 }
+
 const transitionStatus = async (req: Request, res: Response, userId: string, status: VerifierStatus): Promise<void> => {
   try {
     const updated = await transitionVerifier(userId, status, { actorUserId: req.user!.userId })
@@ -206,3 +257,4 @@ const createOrGetAndTransitionStatus = async (req: Request, res: Response, userI
 
   await transitionStatus(req, res, userId, status)
 }
+

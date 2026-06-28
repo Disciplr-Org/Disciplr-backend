@@ -8,6 +8,7 @@ export type EventType =
   | 'vault_cancelled'
   | 'milestone_created'
   | 'milestone_validated'
+  | 'settlement_summary'
 
 // Parsed Event Interface
 export interface ParsedEvent {
@@ -47,6 +48,14 @@ export interface ValidationEventPayload {
   validationResult: 'approved' | 'rejected' | 'pending_review'
   evidenceHash: string
   validatedAt: Date
+}
+
+/** Emitted by `claim` and `slash_on_miss` in the accountability_vault contract. */
+export interface SettlementSummaryEventPayload {
+  releasedAmount: string
+  slashedAmount: string
+  verifiedCount: number
+  finalStatus: 'completed' | 'slashed'
 }
 
 // Database Entity Interfaces

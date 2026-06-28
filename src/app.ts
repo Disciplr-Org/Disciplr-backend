@@ -3,6 +3,7 @@ import express from 'express'
 import helmet from 'helmet'
 import { config } from './config/index.js'
 import { privacyLogger } from './middleware/privacy-logger.js'
+import { AUTH_JSON_MAX_BYTES, JOBS_JSON_MAX_BYTES } from './middleware/requestBodyLimits.js'
 import { adminRouter } from './routes/admin.js'
 import { notificationsRouter } from './routes/notifications.js'
 
@@ -145,6 +146,10 @@ const corsOptions: cors.CorsOptions = {
 }
 
 app.use(cors(corsOptions))
+// Route-specific parsers must run before the global parser so tighter limits
+// still apply to chunked requests that omit Content-Length.
+app.use('/api/auth', express.json({ limit: AUTH_JSON_MAX_BYTES }))
+app.use('/api/jobs/enqueue', express.json({ limit: JOBS_JSON_MAX_BYTES }))
 app.use(express.json())
 
 app.use((_req, res, next) => {
@@ -156,6 +161,11 @@ app.use(privacyLogger)
 
 // Core routes mounted here for test compatibility
 app.use('/api/admin', adminRouter)
-app.use('/api/notifications', notificationsRouter)
+import { metricsRouter } from './routes/metrics.js';
+import { metricsAuth } from './middleware/metricsAuth.js'
+import { metricsRateLimiter } from './middleware/rateLimiter.js'
+
+// Register metrics endpoint with token/IP-guard and rate limiter
+app.use('/api/metrics', metricsAuth, metricsRateLimiter, metricsRouter);
 
 // Additional routes are mounted in index.ts

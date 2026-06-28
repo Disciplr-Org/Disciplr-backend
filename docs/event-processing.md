@@ -1,51 +1,34 @@
-# Event Processing Mapping for Vault Lifecycle
+# Vault Lifecycle Event Processing and Transactional Outbox
 
-This document describes how on-chain events from the Stellar blockchain are mapped to the Disciplr vault lifecycle state in the database.
+To guarantee reliable delivery of vault lifecycle events, Disciplr implements the **Transactional Outbox Pattern**. This architecture decouples event generation (database updates) from event delivery (external webhooks, ETL integrations).
 
-## Overview
+## Architecture Overview
 
-The `EventProcessor` service is responsible for consuming parsed blockchain events and updating the system state consistently. It ensures idempotency, handles out-of-order events through retries, and maintains an audit trail.
+```
+ [Event Inbound] ─> [EventProcessor] (Atomic Transaction)
+                         │
+                         ├──> Update Vault Status (vaults table)
+                         └──> Insert Outbox Event (vault_outbox table)
+                                      │
+                                      ▼
+                              [vault_outbox]
+                                      │
+                              (SKIP LOCKED claim)
+                                      ▼
+                              [OutboxRelay Worker]
+                                 │            │
+                                 ▼            ▼
+                           [Webhooks]    [ETL Enqueue]
+```
 
-## Event Mapping
+1. **Atomic Writes**: When a vault lifecycle event (e.g. `vault_created`, `vault_completed`, `vault_failed`, `vault_cancelled`) is processed, all domain writes (updating the vaults table) and the outbox event payload insertion are wrapped in a single database transaction. This ensures that an event is never lost if a write succeeds but the network/downstream dispatch fails.
+2. **Relay Worker**: A background worker claims unprocessed outbox events using a concurrency-safe database query (`FOR UPDATE SKIP LOCKED`), dispatches them, and marks them as processed.
 
-| On-Chain Event | Database Update | Notes |
-|----------------|-----------------|-------|
-| `vault_created` | Inserts a new record into the `vaults` table. | Uses `onConflict('id').ignore()` to handle duplicates. |
-| `milestone_created` | Inserts a new record into the `milestones` table. | Requires the referenced vault to exist. |
-| `milestone_validated` | Inserts a record into `validations` and updates milestone status. | Requires the referenced milestone to exist. |
-| `vault_completed` | Updates vault status to `completed`. | |
-| `vault_failed` | Updates vault status to `failed`. | |
-| `vault_cancelled` | Updates vault status to `cancelled`. | |
+## Outbox Relay Contract
 
-## Out-of-Order Events
-
-Blockchain events may occasionally arrive out of order (e.g., a milestone creation event processed before its parent vault creation event).
-
-### Strategy: Reject with Retry
-
-If a required dependency (like a Vault or Milestone) is not found in the database when processing an event, the `EventProcessor` throws a `DependencyNotFoundError`. This error is specifically caught and treated as **retryable**.
-
-The processor will retry the operation with exponential backoff. If the parent event arrives and is processed during these retries, the child event will eventually succeed.
-
-## Idempotency
-
-Every event has a unique `eventId` formatted as `{transaction_hash}:{event_index}`. 
-
-1. Before processing, the system checks the `processed_events` table.
-2. If the `eventId` exists, the event is skipped as "already processed."
-3. If not, the event is processed within a database transaction.
-4. Upon success, the `eventId` is recorded in `processed_events` before committing.
-
-## Error Handling & Dead Letter Queue
-
-If an event fails after exhausting all retry attempts (default: 3), it is moved to the `failed_events` table (Dead Letter Queue).
-
-- **Retryable Errors:** Transient failures (network, DB locks) and `DependencyNotFoundError`.
-- **Non-Retryable Errors:** Parsing errors or business rule violations that won't resolve with retries.
-
-Failed events can be manually reprocessed via the `reprocessFailedEvent` method once the underlying issue is resolved.
-
-## Security Considerations
-
-- **Contract Allowlist:** The system only processes events from trusted contract addresses (configured in `ProcessorConfig`).
-- **Data Validation:** All event payloads are strictly validated in `EventParser` before reaching the processor.
+- **At-Least-Once Semantics**: Downstream consumers are guaranteed to receive every committed event at least once. Under network partitions or crashes during event marking, duplicate dispatches may occur.
+- **Consumer Idempotency Requirements**:
+  - **Webhooks**: Subscriptions and processors must verify the unique `eventId` in the payload header (`x-disciplr-event-id`) or request body, rejecting duplicates.
+  - **ETL Enqueue**: The ETL batch tracking database (`etl_batches`) uses the unique `eventId` as its batch key (`batch_id`). Duplicate enqueues result in a unique constraint key violation, which is ignored, maintaining idempotency.
+- **Dead-Letter State**: If an event repeatedly fails delivery, it is moved to a dead-letter state (marked as processed with a `last_error` showing `Exceeded max attempts`) after 5 failed attempts, preventing poison messages from blocking the queue.
+- **Metrics**: Relay lag (defined as the age of the oldest unprocessed row in the outbox) is tracked and exposed via `/api/metrics` under `disciplr_outbox_relay_lag_seconds`.

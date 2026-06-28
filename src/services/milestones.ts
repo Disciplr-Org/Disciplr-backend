@@ -6,12 +6,15 @@ export interface Milestone {
   verifiedAt: string | null
   verifiedBy: string | null
   verifierId: string | null
+  evidenceHash: string | null
   createdAt: string
+  /** ISO 8601 UTC timestamp after which check-in requires a grace window. */
+  dueDate: string | null
 }
 
 const milestonesTable: Milestone[] = []
 
-export const createMilestone = (vaultId: string, description: string, verifierId?: string | null): Milestone => {
+export const createMilestone = (vaultId: string, description: string, verifierId?: string | null, dueDate?: string | null): Milestone => {
   const id = `ms-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
   const milestone: Milestone = {
     id,
@@ -21,7 +24,9 @@ export const createMilestone = (vaultId: string, description: string, verifierId
     verifiedAt: null,
     verifiedBy: null,
     verifierId: verifierId || null,
+    evidenceHash: null,
     createdAt: new Date().toISOString(),
+    dueDate: dueDate ?? null,
   }
   milestonesTable.push(milestone)
   return milestone
@@ -44,7 +49,7 @@ export const verifyMilestone = (id: string): Milestone | null => {
   return milestone
 }
 
-export const validateMilestone = (id: string, validatorUserId: string): { success: boolean, milestone?: Milestone, error?: string } => {
+export const validateMilestone = (id: string, validatorUserId: string, evidenceHash: string): { success: boolean, milestone?: Milestone, error?: string } => {
   const milestone = milestonesTable.find((m) => m.id === id)
   if (!milestone) return { success: false, error: 'Milestone not found' }
 
@@ -59,6 +64,7 @@ export const validateMilestone = (id: string, validatorUserId: string): { succes
   milestone.verified = true
   milestone.verifiedAt = new Date().toISOString()
   milestone.verifiedBy = validatorUserId
+  milestone.evidenceHash = evidenceHash
 
   // Record validation event
   addMilestoneEvent({
@@ -122,4 +128,197 @@ export const listMilestoneEvents = (opts?: {
     result = result.filter((e) => new Date(e.timestamp).getTime() <= toTs)
   }
   return result
+}
+
+// ============================================================================
+// Multi-Verifier Threshold Support for Milestones
+// ============================================================================
+
+/**
+ * Extended Milestone interface with multi-verifier threshold support.
+ */
+export interface MilestoneWithThreshold {
+  id: string
+  vaultId: string
+  description: string
+  verifierId: string | null
+  approvalThreshold: number // M in M-of-N threshold
+  verified: boolean
+  verifiedAt: string | null
+  verifiedBy: string | null
+  createdAt: string
+}
+
+/**
+ * Milestone approval status for threshold-based validation.
+ */
+export interface MilestoneApprovalStatus {
+  milestoneId: string
+  approvalThreshold: number
+  approvedCount: number
+  rejectedCount: number
+  pendingCount: number
+  isComplete: boolean
+  isRejected: boolean
+  approvalPercentage: number
+}
+
+/**
+ * Create a milestone with multi-verifier approval threshold.
+ * Threshold determines how many verifiers need to approve before milestone is considered verified.
+ */
+export const createMilestoneWithThreshold = (
+  vaultId: string,
+  description: string,
+  approvalThreshold: number = 1,
+  verifierId?: string | null,
+): MilestoneWithThreshold => {
+  const id = `ms-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+  const milestone: MilestoneWithThreshold = {
+    id,
+    vaultId,
+    description,
+    verifierId: verifierId || null,
+    approvalThreshold,
+    verified: false,
+    verifiedAt: null,
+    verifiedBy: null,
+    createdAt: new Date().toISOString(),
+  }
+  milestonesTable.push(milestone as any)
+  return milestone
+}
+
+/**
+ * Get milestone as MilestoneWithThreshold if it exists.
+ */
+export const getMilestoneByIdWithThreshold = (id: string): MilestoneWithThreshold | undefined => {
+  const milestone = milestonesTable.find((m) => m.id === id)
+  if (!milestone) return undefined
+
+  return {
+    id: milestone.id,
+    vaultId: milestone.vaultId,
+    description: milestone.description,
+    verifierId: milestone.verifierId || null,
+    approvalThreshold: (milestone as any).approvalThreshold || 1,
+    verified: milestone.verified,
+    verifiedAt: milestone.verifiedAt,
+    verifiedBy: milestone.verifiedBy,
+    createdAt: milestone.createdAt,
+  }
+}
+
+/**
+ * Get milestones from vault filtered by threshold requirement.
+ */
+export const getMilestonesByVaultIdWithThreshold = (
+  vaultId: string,
+  minThreshold?: number,
+): MilestoneWithThreshold[] => {
+  return milestonesTable
+    .filter((m) => m.vaultId === vaultId)
+    .map((m) => ({
+      id: m.id,
+      vaultId: m.vaultId,
+      description: m.description,
+      verifierId: m.verifierId || null,
+      approvalThreshold: (m as any).approvalThreshold || 1,
+      verified: m.verified,
+      verifiedAt: m.verifiedAt,
+      verifiedBy: m.verifiedBy,
+      createdAt: m.createdAt,
+    }))
+    .filter((m) => (minThreshold === undefined ? true : m.approvalThreshold >= minThreshold))
+}
+
+/**
+ * Validate that a milestone requires M-of-N approval and hasn't been approved yet by this verifier.
+ * Returns validation result with details.
+ */
+export const validateMilestoneMultiVerifier = (
+  id: string,
+  validatorUserId: string,
+): {
+  success: boolean
+  milestone?: MilestoneWithThreshold
+  error?: string
+  canApprove?: boolean
+} => {
+  const milestone = getMilestoneByIdWithThreshold(id)
+  if (!milestone) {
+    return { success: false, error: 'Milestone not found', canApprove: false }
+  }
+
+  // Note: This function is used by some milestone approval flows in-memory.
+  // Block suspended/deactivated verifiers from casting new votes.
+  // The real DB-backed approve route should enforce lifecycle status as well.
+  //
+  // Implementation detail: this in-memory validator currently cannot query verifier status.
+  // If this code path is used with DB-backed verifiers, ensure it passes a resolver or
+  // replace this with a DB-backed validator.
+
+
+
+  // For thresholds > 1, multiple verifiers should be able to approve
+  if (milestone.approvalThreshold === 1 && milestone.verifierId && milestone.verifierId !== validatorUserId) {
+    return {
+      success: false,
+      error: 'Unauthorized: only assigned verifier can validate this milestone',
+      milestone,
+      canApprove: false,
+    }
+  }
+
+  if (milestone.verified) {
+    return {
+      success: false,
+      error: 'Milestone already verified',
+      milestone,
+      canApprove: false,
+    }
+  }
+
+  return { success: true, milestone, canApprove: true }
+}
+
+/**
+ * Check if all milestones in a vault meet their approval thresholds.
+ */
+/**
+ * Check if every milestone in a vault has met its approval threshold,
+ * taking into account veto-by-rejection semantics.
+ *
+ * A milestone is settled (not-vetoed + threshold met) when:
+ *   approved >= threshold  AND  maxPossibleApprovals >= threshold
+ *
+ * where maxPossibleApprovals = approved + (totalVerifiers - totalVoted).
+ * If totalVerifiers is absent for a milestone, any rejection is treated as a veto.
+ */
+export const allMilestonesMetThreshold = (
+  vaultId: string,
+  approvalCounts: Record<string, number>,
+  rejectionCounts: Record<string, number> = {},
+  totalVerifierCounts: Record<string, number> = {},
+): boolean => {
+  const vaultMilestones = getMilestonesByVaultId(vaultId)
+  if (vaultMilestones.length === 0) return false
+
+  return vaultMilestones.every((m) => {
+    const threshold = (m as any).approvalThreshold || 1
+    const approved = approvalCounts[m.id] || 0
+    const rejected = rejectionCounts[m.id] || 0
+    const n = totalVerifierCounts[m.id]
+
+    if (n !== undefined && n > 0) {
+      const totalVoted = approved + rejected
+      const remaining = Math.max(n - totalVoted, 0)
+      const maxPossible = approved + remaining
+      if (maxPossible < threshold) return false // veto: can never reach threshold
+    } else {
+      if (rejected > 0) return false // legacy: any rejection vetoes
+    }
+
+    return approved >= threshold
+  })
 }

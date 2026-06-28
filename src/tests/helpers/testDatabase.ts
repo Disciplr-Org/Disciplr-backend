@@ -63,6 +63,9 @@ export async function cleanAllTables(db: Knex): Promise<void> {
   // Delete in order to respect foreign key constraints
   await db('validations').delete()
   await db('milestones').delete()
+  // vault_outbox references vaults and is written atomically by eventProcessor
+  // for vault lifecycle events; must be cleared before vaults to avoid FK violations
+  await db('vault_outbox').delete()
   await db('vaults').delete()
   await db('processed_events').delete()
   await db('failed_events').delete()

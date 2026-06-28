@@ -12,6 +12,108 @@ export interface PerformanceThresholds {
   maxQueryCount?: number
 }
 
+export type PerformanceEndpointKey =
+  | 'vaults.list'
+  | 'vaults.deepPagination'
+  | 'vaults.combinedSortFilter'
+  | 'transactions.list'
+  | 'transactions.cursorPagination'
+  | 'transactions.byVault'
+  | 'transactions.combinedSortFilter'
+  | 'analytics.summary'
+  | 'analytics.overview'
+  | 'analytics.vaults'
+  | 'analytics.milestoneTrends'
+  | 'analytics.behavior'
+
+export interface EndpointPerformanceBudget extends PerformanceThresholds {
+  /** Human-readable endpoint/scenario label for logs and docs */
+  label: string
+  /** Indexes that should appear in representative EXPLAIN plans */
+  expectedIndexes: string[]
+  /** Whether a sequential scan is acceptable for this scenario */
+  allowSequentialScan?: boolean
+}
+
+export const ENDPOINT_PERFORMANCE_BUDGETS: Record<PerformanceEndpointKey, EndpointPerformanceBudget> = {
+  'vaults.list': {
+    label: 'GET /api/vaults list page',
+    maxResponseTime: 750,
+    maxQueryCount: 4,
+    expectedIndexes: ['idx_vaults_status_end_date', 'idx_vaults_end_date'],
+  },
+  'vaults.deepPagination': {
+    label: 'GET /api/vaults deep pagination',
+    maxResponseTime: 1200,
+    maxQueryCount: 6,
+    expectedIndexes: ['idx_vaults_status_end_date'],
+  },
+  'vaults.combinedSortFilter': {
+    label: 'GET /api/vaults status filter plus sort',
+    maxResponseTime: 900,
+    maxQueryCount: 5,
+    expectedIndexes: ['idx_vaults_status_end_date'],
+  },
+  'transactions.list': {
+    label: 'GET /api/transactions list page',
+    maxResponseTime: 900,
+    maxQueryCount: 5,
+    expectedIndexes: ['idx_transactions_stellar_timestamp'],
+  },
+  'transactions.cursorPagination': {
+    label: 'GET /api/transactions cursor page',
+    maxResponseTime: 1000,
+    maxQueryCount: 5,
+    expectedIndexes: ['idx_transactions_stellar_timestamp'],
+  },
+  'transactions.byVault': {
+    label: 'GET /api/transactions/vault/:vaultId',
+    maxResponseTime: 900,
+    maxQueryCount: 5,
+    expectedIndexes: ['idx_transactions_stellar_timestamp'],
+  },
+  'transactions.combinedSortFilter': {
+    label: 'GET /api/transactions type/date filter plus sort',
+    maxResponseTime: 1100,
+    maxQueryCount: 6,
+    expectedIndexes: ['idx_transactions_type_created_at', 'idx_transactions_stellar_timestamp'],
+  },
+  'analytics.summary': {
+    label: 'GET /api/analytics/summary',
+    maxResponseTime: 350,
+    maxQueryCount: 2,
+    expectedIndexes: [],
+    allowSequentialScan: true,
+  },
+  'analytics.overview': {
+    label: 'GET /api/analytics/overview',
+    maxResponseTime: 250,
+    maxQueryCount: 1,
+    expectedIndexes: [],
+    allowSequentialScan: true,
+  },
+  'analytics.vaults': {
+    label: 'GET /api/analytics/vaults',
+    maxResponseTime: 350,
+    maxQueryCount: 2,
+    expectedIndexes: ['idx_vaults_status_end_date'],
+  },
+  'analytics.milestoneTrends': {
+    label: 'GET /api/analytics/milestones/trends',
+    maxResponseTime: 650,
+    maxQueryCount: 3,
+    expectedIndexes: [],
+    allowSequentialScan: true,
+  },
+  'analytics.behavior': {
+    label: 'GET /api/analytics/behavior',
+    maxResponseTime: 650,
+    maxQueryCount: 3,
+    expectedIndexes: [],
+    allowSequentialScan: true,
+  },
+}
+
 export interface PerformanceResult {
   /** Response time in milliseconds */
   responseTime: number
@@ -29,16 +131,11 @@ export interface PerformanceResult {
  * @returns Performance result with timing information
  */
 export async function measurePerformance(
-  operation: () => Promise<any>,
+  operation: () => Promise<unknown>,
   thresholds: PerformanceThresholds
 ): Promise<PerformanceResult> {
   const startTime = Date.now()
-  
-  try {
-    await operation()
-  } catch (error) {
-    throw error
-  }
+  await operation()
   
   const endTime = Date.now()
   const responseTime = endTime - startTime
@@ -58,6 +155,17 @@ export async function measurePerformance(
   }
 }
 
+export function getPerformanceBudget(
+  endpoint: PerformanceEndpointKey,
+  overrides: Partial<EndpointPerformanceBudget> = {},
+): EndpointPerformanceBudget {
+  return {
+    ...ENDPOINT_PERFORMANCE_BUDGETS[endpoint],
+    ...overrides,
+    expectedIndexes: overrides.expectedIndexes ?? ENDPOINT_PERFORMANCE_BUDGETS[endpoint].expectedIndexes,
+  }
+}
+
 /**
  * Track database queries during an operation
  * This is a simplified version - in production you'd use query logging
@@ -67,7 +175,7 @@ export async function measurePerformance(
  */
 export async function trackQueries(
   db: Knex,
-  operation: () => Promise<any>
+  operation: () => Promise<unknown>
 ): Promise<number> {
   let queryCount = 0
   
@@ -85,6 +193,49 @@ export async function trackQueries(
   }
   
   return queryCount
+}
+
+export async function measureEndpointPerformance(
+  db: Knex,
+  operation: () => Promise<unknown>,
+  thresholds: PerformanceThresholds,
+): Promise<PerformanceResult> {
+  const startTime = Date.now()
+  const queryCount = await trackQueries(db, operation)
+  const responseTime = Date.now() - startTime
+  const violations = collectPerformanceViolations({ responseTime, queryCount }, thresholds)
+
+  return {
+    responseTime,
+    queryCount,
+    passed: violations.length === 0,
+    violations,
+  }
+}
+
+export function collectPerformanceViolations(
+  result: Pick<PerformanceResult, 'responseTime' | 'queryCount'>,
+  thresholds: PerformanceThresholds,
+): string[] {
+  const violations: string[] = []
+
+  if (result.responseTime > thresholds.maxResponseTime) {
+    violations.push(
+      `Response time ${result.responseTime}ms exceeded threshold ${thresholds.maxResponseTime}ms`
+    )
+  }
+
+  if (
+    typeof thresholds.maxQueryCount === 'number' &&
+    typeof result.queryCount === 'number' &&
+    result.queryCount > thresholds.maxQueryCount
+  ) {
+    violations.push(
+      `Query count ${result.queryCount} exceeded threshold ${thresholds.maxQueryCount}`
+    )
+  }
+
+  return violations
 }
 
 /**
@@ -203,13 +354,105 @@ export async function cleanupPerfTestData(db: Knex): Promise<void> {
  * @param testName - Name of the test for error messages
  */
 export function assertPerformance(result: PerformanceResult, testName: string): void {
+  const violationMessages = result.violations.join(', ')
+
   if (!result.passed) {
-    const violationMessages = result.violations.join(', ')
     throw new Error(
       `Performance test "${testName}" failed: ${violationMessages}. ` +
       `Response time: ${result.responseTime}ms`
     )
   }
+}
+
+interface ExplainNodeSummary {
+  nodeTypes: string[]
+  indexNames: string[]
+}
+
+interface ExplainPlanNode {
+  'Node Type'?: string
+  'Index Name'?: string
+  Plans?: ExplainPlanNode[]
+}
+
+export interface IndexedPlanOptions {
+  expectedIndexes?: string[]
+  allowSequentialScan?: boolean
+}
+
+export function summarizeExplainPlan(explainPlan: unknown): ExplainNodeSummary {
+  const summary: ExplainNodeSummary = {
+    nodeTypes: [],
+    indexNames: [],
+  }
+
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(visit)
+      return
+    }
+
+    if (!value || typeof value !== 'object') return
+
+    const maybeNode = value as ExplainPlanNode & { Plan?: ExplainPlanNode }
+
+    if (maybeNode.Plan) {
+      visit(maybeNode.Plan)
+      return
+    }
+
+    if (maybeNode['Node Type']) {
+      summary.nodeTypes.push(maybeNode['Node Type'])
+    }
+
+    if (maybeNode['Index Name']) {
+      summary.indexNames.push(maybeNode['Index Name'])
+    }
+
+    if (maybeNode.Plans) {
+      visit(maybeNode.Plans)
+    }
+  }
+
+  visit(explainPlan)
+
+  return {
+    nodeTypes: Array.from(new Set(summary.nodeTypes)),
+    indexNames: Array.from(new Set(summary.indexNames)),
+  }
+}
+
+export function assertIndexedPlan(
+  explainPlan: unknown,
+  options: IndexedPlanOptions = {},
+): ExplainNodeSummary {
+  const summary = summarizeExplainPlan(explainPlan)
+  const sequentialScan = summary.nodeTypes.includes('Seq Scan')
+
+  if (sequentialScan && !options.allowSequentialScan) {
+    throw new Error(`EXPLAIN plan used Seq Scan; node types: ${summary.nodeTypes.join(', ')}`)
+  }
+
+  for (const expectedIndex of options.expectedIndexes ?? []) {
+    if (!summary.indexNames.includes(expectedIndex)) {
+      throw new Error(
+        `EXPLAIN plan did not use expected index "${expectedIndex}". ` +
+        `Indexes used: ${summary.indexNames.join(', ') || 'none'}`
+      )
+    }
+  }
+
+  return summary
+}
+
+export async function explainQueryPlan(
+  db: Knex,
+  sql: string,
+  bindings: readonly Knex.RawBinding[] = [],
+): Promise<unknown> {
+  const result = await db.raw(`EXPLAIN (FORMAT JSON) ${sql}`, bindings)
+  const firstRow = result.rows?.[0] ?? result[0]?.[0]
+  return firstRow?.['QUERY PLAN'] ?? firstRow?.query_plan ?? firstRow
 }
 
 /**

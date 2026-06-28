@@ -4,6 +4,8 @@
 
 The Disciplr backend enforces Role-Based Access Control (RBAC) across all protected endpoints. This document describes the role definitions, enforcement model, and trust hierarchy.
 
+User role and `lastLoginAt` state are persisted in the `users` table and read through Prisma-backed queries. The auth router does not maintain any in-process mock user cache, so role changes survive process restarts and future logins.
+
 ## Registration
 
 Endpoint: `POST /api/auth/register`
@@ -40,6 +42,9 @@ Endpoint: `POST /api/auth/register`
 - Passwords are hashed using `bcryptjs` with a cost factor of 12.
 - Email existence is not leaked during login (generic "Invalid credentials" error).
 - Password hashes are never returned in registration or login responses.
+- Role changes are persisted to the database and later read from the same `users` row.
+- Audit log metadata excludes email addresses and other request-body PII.
+- High-impact admin actions may require a fresh step-up assertion before proceeding.
 
 ## Role Definitions
 
@@ -113,6 +118,13 @@ The enforcement model follows a **token-driven trust hierarchy**:
 3. **Role Assignment:** After verification, the token payload is extracted and `req.user.role` is set by the `authenticate` middleware.
 4. **Authorization Check:** The `authorize()` or `enforceRBAC()` middleware reads **exclusively** from `req.user.role`.
 5. **Deny by Default:** If `req.user.role` is not in the whitelist for a protected route, the request is rejected with `403 Forbidden`.
+
+### Persisted User State
+
+- The source of truth for user role and `lastLoginAt` is the `users` table.
+- `AuthService.login()` updates `lastLoginAt` as part of the login write path.
+- Legacy `POST /api/auth/login` requests that provide only `userId` read the persisted user row instead of fabricating in-memory role state.
+- Administrative role updates write through to the database, so subsequent requests and restarts observe the same role.
 
 ### Request Headers: Untrusted
 
@@ -316,6 +328,7 @@ RBAC correctness is verified by comprehensive test suites that achieve 95%+ cove
 
 ### Core Security Tests
 - **[src/tests/rbac.test.ts](../src/tests/rbac.test.ts):** Core RBAC middleware tests including security header bypass prevention, property-based security tests, and authentication precedence invariants.
+- **[src/tests/rbac.precedence.test.ts](../src/tests/rbac.precedence.test.ts):** Dedicated unit and integration tests to verify the authentication precedence invariant (401-before-403) across all protected routes (admin, verifier, milestones, metrics) and CORS preflight handling.
 
 ### Admin Endpoint Coverage
 - **[src/tests/admin.rbac.test.ts](../src/tests/admin.rbac.test.ts):** Comprehensive admin endpoint RBAC coverage including user management, audit logs, and system overrides.
@@ -354,3 +367,17 @@ Tests specifically validate that the following bypass attempts fail:
 ### Property-Based Testing
 
 The test suite includes property-based tests with minimum 100 iterations per property to validate universal security properties across all valid inputs, providing comprehensive coverage beyond unit tests.
+
+
+## Middleware Consolidation
+`auth.middleware.ts` and `userAuth.ts` have been consolidated into `auth.ts`. Please import `authenticate` and `authorize` strictly from `src/middleware/auth.js`. `requireUserAuth` is deprecated and will be removed in #454.
+
+## Abuse Detection and Anomaly Categories
+
+Failed authentication attempts are tracked by the `security/abuse-monitor.ts` middleware and emitted as structured log events with an `AbuseCategory` discriminated union. See `src/types/security.ts` for the full type definition.
+
+Auth-related categories:
+
+- **`brute-force`**: Triggered when a source IP exceeds `SECURITY_FAILED_LOGIN_BURST_THRESHOLD` failed logins within `SECURITY_FAILED_LOGIN_WINDOW_MS`. Carries `failedLoginCount` and `windowMs`.
+
+Aggregate counts are available at `GET /api/admin/abuse/category-counts` for admin users.

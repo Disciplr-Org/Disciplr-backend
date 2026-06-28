@@ -75,3 +75,14 @@ If the database is unreachable, integration tests will log `SKIP: no database av
 1. **Prefer Truncate over Migrate**: `truncateTables` is significantly faster than running `migrateDown`/`migrateUp` between tests.
 2. **Use Fixture Helpers**: Use `seedMinimalFixtures(harness)` to populate standard reference data (like RBAC roles).
 3. **Snapshot Comparison**: Use `captureDbState(db)` and `compareDbStates(s1, s2)` to verify idempotency or complex multi-table transactions.
+
+## Transpiler & Test Runner Setup
+
+The testing harness executes exclusively using **`ts-jest`** for unit and integration testing, and **`tsx`** for script execution.
+
+### Transpiler Standardization
+Historically, both `ts-node` and `tsx` coexisted in the codebase, leading to subtle ESM semantics mismatch flakiness in CI. To solve this:
+- `ts-node` has been completely removed from the project dependencies and Jest configurations.
+- All Jest test suites are run via `ts-jest` under `--experimental-vm-modules` ESM execution, using the optimized `tsconfig.jest.json` config.
+- One-off scripts and router tests are run via `tsx`.
+- Direct imports of `ts-node` are banned by ESLint (`no-restricted-imports`).

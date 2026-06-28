@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray, encodeCursor, decodeCursor } from '../utils/pagination.js'
 import db from '../db/index.js'
-import { requireUserAuth } from '../middleware/userAuth.js'
+import { requireUserAuth } from '../middleware/auth.js'
 
 export const transactionsRouter = Router()
 

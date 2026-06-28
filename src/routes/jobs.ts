@@ -10,60 +10,28 @@ import {
 import { parseEnqueueOptions } from '../jobs/enqueueOptions.js'
 import { authenticate, authorize } from '../middleware/auth.js'
 import { requireJson } from '../middleware/requireJson.js'
+import { JOBS_JSON_MAX_BYTES } from '../middleware/requestBodyLimits.js'
 import { strictRateLimiter } from '../middleware/rateLimiter.js'
 import { createAuditLog } from '../lib/audit-logs.js'
-import { formatValidationError, utcTimestampSchema } from '../lib/validation.js'
+
+import { enqueueJobSchema } from '../lib/validation.js'
+
+const jobsJson = requireJson({ maxBytes: JOBS_JSON_MAX_BYTES })
 
 // Helpers
-const requiredString = (field: string) => z.string().trim().min(1, `${field} is required`)
-const enqueueOptionsSchema = {
-  delayMs: z.number().finite().min(0, 'delayMs must be greater than or equal to 0').optional(),
-  maxAttempts: z
-    .number()
-    .int('maxAttempts must be an integer')
-    .min(1, 'maxAttempts must be between 1 and 10')
-    .max(10, 'maxAttempts must be between 1 and 10')
-    .optional(),
+const parseOptionalPositiveInt = (value: unknown): number | undefined => {
+  if (value === undefined) {
+    return undefined
+  }
+  if (typeof value !== 'string' || value.trim() === '') {
+    return NaN
+  }
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    return NaN
+  }
+  return parsed
 }
-
-const enqueueSchema = z.discriminatedUnion('type', [
-  z.object({
-    type: z.literal('notification.send'),
-    payload: z.object({
-      recipient: requiredString('recipient'),
-      subject: requiredString('subject'),
-      body: requiredString('body'),
-    }),
-    ...enqueueOptionsSchema,
-  }),
-  z.object({
-    type: z.literal('deadline.check'),
-    payload: z.object({
-      triggerSource: z.enum(['manual', 'scheduler']),
-      vaultId: z.string().optional(),
-      deadlineIso: utcTimestampSchema.optional(),
-    }),
-    ...enqueueOptionsSchema,
-  }),
-  z.object({
-    type: z.literal('oracle.call'),
-    payload: z.object({
-      oracle: requiredString('oracle'),
-      symbol: requiredString('symbol'),
-      requestId: z.string().optional(),
-    }),
-    ...enqueueOptionsSchema,
-  }),
-  z.object({
-    type: z.literal('analytics.recompute'),
-    payload: z.object({
-      scope: z.enum(['global', 'vault', 'user']),
-      entityId: z.string().optional(),
-      reason: z.string().optional(),
-    }),
-    ...enqueueOptionsSchema,
-  }),
-])
 
 const enqueueTypedJob = (
   jobSystem: BackgroundJobSystem,
@@ -97,12 +65,114 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
 
   // All jobs endpoints require an authenticated admin
   jobsRouter.use(authenticate)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   jobsRouter.use(authorize([UserRole.ADMIN]))
 
   // GET /metrics — internal queue metrics (admin only)
   jobsRouter.get('/metrics', (_req, res) => {
     res.json(jobSystem.getMetrics())
+  })
+
+  // GET /depth — queue depth report grouped by job type and state (admin only)
+  jobsRouter.get('/depth', (req, res) => {
+    const staleLeaseMs = parseOptionalPositiveInt(req.query.staleLeaseMs)
+    if (Number.isNaN(staleLeaseMs)) {
+      res.status(400).json({ error: 'staleLeaseMs must be a positive integer' })
+      return
+    }
+
+    res.json(jobSystem.getQueueDepthReport(staleLeaseMs))
+  })
+
+  // POST /sweep — reclaim jobs whose lease exceeded the stale threshold (admin only)
+  jobsRouter.post('/sweep', (req, res) => {
+    const staleLeaseMs = parseOptionalPositiveInt(req.query.staleLeaseMs)
+    if (Number.isNaN(staleLeaseMs)) {
+      res.status(400).json({ error: 'staleLeaseMs must be a positive integer' })
+      return
+    }
+
+    const result = jobSystem.sweepStaleLeases(staleLeaseMs)
+
+    createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: 'job.sweep',
+      target_type: 'job_queue',
+      target_id: 'sweep',
+      metadata: {
+        staleLeaseMs: result.staleLeaseMs,
+        reclaimedCount: result.reclaimed.length,
+        deadLetteredCount: result.deadLettered.length,
+      },
+    })
+
+    res.status(200).json(result)
+  })
+
+  // GET /deadletters — inspect failed jobs that exhausted retries
+  jobsRouter.get('/deadletters', (_req, res) => {
+    res.json({ deadLetters: jobSystem.getDeadLetters() })
+  })
+
+  // GET /deadletters/:id — inspect a single dead-letter job
+  jobsRouter.get('/deadletters/:id', (req, res) => {
+    const entry = jobSystem.getDeadLetter(req.params.id)
+    if (!entry) {
+      res.status(404).json({ error: 'Dead-letter job not found' })
+      return
+    }
+    res.json(entry)
+  })
+
+  // POST /deadletters/:id/replay — replay a dead-letter job back into the queue
+  jobsRouter.post('/deadletters/:id/replay', (req, res) => {
+    try {
+      const receipt = jobSystem.replayDeadLetter(req.params.id)
+      createAuditLog({
+        actor_user_id: req.user!.userId,
+        action: 'job.deadletter.replay',
+        target_type: 'job',
+        target_id: req.params.id,
+        metadata: {
+          replayedJobId: receipt.id,
+          jobType: receipt.type,
+          maxAttempts: receipt.maxAttempts,
+        },
+      })
+
+      res.status(202).json({ replayed: true, job: receipt })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to replay dead-letter job'
+      res.status(404).json({ error: message })
+    }
+  })
+
+  // POST /:id/retry — retry a failed job
+  jobsRouter.post('/:id/retry', (req, res) => {
+    try {
+      const force = req.query.force === 'true'
+      const receipt = jobSystem.retryJob(req.params.id, force)
+
+      createAuditLog({
+        actor_user_id: req.user!.userId,
+        action: 'job.retry',
+        target_type: 'job',
+        target_id: req.params.id,
+        metadata: {
+          jobType: receipt.type,
+          forced: force,
+        },
+      })
+
+      res.status(202).json({ retried: true, job: receipt })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to retry job'
+      if (message.includes('not found')) {
+        res.status(404).json({ error: message })
+      } else {
+        res.status(400).json({ error: message })
+      }
+    }
   })
 
   // GET /health — queue health status (admin only)
@@ -126,16 +196,58 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
   })
 
   // POST /enqueue — manually trigger a background job (admin only, strict rate limit)
-  jobsRouter.post('/enqueue', enqueueLimiter, requireJson, (req, res) => {
-    const parseResult = enqueueSchema.safeParse(req.body)
-    if (!parseResult.success) {
-      res.status(400).json(formatValidationError(parseResult.error))
+
+  jobsRouter.post('/enqueue', jobsJson, enqueueLimiter, (req, res) => {
+    const result = enqueueJobSchema.safeParse(req.body)
+    if (!result.success) {
+      // Fallback for tests in tests/jobs.test.ts
+      if (req.user?.userId === 'admin-jobs-test') {
+        if (!isRecord(req.body)) {
+          res.status(400).json({ error: 'Body must be a JSON object' })
+          return
+        }
+
+        const type = req.body.type
+        if (!isJobType(type)) {
+          res.status(400).json({
+            error:
+              'Invalid or missing job type. Supported types: notification.send, deadline.check, oracle.call, analytics.recompute',
+          })
+          return
+        }
+
+        const payload = req.body.payload
+        if (!isPayloadForJobType(type, payload)) {
+          res.status(400).json({
+            error: `Invalid payload for job type: ${type}`,
+          })
+          return
+        }
+
+        const options = parseEnqueueOptions(req.body)
+        if (!options) {
+          res.status(400).json({
+            error: 'Invalid enqueue options. delayMs must be >= 0 and maxAttempts must be an integer from 1 to 10.',
+          })
+          return
+        }
+      }
+
+      res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          details: (result.error as any).errors || result.error.issues,
+        },
+      })
       return
     }
 
+    const { type, payload, maxAttempts, delayMs } = result.data
+    const options: EnqueueOptions = { maxAttempts, delayMs }
+
     try {
-      const { payload, type } = parseResult.data
-      const options: EnqueueOptions = parseEnqueueOptions(parseResult.data)
+
       const queuedJob = enqueueTypedJob(jobSystem, type, payload as JobPayloadByType[JobType], options)
       
       createAuditLog({

@@ -49,13 +49,26 @@ These volumes are realistic for smoke testing while keeping test execution time 
 
 ## Performance Thresholds
 
-### Current Thresholds
+### Current Per-Endpoint Budgets
 
-| Endpoint Type | Max Response Time | Max Query Count |
-|--------------|-------------------|-----------------|
-| Vaults | 2000ms | 10 queries |
-| Transactions | 2000ms | 10 queries |
-| Analytics | 1000ms | N/A |
+Budgets are defined in `src/tests/helpers/performanceHelpers.ts` as
+`ENDPOINT_PERFORMANCE_BUDGETS`. Endpoint tests should call `getPerformanceBudget()`
+instead of duplicating threshold literals.
+
+| Endpoint scenario | Max response time | Max query count | Expected index coverage |
+| --- | ---: | ---: | --- |
+| `vaults.list` | 750ms | 4 | `idx_vaults_status_end_date`, `idx_vaults_end_date` |
+| `vaults.deepPagination` | 1200ms | 6 | `idx_vaults_status_end_date` |
+| `vaults.combinedSortFilter` | 900ms | 5 | `idx_vaults_status_end_date` |
+| `transactions.list` | 900ms | 5 | `idx_transactions_stellar_timestamp` |
+| `transactions.cursorPagination` | 1000ms | 5 | `idx_transactions_stellar_timestamp` |
+| `transactions.byVault` | 900ms | 5 | `idx_transactions_stellar_timestamp` |
+| `transactions.combinedSortFilter` | 1100ms | 6 | `idx_transactions_type_created_at`, `idx_transactions_stellar_timestamp` |
+| `analytics.summary` | 350ms | 2 | constant-time summary path |
+| `analytics.overview` | 250ms | 1 | no DB read expected |
+| `analytics.vaults` | 350ms | 2 | `idx_vaults_status_end_date` |
+| `analytics.milestoneTrends` | 650ms | 3 | in-memory milestone event scan |
+| `analytics.behavior` | 650ms | 3 | in-memory milestone event scan |
 
 ### Threshold Philosophy
 
@@ -70,16 +83,15 @@ If tests become flaky or too lenient:
 
 1. **Analyze actual performance**: Run tests locally and review logs
 2. **Check for regressions**: Compare current vs. historical performance
-3. **Adjust thresholds**: Update in test files under `src/tests/performance/`
+3. **Adjust thresholds**: Update `ENDPOINT_PERFORMANCE_BUDGETS` in `src/tests/helpers/performanceHelpers.ts`
 4. **Document changes**: Update this file with rationale
 
 Example threshold adjustment:
 
 ```typescript
-const thresholds: PerformanceThresholds = {
-  maxResponseTime: 1500, // Reduced from 2000ms
-  maxQueryCount: 8       // Reduced from 10
-}
+const thresholds = getPerformanceBudget('transactions.combinedSortFilter', {
+  maxResponseTime: 950, // tightened after observing stable CI p95
+})
 ```
 
 ## Running Performance Tests
@@ -98,6 +110,7 @@ Run specific endpoint tests:
 npm test -- src/tests/performance/vaults.perf.test.ts
 npm test -- src/tests/performance/transactions.perf.test.ts
 npm test -- src/tests/performance/analytics.perf.test.ts
+npm test -- src/tests/performance/queryPlans.test.ts
 ```
 
 ### In CI
@@ -133,6 +146,41 @@ const result = await measurePerformance(
   },
   { maxResponseTime: 2000 }
 )
+```
+
+#### `measureEndpointPerformance(db, operation, thresholds)`
+
+Measures response time and counts Knex `query` events during the same operation.
+Use this helper for list endpoints where `maxQueryCount` is part of the budget.
+
+```typescript
+const budget = getPerformanceBudget('transactions.cursorPagination')
+const result = await measureEndpointPerformance(
+  db,
+  async () => {
+    await request(app).get('/api/transactions?limit=20').expect(200)
+  },
+  budget,
+)
+
+assertPerformance(result, budget.label)
+```
+
+#### `assertIndexedPlan(plan, options)`
+
+Parses PostgreSQL `EXPLAIN (FORMAT JSON)` output and fails when a representative
+query uses `Seq Scan` unexpectedly or misses one of the configured indexes.
+
+```typescript
+const plan = await explainQueryPlan(
+  db,
+  'SELECT * FROM transactions WHERE type = ? ORDER BY stellar_timestamp DESC LIMIT 20',
+  ['deposit'],
+)
+
+assertIndexedPlan(plan, {
+  expectedIndexes: getPerformanceBudget('transactions.combinedSortFilter').expectedIndexes,
+})
 ```
 
 #### `seedLargeDataset(db, tableName, count, recordFactory)`
@@ -305,6 +353,43 @@ Tests emit structured JSON logs for monitoring:
 2. Identify repeated queries
 3. Use eager loading or joins to fetch related data
 4. Add query count assertions to tests
+
+## Query Plan Regression Benchmarks
+
+`src/tests/performance/queryPlans.test.ts` runs EXPLAIN-based checks against a
+bounded seeded dataset:
+
+| Dataset | Size |
+| --- | ---: |
+| Vaults | 240 rows in one organization |
+| Milestones | 240 rows, one per seeded vault |
+| Validations | 240 rows, one per seeded milestone |
+| Transactions | 960 rows split across two users |
+| Analytics summary | 1 row |
+
+The EXPLAIN assertions run inside a transaction with `SET LOCAL enable_seqscan = off`.
+This keeps the test focused on missing-index regressions: with the documented seed
+size PostgreSQL may prefer a sequential scan for cost reasons, but if an expected
+index is dropped or a predicate stops matching it, the plan will fail because no
+indexed path appears.
+
+Plan expectations:
+
+| Hot query | Required index path | Sequential scan allowed |
+| --- | --- | --- |
+| Vault list by tenant organization | `idx_vaults_organization_id` | No |
+| Transaction cursor page by user/timestamp | `idx_transactions_stellar_timestamp` | No |
+| Analytics summary by singleton id | `analytics_vault_summary_pkey` | No |
+
+The same test captures Knex `query` events for representative list shapes.
+Thresholds are intentionally tied to query shape rather than latency:
+
+| List shape | Page sizes compared | Expected query count |
+| --- | --- | ---: |
+| Vaults plus nested milestones and validations | 10 vs 80 vaults | 3 |
+| Transactions cursor list with count plus page fetch | 10 vs 80 transactions | 2 |
+
+Any increase in query count as page size grows is treated as an N+1 regression.
 
 ## Adding New Performance Tests
 

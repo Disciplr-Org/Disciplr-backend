@@ -1,7 +1,9 @@
+import { orgAnalyticsRateLimiter } from '../middleware/rateLimiter.js'
 import { Router, Request, Response } from 'express'
 import { authenticate } from '../middleware/auth.js'
-import { requireOrgAccess } from '../middleware/orgAuth.js'
+import { requireOrgAccess, requireOrgRole } from '../middleware/orgAuth.js'
 import { vaults, Vault } from './vaults.js'
+import { getTeamRollup } from '../services/team.js'
 
 export const orgAnalyticsRouter = Router()
 
@@ -9,6 +11,7 @@ orgAnalyticsRouter.get(
   '/:orgId/analytics',
   authenticate,
   requireOrgAccess('owner', 'admin'),
+  orgAnalyticsRateLimiter, 
   (req: Request, res: Response) => {
     const { orgId } = req.params
     const orgVaults = vaults.filter((v) => v.orgId === orgId)
@@ -56,5 +59,22 @@ orgAnalyticsRouter.get(
       teamPerformance,
       generatedAt: new Date().toISOString(),
     })
+  }
+)
+
+orgAnalyticsRouter.get(
+  '/:orgId/teams/rollup',
+  authenticate,
+  requireOrgRole(['owner', 'admin']),
+  orgAnalyticsRateLimiter,
+  async (req: Request, res: Response) => {
+    const { orgId } = req.params
+
+    try {
+      const rollup = await getTeamRollup(orgId)
+      res.json(rollup)
+    } catch {
+      res.status(500).json({ error: 'Failed to generate team rollup' })
+    }
   }
 )

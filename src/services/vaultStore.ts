@@ -6,6 +6,7 @@ import type {
   PersistedMilestone,
   PersistedVault,
 } from "../types/vaults.js";
+import { getOrSet, invalidate, invalidatePrefix } from "../lib/cache.js";
 
 type UpdateableVaultField =
   | "amount"
@@ -75,6 +76,8 @@ const mapVaultRow = (row: {
   creator: string | null;
   status: PersistedVault["status"];
   created_at: string;
+  late_check_in_window_secs?: number | null;
+  organization_id?: string | null;
 }): Omit<PersistedVault, "milestones"> => ({
   id: row.id,
   amount: row.amount,
@@ -86,6 +89,8 @@ const mapVaultRow = (row: {
   creator: row.creator,
   status: row.status,
   createdAt: row.created_at,
+  lateCheckInWindowSecs: row.late_check_in_window_secs ?? 0,
+  orgId: row.organization_id ?? undefined,
 });
 
 export const createVaultWithMilestones = async (
@@ -112,6 +117,8 @@ export const createVaultWithMilestones = async (
     }),
   );
 
+  const orgId = input.orgId;
+
   if (!client) {
     const vault: PersistedVault = {
       id: vaultId,
@@ -125,9 +132,19 @@ export const createVaultWithMilestones = async (
       status: "draft",
       createdAt: now,
       milestones,
+      lateCheckInWindowSecs: input.lateCheckInWindowSecs ?? 0,
+      orgId,
     };
     memoryVaults.push(vault);
     memoryVaultRevisions.set(vault.id, 0);
+
+    // Evict/Invalidate caches on successful write
+    if (orgId) {
+      await invalidatePrefix('vaults:', orgId);
+      await invalidatePrefix('analytics:', orgId);
+    }
+    await invalidate('analytics:overall');
+
     return { vault, clientUsed: null };
   }
 
@@ -147,11 +164,13 @@ export const createVaultWithMilestones = async (
       creator: string | null;
       status: PersistedVault["status"];
       created_at: string;
+      late_check_in_window_secs: number | null;
+      organization_id: string | null;
     }>(
       `INSERT INTO vaults
-        (id, amount, start_date, end_date, verifier, success_destination, failure_destination, creator, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft')
-        RETURNING id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at`,
+        (id, amount, start_date, end_date, verifier, success_destination, failure_destination, creator, status, late_check_in_window_secs, organization_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft', $9, $10)
+        RETURNING id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at, late_check_in_window_secs, organization_id`,
       [
         vaultId,
         input.amount,
@@ -161,6 +180,8 @@ export const createVaultWithMilestones = async (
         input.destinations.success,
         input.destinations.failure,
         input.creator ?? null,
+        input.lateCheckInWindowSecs ?? 0,
+        orgId ?? null,
       ],
     );
 
@@ -190,6 +211,14 @@ export const createVaultWithMilestones = async (
     if (!customClient) {
       await client.query("COMMIT");
     }
+
+    // Evict/Invalidate caches on successful write
+    const finalOrgId = vault.orgId;
+    if (finalOrgId) {
+      await invalidatePrefix('vaults:', finalOrgId);
+      await invalidatePrefix('analytics:', finalOrgId);
+    }
+    await invalidate('analytics:overall');
 
     return { vault, clientUsed: client };
   } catch (error) {
@@ -224,8 +253,10 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
     creator: string | null;
     status: PersistedVault["status"];
     created_at: string;
+    late_check_in_window_secs: number | null;
+    organization_id: string | null;
   }>(
-    "SELECT id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at FROM vaults ORDER BY created_at DESC",
+    "SELECT id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at, late_check_in_window_secs, organization_id FROM vaults ORDER BY created_at DESC",
   );
 
   const milestoneRows = await pool.query<{
@@ -273,6 +304,7 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
     creator: string | null;
     status: PersistedVault["status"];
     created_at: string;
+    late_check_in_window_secs: number | null;
   }> = vaultRows.rows;
 
   return rows.map((row) => ({
@@ -333,6 +365,17 @@ export const updateVaultById = async (
 
     memoryVaults[vaultIndex] = updatedVault;
     memoryVaultRevisions.set(id, Number(currentRevision) + 1);
+
+    // Evict/Invalidate cache
+    const orgId = updatedVault.orgId;
+    await invalidate(`vault:${id}`, orgId);
+    await invalidate(`vault:${id}:org`);
+    if (orgId) {
+      await invalidatePrefix('vaults:', orgId);
+      await invalidatePrefix('analytics:', orgId);
+    }
+    await invalidate('analytics:overall');
+
     return updatedVault;
   }
 
@@ -342,7 +385,7 @@ export const updateVaultById = async (
     UPDATE vaults
     SET ${setParts.join(", ")}
     WHERE id = $1 AND xmin::text = $2
-    RETURNING id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at
+    RETURNING id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at, late_check_in_window_secs, organization_id
   `;
   const result = await executor.query(query, [id, revision, ...values]);
 
@@ -380,17 +423,45 @@ export const updateVaultById = async (
     }),
   );
 
-  return {
+  const updatedVault = {
     ...mapVaultRow(result.rows[0]),
     milestones,
   };
+
+  // Evict/Invalidate cache
+  const orgId = updatedVault.orgId;
+  await invalidate(`vault:${id}`, orgId);
+  await invalidate(`vault:${id}:org`);
+  if (orgId) {
+    await invalidatePrefix('vaults:', orgId);
+    await invalidatePrefix('analytics:', orgId);
+  }
+  await invalidate('analytics:overall');
+
+  return updatedVault;
 };
 
 export const getVaultById = async (
   id: string,
 ): Promise<PersistedVault | null> => {
-  const allVaults = await listVaults();
-  return allVaults.find((vault) => vault.id === id) ?? null;
+  // 1. Try to get orgId from cache mapping `vault:${id}:org`
+  const orgId = await getOrSet<string | null>(`vault:${id}:org`, 300, async () => {
+    const allVaults = await listVaults();
+    const vault = allVaults.find((v) => v.id === id) ?? null;
+    return vault ? (vault.orgId || null) : null;
+  });
+
+  if (orgId) {
+    return getOrSet<PersistedVault | null>(`vault:${id}`, 300, async () => {
+      const allVaults = await listVaults();
+      return allVaults.find((v) => v.id === id) ?? null;
+    }, orgId);
+  } else {
+    return getOrSet<PersistedVault | null>(`vault:${id}`, 300, async () => {
+      const allVaults = await listVaults();
+      return allVaults.find((v) => v.id === id) ?? null;
+    });
+  }
 };
 
 export const resetVaultStore = (): void => {
@@ -418,6 +489,26 @@ export const getVaultRevisionById = async (
   }
 
   return result.rows[0].revision;
+};
+
+/**
+ * Computes a weak ETag for a vault based on its revision.
+ * The ETag is derived from the optimistic-concurrency version column (PostgreSQL xmin or memory counter).
+ * Weak ETags are used because vault representations may be transformed during transmission.
+ *
+ * @param id - Vault ID
+ * @returns Weak ETag string in format W/"-<version>" or null if vault not found
+ * @example
+ *   getVaultETag('vault-123') // Returns: W/"-456789" (where 456789 is the xmin value)
+ */
+export const getVaultETag = async (id: string): Promise<string | null> => {
+  const revision = await getVaultRevisionById(id);
+  if (!revision) {
+    return null;
+  }
+  // Import at function level to avoid circular dependencies
+  const { computeWeakETag } = await import("../utils/etag.js");
+  return computeWeakETag(revision);
 };
 
 export type CancelVaultResult =
@@ -448,6 +539,16 @@ export const cancelVaultById = async (
     vault.status = "cancelled";
     const currentRevision = memoryVaultRevisions.get(id) ?? 0;
     memoryVaultRevisions.set(id, currentRevision + 1);
+
+    const orgId = vault.orgId;
+    await invalidate(`vault:${id}`, orgId);
+    await invalidate(`vault:${id}:org`);
+    if (orgId) {
+      await invalidatePrefix('vaults:', orgId);
+      await invalidatePrefix('analytics:', orgId);
+    }
+    await invalidate('analytics:overall');
+
     return { vault, previousStatus };
   }
 
@@ -481,6 +582,17 @@ export const cancelVaultById = async (
     await client.query("COMMIT");
 
     const vault = await getVaultById(id);
+    if (vault) {
+      const orgId = vault.orgId;
+      await invalidate(`vault:${id}`, orgId);
+      await invalidate(`vault:${id}:org`);
+      if (orgId) {
+        await invalidatePrefix('vaults:', orgId);
+        await invalidatePrefix('analytics:', orgId);
+      }
+      await invalidate('analytics:overall');
+    }
+
     return { vault: vault!, previousStatus: vaultStatus };
   } catch (error) {
     await client.query("ROLLBACK");

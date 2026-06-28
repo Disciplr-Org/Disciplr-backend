@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import type { AbuseCategory, AbuseEvent } from '../types/security.js'
 
 /**
  * Configuration for the Abuse Monitor Heuristics.
@@ -15,15 +16,20 @@ export interface AbuseSignal {
   readonly id: string           // Raw IP or UserID (will be sanitized)
   readonly weight?: number      // Importance of the signal (default: 1)
   readonly type: 'request' | 'auth_fail' | 'invalid_xdr'
+  /** Optional structured category for enriched event emission. */
+  readonly category?: AbuseCategory
 }
 
 /**
  * AbuseMonitor: Tracks and evaluates behavior signals to identify malicious actors.
  * Designed to reduce false positives via a weighted scoring system and confidence decay.
+ * Emits structured AbuseEvent objects for downstream aggregation.
  */
 export class AbuseMonitor {
   private readonly scores: Map<string, { score: number; lastSeen: number }> = new Map()
   private readonly config: AbuseMonitorConfig
+  /** Running totals per category type for the admin summary endpoint. */
+  private readonly categoryCounts: Record<string, number> = {}
 
   constructor(config?: Partial<AbuseMonitorConfig>) {
     this.config = {
@@ -36,16 +42,16 @@ export class AbuseMonitor {
   }
 
   /**
-   * Record an activity signal. 
+   * Record an activity signal.
    * @returns boolean - True if the actor should be throttled/blocked.
    */
   public record(signal: AbuseSignal): boolean {
     const sanitizedId = this.sanitizeIdentifier(signal.id)
     const now = Date.now()
-    
+
     // Prevent Map exhaustion
     if (!this.scores.has(sanitizedId) && this.scores.size >= (this.config.maxEntries ?? 10000)) {
-      return false 
+      return false
     }
 
     const record = this.scores.get(sanitizedId) || { score: 0, lastSeen: now }
@@ -64,14 +70,19 @@ export class AbuseMonitor {
     const isAbusive = currentScore >= this.config.penaltyScoreLimit
 
     if (isAbusive) {
-      this.logAbuse(sanitizedId, currentScore, signal.type)
+      this.emitAbuseEvent(sanitizedId, currentScore, signal)
     }
 
     return isAbusive
   }
 
+  /** Returns a copy of the per-category abuse event counts. */
+  public getCategoryCounts(): Record<string, number> {
+    return { ...this.categoryCounts }
+  }
+
   /**
-   * Detirministic PII Masking.
+   * Deterministic PII Masking.
    * Replaces sensitive identifiers with an opaque token.
    */
   private sanitizeIdentifier(id: string): string {
@@ -81,15 +92,46 @@ export class AbuseMonitor {
       .substring(0, 12)
   }
 
-  private logAbuse(hashedId: string, score: number, type: string): void {
-    // Structured logging without PII leakage
+  private emitAbuseEvent(hashedId: string, score: number, signal: AbuseSignal): void {
+    const category: AbuseCategory = signal.category ?? this.inferCategory(signal)
+    const categoryType = category.type
+
+    this.categoryCounts[categoryType] = (this.categoryCounts[categoryType] ?? 0) + 1
+
+    const event: AbuseEvent = {
+      event: 'security.abuse_detected',
+      actorHash: hashedId,
+      category,
+      timestamp: new Date().toISOString(),
+    }
+
+    // Structured log — no PII
     console.warn(JSON.stringify({
-      event: 'ABUSE_LIMIT_REACHED',
-      actor_hash: hashedId,
+      ...event,
       confidence_score: Math.floor(score),
-      trigger_type: type,
-      timestamp: new Date().toISOString()
     }))
+  }
+
+  /** Infer a default AbuseCategory from the signal type when none is provided. */
+  private inferCategory(signal: AbuseSignal): AbuseCategory {
+    switch (signal.type) {
+      case 'auth_fail':
+        return { type: 'brute-force', failedLoginCount: 1, windowMs: 0 }
+      case 'invalid_xdr':
+        return { type: 'payload-anomaly', badRequestCount: 1, windowMs: 0 }
+      default:
+        return { type: 'rate-limit-trip', requestCount: 1, windowMs: 0 }
+    }
+  }
+
+  /**
+   * Reset all state (scores and category counts). Used in tests.
+   */
+  public reset(): void {
+    this.scores.clear()
+    for (const key of Object.keys(this.categoryCounts)) {
+      delete this.categoryCounts[key]
+    }
   }
 
   /**

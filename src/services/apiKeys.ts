@@ -1,14 +1,16 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import argon2 from 'argon2'
 import type { Pool } from 'pg'
-import type { ApiKeyAuthContext, ApiKeyRecord } from '../types/auth.js'
+import type { ApiKeyAuthContext, ApiKeyRecord, ApiScope } from '../types/auth.js'
 import { utcNow } from '../utils/timestamps.js'
 import { getPgPool } from '../db/pool.js'
+import * as argon2 from 'argon2'
 
 interface CreateApiKeyInput {
   userId?: string
   orgId?: string
   label: string
-  scopes: string[]
+  scopes: ApiScope[]
 }
 
 interface RotateApiKeyInput {
@@ -46,6 +48,14 @@ const HASH_PREFIX_LENGTH = 12
 const memoryApiKeys = new Map<string, ApiKeyRecord>()
 
 const hashSecret = (secret: string): string => createHash('sha256').update(secret).digest('hex')
+
+// Argon2id parameters tuned per docs/api-keys.md (memory in KiB)
+const ARGON2_OPTIONS = {
+  type: argon2.argon2id,
+  memoryCost: 1 << 16, // 65536 KiB = 64 MiB
+  timeCost: 3,
+  parallelism: 1,
+}
 
 const getHashPrefix = (hash: string): string => hash.slice(0, HASH_PREFIX_LENGTH)
 
@@ -255,16 +265,22 @@ const getRepository = (): ApiKeyRepository => {
   return pool ? createPgRepository(pool) : createMemoryRepository()
 }
 
-const createApiKeyRecord = (input: CreateApiKeyInput, secret: string): ApiKeyRecord => ({
-  id: randomUUID(),
-  userId: input.userId ?? null,
-  orgId: input.orgId ?? null,
-  keyHash: hashSecret(secret),
-  label: input.label.trim(),
-  scopes: normalizeScopes(input.scopes),
-  createdAt: utcNow(),
-  revokedAt: null,
-})
+const createApiKeyRecord = async (input: CreateApiKeyInput, secret: string): Promise<ApiKeyRecord> => {
+  const fingerprint = hashSecret(secret)
+  const argonHash = await argon2.hash(secret, ARGON2_OPTIONS)
+
+  return {
+    id: randomUUID(),
+    userId: input.userId ?? null,
+    orgId: input.orgId ?? null,
+    // Store as: <sha256hex>$argon2id$<argon2hash> so existing left(key_hash,12) prefix index remains useful
+    keyHash: `${fingerprint}$argon2id$${argonHash}`,
+    label: input.label.trim(),
+    scopes: normalizeScopes(input.scopes),
+    createdAt: utcNow(),
+    revokedAt: null,
+  }
+}
 
 const findMatchingRecord = async (apiKey: string): Promise<{ record: ApiKeyRecord; secret: string } | null> => {
   const parsed = parseApiKey(apiKey)
@@ -275,28 +291,53 @@ const findMatchingRecord = async (apiKey: string): Promise<{ record: ApiKeyRecor
   const secretHash = hashSecret(parsed.secret)
   const hashPrefix = getHashPrefix(secretHash)
   const candidates = await getRepository().findByHashPrefix(hashPrefix)
-  const matchingCandidate = candidates.find((candidate) => {
-    if (candidate.id !== parsed.apiKeyId) {
-      return false
+
+  for (const candidate of candidates) {
+    if (candidate.id !== parsed.apiKeyId) continue
+
+    const stored = candidate.keyHash
+
+    // New format: <fingerprint>$argon2id$<argonHash>
+    if (stored.includes('$argon2id$')) {
+      const parts = stored.split('$argon2id$')
+      const fingerprintPart = parts[0]
+      const argonPart = parts.slice(1).join('$argon2id$')
+
+      if (fingerprintPart === secretHash) {
+        try {
+          const ok = await argon2.verify(argonPart, parsed.secret)
+          if (ok) return { record: candidate, secret: parsed.secret }
+        } catch (_e) {
+          // verify failure -> continue
+        }
+      }
+      continue
     }
 
-    const left = Buffer.from(candidate.keyHash, 'utf8')
-    const right = Buffer.from(secretHash, 'utf8')
-    return left.length === right.length && timingSafeEqual(left, right)
-  })
+    // Legacy store: plain sha256 fingerprint
+    if (stored === secretHash) {
+      // Rolling re-hash: create argon2 and persist combined format
+      const argonHash = await argon2.hash(parsed.secret, ARGON2_OPTIONS)
+      candidate.keyHash = `${secretHash}$argon2id$${argonHash}`
+      // best-effort update; do not fail validation if update fails
+      try {
+        await getRepository().update(candidate)
+      } catch (_err) {
+        // ignore
+      }
 
-  if (!matchingCandidate) {
-    return null
+      return { record: candidate, secret: parsed.secret }
+    }
   }
 
-  return { record: matchingCandidate, secret: parsed.secret }
+  return null
 }
 
 export const createApiKey = async (
   input: CreateApiKeyInput,
 ): Promise<{ apiKey: string; record: ApiKeyRecord }> => {
   const secret = randomBytes(32).toString('hex')
-  const record = createApiKeyRecord(input, secret)
+  const record = await createApiKeyRecord(input, secret)
   await getRepository().create(record)
 
   return {
@@ -332,7 +373,9 @@ export const rotateApiKey = async (
   }
 
   const nextSecret = randomBytes(32).toString('hex')
-  record.keyHash = hashSecret(nextSecret)
+  const fingerprint = hashSecret(nextSecret)
+  const argonHash = await argon2.hash(nextSecret, ARGON2_OPTIONS)
+  record.keyHash = `${fingerprint}$argon2id$${argonHash}`
   record.createdAt = utcNow()
   record.revokedAt = null
 
@@ -346,7 +389,7 @@ export const rotateApiKey = async (
 
 export const validateApiKey = async (
   apiKey: string,
-  requiredScopes: string[] = [],
+  requiredScopes: ApiScope[] = [],
 ): Promise<ApiKeyValidationResult> => {
   const parsed = parseApiKey(apiKey)
   if (!parsed) {
@@ -364,7 +407,7 @@ export const validateApiKey = async (
     return { valid: false, reason: 'revoked' }
   }
 
-  const normalizedRequiredScopes = normalizeScopes(requiredScopes)
+  const normalizedRequiredScopes = normalizeScopes(requiredScopes as unknown as string[])
   const missingScope = normalizedRequiredScopes.find((scope) => !record.scopes.includes(scope))
   if (missingScope) {
     return { valid: false, reason: 'forbidden' }

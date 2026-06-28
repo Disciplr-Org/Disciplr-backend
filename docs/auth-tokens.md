@@ -117,5 +117,44 @@ Revokes **all** sessions and refresh tokens for the user:
 | `JWT_REFRESH_SECRET` | `fallback-refresh-secret` | Secret for signing refresh tokens |
 | `JWT_ACCESS_EXPIRES_IN` | `15m` | Access token lifetime |
 | `JWT_REFRESH_EXPIRES_IN` | `7d` | Refresh token lifetime |
+| `SESSIONS_CLEANUP_INTERVAL_MS` | `86400000` (24 h) | How often the cleanup job runs |
 
 > **Warning:** The fallback secrets are for development only. In production, set real secrets of at least 32 characters.
+
+## Session Table Cleanup
+
+The `sessions` table is pruned by the `sessions.cleanup` background job to prevent unbounded growth.
+
+### What it deletes
+
+Rows where `expires_at < now() - interval '30 days'`. Active or recently-expired sessions (within the 30-day grace window) are never touched.
+
+### How it runs
+
+The job is scheduled automatically at startup (with a 10-second delay to let the server warm up) and then repeats every 24 hours. It uses a batched `DELETE … LIMIT 1000` loop so large backlogs are processed incrementally without long-running locks.
+
+### Observability
+
+After each run the job logs:
+
+```
+[jobs:sessions.cleanup] deleted=<N> batchSize=<B> attempt=<A>
+```
+
+### Manual trigger
+
+Enqueue an ad-hoc run via the jobs API:
+
+```bash
+curl -X POST http://localhost:3000/api/jobs/enqueue \
+  -H "Content-Type: application/json" \
+  -d '{"type": "sessions.cleanup", "payload": {}}'
+```
+
+Pass an optional `batchSize` (default `1000`) to tune throughput:
+
+```bash
+curl -X POST http://localhost:3000/api/jobs/enqueue \
+  -H "Content-Type: application/json" \
+  -d '{"type": "sessions.cleanup", "payload": {"batchSize": 500}}'
+```

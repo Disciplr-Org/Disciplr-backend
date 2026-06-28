@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken'
 import { randomUUID } from 'node:crypto'
 import { recordSession, validateSession } from '../services/session.js'
 import { UserRole } from '../types/user.js'
+import { verifyAccessToken } from '../lib/auth-utils.js'
 
 import { JWTPayload } from '../types/auth.js'
 
@@ -18,19 +19,26 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
      const authHeader = req.headers.authorization
 
      if (!authHeader || !authHeader.startsWith('Bearer ')) {
-          res.status(401).json({ error: 'Missing or malformed Authorization header' })
+          res.status(401).json({ error: 'Unauthorized: Missing or malformed Authorization header' })
           return
      }
 
      const token = authHeader.slice(7)
 
      try {
-          const payload = jwt.verify(token, JWT_SECRET) as JwtPayload
+          // First try verifyAccessToken from lib/auth-utils.ts (which uses JWT_ACCESS_SECRET)
+          let payload: JwtPayload
+          try {
+               payload = verifyAccessToken(token) as JwtPayload
+          } catch {
+               // Fallback to legacy JWT_SECRET for backward compatibility
+               payload = jwt.verify(token, JWT_SECRET) as JwtPayload
+          }
 
           // Reject tokens with iat too far in the future (beyond clock tolerance)
           const iat = (payload as any).iat as number | undefined
           if (iat && iat > Math.floor(Date.now() / 1000) + 30) {
-               res.status(401).json({ error: 'Invalid token' })
+               res.status(401).json({ error: 'Unauthorized: Invalid token' })
                return
           }
 
@@ -38,7 +46,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
                const isValid = await validateSession(payload.jti)
 
                if (!isValid) {
-                    res.status(401).json({ error: 'Session revoked or expired' })
+                    res.status(401).json({ error: 'Unauthorized: Session revoked or expired' })
                     return
                }
           }
@@ -47,9 +55,9 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
           next()
      } catch (err) {
           if (err instanceof jwt.TokenExpiredError) {
-               res.status(401).json({ error: 'Token expired' })
+               res.status(401).json({ error: 'Unauthorized: Token expired' })
           } else {
-               res.status(401).json({ error: 'Invalid token' })
+               res.status(401).json({ error: 'Unauthorized: Invalid token' })
           }
      }
 }
@@ -77,8 +85,17 @@ export function requireAdmin(
     res: Response,
     next: NextFunction,
 ): void {
-    if (req.user?.role !== 'ADMIN') {
-        res.status(403).json({ error: 'Admin role required' })
+    if (!req.user) {
+        res.status(401).json({ error: 'Unauthorized: Authentication required' })
+        return
+    }
+    // Block impersonation tokens from accessing admin endpoints
+    if (req.user.impersonator) {
+        res.status(403).json({ error: 'Forbidden: Impersonation tokens cannot access admin endpoints' })
+        return
+    }
+    if (req.user.role !== 'ADMIN') {
+        res.status(403).json({ error: 'Forbidden: Admin role required' })
         return
     }
     next()
@@ -133,4 +150,31 @@ export function verifyDownloadToken(
     } catch {
         return null
     }
+}
+/**
+ * @deprecated Use standard `authenticate` instead. Legacy mock auth for early dev. Tracking removal in #454
+ */
+export const requireUserAuth = (req: Request, res: Response, next: NextFunction): void => {
+    const headerUserId = req.header('x-user-id')?.trim()
+    let bearerUserId = null
+    const authHeader = req.header('authorization')
+    if (authHeader) {
+        const match = /^Bearer\s+(.+)$/i.exec(authHeader)
+        if (match) {
+            const token = match[1].trim()
+            bearerUserId = token.startsWith('user:') ? token.slice(5) : token
+        }
+    }
+    const userId = headerUserId || bearerUserId
+    
+    if (!userId) {
+        res.status(401).json({
+            error: 'Authentication required. Provide x-user-id header or Authorization: Bearer user:<user-id>.',
+        })
+        return
+    }
+    
+    // @ts-ignore - Preserving legacy property assignment
+    req.authUser = { userId }
+    next()
 }

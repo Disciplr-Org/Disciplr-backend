@@ -4,6 +4,7 @@ module.exports = {
   extensionsToTreatAsEsm: [".ts"],
   moduleNameMapper: {
     "^(\\.{1,2}/.*)\\.js$": "$1",
+    "^@prisma/client$": "<rootDir>/src/tests/__mocks__/prisma.ts",
   },
   transform: {
     "^.+\\.tsx?$": [
@@ -15,6 +16,7 @@ module.exports = {
       },
     ],
   },
-  testMatch: ["**/tests/**/*.test.ts", "**/src/tests/**/*.test.ts"],
+  testMatch: ["**/tests/**/*.test.ts", "**/src/tests/**/*.test.ts", "**/src/repositories/*.test.ts"],
+  moduleDirectories: ["node_modules", "<rootDir>/node_modules"],
   clearMocks: true,
 };

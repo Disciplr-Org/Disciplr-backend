@@ -10,6 +10,54 @@ The Admin DB Metrics endpoint provides real-time database pool health monitoring
 **Rate Limit:** 20 requests per minute per admin user/IP  
 **Response Time:** < 100ms
 
+## Prometheus Scraper Authentication
+
+The Prometheus metrics endpoint at `GET /api/metrics` is protected by a dedicated access guard (`src/middleware/metricsAuth.ts`) independent of the JWT-based auth used elsewhere.
+
+### Access methods (either is sufficient)
+
+1. **Bearer token** — set `METRICS_TOKEN` env var; scraper sends `Authorization: Bearer <token>`
+2. **IP allowlist** — set `METRICS_ALLOWLIST` env var as a comma-separated list of IPs or CIDR ranges (e.g. `10.0.0.0/8,192.168.1.1`)
+
+If neither is configured the endpoint denies all requests (fail-closed).
+
+### Localhost sidecar
+
+Add `127.0.0.1` to `METRICS_ALLOWLIST`:
+
+```
+METRICS_ALLOWLIST=127.0.0.1
+```
+
+### Audit trail
+
+Every scrape attempt is logged as a structured JSON line (rate-limited to ≤1 entry per IP per 60 s):
+
+```
+{"level":"info","event":"metrics.scrape","ip":"10.0.0.1","allowed":true,"reason":"valid_token","timestamp":"..."}
+{"level":"info","event":"metrics.scrape_denied","ip":"10.0.0.1","allowed":false,"reason":"invalid_token","timestamp":"..."}
+```
+
+### Prometheus scrape config example
+
+```yaml
+scrape_configs:
+  - job_name: 'disciplr'
+    metrics_path: /api/metrics
+    static_configs:
+      - targets: ['app:3000']
+    authorization:
+      credentials: '<METRICS_TOKEN>'
+```
+
+### Gauge label hygiene
+
+All emitted gauges carry only aggregate dimensions — no tenant, organisation, or user-identifying labels are present. This prevents leaking per-tenant queue depths or request volumes through the metrics endpoint.
+
+### See Also
+
+For SLO targets, alert rules, remediation procedures, and on-call guidance, see the **[On-Call SLO and Alerting Runbook](runbooks/on-call-slo.md)**. This runbook defines SLOs for job queue depth, DB connection pool, and listener lag, with Prometheus alert rules and escalation procedures.
+
 ## Security & Compliance
 
 ### 1. Authorization & Access Control
@@ -421,3 +469,72 @@ export const metricsRateLimiter = createRateLimiter({
 - **Query Execution Plans:** Optional EXPLAIN ANALYZE integration
 - **Performance Baselines:** Track metrics against expected SLAs
 - **Alerting Integration:** Send warnings to PagerDuty/Slack when thresholds exceeded
+
+---
+
+## Slow-Query Ring Buffer
+
+### Overview
+
+In addition to the aggregated `SlowQueryTracker`, the service maintains an in-process **ring buffer** that records every individual slow query as it happens. Entries are fingerprints only — raw parameter values are never stored.
+
+**Endpoint:** `GET /api/admin/db/slow-queries`
+**Authentication:** Required (Bearer token)
+**Authorization:** Admin only
+**Response:** Entries ordered oldest → newest
+
+### Configuration
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `SLOW_QUERY_THRESHOLD_MS` | `200` | Minimum duration (ms) before a query is captured |
+| `SLOW_QUERY_BUFFER_SIZE` | `100` | Maximum entries in the ring buffer (oldest evicted on overflow) |
+
+### Response Format
+
+```json
+{
+  "data": {
+    "count": 2,
+    "thresholdMs": 200,
+    "bufferSize": 100,
+    "entries": [
+      {
+        "fingerprint": "select * from vaults where id = ?",
+        "durationMs": 312,
+        "capturedAt": "2026-06-28T00:00:01.000Z"
+      },
+      {
+        "fingerprint": "select * from transactions where user_id = ? and status = ?",
+        "durationMs": 485,
+        "capturedAt": "2026-06-28T00:00:05.000Z"
+      }
+    ]
+  }
+}
+```
+
+### Fingerprinting
+
+SQL strings are normalized before storage to strip all literal values:
+
+| Pattern | Replaced with |
+|---------|---------------|
+| Quoted strings `'value'` | `?` |
+| Integer literals `42` | `?` |
+| Float literals `3.14` | `?` |
+| Positional params `$1`, `$2` | `?` |
+
+Whitespace is collapsed and the fingerprint is capped at 200 characters.
+
+### Knex Integration
+
+`captureSlowQuery` is called automatically via Knex event hooks in `src/db/knex.ts`:
+
+- `query` — records start time keyed by `__knexQueryUid`
+- `query-response` — computes elapsed time and calls `captureSlowQuery`
+- `query-error` — same as above, so failed slow queries are also captured
+
+### Memory Footprint
+
+Each entry holds a fingerprint string (≤200 chars), a number, and an ISO timestamp string. At the default buffer size of 100 entries this is well under 100 KB.

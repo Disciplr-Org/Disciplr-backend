@@ -55,6 +55,7 @@ model RefreshToken {
 }
 
 model Vault {
+deletedAt  DateTime?  @map("deleted_at")
   id                 String      @id @default(uuid())
   creatorId          String      @map("creator_id")
   creator            User        @relation(fields: [creatorId], references: [id])
@@ -92,4 +93,18 @@ model Notification {
   @@index([userId, archivedAt, createdAt])
   @@unique([userId, idempotencyKey])
   @@map("notifications")
+}
+
+model EvidenceReference {
+  id             String   @id @default(uuid())
+  verificationId String   @map("verification_id")
+  evidenceHash   String   @map("evidence_hash")
+  referenceUrl   String   @map("reference_url")
+  expiresAt      DateTime @map("expires_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([verificationId], name: "idx_evidence_references_verification_id")
+  @@index([expiresAt], name: "idx_evidence_references_expires_at")
+  @@unique([verificationId])
+  @@map("evidence_references")
 }

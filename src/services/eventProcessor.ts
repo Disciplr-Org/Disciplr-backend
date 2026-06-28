@@ -3,6 +3,14 @@ import { ParsedEvent, ProcessorConfig, VaultEventPayload, MilestoneEventPayload,
 import { retryWithBackoff, isRetryable } from '../utils/retry.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { IdempotencyService } from './idempotency.js'
+import { dispatchWebhookEvent, VAULT_LIFECYCLE_EVENTS } from './webhooks.js'
+
+/** Extract organization_id from the vault referenced in the event payload. */
+async function resolveOrganizationId(db: Knex, payload: VaultEventPayload): Promise<string> {
+  if (!payload.vaultId) return ''
+  const vault = await db('vaults').where({ id: payload.vaultId }).select('organization_id').first()
+  return (vault as { organization_id?: string } | undefined)?.organization_id ?? ''
+}
 
 /**
  * Error thrown when a dependency (e.g., a vault for a milestone) is not yet in the DB.
@@ -55,7 +63,6 @@ export class EventProcessor {
    */
   async processEvent(event: ParsedEvent): Promise<ProcessingResult> {
     const startTime = Date.now()
-    let retryCount = 0
 
     try {
       await retryWithBackoff(
@@ -84,7 +91,11 @@ export class EventProcessor {
           ledger_number: event.ledgerNumber,
           processing_duration_ms: processingDurationMs
         }
+      }).catch((err) => {
+        console.error('[EventProcessor] audit log write failed (event_processed):', err)
       })
+
+
 
       return { success: true, eventId: event.eventId }
     } catch (error) {
@@ -105,6 +116,8 @@ export class EventProcessor {
           error_message: errorMessage,
           retryable
         }
+      }).catch((err) => {
+        console.error('[EventProcessor] audit log write failed (event_processing_failed):', err)
       })
 
       if (retryable) {
@@ -133,6 +146,27 @@ export class EventProcessor {
 
       await this.routeEvent(event, trx)
       await this.idempotency.markEventProcessed(event, trx)
+
+      // Write to outbox table atomically for vault lifecycle events
+      if (VAULT_LIFECYCLE_EVENTS.has(event.eventType)) {
+        const vaultPayload = event.payload as VaultEventPayload
+        const organizationId = await resolveOrganizationId(trx, vaultPayload)
+        await trx('vault_outbox').insert({
+          event_id: event.eventId,
+          event_type: event.eventType,
+          payload: JSON.stringify({
+            eventId: event.eventId,
+            eventType: event.eventType,
+            timestamp: new Date().toISOString(),
+            data: event.payload,
+            organizationId,
+          }),
+          processed: false,
+          attempts: 0,
+          created_at: new Date(),
+        })
+      }
+
       await trx.commit()
     } catch (error) {
       await trx.rollback()
@@ -181,9 +215,12 @@ export class EventProcessor {
       const status = event.eventType.replace('vault_', '') as 'completed' | 'failed' | 'cancelled'
       const updated = await trx('vaults')
         .where({ id: payload.vaultId })
-        .update({ status, updated_at: new Date() })
-      
-      if (!updated) {
+        .update({
+          status,
+          updated_at: new Date()
+        })
+
+      if (updated === 0) {
         throw new DependencyNotFoundError(`Vault not found for update: ${payload.vaultId}`)
       }
     }
@@ -234,10 +271,19 @@ export class EventProcessor {
       })
       .onConflict('id')
       .ignore()
-    
-    // If approved, update milestone current amount or status
+
+    const updateFields: Record<string, unknown> = { updated_at: new Date() }
     if (payload.validationResult === 'approved') {
-        // Logic to update milestone status/amount could go here
+      updateFields.status = 'completed'
+      updateFields.current_amount = milestone.target_amount
+    } else if (payload.validationResult === 'rejected') {
+      updateFields.status = 'failed'
+    }
+
+    if (Object.keys(updateFields).length > 1) {
+      await trx('milestones')
+        .where({ id: payload.milestoneId })
+        .update(updateFields)
     }
   }
 
@@ -247,17 +293,28 @@ export class EventProcessor {
     retryCount: number
   ): Promise<void> {
     try {
-      await this.db('failed_events')
-        .insert({
-          event_id: event.eventId,
-          event_payload: JSON.stringify(event),
-          error_message: errorMessage,
-          retry_count: retryCount,
-          failed_at: new Date(),
-          created_at: new Date()
-        })
-        .onConflict('event_id')
-        .merge()
+      const failedEvent = {
+        event_id: event.eventId,
+        event_payload: event,
+        error_message: errorMessage,
+        retry_count: retryCount,
+        failed_at: new Date(),
+        created_at: new Date()
+      }
+      const existing = await this.db('failed_events').where({ event_id: event.eventId }).first()
+
+      if (existing) {
+        await this.db('failed_events')
+          .where({ event_id: event.eventId })
+          .update({
+            event_payload: failedEvent.event_payload,
+            error_message: failedEvent.error_message,
+            retry_count: failedEvent.retry_count,
+            failed_at: failedEvent.failed_at
+          })
+      } else {
+        await this.db('failed_events').insert(failedEvent)
+      }
     } catch (error) {
       console.error('Failed to insert into dead letter queue:', error)
     }
@@ -269,7 +326,9 @@ export class EventProcessor {
       return { success: false, eventId: failedEventId, error: 'Failed event not found' }
     }
 
-    const event: ParsedEvent = JSON.parse(failedEvent.event_payload)
+    const event: ParsedEvent = typeof failedEvent.event_payload === 'string'
+      ? JSON.parse(failedEvent.event_payload)
+      : failedEvent.event_payload
     const result = await this.processEvent(event)
 
     if (result.success) {

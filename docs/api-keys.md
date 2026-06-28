@@ -88,6 +88,14 @@ Least-privilege examples:
 - `read:analytics` for analytics overview and trend endpoints
 - `read:vaults` for vault analytics views
 
+Valid scope values are typed and strictly validated at key creation. Unknown or misspelled
+scope strings (for example `vault.crete`) are rejected with a `VALIDATION_ERROR`.
+
+Supported scopes:
+
+- `read:analytics`
+- `read:vaults`
+
 ## Rate limiting and logging
 
 - API key management endpoints use the API key rate limiter.
