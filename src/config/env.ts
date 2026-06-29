@@ -220,6 +220,19 @@ export const envSchema = z
     HTTP_HEADERS_TIMEOUT_MS: positiveInt(61_000),
     HTTP_REQUEST_TIMEOUT_MS: positiveInt(120_000),
 
+    // ── OpenTelemetry / Tracing ───────────────────────────────────
+    OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional(),
+    OTEL_SERVICE_NAME: z.string().optional(),
+    OTEL_TRACES_SAMPLER: z.enum(['always_on', 'always_off', 'traceidratio']).optional(),
+    OTEL_TRACES_SAMPLER_ARG: z
+      .string()
+      .optional()
+      .transform((v) => {
+        if (v === undefined || v === '') return undefined
+        const n = Number.parseFloat(v)
+        return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined
+      }),
+
     // ── Admin / Debug ──────────────────────────────────────────────
     ADMIN_API_KEY: z.string().default(""),
 
