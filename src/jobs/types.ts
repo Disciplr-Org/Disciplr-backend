@@ -5,6 +5,7 @@ export const JOB_TYPES = [
   'analytics.recompute',
   'export.generate',
   'sessions.cleanup',
+  'retention.purge',
 ] as const
 
 export type JobType = (typeof JOB_TYPES)[number]
@@ -41,6 +42,11 @@ export interface SessionsCleanupJobPayload {
   batchSize?: number
 }
 
+export interface RetentionPurgeJobPayload {
+  organizationId: string
+  batchSize?: number
+}
+
 export interface JobPayloadByType {
   'notification.send': NotificationJobPayload
   'deadline.check': DeadlineCheckJobPayload
@@ -48,6 +54,7 @@ export interface JobPayloadByType {
   'analytics.recompute': AnalyticsRecomputeJobPayload
   'export.generate': ExportGenerateJobPayload
   'sessions.cleanup': SessionsCleanupJobPayload
+  'retention.purge': RetentionPurgeJobPayload
 }
 
 export interface JobContext {
@@ -65,7 +72,7 @@ export interface EnqueueOptions {
   maxAttempts?: number
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> => {
+export const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === 'object' && value !== null
 }
 
@@ -122,6 +129,11 @@ export const isPayloadForJobType = (
       return isNonEmptyString(payload.exportJobId)
     case 'sessions.cleanup':
       return payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0)
+    case 'retention.purge':
+      return (
+        isNonEmptyString(payload.organizationId) &&
+        (payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0))
+      )
     default:
       return false
   }

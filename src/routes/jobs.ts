@@ -1,11 +1,13 @@
 import { Router, type RequestHandler } from 'express'
-import { z } from 'zod'
 import { UserRole } from '../types/user.js'
 import type { BackgroundJobSystem } from '../jobs/system.js'
 import {
   type EnqueueOptions,
   type JobPayloadByType,
   type JobType,
+  isJobType,
+  isPayloadForJobType,
+  isRecord,
 } from '../jobs/types.js'
 import { parseEnqueueOptions } from '../jobs/enqueueOptions.js'
 import { authenticate, authorize } from '../middleware/auth.js'
@@ -33,6 +35,8 @@ const enqueueTypedJob = (
     case 'oracle.call':
       return jobSystem.enqueue(type, payload, options)
     case 'analytics.recompute':
+      return jobSystem.enqueue(type, payload, options)
+    case 'retention.purge':
       return jobSystem.enqueue(type, payload, options)
     default:
       throw new Error('Unsupported job type')
@@ -161,7 +165,7 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
         if (!isJobType(type)) {
           res.status(400).json({
             error:
-              'Invalid or missing job type. Supported types: notification.send, deadline.check, oracle.call, analytics.recompute',
+              'Invalid or missing job type. Supported types: notification.send, deadline.check, oracle.call, analytics.recompute, retention.purge',
           })
           return
         }

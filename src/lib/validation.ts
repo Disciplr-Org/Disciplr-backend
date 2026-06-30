@@ -98,6 +98,11 @@ export const analyticsRecomputePayloadSchema = z.object({
   reason: z.string().optional(),
 })
 
+export const retentionPurgePayloadSchema = z.object({
+  organizationId: nonEmptyString,
+  batchSize: z.number().int().min(1).optional(),
+})
+
 export const enqueueJobSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('notification.send'),
@@ -120,6 +125,12 @@ export const enqueueJobSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('analytics.recompute'),
     payload: analyticsRecomputePayloadSchema,
+    maxAttempts: z.number().int().min(1).max(10).optional(),
+    delayMs: z.number().int().min(0).max(60000).optional(),
+  }),
+  z.object({
+    type: z.literal('retention.purge'),
+    payload: retentionPurgePayloadSchema,
     maxAttempts: z.number().int().min(1).max(10).optional(),
     delayMs: z.number().int().min(0).max(60000).optional(),
   }),

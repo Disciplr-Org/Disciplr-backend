@@ -2,6 +2,7 @@ import { createDefaultJobHandlers } from './handlers.js'
 import { InMemoryJobQueue, type QueueMetrics, type QueuedJobReceipt } from './queue.js'
 import { type EnqueueOptions, type JobPayloadByType, type JobType } from './types.js'
 import { recoverPendingExportJobs } from '../services/exportQueue.js'
+import { listOrganizations } from '../services/organization.js'
 import {
   createNotificationService,
   type NotificationService,
@@ -42,6 +43,7 @@ export class BackgroundJobSystem {
     this.queue.registerHandler('analytics.recompute', handlers['analytics.recompute'])
     this.queue.registerHandler('export.generate', handlers['export.generate'])
     this.queue.registerHandler('sessions.cleanup', handlers['sessions.cleanup'])
+    this.queue.registerHandler('retention.purge', handlers['retention.purge'])
   }
 
   start(): void {
@@ -151,6 +153,46 @@ export class BackgroundJobSystem {
     const sessionsTimer = setInterval(() => {
       this.enqueue('sessions.cleanup', {})
     }, sessionsCleanupIntervalMs)
+
+    const retentionPurgeIntervalMs = parsePositiveInteger(
+      process.env.RETENTION_PURGE_INTERVAL_MS,
+      86_400_000,
+    )
+    const retentionPurgeBatchSize = parsePositiveInteger(
+      process.env.RETENTION_PURGE_BATCH_SIZE,
+      500,
+    )
+
+    const enqueueRetentionPurgeJobs = async (): Promise<void> => {
+      try {
+        const organizations = await listOrganizations()
+        for (const org of organizations) {
+          this.enqueue('retention.purge', {
+            organizationId: org.id,
+            batchSize: retentionPurgeBatchSize,
+          })
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.error(`[jobs:retention.purge] failed to enqueue jobs: ${message}`)
+      }
+    }
+
+    if (process.env.ENABLE_RETENTION_PURGE_SCHEDULER !== 'false') {
+      const retentionTimer = setInterval(() => {
+        void enqueueRetentionPurgeJobs()
+      }, retentionPurgeIntervalMs)
+
+      if (typeof retentionTimer.unref === 'function') {
+        retentionTimer.unref()
+      }
+
+      this.scheduleTimers.push(retentionTimer)
+      void enqueueRetentionPurgeJobs().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error)
+        console.error(`[jobs:retention.purge] initial enqueue failed: ${message}`)
+      })
+    }
 
     if (typeof deadlineTimer.unref === 'function') {
       deadlineTimer.unref()
