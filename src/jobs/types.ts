@@ -137,6 +137,7 @@ export const isPayloadForJobType = (
       return (
         (payload.vaultIds === undefined || Array.isArray(payload.vaultIds)) &&
         (payload.batchSize === undefined || typeof payload.batchSize === 'number')
+      )
     case 'sessions.cleanup':
       return payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0)
     case 'outbox.relay':

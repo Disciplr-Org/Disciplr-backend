@@ -652,7 +652,6 @@ export const createDefaultSorobanClient = (
       return null
     }
   },
-}
 })
 
 export const defaultSorobanClient: SorobanClient = createDefaultSorobanClient()
