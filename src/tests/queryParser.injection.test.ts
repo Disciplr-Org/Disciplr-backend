@@ -2,6 +2,7 @@ import express, { Request, Response, NextFunction } from 'express'
 import request from 'supertest'
 import { describe, it, expect } from '@jest/globals'
 import { queryParser } from '../middleware/queryParser.js'
+import { QueryParser } from '../services/queryParser.js'
 
 const app = express()
 app.use(express.json())
@@ -15,6 +16,29 @@ app.get(
 )
 
 describe('queryParser injection guards', () => {
+  it('ignores prototype pollution and unsupported operators in the service parser', () => {
+    const parser = new QueryParser({ allowedColumns: ['status', 'creator'] })
+
+    const parsed = parser.parse({
+      filter: {
+        status: { eq: 'active' },
+        creator: { nope: 'alice' },
+        __proto__: { eq: 'polluted' },
+        constructor: { eq: 'polluted' },
+        prototype: { eq: 'polluted' },
+        unknown: { eq: 'ignored' },
+      },
+      limit: '10',
+      offset: '2',
+      sort: 'status:desc',
+    })
+
+    expect(parsed.conditions).toEqual([{ column: 'status', operator: '=', value: 'active' }])
+    expect(parsed.limit).toBe(10)
+    expect(parsed.offset).toBe(2)
+    expect(parsed.sorts).toEqual([{ column: 'status', order: 'desc' }])
+  })
+
   it('rejects prototype pollution keys such as __proto__, constructor, and prototype', async () => {
     const res = await request(app)
       .get('/parse')
