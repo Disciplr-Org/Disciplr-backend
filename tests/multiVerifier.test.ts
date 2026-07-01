@@ -1,5 +1,108 @@
-import { describe, it, expect, beforeEach, afterEach } from '@jest/globals'
-import {
+/**
+ * Multi-verifier milestone approval system tests.
+ * Uses an in-memory knex mock — no real DB required.
+ */
+import { describe, it, expect, jest, beforeEach, afterEach, mock } from 'bun:test'
+
+// ---------------------------------------------------------------------------
+// In-memory store
+// ---------------------------------------------------------------------------
+type Row = {
+  id: string
+  milestone_id: string
+  verifier_user_id: string
+  approval_status: string
+  created_at: Date
+  updated_at: Date
+}
+let store: Row[] = []
+let idSeq = 0
+
+function makeRow(milestoneId: string, verifierUserId: string, approvalStatus: string): Row {
+  return {
+    id: String(++idSeq),
+    milestone_id: milestoneId,
+    verifier_user_id: verifierUserId,
+    approval_status: approvalStatus,
+    created_at: new Date(),
+    updated_at: new Date(),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Minimal knex mock (same shape as veto test)
+// ---------------------------------------------------------------------------
+function buildQuery(table: string) {
+  const q: any = { _table: table, _wheres: {} as Record<string, unknown>, _inserted: undefined as Row[] | undefined }
+
+  q.where = (conds: Record<string, unknown>) => { Object.assign(q._wheres, conds); return q }
+  q.first = async () => {
+    if (q._table === 'milestone_approvals') {
+      return store.find(r =>
+        Object.entries(q._wheres).every(([k, v]) => (r as any)[k] === v)
+      ) ?? null
+    }
+    return null
+  }
+  q.insert = (data: any) => {
+    const row = { ...makeRow(data.milestone_id, data.verifier_user_id, data.approval_status), ...data }
+    store.push(row)
+    q._inserted = [row]
+    return q
+  }
+  q.returning = (_fields: string) => q._inserted ?? []
+  q.orderBy = () => q
+  q.select = () => q
+  q.count = <T>(_expr: string) => {
+    // Returns a query that resolves to [{ count: N }]
+    const countQ: any = { _wheres: { ...q._wheres }, _table: q._table }
+    countQ.where = (conds: Record<string, unknown>) => { Object.assign(countQ._wheres, conds); return countQ }
+    countQ.first = async () => {
+      const count = store.filter(r =>
+        Object.entries(countQ._wheres).every(([k, v]) => (r as any)[k] === v)
+      ).length
+      return { count: String(count) }
+    }
+    countQ.then = (resolve: any, reject: any) => {
+      try {
+        const count = store.filter(r =>
+          Object.entries(countQ._wheres).every(([k, v]) => (r as any)[k] === v)
+        ).length
+        resolve([{ count: String(count) }])
+      } catch (e) { reject(e) }
+      return Promise.resolve()
+    }
+    return countQ
+  }
+  // Make the query itself awaitable — resolves to matching rows
+  q.then = (resolve: any, reject: any) => {
+    try {
+      const rows = store.filter(r =>
+        Object.entries(q._wheres).every(([k, v]) => (r as any)[k] === v)
+      )
+      resolve(rows)
+    } catch (e) { reject(e) }
+    return Promise.resolve()
+  }
+  q.del = async () => {
+    store = store.filter(r =>
+      !Object.entries(q._wheres).every(([k, v]) => (r as any)[k] === v)
+    )
+  }
+  return q
+}
+
+mock.module('../src/db/knex.js', () => {
+  function db(table: string) { return buildQuery(table) }
+  db.fn = { now: () => new Date() }
+  db.transaction = async (cb: any) => cb(db)
+  return { db, closeDatabase: () => {} }
+});
+
+// ---------------------------------------------------------------------------
+// Imports must come after mock registration
+// ---------------------------------------------------------------------------
+const {
   recordMilestoneApproval,
   getMilestoneApprovals,
   getApprovedVerifiersCount,
@@ -9,20 +112,27 @@ import {
   getMilestoneApprovalProgress,
   DuplicateVerifierVoteError,
   resetMilestoneApprovals,
-} from '../src/services/verifiers'
+} = await import('../src/services/verifiers.js')
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function reset() {
+  store = []
+  idSeq = 0
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 describe('Multi-Verifier Milestone Approval System', () => {
   const testMilestoneId = 'test-milestone-001'
   const testVerifiers = ['verifier-1', 'verifier-2', 'verifier-3']
   const thresholdMofN = 2 // 2-of-3 threshold
 
-  beforeEach(async () => {
-    await resetMilestoneApprovals()
-  })
-
-  afterEach(async () => {
-    await resetMilestoneApprovals()
-  })
+  beforeEach(reset)
+  afterEach(reset)
 
   describe('recordMilestoneApproval', () => {
     it('should record a milestone approval successfully', async () => {
@@ -50,10 +160,8 @@ describe('Multi-Verifier Milestone Approval System', () => {
     })
 
     it('should throw DuplicateVerifierVoteError on duplicate vote', async () => {
-      // First vote
       await recordMilestoneApproval(testMilestoneId, testVerifiers[0], 'approved')
 
-      // Second vote by same verifier should fail
       await expect(
         recordMilestoneApproval(testMilestoneId, testVerifiers[0], 'approved'),
       ).rejects.toThrow(DuplicateVerifierVoteError)
@@ -85,22 +193,18 @@ describe('Multi-Verifier Milestone Approval System', () => {
     })
 
     it('should prevent a verifier from changing their vote', async () => {
-      // First vote: approved
       await recordMilestoneApproval(testMilestoneId, testVerifiers[0], 'approved')
 
-      // Try to change to rejected
       await expect(
         recordMilestoneApproval(testMilestoneId, testVerifiers[0], 'rejected'),
       ).rejects.toThrow(DuplicateVerifierVoteError)
     })
 
     it('should validate vote uniqueness across multiple verifiers', async () => {
-      // Add approvals from multiple verifiers
       await recordMilestoneApproval(testMilestoneId, testVerifiers[0], 'approved')
       await recordMilestoneApproval(testMilestoneId, testVerifiers[1], 'approved')
       await recordMilestoneApproval(testMilestoneId, testVerifiers[2], 'rejected')
 
-      // Verify each can only vote once
       await expect(
         recordMilestoneApproval(testMilestoneId, testVerifiers[0], 'approved'),
       ).rejects.toThrow()
@@ -137,10 +241,7 @@ describe('Multi-Verifier Milestone Approval System', () => {
     it('should maintain order of approvals by timestamp', async () => {
       const milestoneId = 'ordered-milestone'
       await recordMilestoneApproval(milestoneId, 'verifier-a', 'approved')
-
-      // Small delay to ensure different timestamps
       await new Promise((resolve) => setTimeout(resolve, 10))
-
       await recordMilestoneApproval(milestoneId, 'verifier-b', 'approved')
 
       const approvals = await getMilestoneApprovals(milestoneId)
@@ -277,7 +378,7 @@ describe('Multi-Verifier Milestone Approval System', () => {
       expect(progress.isRejected).toBe(false)
     })
 
-    it('should indicate rejection if any verifier rejects', async () => {
+    it('should indicate rejection if any verifier rejects (legacy mode, no N)', async () => {
       await recordMilestoneApproval(testMilestoneId, testVerifiers[0], 'approved')
       await recordMilestoneApproval(testMilestoneId, testVerifiers[1], 'rejected')
 
@@ -339,7 +440,6 @@ describe('Multi-Verifier Milestone Approval System', () => {
     it('should complete 2-of-3 milestone approval', async () => {
       const milestoneId = '2of3-milestone'
 
-      // First verifier approves
       const approval1 = await recordMilestoneApproval(milestoneId, 'v1', 'approved')
       expect(approval1.approvalStatus).toBe('approved')
 
@@ -347,7 +447,6 @@ describe('Multi-Verifier Milestone Approval System', () => {
       expect(progress.isComplete).toBe(false)
       expect(progress.approved).toBe(1)
 
-      // Second verifier approves - threshold met
       const approval2 = await recordMilestoneApproval(milestoneId, 'v2', 'approved')
       expect(approval2.approvalStatus).toBe('approved')
 
@@ -355,7 +454,6 @@ describe('Multi-Verifier Milestone Approval System', () => {
       expect(progress.isComplete).toBe(true)
       expect(progress.approved).toBe(2)
 
-      // Third verifier's vote should still be recordable but not required
       const approval3 = await recordMilestoneApproval(milestoneId, 'v3', 'approved')
       expect(approval3.approvalStatus).toBe('approved')
 
@@ -364,7 +462,7 @@ describe('Multi-Verifier Milestone Approval System', () => {
       expect(progress.isComplete).toBe(true)
     })
 
-    it('should fail milestone on any rejection', async () => {
+    it('should fail milestone on any rejection (legacy: no N)', async () => {
       const milestoneId = 'rejection-milestone'
 
       await recordMilestoneApproval(milestoneId, 'v1', 'approved')
@@ -379,7 +477,6 @@ describe('Multi-Verifier Milestone Approval System', () => {
     it('should handle 3-of-5 threshold', async () => {
       const milestoneId = '3of5-milestone'
 
-      // Add approvals until threshold is met
       for (let i = 0; i < 3; i++) {
         await recordMilestoneApproval(milestoneId, `v${i}`, 'approved')
       }
@@ -387,7 +484,6 @@ describe('Multi-Verifier Milestone Approval System', () => {
       let progress = await getMilestoneApprovalProgress(milestoneId, 3)
       expect(progress.isComplete).toBe(true)
 
-      // Add additional approvals
       await recordMilestoneApproval(milestoneId, 'v3', 'approved')
       await recordMilestoneApproval(milestoneId, 'v4', 'approved')
 
@@ -399,15 +495,12 @@ describe('Multi-Verifier Milestone Approval System', () => {
     it('should prevent double voting throughout workflow', async () => {
       const milestoneId = 'double-vote-test'
 
-      // Verifier votes multiple times
       await recordMilestoneApproval(milestoneId, 'v1', 'approved')
 
-      // Should fail on second attempt
       await expect(
         recordMilestoneApproval(milestoneId, 'v1', 'approved'),
       ).rejects.toThrow(DuplicateVerifierVoteError)
 
-      // Other verifiers can still vote
       const approval2 = await recordMilestoneApproval(milestoneId, 'v2', 'approved')
       expect(approval2.verifierUserId).toBe('v2')
     })
@@ -435,11 +528,9 @@ describe('Multi-Verifier Milestone Approval System', () => {
       const milestoneId = 'case-test'
       await recordMilestoneApproval(milestoneId, 'Verifier', 'approved')
 
-      // Should allow different case as different verifier
       const approval2 = await recordMilestoneApproval(milestoneId, 'verifier', 'approved')
       expect(approval2.verifierUserId).toBe('verifier')
 
-      // But original case should still fail duplicates
       await expect(
         recordMilestoneApproval(milestoneId, 'Verifier', 'approved'),
       ).rejects.toThrow()
@@ -448,7 +539,6 @@ describe('Multi-Verifier Milestone Approval System', () => {
     it('should maintain data consistency across multiple operations', async () => {
       const milestoneId = 'consistency-test'
 
-      // Perform multiple operations
       for (let i = 0; i < 10; i++) {
         await recordMilestoneApproval(milestoneId, `verifier-${i}`, 'approved')
       }
@@ -475,7 +565,7 @@ describe('Multi-Verifier Milestone Approval System', () => {
       }
 
       const approvals = await getMilestoneApprovals(milestoneId)
-      expect(approvals.approved.length).toBe(2)
+      expect(approvals.approved.length).toBe(3)
       expect(approvals.rejected.length).toBe(2)
       expect(approvals.pending.length).toBe(1)
     })

@@ -231,3 +231,217 @@ To run the full suite against a local database:
 ```bash
 DATABASE_URL=postgres://user:pw@localhost:5432/disciplr_test npm test -- milestoneEmbeddings
 ```
+
+## Embedding reindex backfill job
+
+The pgvector section above notes that embeddings are "populated asynchronously by an offline
+job" — `embeddings.reindex` is that job. It keeps `milestone_embeddings` in sync with the
+`milestones` table, fixing drift caused by an embedding-model change, a failed enqueue, or a
+fresh `milestone_embeddings` migration where no rows exist yet.
+
+### Why a reindex is needed
+
+A row in `milestone_embeddings` is considered **stale or missing** when either is true:
+
+- No row exists for that `milestone_id` at all.
+- The row's `model_version` no longer matches the currently configured embedding model
+  (`CURRENT_EMBEDDING_MODEL_VERSION`, see `src/services/embeddingProvider.ts`, sourced from the
+  `EMBEDDING_MODEL_VERSION` env var, default `deterministic-v1`).
+
+The `model_version` column (migration `20260627000000_add_model_version_to_milestone_embeddings.cjs`)
+defaults existing legacy rows to the sentinel `legacy-unversioned`, which never matches a real
+configured model — so every embedding that predates this job is picked up and regenerated on the
+first run.
+
+### How it works
+
+Core logic lives in `src/services/evidenceReindex.ts`:
+
+- **`reindexEvidenceBatch(options)`** — processes one bounded page of the `milestones` table
+  (ordered by `id` ascending), regenerates any missing/stale embedding, and advances a persisted
+  cursor to the last milestone id seen in that page.
+- **`runReindexBatches(options)`** — runs up to `maxBatchesPerRun` batches (default 5) in one job
+  invocation, stopping early once the table is fully caught up. This bounds how long a single job
+  execution can take.
+
+The job is registered as `embeddings.reindex` in `src/jobs/types.ts` / `src/jobs/handlers.ts`, and
+runs on a recurring schedule from `BackgroundJobSystem` (every `EMBEDDING_REINDEX_INTERVAL_MS`,
+default 10 minutes; first run 15s after startup). It can also be enqueued on demand:
+
+```ts
+jobSystem.enqueue('embeddings.reindex', { batchSize: 100, maxBatchesPerRun: 10 })
+```
+
+### Resumability
+
+The cursor (last processed milestone id) is persisted via `BackfillCursorStore`
+(`src/services/backfillCursorStore.ts`, table `backfill_cursors`, migration
+`20260627000001_create_backfill_cursors.cjs`) under job name
+`milestone-evidence-embedding-reindex`. If the process crashes or restarts mid-backfill, the next
+run resumes from the persisted cursor instead of rescanning rows that are already current.
+
+### Rate limiting
+
+Between successive embedding-provider calls **within a batch**, the job awaits `rateLimitMs`
+(default 50ms) so it never fires requests at the provider back-to-back. Rows that are skipped
+because they're already current do not count towards this delay — only actual regenerations do.
+
+### Embedding text and provider
+
+The embedding input text is the milestone's `title` and `description` (the same plaintext fields
+already stored on the `milestones` row — no raw evidence content is read or stored, consistent
+with the evidence-storage privacy contract in `docs/evidence-storage.md`).
+
+The default provider (`DeterministicEmbeddingProvider` in `src/services/embeddingProvider.ts`) is
+a network-free, deterministic provider: the same text always produces the same vector, which is
+what makes the backfill idempotent and keeps tests free of real API calls. Swap in a real model
+by implementing the `EmbeddingProvider` interface and passing it into `BackgroundJobSystem`'s
+constructor.
+
+### Progress metrics
+
+After every batch, progress is recorded via `recordEmbeddingReindexProgress` in
+`src/services/dbMetrics.ts` and readable via `getEmbeddingReindexProgress()`:
+
+```ts
+import { getEmbeddingReindexProgress } from './src/services/dbMetrics.js'
+
+getEmbeddingReindexProgress()
+// => { processed, reindexed, skippedUpToDate, cursor, done, modelVersion, recordedAt }
+```
+
+### Tests
+
+`src/tests/evidence.reindex.test.ts` covers the batch/run logic, `MilestoneRepository`'s reindex
+support methods, `BackfillCursorStore`, the embedding provider, and the `embeddings.reindex` job
+handler — all against lightweight in-memory fakes, so the suite runs without a live database (no
+`DATABASE_URL` or pgvector required).
+
+---
+
+## Bulk Milestone Check-in
+
+### POST /api/verifications/bulk
+
+Submits multiple milestone check-ins in a single request. Each item is validated and applied independently; failures are reported per-item without aborting the entire batch.
+
+**Authentication:** Required (JWT Bearer token)
+**Authorization:** VERIFIER role required
+**Idempotency:** Yes - repeated submissions for the same targetId return conflict error
+
+#### Request
+
+- **Method:** POST
+- **Path:** `/api/verifications/bulk`
+- **Headers:**
+  - `Authorization: Bearer <jwt-token>`
+  - `Content-Type: application/json`
+- **Body:** Array of check-in items
+
+```json
+[
+  {
+    "targetId": "milestone-1",
+    "result": "approved",
+    "disputed": false,
+    "evidenceHash": "a".repeat(64),
+    "evidenceReferenceUrl": "https://s3.example.com/evidence.pdf"
+  },
+  {
+    "targetId": "milestone-2",
+    "result": "rejected",
+    "disputed": true,
+    "evidenceHash": "b".repeat(64),
+    "evidenceReferenceUrl": "https://s3.example.com/evidence2.pdf"
+  }
+]
+```
+
+#### Response
+
+**Success (200):**
+```json
+{
+  "results": [
+    {
+      "targetId": "milestone-1",
+      "success": true,
+      "verification": {
+        "id": "ver-1",
+        "verifierUserId": "verifier-1",
+        "targetId": "milestone-1",
+        "result": "approved",
+        "evidenceHash": "a".repeat(64),
+        "disputed": false,
+        "timestamp": "2024-01-01T00:00:00.000Z"
+      },
+      "evidenceReference": {
+        "id": "ev-1",
+        "verificationId": "ver-1",
+        "evidenceHash": "a".repeat(64),
+        "evidenceReferenceUrl": "https://s3.example.com/evidence.pdf"
+      }
+    },
+    {
+      "targetId": "milestone-2",
+      "success": false,
+      "error": {
+        "code": "CONFLICT",
+        "message": "conflicting verification decision already exists"
+      }
+    }
+  ],
+  "summary": {
+    "total": 2,
+    "succeeded": 1,
+    "failed": 1
+  }
+}
+```
+
+#### Error Codes
+
+| Code | Description |
+|---|---|
+| `BAD_REQUEST` | Invalid request data (missing/invalid fields) |
+| `VALIDATION_ERROR` | Evidence reference validation failed |
+| `CONFLICT` | Verification decision already exists for this targetId |
+| `INTERNAL_ERROR` | Unexpected server error |
+
+#### Constraints
+
+- **Batch Size:** Maximum 100 items per request
+- **Per-item Validation:** Each item is validated independently
+- **Partial Failure:** One failed item does not abort the entire batch
+- **Idempotency:** Retrying the same batch returns consistent results
+
+#### Authorization Rules
+
+1. **Role Check:** User must have VERIFIER role
+2. **Active Verifier:** Verifier account must be active
+3. **Per-item Authorization:** All items use the authenticated verifier's userId
+
+#### Events
+
+Successful check-ins emit:
+- `verification.decision.recorded` audit log for each successful item
+- Evidence reference created for each successful item
+
+#### Security Considerations
+
+- Verifier identity verified from authenticated JWT context
+- Per-item isolation prevents one bad item from affecting others
+- Bounded batch size prevents resource exhaustion
+- All validation attempts logged with actor information
+
+#### Testing
+
+Tests live in `src/tests/verifications.bulk.test.ts` and cover:
+- Request validation (array format, empty array, batch size cap)
+- Per-item validation (missing fields, invalid formats)
+- Mixed success/failure scenarios
+- Batch size cap enforcement
+- Idempotent retry behavior
+- Duplicate items in batch
+- Authorization requirements
+

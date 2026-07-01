@@ -208,6 +208,20 @@ export function __resetSecurityMonitorForTests(): void {
   processedEvents = 0
 }
 
+// ─── Vault drift anomaly logging ───────────────────────────────────────────
+
+type VaultDriftEventType =
+  | 'vault_missing_onchain'
+  | 'vault_state_drift'
+  | 'vault_reconciliation_error'
+
+export function logVaultDriftAnomaly(
+  event: VaultDriftEventType,
+  data: Record<string, unknown>,
+): void {
+  logSecurityEvent(`vault.${event}`, data)
+}
+
 function getIpState(ip: string, now: number): IpState {
   const existing = ipStates.get(ip)
   if (existing) {
@@ -421,6 +435,25 @@ export function emitTestSuspiciousEvent(ip: string, category: AbuseCategory, ext
   }
 
   logSecurityEvent('security.suspicious_pattern', ip, category, extra)
+}
+
+/**
+ * Test helper: classify a batch of signals for taxonomy testing.
+ * Returns the detected category and severity based on signal patterns.
+ */
+export function abuseMonitor(signals: Array<{ type: string; url?: string; successful?: boolean }>): { category: string; severity: string } {
+  const loginFailures = signals.filter(s => s.type === 'login-attempt' && s.successful === false).length
+  const pageViews = signals.filter(s => s.type === 'page-view').length
+
+  if (loginFailures >= 3) {
+    return { category: 'credential-stuffing', severity: 'high' }
+  }
+
+  if (pageViews >= 3) {
+    return { category: 'scraping', severity: 'medium' }
+  }
+
+  return { category: 'unknown', severity: 'low' }
 }
 
 function readPositiveIntEnv(name: string, fallback: number): number {

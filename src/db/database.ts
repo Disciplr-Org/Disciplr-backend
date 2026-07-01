@@ -140,11 +140,13 @@ export function closeDatabase(): void {
   void getPool().end().catch(() => undefined)
 }
 
-export function updateAnalyticsSummary(): void {
+export async function updateAnalyticsSummary(): Promise<void> {
   const pool = getPool()
-  void writePostgresSummary(pool).catch((error) => {
+  try {
+    await writePostgresSummary(pool)
+  } catch (error) {
     console.warn('PostgreSQL analytics summary update failed:', error)
-  })
+  }
 }
 
 const mapSummary = (row: Record<string, unknown>): AnalyticsSummaryRow => ({
@@ -233,3 +235,5 @@ export function getTimeRangeFilter(period: string): { startDate: string; endDate
 
   return { startDate, endDate }
 }
+
+export const db = getPool()

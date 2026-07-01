@@ -46,6 +46,10 @@ jest.unstable_mockModule('../services/membership.js', async () => ({
   createMembership: jest.fn().mockResolvedValue({ role: 'member' }),
   removeMembership: jest.fn(),
   updateMemberRole: jest.fn(),
+  resendInvitation: jest.fn(),
+  revokeInvitation: jest.fn(),
+  InvitationNotFoundError: class InvitationNotFoundError extends Error {},
+  InvitationAcceptedError: class InvitationAcceptedError extends Error {},
   LastAdminError: class LastAdminError extends Error {},
 }))
 
@@ -185,7 +189,7 @@ describe('POST /api/organizations/:orgId/invitations/accept', () => {
       .post('/api/organizations/org-abc/invitations/accept')
       .send({ token: 'deadbeef'.repeat(8), userId: 'user-2' })
     expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/invalid or expired/i)
+    expect(res.body.error.message).toMatch(/invalid or expired/i)
   })
 
   it('returns 400 when token hash does not match', async () => {

@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import { AuthenticatedRequest } from './auth.js'
+import { AppError } from './errorHandler.js'
 import {
   getOrganization,
   getMemberRole as lookupMemberRole,
@@ -14,30 +15,30 @@ export type { OrgRole } from '../models/organizations.js'
  * Checks org existence and membership via in-memory store.
  */
 export function requireOrgAccess(...allowedRoles: (OrgRole | string)[]) {
-  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  return (req: AuthenticatedRequest, _res: Response, next: NextFunction) => {
     const orgId = req.params.orgId || (req.query.orgId as string)
-    const userId = req.user?.userId || (req.user as any)?.sub
+    const userId = req.user?.userId || (req.user as any)?.sub || (req as any).authUser?.userId
 
     if (!orgId || !userId) {
-      res.status(401).json({ error: 'Auth/Org info missing' })
+      next(AppError.unauthorized('Auth/Org info missing'))
       return
     }
 
     const org = getOrganization(orgId)
     if (!org) {
-      res.status(404).json({ error: 'Organization not found' })
+      next(AppError.notFound('Organization not found'))
       return
     }
-      (req as any).orgId = orgId
+    ;(req as any).orgId = orgId
 
     const role = lookupMemberRole(orgId, userId)
     if (!role) {
-      res.status(403).json({ error: 'Forbidden: not a member of this organization' })
+      next(AppError.forbidden('Forbidden: not a member of this organization'))
       return
     }
 
     if (!allowedRoles.includes(role)) {
-      res.status(403).json({ error: `Forbidden: requires role ${allowedRoles.join(' or ')}` })
+      next(AppError.forbidden(`Forbidden: requires role ${allowedRoles.join(' or ')}`))
       return
     }
 

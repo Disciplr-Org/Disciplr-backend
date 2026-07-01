@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 import { db } from '../db/knex.js'
+import { getOrSet, invalidate, invalidatePrefix, getCacheStats as getSharedCacheStats } from '../lib/cache.js'
 
 /**
  * Feature flag names that can be toggled at runtime
- * Add new flags here and seed them in the migration
  */
 export enum FeatureFlag {
   ENTERPRISE_ANALYTICS = 'ENTERPRISE_ANALYTICS',
@@ -84,7 +84,6 @@ interface FeatureFlagRow {
 
 /**
  * Generate cache key from flag name and organization ID
- * Format: "flag_name:org_id" or "flag_name:global" for org_id null
  */
 function getCacheKey(name: string, orgId: string | null, context?: FeatureFlagContext): string {
   const contextKey = context
@@ -225,7 +224,7 @@ export async function getFlag(
         return value
       }
     } catch (error) {
-      console.error(`Error fetching org-specific flag ${name} for org ${orgId}:`, error)
+      console.error(`Error fetching org-specific flag ${name} for ${orgId}:`, error)
     }
   }
 
@@ -242,21 +241,13 @@ export async function getFlag(
     cache.set(globalCacheKey, value)
     return value
   } catch (error) {
-    console.error(`Error fetching global flag ${name}:`, error)
+    console.error(`Error fetching flag ${name}:`, error)
     return false
   }
 }
 
 /**
- * Set feature flag value for an organization
- * If orgId is null, sets the global default
- * Updates cache immediately to reflect change
- *
- * @param name - Feature flag name
- * @param orgId - Organization ID, or null for global
- * @param enabled - Whether to enable the flag
- * @returns Promise<boolean> - The new value
- * @throws Error if database operation fails
+ * Set feature flag value for an organization and invalidate cache.
  */
 export async function setFlag(
   name: string,
@@ -264,13 +255,11 @@ export async function setFlag(
   enabled: boolean,
 ): Promise<boolean> {
   try {
-    // Use upsert pattern: try update first, then insert if no rows affected
     const updated = await db('feature_flags')
       .where({ name, org_id: orgId })
       .update({ enabled, updated_at: db.fn.now() })
 
     if (updated === 0) {
-      // Row doesn't exist, insert it
       await db('feature_flags').insert({
         name,
         org_id: orgId,
@@ -279,6 +268,8 @@ export async function setFlag(
       })
     }
 
+    // Invalidate cache immediately on write
+    await invalidate(getCacheKey(name, orgId))
     // Invalidate cached global rollout and org-specific decisions for this process.
     cache.invalidateAll()
 
@@ -290,30 +281,22 @@ export async function setFlag(
 }
 
 /**
- * Get all feature flags for an organization
- * Includes org-specific overrides and global defaults merged
- *
- * @param orgId - Organization ID
- * @returns Promise<Record<string, boolean>> - Map of flag names to enabled status
+ * Get all feature flags for an organization (bypasses cache for bulk read).
  */
 export async function getAllFlags(orgId: string | null): Promise<Record<string, boolean>> {
   const flags: Record<string, boolean> = {}
-
   try {
-    // Fetch global defaults
     const globalRows = await db('feature_flags').where({ org_id: null })
     for (const row of globalRows) {
       flags[row.name] = row.enabled
     }
 
-    // If orgId provided, fetch and merge org-specific overrides
     if (orgId) {
       const orgRows = await db('feature_flags').where({ org_id: orgId })
       for (const row of orgRows) {
-        flags[row.name] = row.enabled // Override global with org-specific
+        flags[row.name] = row.enabled
       }
     }
-
     return flags
   } catch (error) {
     console.error(`Error fetching all flags for org ${orgId}:`, error)
@@ -322,22 +305,21 @@ export async function getAllFlags(orgId: string | null): Promise<Record<string, 
 }
 
 /**
- * Clear all cache entries (useful for testing or cache invalidation)
- * In production, consider using a more sophisticated cache invalidation strategy
+ * Clear all feature flag cache entries.
  */
-export function clearCache(): void {
-  cache.invalidateAll()
+export async function clearCache(): Promise<void> {
+  await invalidatePrefix('feature_flag:')
 }
 
 /**
- * Get cache statistics for monitoring/debugging
+ * Get cache statistics for monitoring/debugging.
  */
 export function getCacheStats(): { size: number; maxSize: number } {
-  return { size: cache.size(), maxSize: 1000 }
+  return getSharedCacheStats()
 }
 
 /**
- * Type guard for FeatureFlag enum
+ * Type guard for FeatureFlag enum.
  */
 export function isValidFeatureFlag(value: string): value is FeatureFlag {
   return Object.values(FeatureFlag).includes(value as FeatureFlag)

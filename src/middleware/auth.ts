@@ -4,6 +4,8 @@ import jwt from 'jsonwebtoken'
 import { randomUUID } from 'node:crypto'
 import { recordSession, validateSession } from '../services/session.js'
 import { UserRole } from '../types/user.js'
+import { verifyAccessToken } from '../lib/auth-utils.js'
+import { config } from '../config/index.js'
 
 import { JWTPayload } from '../types/auth.js'
 
@@ -13,6 +15,62 @@ export type Role = 'user' | 'verifier' | 'admin'
 export type JwtPayload = JWTPayload & { jti?: string }
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production'
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+export function csrfProtection(req: Request, res: Response, next: NextFunction): void {
+  if (SAFE_METHODS.has(req.method)) {
+    next()
+    return
+  }
+
+  const authHeader = req.headers.authorization
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    next()
+    return
+  }
+
+  const origin = req.headers.origin as string | undefined
+  const referer = req.headers.referer as string | undefined
+
+  if (!origin && !referer) {
+    next()
+    return
+  }
+
+  const allowedOrigins = config.corsOrigins
+
+  if (origin) {
+    if (allowedOrigins === '*') {
+      next()
+      return
+    }
+    if (Array.isArray(allowedOrigins) && allowedOrigins.includes(origin)) {
+      next()
+      return
+    }
+  }
+
+  if (!origin && referer) {
+    try {
+      const refererUrl = new URL(referer)
+      const refererOrigin = `${refererUrl.protocol}//${refererUrl.host}`
+      if (allowedOrigins === '*') {
+        next()
+        return
+      }
+      if (Array.isArray(allowedOrigins) && allowedOrigins.includes(refererOrigin)) {
+        next()
+        return
+      }
+    } catch {
+      res.status(403).json({ error: 'Forbidden' })
+      return
+    }
+  }
+
+  res.status(403).json({ error: 'Forbidden' })
+}
 
 export async function authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
      const authHeader = req.headers.authorization
@@ -25,7 +83,14 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
      const token = authHeader.slice(7)
 
      try {
-          const payload = jwt.verify(token, JWT_SECRET) as JwtPayload
+          // First try verifyAccessToken from lib/auth-utils.ts (which uses JWT_ACCESS_SECRET)
+          let payload: JwtPayload
+          try {
+               payload = verifyAccessToken(token) as JwtPayload
+          } catch {
+               // Fallback to legacy JWT_SECRET for backward compatibility
+               payload = jwt.verify(token, JWT_SECRET) as JwtPayload
+          }
 
           // Reject tokens with iat too far in the future (beyond clock tolerance)
           const iat = (payload as any).iat as number | undefined
@@ -79,6 +144,11 @@ export function requireAdmin(
 ): void {
     if (!req.user) {
         res.status(401).json({ error: 'Unauthorized: Authentication required' })
+        return
+    }
+    // Block impersonation tokens from accessing admin endpoints
+    if (req.user.impersonator) {
+        res.status(403).json({ error: 'Forbidden: Impersonation tokens cannot access admin endpoints' })
         return
     }
     if (req.user.role !== 'ADMIN') {

@@ -2,6 +2,8 @@
 
 This backend uses **Knex + PostgreSQL** for schema migrations.
 
+For operational guidelines on safe online migrations (zero-downtime expand/contract patterns, concurrent index creation, statement timeouts, and rollback workflows), refer to the [Production Database Migration Strategy Runbook](runbooks/migration-strategy.md).
+
 ## Why this tool
 
 - Works well with Node.js/TypeScript projects.
@@ -123,7 +125,7 @@ This keeps on-chain contract code verified alongside the existing Node/TypeScrip
   npm run migrate:rollback
   ```
 - Keep database backups/snapshots in production for disaster recovery.
-- For destructive changes, use multi-step deploys (additive migration, backfill, cleanup migration).
+- For destructive changes, follow the expand/contract operational procedures documented in the [Migration Strategy Runbook](runbooks/migration-strategy.md).
 
 ## Corrective migration: `20260227000000_fix_vault_schema.cjs`
 

@@ -80,6 +80,10 @@ Admin-only access requirements for audit query endpoints:
 
 All timestamps are stored, transmitted, and returned in UTC (ISO 8601 with `Z` suffix). Input timestamps must include a timezone designator. See [Timezone Contract](docs/TIMEZONE_CONTRACT.md) for the full specification.
 
+## Configuration
+
+For a complete reference of all supported environment variables, their types, defaults, and security considerations, see [Configuration Reference](docs/configuration.md).
+
 ## Tech stack
 
 ## Background job system
@@ -157,6 +161,10 @@ The `email` provider includes bounded retries with exponential backoff for trans
 - Express
 - Helmet + CORS
 - PostgreSQL migrations via Knex
+
+## Operations and recovery
+
+- See [docs/runbooks/disaster-recovery.md](docs/runbooks/disaster-recovery.md) for the backup, restore, and disaster-recovery procedure with RPO/RTO targets.
 
 ## Local setup
 

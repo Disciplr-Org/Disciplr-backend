@@ -6,7 +6,7 @@ import type { BackgroundJobSystem } from '../jobs/system.js'
 import { Readable, Transform } from 'node:stream'
 import { createGzip, gzipSync } from 'node:zlib'
 import { maskPii, sanitizePrivacyPayload, sanitizePrivacyString } from '../utils/privacy.js'
-import { resolveS3Config, uploadToS3 } from '../services/exportS3.js'
+import { resolveS3Config, uploadToS3, sanitizeS3KeySegment } from '../services/exportS3.js'
 
 export type ExportFormat = 'csv' | 'json' | 'ndjson'
 export type ExportScope = 'vaults' | 'transactions' | 'analytics' | 'all'
@@ -37,10 +37,12 @@ export type DlqMetricsHook = (event: DlqMetricsEvent) => void
 export interface ExportJob {
   id: string
   userId: string
+  orgId?: string
   isAdmin: boolean
   targetUserId?: string
   scope: ExportScope
   format: ExportFormat
+  columns?: Record<keyof ExportData, string[]>
   status: JobStatus
   createdAt: string
   completedAt?: string
@@ -56,10 +58,12 @@ export interface ExportJob {
 
 export interface EnqueueExportJobInput {
   userId: string
+  orgId?: string
   isAdmin: boolean
   targetUserId?: string
   scope: ExportScope
   format: ExportFormat
+  columns?: Record<keyof ExportData, string[]>
   idempotencyKey?: string
   maxAttempts?: number
 }
@@ -67,10 +71,12 @@ export interface EnqueueExportJobInput {
 interface ExportJobRecord {
   id: string
   requester_user_id: string
+  org_id?: string | null
   requester_is_admin: boolean
   target_user_id: string | null
   scope: ExportScope
   format: ExportFormat
+  columns: string | null
   status: JobStatus
   created_at: string
   completed_at: string | null
@@ -115,7 +121,7 @@ const RETRYABLE_EXPORT_JOB_STATUSES: JobStatus[] = ['pending', 'running']
 const EXPORT_SECTION_ORDER: Array<keyof ExportData> = ['vaults', 'transactions', 'analytics']
 const DEFAULT_MAX_ATTEMPTS = 3
 
-const CSV_SCHEMAS: Record<keyof ExportData, ExportSectionSchema> = {
+export const CSV_SCHEMAS: Record<keyof ExportData, ExportSectionSchema> = {
   vaults: {
     columns: [
       { key: 'id', header: 'id' },
@@ -160,13 +166,20 @@ const CSV_SCHEMAS: Record<keyof ExportData, ExportSectionSchema> = {
   },
 }
 
-const hashExportRequest = (input: Pick<EnqueueExportJobInput, 'targetUserId' | 'scope' | 'format'>): string => {
+export const ALLOWED_COLUMNS: Record<keyof ExportData, string[]> = {
+  vaults: CSV_SCHEMAS.vaults.columns.map(c => c.key),
+  transactions: CSV_SCHEMAS.transactions.columns.map(c => c.key),
+  analytics: CSV_SCHEMAS.analytics.columns.map(c => c.key),
+}
+
+const hashExportRequest = (input: Pick<EnqueueExportJobInput, 'targetUserId' | 'scope' | 'format' | 'columns'>): string => {
   return crypto
     .createHash('sha256')
     .update(JSON.stringify({
       targetUserId: input.targetUserId ?? null,
       scope: input.scope,
       format: input.format,
+      columns: input.columns ?? null,
     }))
     .digest('hex')
 }
@@ -196,10 +209,12 @@ const sanitizeExportTelemetry = (
 const toExportJob = (record: ExportJobRecord): ExportJob => ({
   id: record.id,
   userId: record.requester_user_id,
+  orgId: record.org_id ?? undefined,
   isAdmin: record.requester_is_admin,
   targetUserId: record.target_user_id ?? undefined,
   scope: record.scope,
   format: record.format,
+  columns: record.columns ? JSON.parse(record.columns) : undefined,
   status: record.status,
   createdAt: record.created_at,
   completedAt: record.completed_at ?? undefined,
@@ -216,10 +231,12 @@ const toExportJob = (record: ExportJobRecord): ExportJob => ({
 const toRecord = (job: ExportJob): ExportJobRecord => ({
   id: job.id,
   requester_user_id: job.userId,
+  org_id: job.orgId ?? null,
   requester_is_admin: job.isAdmin,
   target_user_id: job.targetUserId ?? null,
   scope: job.scope,
   format: job.format,
+  columns: job.columns ? JSON.stringify(job.columns) : null,
   status: job.status,
   created_at: job.createdAt,
   completed_at: job.completedAt ?? null,
@@ -616,37 +633,81 @@ function ndjsonGzipReadable(data: ExportData): Readable {
   return source.pipe(createGzip())
 }
 
+function filterExportData(
+  data: ExportData,
+  columns?: Record<keyof ExportData, string[]>,
+): ExportData {
+  const result: ExportData = {}
+
+  for (const sectionName of EXPORT_SECTION_ORDER) {
+    const rows = data[sectionName]
+    if (!rows) continue
+
+    const allowedColumns = columns?.[sectionName]
+    if (!allowedColumns) {
+      result[sectionName] = rows
+      continue
+    }
+
+    result[sectionName] = rows.map(row => {
+      const filteredRow: Record<string, unknown> = {}
+      for (const col of allowedColumns) {
+        if (col in row) {
+          filteredRow[col] = row[col]
+        }
+      }
+      return filteredRow
+    })
+  }
+
+  return result
+}
+
+function filterCsvSchema(
+  schema: ExportSectionSchema,
+  allowedColumns?: string[],
+): ExportSectionSchema {
+  if (!allowedColumns) return schema
+  return {
+    columns: schema.columns.filter(col => allowedColumns.includes(col.key)),
+  }
+}
+
 export function serializeExportData(
   data: ExportData,
   format: ExportFormat,
+  columns?: Record<keyof ExportData, string[]>,
 ): { buffer?: Buffer; filename: string; readable?: Readable } {
+  const filteredData = filterExportData(data, columns)
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
 
   if (format === 'json') {
     return {
-      buffer: Buffer.from(JSON.stringify(data, null, 2), 'utf8'),
+      buffer: Buffer.from(JSON.stringify(filteredData, null, 2), 'utf8'),
       filename: `export-${timestamp}.json`,
     }
   }
 
   if (format === 'ndjson') {
     const filename = `export-${timestamp}.ndjson.gz`
-    const readable = ndjsonGzipReadable(data)
+    const readable = ndjsonGzipReadable(filteredData)
     return { filename, readable }
   }
 
   const parts: string[] = [CSV_UTF8_BOM]
 
   for (const sectionName of EXPORT_SECTION_ORDER) {
-    const rows = data[sectionName]
+    const rows = filteredData[sectionName]
     const schema = CSV_SCHEMAS[sectionName]
     if (!rows || rows.length === 0) continue
+
+    const filteredSchema = filterCsvSchema(schema, columns?.[sectionName])
 
     parts.push(`# ${sectionName.toUpperCase()}\n`)
     parts.push(
       csvStringify(rows, {
         header: true,
-        columns: schema.columns,
+        columns: filteredSchema.columns,
         cast: { string: (value) => (value && /^[=+\-@\t\r]/.test(value) ? `'${value}` : value) },
       }),
     )
@@ -678,6 +739,7 @@ export const enqueueExportJob = async (
 
   const created = await exportJobRepository.create({
     userId: input.userId,
+    orgId: input.orgId,
     isAdmin: input.isAdmin,
     targetUserId: input.targetUserId,
     scope: input.scope,
@@ -723,13 +785,15 @@ export async function processJob(
       ? buildExportDataFromVaultStore(job.scope, scopedUserId, vaultsStore)
       : await buildExportDataFromDatabase(job.scope, scopedUserId)
     _stage = 'serialization'
-    const { buffer, filename, readable } = serializeExportData(data, job.format)
+    const { buffer, filename, readable } = serializeExportData(data, job.format, job.columns)
     _stage = undefined
 
     const s3Config = resolveS3Config()
     let s3Key: string | undefined
     if (s3Config) {
-      const key = `exports/${job.id}/${filename}`
+      const safeJobId = sanitizeS3KeySegment(job.id)
+      const safeFilename = sanitizeS3KeySegment(filename ?? `export-${job.id}`)
+      const key = `exports/${safeJobId}/${safeFilename}`
       const contentType = job.format === 'csv'
         ? 'text/csv; charset=utf-8'
         : job.format === 'json'

@@ -8,8 +8,13 @@ import {
   listOrgMemberships,
   createMembership,
   removeMembership,
-  updateMemberRole,
+  changeRole,
+  transferOwnership,
   LastAdminError,
+  resendInvitation,
+  revokeInvitation,
+  InvitationAcceptedError,
+  InvitationNotFoundError,
 } from '../services/membership.js'
 import type { OrgRole } from '../models/organizations.js'
 import db from '../db/index.js'
@@ -147,15 +152,7 @@ orgMembersRouter.patch(
     }
 
     try {
-      const updated = await updateMemberRole(userId, orgId, role as OrgRole)
-
-      createAuditLog({
-        actor_user_id: req.user!.userId,
-        action: 'org.member.role_changed',
-        target_type: 'org_membership',
-        target_id: `${orgId}:${userId}`,
-        metadata: { orgId, newRole: role },
-      })
+      const updated = await changeRole(userId, orgId, role as OrgRole, req.user!.userId)
 
       res.status(200).json({
         orgId,
@@ -163,12 +160,38 @@ orgMembersRouter.patch(
         role: updated.role,
       })
     } catch (err) {
-      if (err instanceof LastAdminError) {
-        return next(AppError.unprocessable(err.message))
+      if (err instanceof LastAdminError || (err instanceof Error && err.message.includes('owner'))) {
+        return next(AppError.unprocessable(err instanceof Error ? err.message : 'Cannot process.'))
       }
 
       const message = err instanceof Error ? err.message : 'Failed to update role.'
       return next(AppError.notFound(message))
+    }
+  },
+)
+
+// ─── POST /api/organizations/:orgId/transfer-ownership ──────────────────────
+// Transfer ownership of an organization to another member.
+// Demotes current owner to admin.
+
+orgMembersRouter.post(
+  '/:orgId/transfer-ownership',
+  authenticate,
+  requireOrgAccess('owner'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    const { orgId } = req.params
+    const { newOwnerId } = req.body as { newOwnerId?: string }
+
+    if (!newOwnerId) {
+      return next(AppError.badRequest('newOwnerId is required.'))
+    }
+
+    try {
+      await transferOwnership(orgId, req.user!.userId, newOwnerId)
+      res.status(200).json({ message: 'Ownership transferred.', orgId, newOwnerId })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to transfer ownership.'
+      return next(AppError.unprocessable(message))
     }
   },
 )
@@ -227,6 +250,97 @@ orgMembersRouter.post(
   },
 )
 
+// ─── POST /api/organizations/:orgId/invitations/:id/resend ───────────────────
+// Issue a fresh one-time token for a pending invitation. Only owners/admins.
+
+orgMembersRouter.post(
+  '/:orgId/invitations/:id/resend',
+  authenticate,
+  requireOrgAccess('owner', 'admin'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    const { orgId, id } = req.params
+    const rawToken = crypto.randomBytes(32).toString('hex')
+    const tokenHash = hashToken(rawToken)
+    const expiresAt = new Date(Date.now() + INVITATION_TTL_MS)
+
+    try {
+      const invitation = await resendInvitation(orgId, id, tokenHash, expiresAt)
+
+      createAuditLog({
+        actor_user_id: req.user!.userId,
+        action: 'org.invitation.resent',
+        target_type: 'org_invitation',
+        target_id: invitation.id,
+        metadata: { orgId },
+      })
+
+      const provider = buildNotificationProviderRegistry().console
+      await provider.send(
+        invitation.email,
+        `You have been invited to join an organization`,
+        `Use this token to accept: ${rawToken} (expires ${expiresAt.toISOString()})`,
+      )
+
+      res.status(200).json({
+        id: invitation.id,
+        orgId: invitation.org_id,
+        email: invitation.email,
+        expiresAt: invitation.expires_at,
+        token: rawToken,
+      })
+    } catch (err) {
+      if (err instanceof InvitationAcceptedError) {
+        return next(AppError.conflict('Accepted invitations cannot be resent.'))
+      }
+      if (err instanceof InvitationNotFoundError) {
+        return next(AppError.notFound(err.message))
+      }
+
+      return next(AppError.internal('Failed to resend invitation.'))
+    }
+  },
+)
+
+// ─── DELETE /api/organizations/:orgId/invitations/:id ────────────────────────
+// Revoke a pending invitation. Accepted invitations are immutable.
+
+orgMembersRouter.delete(
+  '/:orgId/invitations/:id',
+  authenticate,
+  requireOrgAccess('owner', 'admin'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    const { orgId, id } = req.params
+
+    try {
+      const invitation = await revokeInvitation(orgId, id)
+
+      createAuditLog({
+        actor_user_id: req.user!.userId,
+        action: 'org.invitation.revoked',
+        target_type: 'org_invitation',
+        target_id: invitation.id,
+        metadata: { orgId },
+      })
+
+      res.status(200).json({
+        id: invitation.id,
+        orgId: invitation.org_id,
+        email: invitation.email,
+        revokedAt: invitation.revoked_at,
+      })
+    } catch (err) {
+      if (err instanceof InvitationAcceptedError) {
+        return next(AppError.conflict('Accepted invitations cannot be revoked.'))
+      }
+      if (err instanceof InvitationNotFoundError) {
+        return next(AppError.notFound(err.message))
+      }
+
+      return next(AppError.internal('Failed to revoke invitation.'))
+    }
+  },
+)
+
 // ─── POST /api/organizations/:orgId/invitations/accept ────────────────────────
 // Accept an invitation by submitting the raw token and desired userId.
 // Promotes the recipient to org member.
@@ -244,8 +358,9 @@ orgMembersRouter.post(
     const incomingHash = hashToken(token)
 
     const invitation = await db('org_invitations')
-      .where({ org_id: orgId })
+      .where({ org_id: orgId, token_hash: incomingHash })
       .whereNull('accepted_at')
+      .whereNull('revoked_at')
       .where('expires_at', '>', new Date())
       .first()
 

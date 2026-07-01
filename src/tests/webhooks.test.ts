@@ -28,14 +28,18 @@ jest.unstable_mockModule('../repositories/webhookSubscriberRepository.js', () =>
         url: string
         secret: string
         events: string[]
+        schemaVersion?: number
       }): Promise<WebhookSubscriber> => {
         const sub: WebhookSubscriber = {
           id: randomUUID(),
           organizationId: data.organizationId,
           url: data.url,
           secret: data.secret,
+          previousSecret: null,
+          rotatedAt: null,
           events: [...data.events],
           active: true,
+          schemaVersion: data.schemaVersion ?? 1,
           createdAt: new Date().toISOString(),
         }
         mockSubscribers.push(sub)
@@ -50,6 +54,11 @@ jest.unstable_mockModule('../repositories/webhookSubscriberRepository.js', () =>
       }
       return false
     }),
+    getBreakerState: jest.fn(async () => null),
+    upsertBreakerState: jest.fn(async () => {}),
+    tryTransitionToHalfOpen: jest.fn(async () => false),
+    removeBreakerState: jest.fn(async () => true),
+    getAllBreakerStates: jest.fn(async () => []),
   })),
 }))
 

@@ -105,6 +105,7 @@ registry.registerPath({
             status: z.string().openapi({ example: 'ok' }),
             timestamp: z.string().datetime(),
             uptime: z.number(),
+            service: z.string(),
             jobs: z.any(),
           }),
         },
@@ -165,8 +166,15 @@ registry.registerPath({
   security: [{ bearerAuth: [] }],
   responses: {
     200: {
-      description: 'List of vaults',
-      content: { 'application/json': { schema: z.array(VaultSchema) } },
+      description: 'Paginated list of vaults',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.array(VaultSchema),
+            pagination: z.any(),
+          }),
+        },
+      },
     },
   },
 })

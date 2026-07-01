@@ -1,7 +1,7 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals'
 import { AbuseMonitor } from '../services/abuse-monitor.js'
 import { logger } from '../middleware/logger.js'
-import { emitTestSuspiciousEvent, __resetSecurityMonitorForTests, getAbuseCategoryCounts } from '../security/abuse-monitor.js'
+import { emitTestSuspiciousEvent, __resetSecurityMonitorForTests, getAbuseCategoryCounts, logVaultDriftAnomaly } from '../security/abuse-monitor.js'
 import type { AbuseCategory } from '../types/security.js'
 
 describe('AbuseMonitor Heuristics', () => {
@@ -190,5 +190,56 @@ describe('security/abuse-monitor structured events (pino integration)', () => {
 
     const counts = getAbuseCategoryCounts()
     expect(counts['brute-force']).toBe(2)
+  })
+
+  it('logVaultDriftAnomaly emits structured vault_missing_onchain event', () => {
+    const spy = jest.spyOn(console, 'log').mockImplementation(() => {})
+
+    logVaultDriftAnomaly('vault_missing_onchain', {
+      vaultId: 'vault-123',
+      persistedStatus: 'active',
+    })
+
+    const logCall = spy.mock.calls[0][0] as string
+    expect(logCall).toContain('vault.vault_missing_onchain')
+    expect(logCall).toContain('vault-123')
+    expect(logCall).toContain('active')
+
+    spy.mockRestore()
+  })
+
+  it('logVaultDriftAnomaly emits structured vault_state_drift event', () => {
+    const spy = jest.spyOn(console, 'log').mockImplementation(() => {})
+
+    logVaultDriftAnomaly('vault_state_drift', {
+      vaultId: 'vault-456',
+      driftedFields: ['status', 'amount'],
+      persisted: { status: 'active', amount: '1000' },
+      onChain: { status: 'completed', amount: '2000' },
+    })
+
+    const logCall = spy.mock.calls[0][0] as string
+    expect(logCall).toContain('vault.vault_state_drift')
+    expect(logCall).toContain('vault-456')
+    expect(logCall).toContain('status')
+    expect(logCall).toContain('amount')
+
+    spy.mockRestore()
+  })
+
+  it('logVaultDriftAnomaly emits structured vault_reconciliation_error event', () => {
+    const spy = jest.spyOn(console, 'log').mockImplementation(() => {})
+
+    logVaultDriftAnomaly('vault_reconciliation_error', {
+      vaultId: 'vault-789',
+      error: 'RPC timeout',
+    })
+
+    const logCall = spy.mock.calls[0][0] as string
+    expect(logCall).toContain('vault.vault_reconciliation_error')
+    expect(logCall).toContain('vault-789')
+    expect(logCall).toContain('RPC timeout')
+
+    spy.mockRestore()
   })
 })

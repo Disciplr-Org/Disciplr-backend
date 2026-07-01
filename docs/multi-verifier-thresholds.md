@@ -275,16 +275,26 @@ Returns comprehensive approval progress. When `totalVerifiers` is supplied, `isR
 - Ensures fair voting (1 vote per verifier)
 - Immutable approval record
 
-### Rejection as Veto
+### Rejection as Veto (N-based)
 
-- A single rejection immediately marks the milestone as rejected
-- Subsequent approvals cannot override a rejection
-- This is an all-or-nothing model: if ANY verifier rejects, the milestone fails
+A milestone is irrevocably rejected only when it is **mathematically impossible** to ever reach the approval threshold — not on the first rejection. The veto condition is:
 
-**Rationale:**
-- Ensures security-critical milestones cannot be approved despite dissent
-- Prevents collusion (one verifier can't outvote another's rejection)
-- Clear veto semantics
+```
+maxPossibleApprovals = approved + (N - totalVoted) < M
+```
+
+This means:
+- For a 2-of-3 milestone, **one** rejection does not veto (two approvals are still possible)
+- For a 2-of-3 milestone, **two** rejections do veto (only one approval remains possible, which is < 2)
+- Once vetoed, the state is irreversible — no further votes can change `isRejected`
+
+**Backward compatibility:** When N (total verifiers) is not provided, the system falls back to
+legacy semantics where any single rejection immediately vetoes the milestone.
+
+**Why this matters:**
+- Allows dissenting minority votes without blocking valid majority approval
+- Prevents premature rejection of milestones where consensus is still possible
+- Clear, deterministic settlement: `rejected > N - M` triggers veto
 
 ### Threshold Validation
 
@@ -354,24 +364,21 @@ try {
 }
 ```
 
-### 4. Rejection as Veto
+### 4. Veto by Rejection (N-based)
 
 ```typescript
-// Setup: 2-of-3 threshold
+// Setup: 2-of-3 threshold, N=3 verifiers
 const milestone = createMilestoneWithThreshold(vaultId, 'Audit', 2)
 
-// Two verifiers approve
-await recordMilestoneApproval(milestone.id, 'v1', 'approved')
-await recordMilestoneApproval(milestone.id, 'v2', 'approved')
+// One rejection: maxPossible = 0 + 2 remaining = 2 >= 2 → NOT yet vetoed
+await recordMilestoneApproval(milestone.id, 'v1', 'rejected')
+let progress = await getMilestoneApprovalProgress(milestone.id, 2, 3)
+console.log(progress.isRejected) // false (can still reach 2 approvals)
 
-let progress = await getMilestoneApprovalProgress(milestone.id, 2)
-console.log(progress.isComplete) // true (2 approvals)
-
-// Third verifier rejects
-await recordMilestoneApproval(milestone.id, 'v3', 'rejected')
-
-progress = await getMilestoneApprovalProgress(milestone.id, 2)
-console.log(progress.isRejected) // true (any rejection fails milestone)
+// Two rejections: maxPossible = 0 + 1 remaining = 1 < 2 → VETOED
+await recordMilestoneApproval(milestone.id, 'v2', 'rejected')
+progress = await getMilestoneApprovalProgress(milestone.id, 2, 3)
+console.log(progress.isRejected) // true
 console.log(progress.isComplete) // false
 ```
 

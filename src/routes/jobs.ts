@@ -21,6 +21,20 @@ import { enqueueJobSchema } from '../lib/validation.js'
 const jobsJson = requireJson({ maxBytes: JOBS_JSON_MAX_BYTES })
 
 // Helpers
+const parseOptionalPositiveInt = (value: unknown): number | undefined => {
+  if (value === undefined) {
+    return undefined
+  }
+  if (typeof value !== 'string' || value.trim() === '') {
+    return NaN
+  }
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    return NaN
+  }
+  return parsed
+}
+
 const enqueueTypedJob = (
   jobSystem: BackgroundJobSystem,
   type: JobType,
@@ -61,6 +75,42 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
   // GET /metrics — internal queue metrics (admin only)
   jobsRouter.get('/metrics', (_req, res) => {
     res.json(jobSystem.getMetrics())
+  })
+
+  // GET /depth — queue depth report grouped by job type and state (admin only)
+  jobsRouter.get('/depth', (req, res) => {
+    const staleLeaseMs = parseOptionalPositiveInt(req.query.staleLeaseMs)
+    if (Number.isNaN(staleLeaseMs)) {
+      res.status(400).json({ error: 'staleLeaseMs must be a positive integer' })
+      return
+    }
+
+    res.json(jobSystem.getQueueDepthReport(staleLeaseMs))
+  })
+
+  // POST /sweep — reclaim jobs whose lease exceeded the stale threshold (admin only)
+  jobsRouter.post('/sweep', (req, res) => {
+    const staleLeaseMs = parseOptionalPositiveInt(req.query.staleLeaseMs)
+    if (Number.isNaN(staleLeaseMs)) {
+      res.status(400).json({ error: 'staleLeaseMs must be a positive integer' })
+      return
+    }
+
+    const result = jobSystem.sweepStaleLeases(staleLeaseMs)
+
+    createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: 'job.sweep',
+      target_type: 'job_queue',
+      target_id: 'sweep',
+      metadata: {
+        staleLeaseMs: result.staleLeaseMs,
+        reclaimedCount: result.reclaimed.length,
+        deadLetteredCount: result.deadLettered.length,
+      },
+    })
+
+    res.status(200).json(result)
   })
 
   // GET /deadletters — inspect failed jobs that exhausted retries

@@ -38,13 +38,33 @@ export function shouldRedact(key: string): boolean {
   return SENSITIVE_KEYS.has(key.toLowerCase())
 }
 
+export const ALLOWLIST_KEYS = new Set([
+  'id',
+  'requestid',
+  'request_id',
+  'route',
+  'status',
+  // Common safe headers
+  'host',
+  'user-agent',
+  'accept',
+  'content-type',
+  'content-length',
+])
+
+/** Returns true when a field name is explicitly allowlisted. */
+export function shouldAllow(key: string): boolean {
+  return ALLOWLIST_KEYS.has(key.toLowerCase())
+}
+
 /**
  * Pure recursive redactor. Deep-copies input and replaces:
  * - values under sensitive field names, and
  * - string values matching email or JWT patterns
  * with REDACTED. Never mutates the original.
+ * If allowlistMode is true, redacts any field not explicitly allowlisted.
  */
-export function redact<T>(value: T, seen = new WeakSet()): T {
+export function redact<T>(value: T, seen = new WeakSet(), allowlistMode = false): T {
   if (value === null || value === undefined) return value
 
   if (typeof value !== 'object') {
@@ -60,7 +80,7 @@ export function redact<T>(value: T, seen = new WeakSet()): T {
   seen.add(value as object)
 
   if (Array.isArray(value)) {
-    return value.map((item) => redact(item, seen)) as unknown as T
+    return value.map((item) => redact(item, seen, allowlistMode)) as unknown as T
   }
 
   if (value instanceof Date) return value.toISOString() as unknown as T
@@ -70,7 +90,13 @@ export function redact<T>(value: T, seen = new WeakSet()): T {
   const result: Record<string, unknown> = {}
 
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    result[k] = shouldRedact(k) ? REDACTED : redact(v, seen)
+    if (shouldRedact(k)) {
+      result[k] = REDACTED
+    } else if (allowlistMode && !shouldAllow(k)) {
+      result[k] = REDACTED
+    } else {
+      result[k] = redact(v, seen, allowlistMode)
+    }
   }
 
   return result as unknown as T
@@ -141,13 +167,13 @@ export const privacyLogger = (
           rawBody !== undefined &&
           typeof rawBody === 'object' &&
           !Array.isArray(rawBody)
-            ? redact(rawBody as Record<string, unknown>)
+            ? redact(rawBody as Record<string, unknown>, new WeakSet(), true)
             : null,
         query:
           rawQuery && Object.keys(rawQuery).length > 0
-            ? redact(rawQuery)
+            ? redact(rawQuery, new WeakSet(), true)
             : null,
-        headers: redact(req.headers as Record<string, unknown>),
+        headers: redact(req.headers as Record<string, unknown>, new WeakSet(), true),
       }
 
       console.log(JSON.stringify(line))

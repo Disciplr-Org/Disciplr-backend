@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { utcTimestampSchema } from '../lib/validation.js'
+import { StrKey } from '@stellar/stellar-sdk'
 export { flattenZodErrors } from '../lib/validation.js'
 
 // ─── Soroban-aligned constants ───────────────────────────────────────────────
@@ -16,14 +17,69 @@ export const VAULT_MILESTONES_MIN = 1
 /** Maximum number of milestones in a vault. This caps request size and enforces operational limits. */
 export const VAULT_MILESTONES_MAX = 20
 
-/** Stellar strkey G-address: 'G' + 55 base-32 chars (A-Z, 2-7). */
-const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/
+// Mock exchange addresses requiring a memo.
+// GDHWBXJFCTBJ6ZQPK2E64JAOMHQOEOMWQ43Q5C3J6TEA6SNOFELWBVCY (Valid Classic 1) is the primary mock exchange for testing.
+export const MEMO_REQUIRED_EXCHANGES = new Set([
+  'GDHWBXJFCTBJ6ZQPK2E64JAOMHQOEOMWQ43Q5C3J6TEA6SNOFELWBVCY',
+])
+
+export function getClassicAddress(address: string): string {
+  try {
+    if (StrKey.isValidMed25519PublicKey(address)) {
+      const decoded = StrKey.decodeMed25519PublicKey(address)
+      return StrKey.encodeEd25519PublicKey(decoded.slice(0, 32))
+    }
+  } catch {
+    // ignore
+  }
+  return address
+}
+
+export function isUnsafeAddress(address: string): boolean {
+  try {
+    let pubkey: Buffer
+    if (StrKey.isValidEd25519PublicKey(address)) {
+      pubkey = StrKey.decodeEd25519PublicKey(address)
+    } else if (StrKey.isValidMed25519PublicKey(address)) {
+      pubkey = StrKey.decodeMed25519PublicKey(address).slice(0, 32)
+    } else {
+      return false
+    }
+    const allZeros = pubkey.every((b) => b === 0x00)
+    const allOnes = pubkey.every((b) => b === 0xff)
+    return allZeros || allOnes
+  } catch {
+    return true
+  }
+}
 
 // ─── Reusable field schemas ──────────────────────────────────────────────────
 
 const stellarAddressSchema = z
   .string({ message: 'required' })
-  .regex(STELLAR_ADDRESS_RE, 'must be a valid Stellar public key')
+  .superRefine((val, ctx) => {
+    if (val.startsWith('C')) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Contract addresses are not allowed where an account is required',
+      })
+      return
+    }
+    try {
+      const isValid = StrKey.isValidEd25519PublicKey(val) || StrKey.isValidMed25519PublicKey(val)
+      if (!isValid) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'must be a valid Stellar public key',
+        })
+      }
+    } catch {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'must be a valid Stellar public key',
+      })
+    }
+  })
 
 /**
  * Amount field: stored as a string, but the value must parse to a finite
@@ -72,6 +128,8 @@ export const createVaultSchema = z
       .min(VAULT_MILESTONES_MIN, 'must contain at least one item')
       .max(VAULT_MILESTONES_MAX, `must contain at most ${VAULT_MILESTONES_MAX} items`),
     creator: stellarAddressSchema.optional(),
+    orgId: z.string().uuid().optional(),
+    organizationId: z.string().uuid().optional(),
     /**
      * Grace window in seconds after a milestone dueDate during which check-in
      * is still accepted. Must be a non-negative integer. Bounded at runtime by
@@ -128,6 +186,84 @@ export const createVaultSchema = z
           code: 'custom',
           message: 'Total milestone amount cannot exceed vault amount',
           path: ['milestones'],
+        })
+      }
+    }
+
+    // Reject unsafe success/failure destination addresses
+    if (isUnsafeAddress(data.destinations.success)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Destination address cannot be a zero, burn, or unsafe address',
+        path: ['destinations', 'success'],
+      })
+    }
+    if (isUnsafeAddress(data.destinations.failure)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Destination address cannot be a zero, burn, or unsafe address',
+        path: ['destinations', 'failure'],
+      })
+    }
+
+    // Reject exchange destinations lacking a memo
+    const successClassic = getClassicAddress(data.destinations.success)
+    if (MEMO_REQUIRED_EXCHANGES.has(successClassic)) {
+      if (!StrKey.isValidMed25519PublicKey(data.destinations.success)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Destination is a known exchange that requires a memo. Use a muxed address.',
+          path: ['destinations', 'success'],
+        })
+      }
+    }
+    const failureClassic = getClassicAddress(data.destinations.failure)
+    if (MEMO_REQUIRED_EXCHANGES.has(failureClassic)) {
+      if (!StrKey.isValidMed25519PublicKey(data.destinations.failure)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Destination is a known exchange that requires a memo. Use a muxed address.',
+          path: ['destinations', 'failure'],
+        })
+      }
+    }
+
+    // Validate embedded muxed address memo ID range
+    if (StrKey.isValidMed25519PublicKey(data.destinations.success)) {
+      try {
+        const decoded = StrKey.decodeMed25519PublicKey(data.destinations.success)
+        const memoId = decoded.readBigUInt64BE(32)
+        if (memoId < 0n) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Invalid memo ID in success destination',
+            path: ['destinations', 'success'],
+          })
+        }
+      } catch {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Invalid or malformed muxed address for success destination',
+          path: ['destinations', 'success'],
+        })
+      }
+    }
+    if (StrKey.isValidMed25519PublicKey(data.destinations.failure)) {
+      try {
+        const decoded = StrKey.decodeMed25519PublicKey(data.destinations.failure)
+        const memoId = decoded.readBigUInt64BE(32)
+        if (memoId < 0n) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Invalid memo ID in failure destination',
+            path: ['destinations', 'failure'],
+          })
+        }
+      } catch {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Invalid or malformed muxed address for failure destination',
+          path: ['destinations', 'failure'],
         })
       }
     }

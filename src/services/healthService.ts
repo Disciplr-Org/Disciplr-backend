@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma.js';
 import { db } from '../db/knex.js';
 import type { BackgroundJobSystem } from '../jobs/system.js';
 import { getSorobanBootResult } from './sorobanBoot.js';
+import { getRpcPoolHealth, type RpcEndpointHealth } from './soroban.js';
 
 const DEFAULT_TIMEOUT_MS = 3000;
 
@@ -78,10 +79,13 @@ export const healthService = {
         : { status: 'down', error: String(schedulerResult.reason?.message ?? 'Unknown error') };
 
     const sorobanBoot = this.checkSorobanBoot();
+    const sorobanRpcPool = this.checkSorobanRpcPool();
 
     const components = [database, migrations, jobs, horizonListener, expirationScheduler];
     const isDown = components.some((c: any) => c.status === 'down');
-    const isDegraded = components.some((c: any) => c.status === 'stale');
+    const isDegraded =
+      components.some((c: any) => c.status === 'stale') ||
+      (sorobanRpcPool !== null && sorobanRpcPool.some((e: RpcEndpointHealth) => e.status === 'down'));
 
     return {
       status: isDown ? 'error' : isDegraded ? 'degraded' : 'ok',
@@ -94,6 +98,7 @@ export const healthService = {
         horizonListener,
         expirationScheduler,
         sorobanBoot,
+        sorobanRpcPool,
       },
     };
   },
@@ -108,6 +113,14 @@ export const healthService = {
     if (!result.ran) return { status: 'not_applicable' };
     if (result.error) return { status: 'error', error: result.error };
     return { status: 'ok', funded: result.funded ?? false };
+  },
+
+  /**
+   * Returns current health of each Soroban RPC endpoint in the pool.
+   * Returns null when no submissions have been attempted yet (pool not initialised).
+   */
+  checkSorobanRpcPool(): RpcEndpointHealth[] | null {
+    return getRpcPoolHealth();
   },
 
   async checkDatabase(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<{ status: string; error?: string }> {
