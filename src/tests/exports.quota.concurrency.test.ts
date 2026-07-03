@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, jest } from '@jest/globals'
+import { beforeEach, describe, expect, it, jest, mock } from 'bun:test'
 import {
   checkAndIncrementExportQuota,
   configureOrgQuotaRepository,
@@ -8,7 +8,7 @@ import {
 } from '../services/exportQuota.js'
 
 /** Mock auth to avoid dependencies */
-jest.unstable_mockModule('../middleware/auth.js', () => ({
+mock.module('../middleware/auth.js', () => ({
   authenticate: (_req: any, _res: any, next: () => void) => next(),
   requireAdmin: (_req: any, _res: any, next: () => void) => next(),
   signDownloadToken: () => 'mock-token',

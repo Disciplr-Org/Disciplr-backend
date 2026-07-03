@@ -611,7 +611,68 @@ When adding performance tests:
 - [PostgreSQL EXPLAIN](https://www.postgresql.org/docs/current/sql-explain.html)
 - [Database Indexing Best Practices](https://use-the-index-luke.com/)
 
+## Cache Read Benchmark
+
+`src/tests/performance/cacheReads.perf.test.ts` benchmarks the cache-aside
+layer that fronts hot vault and analytics reads. It uses the in-memory LRU
+cache (no Redis) for fully deterministic measurement. See [cache architecture
+and invalidation patterns](cache.md) for background on the namespacing
+conventions exercised here.
+
+### Budget constants
+
+| Metric | Budget |
+| --- | ---: |
+| Hit ratio floor (after warm-up) | ≥ 95 % |
+| p95 in-memory hit latency | < 5 ms |
+
+### What is covered
+
+| Scenario | Assertion |
+| --- | --- |
+| Cold-cache miss path | Loader called exactly once; elapsed time includes loader overhead |
+| Warm-cache hit path | Loader never called after warm-up; returned value identical to cold read |
+| Hit ratio | ≥ 95 % of 100 reads served from cache after one warm-up miss |
+| Vault read: DB query count | `AnalyticsBatchLoader` issues exactly 2 queries (vault batch + milestone batch) on cold read |
+| Vault read: warm cache | `getOrSet` wrapping `getOrgAnalyticsBatched` issues 0 loader calls after warm-up |
+| Analytics read: warm cache | `getOrSet` wrapping the analytics loader issues 0 loader calls after warm-up |
+| p95 latency budget | p95 of 100 in-memory hits < 5 ms for both analytics and vault paths |
+| Latency advantage | Cache-hit p95 measurably lower than a 20 ms simulated cold-loader latency |
+| Cache-bypass regression | Loader call count stays at 1 as read volume grows (10 → 25 → 50 → 100 reads) |
+| Multi-tenant isolation | Warming org-A cache does not serve org-B; each org gets exactly one miss |
+
+### Running the cache benchmark
+
+```bash
+npm run test:perf -- --testPathPattern=cacheReads
+```
+
+Single-worker mode (required for latency accuracy):
+
+```bash
+npm run test:perf -- --testPathPattern=cacheReads --maxWorkers=1
+```
+
+### Threshold tuning
+
+The two budget constants live at the top of the test file:
+
+```typescript
+const HIT_RATIO_FLOOR    = 0.95  // raise if cache TTLs shorten significantly
+const HIT_LATENCY_P95_MS = 5     // raise only on constrained CI hardware
+```
+
+Latency thresholds are intentionally conservative (5 ms for a Map lookup)
+so that a regression that accidentally calls an async loader on every read
+is caught immediately — a genuine in-memory hit completes in < 1 ms in
+practice.
+
 ## Changelog
+
+### 2026-06-28
+- Added cache hit-ratio and read-latency benchmark (`cacheReads.perf.test.ts`)
+- Documented cache benchmark budgets and coverage in this file
+- Linked cache architecture doc from benchmark section
 
 ### 2026-04-25
 - Initial performance testing infrastructure

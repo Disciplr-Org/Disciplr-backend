@@ -1,4 +1,4 @@
-import { orgReadRateLimiter } from '../middleware/rateLimiter.js'
+import { orgReadRateLimiter, orgWriteRateLimiter } from '../middleware/rateLimiter.js'
 import { Router, Request, Response } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireOrgAccess } from '../middleware/orgAuth.js'
@@ -6,14 +6,18 @@ import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray, encodeCursor, decodeCursor } from '../utils/pagination.js'
 import { vaults } from './vaults.js'
 import db from '../db/index.js'
+import type { Knex } from 'knex'
+import { createHash } from 'node:crypto'
 
 export const orgVaultsRouter = Router()
+
+// ─── Existing vault list ──────────────────────────────────────────────────────
 
 orgVaultsRouter.get(
   '/:orgId/vaults',
   authenticate,
   requireOrgAccess('owner', 'admin', 'member'),
-  orgReadRateLimiter, 
+  orgReadRateLimiter,
   queryParser({
     allowedSortFields: ['createdAt', 'amount', 'endTimestamp', 'status'],
     allowedFilterFields: ['status', 'creator'],
@@ -32,7 +36,346 @@ orgVaultsRouter.get(
 
     const paginatedResult = paginateArray(result, req.pagination!)
     res.json(paginatedResult)
+  },
+)
+
+// ─── Saved-search constants ───────────────────────────────────────────────────
+
+export const MAX_SEARCHES_PER_ORG = 20
+export const MIN_ALERT_FREQUENCY_MS = 3_600_000 // 1 hour
+
+const VALID_STATUSES = new Set(['draft', 'active', 'completed', 'failed', 'cancelled'])
+const VALID_SORT_FIELDS = new Set(['created_at', 'amount', 'end_date', 'status'])
+const VALID_SORT_ORDERS = new Set(['asc', 'desc'])
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface SavedSearchQueryDefinition {
+  q?: string
+  status?: string
+  verifier?: string
+  amount_min?: string
+  amount_max?: string
+  date_from?: string
+  date_to?: string
+  sort_by?: string
+  sort_order?: string
+  limit?: number
+}
+
+export interface OrgVaultSearch {
+  id: string
+  org_id: string
+  name: string
+  query_definition: SavedSearchQueryDefinition
+  alerts_enabled: boolean
+  alert_recipient: string | null
+  alert_frequency_ms: number
+  last_evaluated_at: string | null
+  last_result_hash: string | null
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+// ─── Validation ───────────────────────────────────────────────────────────────
+
+export interface QueryValidationResult {
+  valid: boolean
+  errors: string[]
+  sanitized: SavedSearchQueryDefinition
+}
+
+export function validateAndSanitizeQueryDefinition(raw: unknown): QueryValidationResult {
+  const errors: string[] = []
+  const sanitized: SavedSearchQueryDefinition = {}
+
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return { valid: false, errors: ['query_definition must be an object'], sanitized }
   }
+
+  const input = raw as Record<string, unknown>
+
+  if (input.q !== undefined) {
+    if (typeof input.q !== 'string') {
+      errors.push('q must be a string')
+    } else {
+      sanitized.q = input.q.replace(/[^\w\s.\-]/g, '').substring(0, 200)
+    }
+  }
+
+  if (input.status !== undefined) {
+    if (typeof input.status !== 'string' || !VALID_STATUSES.has(input.status)) {
+      errors.push(`status must be one of: ${[...VALID_STATUSES].join(', ')}`)
+    } else {
+      sanitized.status = input.status
+    }
+  }
+
+  if (input.verifier !== undefined) {
+    if (typeof input.verifier !== 'string') {
+      errors.push('verifier must be a string')
+    } else {
+      sanitized.verifier = input.verifier.slice(0, 256)
+    }
+  }
+
+  for (const field of ['amount_min', 'amount_max'] as const) {
+    if (input[field] !== undefined) {
+      const v = String(input[field])
+      if (!/^\d+(\.\d+)?$/.test(v)) {
+        errors.push(`${field} must be a non-negative numeric string`)
+      } else {
+        sanitized[field] = v
+      }
+    }
+  }
+
+  for (const field of ['date_from', 'date_to'] as const) {
+    if (input[field] !== undefined) {
+      if (typeof input[field] !== 'string' || isNaN(Date.parse(input[field] as string))) {
+        errors.push(`${field} must be a valid ISO 8601 date string`)
+      } else {
+        sanitized[field] = input[field] as string
+      }
+    }
+  }
+
+  if (input.sort_by !== undefined) {
+    if (typeof input.sort_by !== 'string' || !VALID_SORT_FIELDS.has(input.sort_by)) {
+      errors.push(`sort_by must be one of: ${[...VALID_SORT_FIELDS].join(', ')}`)
+    } else {
+      sanitized.sort_by = input.sort_by
+    }
+  }
+
+  if (input.sort_order !== undefined) {
+    if (typeof input.sort_order !== 'string' || !VALID_SORT_ORDERS.has(input.sort_order)) {
+      errors.push('sort_order must be "asc" or "desc"')
+    } else {
+      sanitized.sort_order = input.sort_order
+    }
+  }
+
+  if (input.limit !== undefined) {
+    const n = Number(input.limit)
+    if (!Number.isInteger(n) || n < 1 || n > 100) {
+      errors.push('limit must be an integer between 1 and 100')
+    } else {
+      sanitized.limit = n
+    }
+  }
+
+  return { valid: errors.length === 0, errors, sanitized }
+}
+
+// ─── Shared evaluation helper (also used by the periodic job) ─────────────────
+
+export async function runSavedSearch(
+  orgId: string,
+  queryDef: SavedSearchQueryDefinition,
+): Promise<string[]> {
+  const limit = Math.min(100, Math.max(1, queryDef.limit ?? 20))
+
+  let query = db('vaults')
+    .where('organization_id', orgId)
+    .whereNull('deleted_at')
+    .select('id')
+
+  if (queryDef.q) {
+    const q = queryDef.q
+    const hasFtsColumn = await db('information_schema.columns')
+      .where({ table_schema: 'public', table_name: 'vaults', column_name: 'search_vector' })
+      .first()
+      .then(Boolean)
+
+    if (hasFtsColumn) {
+      query = query.whereRaw(
+        `search_vector @@ to_tsquery('simple', ?)`,
+        [q.split(/\s+/).filter(Boolean).map((t) => `${t}:*`).join(' & ')],
+      )
+    } else {
+      query = query.where((builder: Knex.QueryBuilder) => {
+        builder.where('creator', 'ilike', `%${q}%`).orWhere('verifier', 'ilike', `%${q}%`)
+      })
+    }
+  }
+
+  if (queryDef.status) query = query.where('status', queryDef.status)
+  if (queryDef.verifier) query = query.where('verifier', queryDef.verifier)
+  if (queryDef.amount_min) query = query.where('amount', '>=', queryDef.amount_min)
+  if (queryDef.amount_max) query = query.where('amount', '<=', queryDef.amount_max)
+  if (queryDef.date_from) query = query.where('created_at', '>=', new Date(queryDef.date_from))
+  if (queryDef.date_to) query = query.where('created_at', '<=', new Date(queryDef.date_to))
+
+  const sortField = queryDef.sort_by ?? 'created_at'
+  const sortOrder = (queryDef.sort_order ?? 'desc') as 'asc' | 'desc'
+  query = query.orderBy(sortField, sortOrder).orderBy('id', 'desc')
+
+  const rows = await query.limit(limit)
+  return rows.map((r: { id: string }) => r.id)
+}
+
+export function hashResultSet(ids: string[]): string {
+  return createHash('sha256').update(JSON.stringify(ids)).digest('hex')
+}
+
+// ─── POST /api/orgs/:orgId/vault-searches ─────────────────────────────────────
+
+orgVaultsRouter.post(
+  '/:orgId/vault-searches',
+  authenticate,
+  requireOrgAccess('owner', 'admin'),
+  orgWriteRateLimiter,
+  async (req: Request, res: Response): Promise<void> => {
+    const { orgId } = req.params
+    const userId: string = (req.user as any)?.userId || (req.user as any)?.sub || ''
+
+    const { name, query_definition, alerts_enabled, alert_recipient, alert_frequency_ms } = req.body
+
+    if (typeof name !== 'string' || name.trim().length === 0 || name.length > 255) {
+      res.status(400).json({ error: 'name must be a non-empty string (max 255 chars)' })
+      return
+    }
+
+    const validation = validateAndSanitizeQueryDefinition(query_definition)
+    if (!validation.valid) {
+      res.status(400).json({ error: 'Invalid query_definition', details: validation.errors })
+      return
+    }
+
+    const alertsOn = Boolean(alerts_enabled)
+
+    if (alertsOn) {
+      if (typeof alert_recipient !== 'string' || alert_recipient.trim().length === 0) {
+        res.status(400).json({ error: 'alert_recipient is required when alerts_enabled is true' })
+        return
+      }
+
+      const freqMs = alert_frequency_ms !== undefined ? Number(alert_frequency_ms) : MIN_ALERT_FREQUENCY_MS
+      if (!Number.isInteger(freqMs) || freqMs < MIN_ALERT_FREQUENCY_MS) {
+        res.status(400).json({
+          error: `alert_frequency_ms must be an integer >= ${MIN_ALERT_FREQUENCY_MS} (1 hour)`,
+        })
+        return
+      }
+    }
+
+    try {
+      const countRow = await db('org_vault_searches')
+        .where({ org_id: orgId })
+        .count('id as n')
+        .first()
+
+      const currentCount = Number(countRow?.n ?? 0)
+      if (currentCount >= MAX_SEARCHES_PER_ORG) {
+        res.status(422).json({
+          error: `Org has reached the maximum of ${MAX_SEARCHES_PER_ORG} saved searches`,
+        })
+        return
+      }
+
+      const [search] = await db('org_vault_searches')
+        .insert({
+          org_id: orgId,
+          name: name.trim(),
+          query_definition: JSON.stringify(validation.sanitized),
+          alerts_enabled: alertsOn,
+          alert_recipient: alertsOn ? (alert_recipient as string).trim() : null,
+          alert_frequency_ms: alertsOn
+            ? (alert_frequency_ms !== undefined ? Number(alert_frequency_ms) : MIN_ALERT_FREQUENCY_MS)
+            : MIN_ALERT_FREQUENCY_MS,
+          created_by: userId,
+          created_at: new Date(),
+          updated_at: new Date(),
+        })
+        .returning('*')
+
+      res.status(201).json({ search })
+    } catch (error) {
+      console.error('Error creating saved search:', error)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  },
+)
+
+// ─── GET /api/orgs/:orgId/vault-searches ──────────────────────────────────────
+
+orgVaultsRouter.get(
+  '/:orgId/vault-searches',
+  authenticate,
+  requireOrgAccess('owner', 'admin', 'member'),
+  orgReadRateLimiter,
+  async (req: Request, res: Response): Promise<void> => {
+    const { orgId } = req.params
+
+    try {
+      const searches: OrgVaultSearch[] = await db('org_vault_searches')
+        .where({ org_id: orgId })
+        .orderBy('created_at', 'desc')
+
+      res.json({ searches })
+    } catch (error) {
+      console.error('Error listing saved searches:', error)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  },
+)
+
+// ─── GET /api/orgs/:orgId/vault-searches/:searchId ────────────────────────────
+
+orgVaultsRouter.get(
+  '/:orgId/vault-searches/:searchId',
+  authenticate,
+  requireOrgAccess('owner', 'admin', 'member'),
+  orgReadRateLimiter,
+  async (req: Request, res: Response): Promise<void> => {
+    const { orgId, searchId } = req.params
+
+    try {
+      const search: OrgVaultSearch | undefined = await db('org_vault_searches')
+        .where({ id: searchId, org_id: orgId })
+        .first()
+
+      if (!search) {
+        res.status(404).json({ error: 'Saved search not found' })
+        return
+      }
+
+      res.json({ search })
+    } catch (error) {
+      console.error('Error fetching saved search:', error)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  },
+)
+
+// ─── DELETE /api/orgs/:orgId/vault-searches/:searchId ─────────────────────────
+
+orgVaultsRouter.delete(
+  '/:orgId/vault-searches/:searchId',
+  authenticate,
+  requireOrgAccess('owner', 'admin'),
+  orgWriteRateLimiter,
+  async (req: Request, res: Response): Promise<void> => {
+    const { orgId, searchId } = req.params
+
+    try {
+      const deleted = await db('org_vault_searches')
+        .where({ id: searchId, org_id: orgId })
+        .delete()
+
+      if (deleted === 0) {
+        res.status(404).json({ error: 'Saved search not found' })
+        return
+      }
+
+      res.status(204).end()
+    } catch (error) {
+      console.error('Error deleting saved search:', error)
+      res.status(500).json({ error: 'Internal server error' })
+    }
+  },
 )
 
 /**

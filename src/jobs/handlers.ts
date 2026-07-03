@@ -1,8 +1,28 @@
+import { createHash } from 'node:crypto'
 import { NotificationService } from '../services/notifications/factory.js'
 import { processJob as processExportJob } from '../services/exportQueue.js'
 import type { JobHandler, JobType } from './types.js'
-import { markVaultExpiries } from '../services/vault.js'
 import { TransactionETLService } from '../services/transactionETL.js'
+import { MilestoneEmbeddingSource, ReindexCursorStore } from '../services/evidenceReindex.js'
+import { EmbeddingProvider } from '../services/embeddingProvider.js'
+import { buildSlashOnMissPayload } from '../services/soroban.js'
+import {
+  markVaultExpiries,
+  sendMilestoneReminders,
+  sendMilestoneDigestReminders,
+  processDeferredReminders,
+} from '../services/vaultExpiry.service.js'
+import { cleanupExpiredSessions } from '../services/session.js'
+import { relayOutboxBatch } from '../services/outboxRelay.js'
+import { runReindexBatches } from '../services/evidenceReindex.js'
+import { renderOrgAnalyticsSnapshot } from '../services/analytics.service.js'
+import {
+  saveOrgReport,
+  getAllOrgIds,
+  checkAndIncrementReportQuota,
+} from '../services/analyticsReports.js'
+import { resolveS3Config, uploadToS3 } from '../services/exportS3.js'
+import db from '../db/index.js'
 
 type JobHandlerRegistry = {
   [K in JobType]: JobHandler<K>
@@ -59,6 +79,25 @@ export const createDefaultJobHandlers = (
       `sent ${remindersSent} reminders attempt=${context.attempt}`,
     )
   },
+  'milestone.reminders.digest': async (payload, context) => {
+    const result = await sendMilestoneDigestReminders({
+      leadTimesMs: payload.leadTimesMs,
+      limit: payload.limit,
+    })
+    logJob(
+      'milestone.reminders.digest',
+      `sent=${result.digestsSent} deferred=${result.digestsDeferred} milestones=${result.totalMilestones} attempt=${context.attempt}`,
+    )
+  },
+  'milestone.reminders.deferred': async (payload, context) => {
+    const delivered = await processDeferredReminders({
+      batchSize: payload.batchSize,
+    })
+    logJob(
+      'milestone.reminders.deferred',
+      `delivered=${delivered} attempt=${context.attempt}`,
+    )
+  },
   'oracle.call': async (payload, context) => {
     await sleep(60)
     const requestId = payload.requestId ?? context.jobId
@@ -76,6 +115,44 @@ export const createDefaultJobHandlers = (
       `scope=${payload.scope} entity=${entity} reason=${reason} attempt=${context.attempt}`,
     )
   },
+  'analytics.report.generate': async (payload, context) => {
+    const s3Config = resolveS3Config()
+    const orgIds = payload.orgIds ?? getAllOrgIds()
+    let generated = 0
+    let skipped = 0
+
+    for (const orgId of orgIds) {
+      if (!checkAndIncrementReportQuota(orgId)) {
+        logJob('analytics.report.generate', `quota_exceeded orgId=${orgId}`)
+        skipped++
+        continue
+      }
+
+      try {
+        const snapshot = renderOrgAnalyticsSnapshot(orgId)
+        const json = JSON.stringify(snapshot)
+        const buf = Buffer.from(json, 'utf8')
+        const ts = new Date().toISOString().replace(/[:.]/g, '-')
+        const key = `analytics-reports/${orgId}/${ts}.json`
+
+        if (s3Config) {
+          await uploadToS3(s3Config, key, buf, 'application/json')
+          saveOrgReport({ orgId, s3Key: key, snapshotAt: snapshot.snapshotAt, sizeBytes: buf.byteLength })
+        } else {
+          saveOrgReport({ orgId, localBuffer: buf, snapshotAt: snapshot.snapshotAt, sizeBytes: buf.byteLength })
+        }
+        generated++
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        logJob('analytics.report.generate', `error orgId=${orgId}: ${msg}`)
+      }
+    }
+
+    logJob(
+      'analytics.report.generate',
+      `generated=${generated} skipped=${skipped} attempt=${context.attempt} job_id=${context.jobId}`,
+    )
+  },
   'export.generate': async (payload, context) => {
     await processExportJob(payload.exportJobId, undefined, context.attempt)
     logJob(
@@ -83,7 +160,7 @@ export const createDefaultJobHandlers = (
       `exportJobId=${payload.exportJobId} attempt=${context.attempt}`,
     )
   },
-`  'vault.reconcile': async (payload, context) => {
+  'vault.reconcile': async (payload, context) => {
     const etlConfig = {
       horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org',
       networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015',
@@ -100,7 +177,6 @@ export const createDefaultJobHandlers = (
       `vaultIds=${payload.vaultIds?.length || 'all'} batchSize=${payload.batchSize || 50} checked=${result.checked}/${result.totalVaults} drift=${result.driftDetected} missing=${result.missingOnChain} errors=${result.errors} attempt=${context.attempt}`,
     )
   },
-}
   'sessions.cleanup': async (payload, context) => {
     const batchSize = payload.batchSize ?? 1000
     const deleted = await cleanupExpiredSessions(batchSize)
@@ -128,6 +204,76 @@ export const createDefaultJobHandlers = (
       'embeddings.reindex',
       `batches=${result.batches} processed=${result.processed} reindexed=${result.reindexed} ` +
         `skipped=${result.skippedUpToDate} cursor=${result.cursor ?? 'none'} done=${result.done} attempt=${context.attempt}`,
+    )
+  },
+  'saved-search.evaluate': async (payload, context) => {
+    const now = new Date()
+
+    let searchQuery = db('org_vault_searches').where({ alerts_enabled: true })
+    if (payload.searchId) {
+      searchQuery = searchQuery.where({ id: payload.searchId })
+    } else {
+      searchQuery = searchQuery.whereRaw(
+        `(last_evaluated_at IS NULL OR last_evaluated_at + (alert_frequency_ms || ' milliseconds')::interval <= ?)`,
+        [now],
+      )
+    }
+
+    const searches = await searchQuery.select('*')
+    let evaluated = 0
+    let notified = 0
+
+    for (const search of searches) {
+      try {
+        const queryDef = typeof search.query_definition === 'string'
+          ? JSON.parse(search.query_definition)
+          : search.query_definition
+
+        const limit = Math.min(100, Math.max(1, queryDef.limit ?? 20))
+
+        let vaultQuery = db('vaults')
+          .where('organization_id', search.org_id)
+          .whereNull('deleted_at')
+          .select('id')
+
+        if (queryDef.status) vaultQuery = vaultQuery.where('status', queryDef.status)
+        if (queryDef.verifier) vaultQuery = vaultQuery.where('verifier', queryDef.verifier)
+        if (queryDef.amount_min) vaultQuery = vaultQuery.where('amount', '>=', queryDef.amount_min)
+        if (queryDef.amount_max) vaultQuery = vaultQuery.where('amount', '<=', queryDef.amount_max)
+        if (queryDef.date_from) vaultQuery = vaultQuery.where('created_at', '>=', new Date(queryDef.date_from))
+        if (queryDef.date_to) vaultQuery = vaultQuery.where('created_at', '<=', new Date(queryDef.date_to))
+
+        const sortField = queryDef.sort_by ?? 'created_at'
+        const sortOrder = (queryDef.sort_order ?? 'desc') as 'asc' | 'desc'
+        vaultQuery = vaultQuery.orderBy(sortField, sortOrder).orderBy('id', 'desc').limit(limit)
+
+        const rows = await vaultQuery
+        const ids: string[] = rows.map((r: { id: string }) => r.id)
+        const newHash = createHash('sha256').update(JSON.stringify(ids)).digest('hex')
+
+        if (newHash !== search.last_result_hash) {
+          await notificationService.send(
+            search.alert_recipient,
+            `Saved search "${search.name}" has new results`,
+            `Your saved vault search "${search.name}" returned ${ids.length} result(s). The result set has changed since the last evaluation.`,
+          )
+          notified++
+        }
+
+        await db('org_vault_searches')
+          .where({ id: search.id })
+          .update({ last_evaluated_at: now, last_result_hash: newHash, updated_at: now })
+
+        evaluated++
+      } catch (evalError) {
+        const msg = evalError instanceof Error ? evalError.message : String(evalError)
+        logJob('saved-search.evaluate', `error evaluating search=${search.id}: ${msg}`)
+      }
+    }
+
+    logJob(
+      'saved-search.evaluate',
+      `evaluated=${evaluated} notified=${notified} job_id=${context.jobId} attempt=${context.attempt}`,
     )
   },
 })

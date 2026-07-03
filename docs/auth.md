@@ -46,6 +46,11 @@ Endpoint: `POST /api/auth/register`
 - Audit log metadata excludes email addresses and other request-body PII.
 - High-impact admin actions may require a fresh step-up assertion before proceeding.
 
+## Breached Passwords & Refresh Reuse Protections
+
+- **Breached password rejection:** When enabled via `AUTH_BREACHED_PASSWORDS` (comma-separated, case-insensitive list) or `AUTH_BREACHED_PASSWORDS_ENABLED`, the server rejects registration and password-change requests that match known-breached passwords. Rejections emit a security audit event but never log raw passwords.
+- **Refresh-token reuse detection:** If a refresh token that has already been rotated/revoked is seen again (indicative of token theft or replay), the server revokes the entire refresh-token family for that user, revokes all sessions, and emits a security audit event. This detection is enforced and never fails open.
+
 ## Role Definitions
 
 Disciplr defines three primary user roles with a hierarchical access model: **USER** < **VERIFIER** < **ADMIN**.
@@ -368,6 +373,49 @@ Tests specifically validate that the following bypass attempts fail:
 
 The test suite includes property-based tests with minimum 100 iterations per property to validate universal security properties across all valid inputs, providing comprehensive coverage beyond unit tests.
 
+
+## CSRF Protection
+
+**Location:** [src/middleware/auth.ts](../src/middleware/auth.ts#L21)
+
+The `csrfProtection` middleware prevents cross-site request forgery on cookie-authenticated state-changing routes. It is registered globally in [src/app.ts](../src/app.ts#L150) and runs on every request.
+
+### How it works
+
+The middleware uses an **origin/referer verification** strategy:
+
+1. **Safe methods** (`GET`, `HEAD`, `OPTIONS`) are always allowed — they cannot change state.
+2. **Bearer token requests** are exempt — the `Authorization: Bearer <token>` header is not automatically attached by browsers cross-origin, so these requests are not CSRF-prone.
+3. **For remaining mutating requests** (`POST`, `PUT`, `PATCH`, `DELETE`) without a Bearer token:
+   - The `Origin` header is checked against the configured CORS allowlist.
+   - If `Origin` is absent, the `Referer` header is parsed and its origin is verified.
+   - If neither header is present (non-browser client), the request is allowed through.
+4. On verification failure, a generic `403 Forbidden` is returned — no details about the expected origin are leaked.
+
+### Exemptions
+
+| Request type | CSRF check | Rationale |
+|---|---|---|
+| `GET`/`HEAD`/`OPTIONS` | Skipped | Safe methods, cannot modify state |
+| Bearer token (`Authorization: Bearer ...`) | Skipped | Not automatically attached cross-origin by browsers |
+| No `Origin`/`Referer` | Skipped | Non-browser client (curl, server-to-server) |
+| Matching origin | Passes | Legitimate same-origin or allowed cross-origin request |
+| Mismatched origin | Blocked (403) | Cross-site request forgery attempt |
+
+### Configuration
+
+CSRF origin verification uses the same allowlist as CORS, configured via the `CORS_ORIGINS` environment variable (comma-separated origins or `*`). In production, the wildcard is rejected during environment validation.
+
+### Error Response
+
+All CSRF failures return:
+```json
+{
+  "error": "Forbidden"
+}
+```
+
+No additional details are included to avoid information leakage.
 
 ## Middleware Consolidation
 `auth.middleware.ts` and `userAuth.ts` have been consolidated into `auth.ts`. Please import `authenticate` and `authorize` strictly from `src/middleware/auth.js`. `requireUserAuth` is deprecated and will be removed in #454.

@@ -40,6 +40,46 @@ type OrgInvitation = {
 const isAdminRole = (role: string): boolean =>
   role === 'owner' || role === 'admin'
 
+/** Precedence for resolving conflicting org/team role grants (higher wins). */
+export const ORG_ROLE_RANK: Readonly<Record<string, number>> = {
+  owner: 3,
+  admin: 2,
+  member: 1,
+  viewer: 0,
+}
+
+export const getOrgRoleRank = (role: string): number =>
+  ORG_ROLE_RANK[role] ?? -1
+
+export const isKnownOrgRole = (role: string): boolean =>
+  role in ORG_ROLE_RANK
+
+/** Pick the higher-precedence role between two grants. */
+export const pickHigherOrgRole = (a: string, b: string): string =>
+  getOrgRoleRank(a) >= getOrgRoleRank(b) ? a : b
+
+/**
+ * Resolve a user's effective org role from all org- and team-level memberships.
+ * When multiple grants exist, the highest applicable role wins.
+ */
+export const resolveEffectiveOrgRole = async (
+  userId: string,
+  organizationId: string,
+): Promise<string | null> => {
+  const memberships = await db('memberships')
+    .where({ user_id: userId, organization_id: organizationId })
+    .select('role')
+
+  if (memberships.length === 0) {
+    return null
+  }
+
+  return memberships.reduce(
+    (highest, membership) => pickHigherOrgRole(highest, membership.role),
+    memberships[0].role,
+  )
+}
+
 // ─── Create ───────────────────────────────────────────────────────────────────
 
 export const createMembership = async (

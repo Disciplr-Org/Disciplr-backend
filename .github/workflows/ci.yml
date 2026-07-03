@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  # Dependency advisory gate: low | moderate | high | critical
+  DEPENDENCY_AUDIT_LEVEL: high
+
 jobs:
   test-and-migrate:
     runs-on: ubuntu-latest
@@ -53,3 +57,61 @@ jobs:
         run: npm test
         env:
           NODE_ENV: test
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  sbom:
+    name: SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate CycloneDX SBOM
+        run: bunx @cyclonedx/cdxgen -o sbom.json --spec-version 1.5
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.json
+          retention-days: 90
+          if-no-files-found: error
+
+  dependency-audit:
+    name: Dependency advisory gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Audit lockfile (${{ env.DEPENDENCY_AUDIT_LEVEL }}+)
+        run: bun audit --audit-level=${{ env.DEPENDENCY_AUDIT_LEVEL }}

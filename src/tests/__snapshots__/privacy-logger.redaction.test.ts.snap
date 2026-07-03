@@ -1,0 +1,25 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`privacyLogger middleware snapshot: structured log line for a request with sensitive fields 1`] = `
+{
+  "body": {
+    "email": "[REDACTED]",
+    "password": "[REDACTED]",
+  },
+  "durationMs": 0,
+  "event": "http.request",
+  "headers": {
+    "authorization": "[REDACTED]",
+    "content-type": "application/json",
+    "x-api-key": "[REDACTED]",
+  },
+  "ip": "10.20.x.x",
+  "level": "info",
+  "method": "POST",
+  "query": null,
+  "service": "disciplr-backend",
+  "status": 200,
+  "timestamp": "2024-01-01T00:00:00.000Z",
+  "url": "/api/auth/login",
+}
+`;

@@ -223,6 +223,8 @@ export async function getFlag(
         cache.set(cacheKey, value)
         return value
       }
+    } catch (error) {
+      console.error(`Error fetching org-specific flag ${name} for ${orgId}:`, error)
     }
   }
 

@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { recordSession, validateSession } from '../services/session.js'
 import { UserRole } from '../types/user.js'
 import { verifyAccessToken } from '../lib/auth-utils.js'
+import { config } from '../config/index.js'
 
 import { JWTPayload } from '../types/auth.js'
 
@@ -14,6 +15,62 @@ export type Role = 'user' | 'verifier' | 'admin'
 export type JwtPayload = JWTPayload & { jti?: string }
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production'
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+export function csrfProtection(req: Request, res: Response, next: NextFunction): void {
+  if (SAFE_METHODS.has(req.method)) {
+    next()
+    return
+  }
+
+  const authHeader = req.headers.authorization
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    next()
+    return
+  }
+
+  const origin = req.headers.origin as string | undefined
+  const referer = req.headers.referer as string | undefined
+
+  if (!origin && !referer) {
+    next()
+    return
+  }
+
+  const allowedOrigins = config.corsOrigins
+
+  if (origin) {
+    if (allowedOrigins === '*') {
+      next()
+      return
+    }
+    if (Array.isArray(allowedOrigins) && allowedOrigins.includes(origin)) {
+      next()
+      return
+    }
+  }
+
+  if (!origin && referer) {
+    try {
+      const refererUrl = new URL(referer)
+      const refererOrigin = `${refererUrl.protocol}//${refererUrl.host}`
+      if (allowedOrigins === '*') {
+        next()
+        return
+      }
+      if (Array.isArray(allowedOrigins) && allowedOrigins.includes(refererOrigin)) {
+        next()
+        return
+      }
+    } catch {
+      res.status(403).json({ error: 'Forbidden' })
+      return
+    }
+  }
+
+  res.status(403).json({ error: 'Forbidden' })
+}
 
 export async function authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
      const authHeader = req.headers.authorization

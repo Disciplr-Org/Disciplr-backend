@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from 'express'
+import { sanitizePrivacyPayload } from '../utils/privacy.js'
 
 // ─── Error Codes ─────────────────────────────────────────────────────────────
 // Machine-readable codes clients can branch on without parsing message strings.
@@ -166,6 +167,13 @@ export const errorHandler = (
   // PII is not logged: we only record method, path, and a sanitised message.
   const requestId = (req.headers['x-request-id'] as string | undefined) ?? undefined
 
+  // Determine if we are in a production environment
+  const isProduction = process.env.NODE_ENV === 'production'
+
+  // Sanitize any echoed PII from error details in production
+  const sanitizeDetails = (details: unknown) =>
+    isProduction ? sanitizePrivacyPayload(details) : details
+
   // Sanitize and convert express body-parser size limit errors
   if (err && typeof err === 'object' && 'status' in err && err.status === 413 && 'type' in err && (err as any).type === 'entity.too.large') {
     err = new AppError(413, ErrorCode.PAYLOAD_TOO_LARGE, 'Payload too large')
@@ -191,7 +199,7 @@ export const errorHandler = (
       error: {
         code: err.code,
         message: err.message,
-        ...(err.details !== undefined && { details: err.details }),
+        ...(err.details !== undefined && { details: sanitizeDetails(err.details) }),
         ...(requestId && { requestId }),
       },
     }
@@ -201,7 +209,10 @@ export const errorHandler = (
   }
 
   // Unknown / unexpected errors – never leak internals to the client.
-  const message = err instanceof Error ? err.message : 'Internal server error'
+  // In production, always use a generic message. In dev, show the real error.
+  const message = isProduction
+    ? 'Internal server error'
+    : err instanceof Error ? err.message : 'Internal server error'
 
   console.error(
     JSON.stringify({
@@ -221,7 +232,7 @@ export const errorHandler = (
   const body: ErrorResponse = {
     error: {
       code: ErrorCode.INTERNAL_ERROR,
-      message: 'Internal server error',
+      message,
       ...(requestId && { requestId }),
     },
   }

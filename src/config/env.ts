@@ -60,6 +60,24 @@ export const envSchema = z
         "REDIS_URL must be a valid Redis connection URL (starting with redis:// or rediss://)",
       ),
 
+    // ── Field encryption (envelope encryption for reversible secrets) ──
+    //
+    // Two ways to configure, in priority order:
+    //   1. FIELD_ENCRYPTION_KEYS – JSON array of { kid, key } objects, where
+    //      `key` is a base64-encoded 32-byte (AES-256) key. The FIRST entry is
+    //      the active key used to encrypt new data; the remaining entries are
+    //      retained so ciphertext written under an older key id still decrypts
+    //      after a rotation.
+    //   2. FIELD_ENCRYPTION_KEY – a single base64-encoded 32-byte key, treated
+    //      as the active key under the reserved key id "default". Convenient for
+    //      development / single-key deployments.
+    //
+    // Validation of the actual key material (length, base64) is performed in
+    // src/lib/encryption.ts so that decryption failures surface with precise,
+    // security-conscious error messages rather than as opaque Zod issues.
+    FIELD_ENCRYPTION_KEY: z.string().optional(),
+    FIELD_ENCRYPTION_KEYS: z.string().optional(),
+
     // ── Auth / secrets ──────────────────────────────────────
     JWT_SECRET: z
       .string()
@@ -81,6 +99,8 @@ export const envSchema = z
       .string()
       .regex(/^\d+[smhd]$/, "invalid duration format")
       .default("7d"),
+    JWT_ISSUER: z.string().min(1, "JWT_ISSUER is required").default("disciplr"),
+    JWT_AUDIENCE: z.string().min(1, "JWT_AUDIENCE is required").default("disciplr-api"),
     DOWNLOAD_SECRET: z
       .string()
       .min(16, "must be at least 16 characters")
@@ -219,6 +239,20 @@ export const envSchema = z
     HTTP_KEEPALIVE_TIMEOUT_MS: positiveInt(45_000),
     HTTP_HEADERS_TIMEOUT_MS: positiveInt(61_000),
     HTTP_REQUEST_TIMEOUT_MS: positiveInt(120_000),
+
+    // ── Admin / Debug ──────────────────────────────────────────────
+    ADMIN_API_KEY: z.string().default(""),
+
+    // ── Log sampling ───────────────────────────────────────────────
+    LOG_SAMPLE_RATE: z
+      .string()
+      .default("1")
+      .transform((v) => {
+        const n = Number.parseFloat(v);
+        return Number.isFinite(n) && n >= 0 && n <= 1 ? n : 1;
+      }),
+    LOG_SLOW_THRESHOLD_MS: positiveInt(1000),
+    LOG_ALWAYS_LOG_STATUS: z.string().default("500,502,503"),
   })
   .superRefine((data, ctx) => {
     // Existing CORS warning
@@ -261,9 +295,9 @@ let _validated: Env | undefined;
  */
 export function getEnv(): Env {
   if (!_validated) {
-    throw new Error("Environment not validated yet — call initEnv() first");
+    initEnv()
   }
-  return _validated;
+  return _validated!;
 }
 
 /** Reset internal state — exposed for tests only. */
@@ -422,7 +456,28 @@ export function validateEnv(raw?: Record<string, string | undefined>): {
   return { env: result.data, warnings };
 }
 
-/** Returns parsed JWT keys from the environment. */
+/** Warnings emitted during validation (not hard failures). */
 export function getJwtKeys(env: Env): JwtKey[] {
   return (env as any).JWT_KEYS as JwtKey[];
+}
+
+/**
+ * Raw field-encryption configuration, read directly from the environment.
+ *
+ * Resolved independently of the full {@link initEnv} validation so the
+ * encryption helpers (src/lib/encryption.ts) can be used in isolation — e.g. in
+ * unit tests — without requiring a complete, valid application environment.
+ * The actual key material (base64, 32-byte length, key-id uniqueness) is
+ * validated in src/lib/encryption.ts, where decryption failures can surface
+ * precise, security-conscious errors.
+ *
+ * @param env  Defaults to `process.env` — pass a custom record in tests.
+ */
+export function getFieldEncryptionConfig(
+  env: Record<string, string | undefined> = process.env,
+): { key?: string; keys?: string } {
+  return {
+    key: env.FIELD_ENCRYPTION_KEY,
+    keys: env.FIELD_ENCRYPTION_KEYS,
+  };
 }

@@ -1,176 +1,97 @@
-# Evidence Storage Contract
+# Evidence and Export Object Storage
 
-This service stores signed object-storage references for verification evidence without persisting raw PII or document contents.
+This document describes the security rules applied to S3 object-key construction
+and content-type validation for evidence references and export uploads.
 
-## What is stored
+---
 
-- `verification_id` — links the reference to the recorded verification decision.
-- `evidence_hash` — integrity checksum for the submitted evidence payload.
-- `reference_url` — signed object-storage URL (e.g. S3-compatible signed URL).
-- `expires_at` — expiry timestamp extracted from the signed URL.
-- `created_at` — insertion timestamp.
+## S3 Object-Key Rules
 
-## What is not stored
-
-- Raw evidence files.
-- User-uploaded document contents.
-- Sensitive personal data from the payload.
-
-## Ingestion rules
-
-- `POST /api/verifications` now accepts `evidenceHash` and `evidenceReferenceUrl`.
-- `evidenceHash` must be a non-empty alphanumeric-hyphen-underscore string between 32 and 128 characters.
-- `evidenceReferenceUrl` must be an HTTP/HTTPS signed object-storage URL.
-- URL expiry is validated by parsing one of:
-  - `X-Amz-Expires` with `X-Amz-Date`
-  - `Expires`
-  - `expires`
-- Expired URLs are rejected.
-
-## SSRF Protection
-
-Evidence URL references are validated with SSRF protection that blocks requests to internal, private, and cloud-metadata addresses. This protects against:
-
-- **Server-side request forgery** — an attacker submitting a malicious evidence URL designed to trigger requests to internal services
-- **Cloud metadata endpoint attacks** — accessing AWS/GCP/Azure metadata endpoints
-- **DNS rebinding** — a hostname that initially resolves to a safe IP but later rebinds to a private IP
-
-### Blocked IP Ranges
-
-The following IP ranges are always blocked, regardless of allowlist configuration:
-
-| Range | Purpose | Examples |
-|-------|---------|----------|
-| `10.0.0.0/8` | RFC1918 private network | `10.0.0.1` — `10.255.255.255` |
-| `172.16.0.0/12` | RFC1918 private network | `172.16.0.1` — `172.31.255.255` |
-| `192.168.0.0/16` | RFC1918 private network | `192.168.1.1` — `192.168.255.255` |
-| `127.0.0.0/8` | Loopback | `127.0.0.1`, `127.0.0.2`, etc. |
-| `::1` | IPv6 loopback | `[::1]` |
-| `169.254.0.0/16` | Link-local / cloud metadata | `169.254.169.254` (AWS/GCP metadata) |
-
-### Blocked Hostnames
-
-The following hostnames are always blocked:
-
-- `localhost` and `*.localhost`
-- `localtest.me` (DNS rebinding vector)
-
-### Scheme Allowlist
-
-Only `https://` is permitted in production. `http://` is permitted only for:
-
-- Local development environments
-- Intra-datacenter communication (when explicitly configured via `EVIDENCE_ALLOWLIST`)
-
-### Host Allowlist
-
-By default (no allowlist configured), evidence URLs may reference any public hostname. To restrict evidence storage to specific hosts, configure:
-
-```bash
-EVIDENCE_ALLOWLIST=storage.example.com,cdn.example.com,s3.amazonaws.com
-```
-
-The allowlist:
-- Is comma-separated
-- Supports subdomains (e.g., `example.com` allows `api.example.com`, `cdn.example.com`, etc.)
-- Is case-insensitive
-- **Still enforces private IP blocking** — a hostname cannot be allowlisted if it resolves to a private IP
-
-Fallback behavior:
-
-- If `EVIDENCE_ALLOWLIST` is not set, the system falls back to `WEBHOOK_ALLOWED_HOSTS` (allowing webhook and evidence to use the same allowlist)
-- If neither is set, all public-IP hostnames are allowed
-
-### DNS Rebinding Mitigation
-
-The hostname is validated at the socket level using the same logic as webhook delivery:
-
-1. The hostname is parsed from the URL
-2. `isUrlAllowed()` (from `src/services/webhooks.ts`) validates the hostname against blocked ranges
-3. Before each fetch, the URL is re-validated to catch rebinding attacks
-
-This prevents an attacker from:
-- Submitting a URL for `my-malicious-domain.com` that initially resolves to a public IP
-- The domain later rebinding to `169.254.169.254` to access cloud metadata
-
-### Adding New Storage Providers
-
-To allowlist a new evidence storage provider:
-
-1. **Verify the provider's IP range** — ensure it uses public IPs and not shared infrastructure (e.g., AWS regions with mixed public/private endpoints)
-2. **Add to `EVIDENCE_ALLOWLIST`** — include the provider's hostname or domain
-   ```bash
-   EVIDENCE_ALLOWLIST=storage.example.com,existing-provider.com
-   ```
-3. **Document in this file** — add the provider to the list below
-
-#### Current Approved Providers
-
-| Provider | Hostname | Notes |
-|----------|----------|-------|
-| AWS S3 | `*.s3.amazonaws.com`, `s3.*.amazonaws.com` | Use region-specific or bucket-specific endpoints |
-| Google Cloud Storage | `storage.googleapis.com` | |
-| Azure Blob Storage | `*.blob.core.windows.net` | Use storage account-specific endpoints |
-
-## Persistence
-
-A new `evidence_references` table stores evidence metadata.
-This table is created by the new database migration `db/migrations/20260527000000_create_evidence_references.cjs`.
-
-## Audit logging
-
-Audit logs do not include the raw signed URL.
-Only evidence metadata such as `evidenceHash` and the fact that evidence was attached are recorded.
-
-Blocked SSRF attempts are logged as warnings without including the full URL to prevent leaking internal topology:
+All object keys are tenant-prefixed to ensure cross-tenant isolation:
 
 ```
-[Evidence] SSRF protection blocked unsafe evidence URL
+exports/<job-id>/<filename>
 ```
 
-## Similarity Search
+### Key Segment Sanitisation
 
-To detect near-duplicate or low-effort submissions, evidence supports a hybrid similarity search combining vector embeddings and keyword/text matching.
+Every user-influenced path segment (job ID, filename) is passed through
+`sanitizeS3KeySegment` before the key is assembled. The function enforces:
 
-### Hybrid Search Implementation
-- **Vector Search (HNSW)**: The `milestone_embeddings` table uses an HNSW index on the `embedding` column with the `vector_cosine_ops` operator class.
-  - **Tradeoffs**: HNSW provides superior recall and faster query times compared to IVFFlat, though it consumes slightly more memory and index build time.
-  - **Parameters**: Built with `m = 16` and `ef_construction = 64` as standards for 768-dimensional embeddings.
-- **Keyword Search (pg_trgm)**: The `evidence_references` table is indexed with GIN indexes (`gin_trgm_ops`) on `reference_url` and `evidence_hash`.
-  - This acts as a fallback for evidence that shares few embedded features but has exactly or near-exactly matching URLs or hashes.
-- **Scoring**: A fused score is calculated as `w1 * vector_distance + w2 * keyword_distance`. Both vector and keyword use distance metrics where `0` implies an exact match.
+| Rule | Effect |
+|------|--------|
+| Null bytes (`\0`) | **Rejected** — throws `S3KeyTraversalError` |
+| `..` in any slash-delimited component | **Rejected** — throws `S3KeyTraversalError` |
+| Single `.` in any slash-delimited component | **Rejected** — throws `S3KeyTraversalError` |
+| Leading `/` or `//…` | **Stripped** — cannot escape the tenant prefix |
+| Embedded `/` sequences | **Collapsed to `-`** — segment stays within a single path component |
 
-## Relationship to milestone embeddings
+Because the tenant prefix (`exports/`) is prepended _after_ sanitisation,
+no caller-supplied value can navigate above or outside the intended prefix.
 
-This service intentionally does **not** generate or store embeddings — see "What is not stored"
-above. Similarity-search embeddings for milestones (used for near-duplicate / low-effort
-submission detection) are a separate subsystem keyed by `milestone_id`, not evidence rows, and are
-kept in sync by an offline reindex backfill job. See "Embedding reindex backfill job" in
-`docs/milestones.md` for that job's design, resumability, and rate-limiting.
+### Why this matters
 
-## Security Notes
+Without sanitisation, a segment such as `../../other-org/secrets.csv` would
+produce the key `exports/../../other-org/secrets.csv`, which many S3-compatible
+stores normalise to `other-org/secrets.csv`, overwriting another tenant's
+object.
 
-### Implementation Details
+---
 
-- SSRF validation occurs in `src/services/evidence.ts` via the `validateEvidenceUrlSafety()` function
-- Reuses the same `isUrlAllowed()` logic as webhook delivery for consistency (see `src/services/webhooks.ts`)
-- Both `createEvidenceReference()` and `fetchEvidenceContent()` validate URLs before accepting or fetching
-- HTTP redirects are rejected during fetch to prevent redirect-based SSRF (using `redirect: 'manual'`)
+## Content-Type Allowlist
 
-### Defense-in-Depth
+`uploadToS3` calls `assertAllowedContentType` before sending the upload. Any
+content type not in `ALLOWED_CONTENT_TYPES` causes an `S3ContentTypeError` and
+the upload is aborted.
 
-SSRF validation happens at two points:
+### Permitted content types
 
-1. **At reference creation** (`createEvidenceReference()`) — blocks storage of unsafe URLs
-2. **Before each fetch** (`fetchEvidenceContent()`) — catches configuration changes or bypasses
+| MIME type | Use |
+|-----------|-----|
+| `text/csv` | Export CSV downloads |
+| `text/csv; charset=utf-8` | Export CSV downloads |
+| `application/json` | Export JSON downloads |
+| `application/json; charset=utf-8` | Export JSON downloads |
+| `application/x-ndjson` | Export NDJSON downloads |
+| `application/pdf` | Evidence attachments |
+| `image/png` | Evidence screenshots |
+| `image/jpeg` | Evidence screenshots |
+| `image/webp` | Evidence screenshots |
 
-This dual validation ensures that:
-- Misconfigured allowlists don't leak access to internal services
-- Future changes to the allowlist don't retroactively expose old references
-- DNS rebinding after reference creation is caught before fetch
+### Rejected categories
 
-### Audit and Compliance
+- `text/html` — served directly, creates XSS vectors
+- `application/javascript` / `text/javascript` — active content
+- `application/octet-stream` — generic binary, potential executable
+- `text/xml` / `application/xml` — XXE vectors
+- Any type not explicitly listed above
 
-- Blocked SSRF attempts are logged (without URL details) for security audits
-- Evidence references are immutable (created via `ON CONFLICT DO UPDATE`) — once accepted, the URL cannot be changed
-- All URL validation is deterministic and testable (see `src/tests/evidence.ssrf.test.ts`)
+To add a new type, update `ALLOWED_CONTENT_TYPES` in
+`src/services/exportS3.ts` and extend the test matrix in
+`src/tests/exportS3.traversal.test.ts`.
+
+---
+
+## Evidence URL Validation
+
+Evidence references store pre-signed object-storage URLs supplied by callers.
+They are **not** built by the backend, but they are validated before acceptance:
+
+1. **SSRF guard** — `validateEvidenceUrlSafety` calls `isUrlAllowed`, which
+   blocks RFC 1918 private ranges, loopback, link-local, and non-allowlisted
+   hosts. See `src/services/evidence.ts` for the implementation.
+2. **Expiry check** — the signed URL must not already be expired. Both
+   AWS-style (`X-Amz-Expires` + `X-Amz-Date`) and epoch-style (`Expires`)
+   parameters are supported.
+3. **Protocol enforcement** — only `http:` and `https:` are accepted.
+
+---
+
+## Adding a New Upload Path
+
+1. Determine the tenant prefix (e.g. `evidence/<org-id>/`).
+2. Pass every user-supplied path segment through `sanitizeS3KeySegment`.
+3. Choose the correct content type and confirm it is in `ALLOWED_CONTENT_TYPES`.
+4. Call `uploadToS3` — it enforces the content-type allowlist automatically.
+5. Add test cases covering traversal inputs and the disallowed-content-type
+   path to `src/tests/exportS3.traversal.test.ts`.
