@@ -1,6 +1,6 @@
 import express from 'express'
 import request from 'supertest'
-import { jest, describe, it, expect, beforeEach } from '@jest/globals'
+import { jest, describe, it, expect, beforeEach, mock } from 'bun:test'
 
 const checkpointRows = [
   {
@@ -107,35 +107,35 @@ const makeDbChain = (tableName: string) => {
 
 const db = jest.fn<any>((tableName: string) => makeDbChain(tableName))
 
-jest.unstable_mockModule('../middleware/auth.js', () => ({ authenticate: authMiddleware }))
-jest.unstable_mockModule('../middleware/rateLimiter.js', () => ({ metricsRateLimiter: (_req: any, _res: any, next: any) => next() }))
-jest.unstable_mockModule('../middleware/queryParser.js', () => ({ queryParser: () => (_req: any, _res: any, next: any) => next() }))
-jest.unstable_mockModule('../lib/audit-logs.js', () => ({
+mock.module('../middleware/auth.js', () => ({ authenticate: authMiddleware }))
+mock.module('../middleware/rateLimiter.js', () => ({ metricsRateLimiter: (_req: any, _res: any, next: any) => next() }))
+mock.module('../middleware/queryParser.js', () => ({ queryParser: () => (_req: any, _res: any, next: any) => next() }))
+mock.module('../lib/audit-logs.js', () => ({
   createAuditLog,
   getAuditLogById: jest.fn<any>(),
   listAuditLogs: jest.fn<any>(),
 }))
-jest.unstable_mockModule('../services/checkpointStore.js', () => ({
+mock.module('../services/checkpointStore.js', () => ({
   CheckpointStore: class {
     getAllCheckpoints = getAllCheckpoints
     getCheckpoint = getCheckpoint
     resetCheckpoint = resetCheckpoint
   },
 }))
-jest.unstable_mockModule('../services/monitor.js', () => ({ getLatestListenerLag: () => 7 }))
-jest.unstable_mockModule('../db/knex.js', () => ({ db }))
-jest.unstable_mockModule('../db/index.js', () => ({ pool: {} }))
-jest.unstable_mockModule('../services/user.service.js', () => ({ userService: {}, DeleteResult: {} }))
-jest.unstable_mockModule('../services/session.js', () => ({ forceRevokeUserSessions: jest.fn<any>() }))
-jest.unstable_mockModule('../services/vaultStore.js', () => ({ cancelVaultById: jest.fn<any>() }))
-jest.unstable_mockModule('../services/dbMetrics.js', () => ({ getDBHealthMetrics: jest.fn<any>() }))
-jest.unstable_mockModule('../services/featureFlags.js', () => ({
+mock.module('../services/monitor.js', () => ({ getLatestListenerLag: () => 7 }))
+mock.module('../db/knex.js', () => ({ db }))
+mock.module('../db/index.js', () => ({ pool: {} }))
+mock.module('../services/user.service.js', () => ({ userService: {}, DeleteResult: {} }))
+mock.module('../services/session.js', () => ({ forceRevokeUserSessions: jest.fn<any>() }))
+mock.module('../services/vaultStore.js', () => ({ cancelVaultById: jest.fn<any>() }))
+mock.module('../services/dbMetrics.js', () => ({ getDBHealthMetrics: jest.fn<any>() }))
+mock.module('../services/featureFlags.js', () => ({
   getFlag: jest.fn<any>(),
   setFlag: jest.fn<any>(),
   isValidFeatureFlag: jest.fn<any>(),
   getAllFlags: jest.fn<any>(),
 }))
-jest.unstable_mockModule('../security/abuse-monitor.js', () => ({ getAbuseCategoryCounts: jest.fn<any>(() => ({})) }))
+mock.module('../security/abuse-monitor.js', () => ({ getAbuseCategoryCounts: jest.fn<any>(() => ({})) }))
 
 const { adminRouter } = await import('../routes/admin.js')
 

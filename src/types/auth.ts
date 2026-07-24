@@ -26,6 +26,9 @@ export interface ApiKeyRecord {
   scopes: ApiScope[]
   createdAt: string
   revokedAt: string | null
+  lastUsedAt?: string | null
+  requestCount?: number
+  lastIp?: string | null
 }
 
 export interface JWTPayload {

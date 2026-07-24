@@ -13,6 +13,9 @@ import {
   saveIdempotentResponse,
   failPendingIdempotentResponse,
   IdempotencyConflictError,
+  validateIdempotencyKey,
+  scopeIdempotencyKey,
+  type OwnerContext,
 } from '../services/idempotency.js'
 import { buildVaultCreationPayload } from '../services/soroban.js'
 import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById, updateVaultById, getVaultRevisionById, getVaultETag } from '../services/vaultStore.js'
@@ -69,15 +72,37 @@ vaultsRouter.get(
 // POST /api/vaults 
 
 vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: NextFunction) => {
-  // 1. Idempotency – replay cached response if key+hash match
-  const idempotencyKey = req.header('idempotency-key') ?? null
+  const rawIdempotencyKey = req.header('idempotency-key') ?? null
+  let scopedIdempotencyKey: string | null = null
+  const actorUserId = (req.header('x-user-id') ?? req.body?.creator) || req.user?.userId || 'unknown'
+
+  if (rawIdempotencyKey) {
+    const validation = validateIdempotencyKey(rawIdempotencyKey)
+    if (!validation.valid) {
+      res.status(400).json({
+        error: {
+          code: validation.code,
+          message: validation.error,
+        },
+      })
+      return
+    }
+    scopedIdempotencyKey = scopeIdempotencyKey(actorUserId, rawIdempotencyKey)
+  }
+
   const requestHash = hashRequestPayload(req.body)
 
-  if (idempotencyKey) {
+  // Derive owner from authenticated principal (JWT or API key)
+  const owner: OwnerContext = {
+    userId: req.user?.userId ?? req.apiKeyAuth?.userId ?? null,
+    orgId: req.apiKeyAuth?.orgId ?? req.user?.enterpriseId ?? null,
+  }
+
+  if (scopedIdempotencyKey) {
     try {
-      const cached = await getIdempotentResponse<VaultCreateResponse>(idempotencyKey, requestHash)
+      const cached = await getIdempotentResponse<VaultCreateResponse>(scopedIdempotencyKey, requestHash, owner)
       if (cached !== null) {
-        res.status(200).json({ ...cached, idempotency: { key: idempotencyKey, replayed: true } })
+        res.status(200).json({ ...cached, idempotency: { key: rawIdempotencyKey, replayed: true } })
         return
       }
     } catch (err) {
@@ -102,7 +127,6 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
 
   const input = parseResult.data
 
-  // Ensure Stellar addresses (verifier and destinations) pass checksum
   try {
     if (input.verifier && !(await isValidStellarAddress(input.verifier))) {
       return next(AppError.validation('invalid Stellar public key', { field: 'verifier' }))
@@ -124,14 +148,13 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
     const responseBody: VaultCreateResponse = {
       vault,
       onChain: await buildVaultCreationPayload(input, vault),
-      idempotency: { key: idempotencyKey, replayed: false },
+      idempotency: { key: rawIdempotencyKey, replayed: false },
     }
 
-    if (idempotencyKey) {
-      await saveIdempotentResponse(idempotencyKey, requestHash, vault.id, responseBody)
+    if (scopedIdempotencyKey) {
+      await saveIdempotentResponse(scopedIdempotencyKey, requestHash, vault.id, responseBody, owner)
     }
 
-    const actorUserId = (req.header('x-user-id') ?? input.creator) || req.user?.userId || 'unknown'
     createAuditLog({
       actor_user_id: actorUserId,
       action: 'vault.created',
@@ -143,8 +166,8 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
     updateAnalyticsSummary()
     res.status(201).json(responseBody)
   } catch (error) {
-    if (idempotencyKey) {
-      failPendingIdempotentResponse(idempotencyKey, requestHash, error)
+    if (scopedIdempotencyKey) {
+      failPendingIdempotentResponse(scopedIdempotencyKey, requestHash, error, owner)
     }
 
     console.error('Vault creation failed', error)
@@ -213,6 +236,31 @@ vaultsRouter.patch('/:id', authenticate, async (req: Request, res: Response) => 
       return
     }
     res.status(500).json({ error: 'Failed to update vault' })
+  }
+})
+
+// GET /api/vaults/:id/timeline
+vaultsRouter.get('/:id/timeline', authenticate, async (req, res, next) => {
+  const { id } = req.params
+  const actorUserId = req.user!.userId
+  const actorRole = req.user!.role
+
+  try {
+    const vault = await getVaultById(id)
+    if (!vault) {
+      return next(AppError.notFound('Vault not found'))
+    }
+
+    // Authorization: only vault creator or an admin can view the timeline
+    if (actorUserId !== vault.creator && actorRole !== UserRole.ADMIN) {
+      return next(AppError.forbidden('You do not have permission to view this vault timeline.'))
+    }
+
+    const timeline = await VaultService.getVaultTimeline(id)
+    res.json({ timeline })
+  } catch (error) {
+    console.error(`Failed to fetch timeline for vault ${id}:`, error)
+    return next(AppError.internal('Failed to fetch vault timeline.'))
   }
 })
 

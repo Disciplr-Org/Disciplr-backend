@@ -1,3 +1,4 @@
+import type { Knex } from 'knex'
 import db from '../db/index.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import type { Membership, CreateMembershipInput } from '../types/enterprise.js'
@@ -39,6 +40,46 @@ type OrgInvitation = {
 
 const isAdminRole = (role: string): boolean =>
   role === 'owner' || role === 'admin'
+
+/** Precedence for resolving conflicting org/team role grants (higher wins). */
+export const ORG_ROLE_RANK: Readonly<Record<string, number>> = {
+  owner: 3,
+  admin: 2,
+  member: 1,
+  viewer: 0,
+}
+
+export const getOrgRoleRank = (role: string): number =>
+  ORG_ROLE_RANK[role] ?? -1
+
+export const isKnownOrgRole = (role: string): boolean =>
+  role in ORG_ROLE_RANK
+
+/** Pick the higher-precedence role between two grants. */
+export const pickHigherOrgRole = (a: string, b: string): string =>
+  getOrgRoleRank(a) >= getOrgRoleRank(b) ? a : b
+
+/**
+ * Resolve a user's effective org role from all org- and team-level memberships.
+ * When multiple grants exist, the highest applicable role wins.
+ */
+export const resolveEffectiveOrgRole = async (
+  userId: string,
+  organizationId: string,
+): Promise<string | null> => {
+  const memberships = await db('memberships')
+    .where({ user_id: userId, organization_id: organizationId })
+    .select('role')
+
+  if (memberships.length === 0) {
+    return null
+  }
+
+  return memberships.reduce(
+    (highest, membership) => pickHigherOrgRole(highest, membership.role),
+    memberships[0].role,
+  )
+}
 
 // ─── Create ───────────────────────────────────────────────────────────────────
 
@@ -104,23 +145,31 @@ export const getUserTeamRole = async (
 
 // ─── Admin Count ──────────────────────────────────────────────────────────────
 
-export const countOrgAdmins = async (orgId: string): Promise<number> => {
-  const result = await db('memberships')
+export const countOrgAdmins = async (
+  orgId: string,
+  queryBuilder: Knex | Knex.Transaction = db,
+): Promise<number> => {
+  // Aggregates can't be combined with a locking clause in Postgres, so the
+  // matching rows are locked and counted in JS instead of via count(*).
+  const rows = await queryBuilder('memberships')
     .where({ organization_id: orgId, team_id: null })
     .whereIn('role', ['owner', 'admin'])
-    .count('* as count')
-    .first()
+    .forUpdate()
+    .select('id')
 
-  return Number(result?.count ?? 0)
+  return rows.length
 }
 
-export const countOrgOwners = async (orgId: string): Promise<number> => {
-  const result = await db('memberships')
+export const countOrgOwners = async (
+  orgId: string,
+  queryBuilder: Knex | Knex.Transaction = db,
+): Promise<number> => {
+  const rows = await queryBuilder('memberships')
     .where({ organization_id: orgId, team_id: null, role: 'owner' })
-    .count('* as count')
-    .first()
+    .forUpdate()
+    .select('id')
 
-  return Number(result?.count ?? 0)
+  return rows.length
 }
 
 // ─── Delete ───────────────────────────────────────────────────────────────────
@@ -129,39 +178,42 @@ export const removeMembership = async (
   userId: string,
   orgId: string,
 ): Promise<void> => {
-  const membership = await db('memberships')
-    .where({
-      user_id: userId,
-      organization_id: orgId,
-      team_id: null,
-    })
-    .first()
+  await db.transaction(async (trx) => {
+    const membership = await trx('memberships')
+      .where({
+        user_id: userId,
+        organization_id: orgId,
+        team_id: null,
+      })
+      .forUpdate()
+      .first()
 
-  if (!membership) {
-    throw new Error('Membership not found.')
-  }
-
-  if (membership.role === 'owner') {
-    const ownerCount = await countOrgOwners(orgId)
-    if (ownerCount <= 1) {
-      throw new Error('Cannot remove the last owner of an organization.')
+    if (!membership) {
+      throw new Error('Membership not found.')
     }
-  }
-  
-  if (isAdminRole(membership.role)) {
-    const adminCount = await countOrgAdmins(orgId)
-    if (adminCount <= 1) {
-      throw new LastAdminError()
-    }
-  }
 
-  await db('memberships')
-    .where({
-      user_id: userId,
-      organization_id: orgId,
-      team_id: null,
-    })
-    .delete()
+    if (membership.role === 'owner') {
+      const ownerCount = await countOrgOwners(orgId, trx)
+      if (ownerCount <= 1) {
+        throw new Error('Cannot remove the last owner of an organization.')
+      }
+    }
+
+    if (isAdminRole(membership.role)) {
+      const adminCount = await countOrgAdmins(orgId, trx)
+      if (adminCount <= 1) {
+        throw new LastAdminError()
+      }
+    }
+
+    await trx('memberships')
+      .where({
+        user_id: userId,
+        organization_id: orgId,
+        team_id: null,
+      })
+      .delete()
+  })
 }
 
 // ─── Update ───────────────────────────────────────────────────────────────────
@@ -172,54 +224,57 @@ export const changeRole = async (
   newRole: string,
   actorUserId: string,
 ): Promise<Membership> => {
-  const membership = await db('memberships')
-    .where({
-      user_id: userId,
-      organization_id: orgId,
-      team_id: null,
-    })
-    .first()
+  return db.transaction(async (trx) => {
+    const membership = await trx('memberships')
+      .where({
+        user_id: userId,
+        organization_id: orgId,
+        team_id: null,
+      })
+      .forUpdate()
+      .first()
 
-  if (!membership) {
-    throw new Error('Membership not found.')
-  }
-
-  const oldRole = membership.role
-  if (oldRole === newRole) {
-    return membership
-  }
-
-  if (oldRole === 'owner') {
-    const ownerCount = await countOrgOwners(orgId)
-    if (ownerCount <= 1) {
-      throw new Error('Cannot demote the last owner of an organization.')
+    if (!membership) {
+      throw new Error('Membership not found.')
     }
-  } else if (isAdminRole(oldRole) && !isAdminRole(newRole)) {
-    const adminCount = await countOrgAdmins(orgId)
-    if (adminCount <= 1) {
-      throw new LastAdminError()
+
+    const oldRole = membership.role
+    if (oldRole === newRole) {
+      return membership
     }
-  }
 
-  const [updated] = await db('memberships')
-    .where({
-      user_id: userId,
+    if (oldRole === 'owner') {
+      const ownerCount = await countOrgOwners(orgId, trx)
+      if (ownerCount <= 1) {
+        throw new Error('Cannot demote the last owner of an organization.')
+      }
+    } else if (isAdminRole(oldRole) && !isAdminRole(newRole)) {
+      const adminCount = await countOrgAdmins(orgId, trx)
+      if (adminCount <= 1) {
+        throw new LastAdminError()
+      }
+    }
+
+    const [updated] = await trx('memberships')
+      .where({
+        user_id: userId,
+        organization_id: orgId,
+        team_id: null,
+      })
+      .update({ role: newRole })
+      .returning('*')
+
+    await createAuditLog({
+      actor_user_id: actorUserId,
       organization_id: orgId,
-      team_id: null,
+      action: 'org.member.role_changed',
+      target_type: 'org_membership',
+      target_id: `${orgId}:${userId}`,
+      metadata: { org_id: orgId, old_role: oldRole, new_role: newRole },
     })
-    .update({ role: newRole })
-    .returning('*')
 
-  await createAuditLog({
-    actor_user_id: actorUserId,
-    organization_id: orgId,
-    action: 'org.member.role_changed',
-    target_type: 'org_membership',
-    target_id: `${orgId}:${userId}`,
-    metadata: { org_id: orgId, old_role: oldRole, new_role: newRole },
+    return updated
   })
-
-  return updated
 }
 
 // ─── Invitations ─────────────────────────────────────────────────────────────

@@ -1,29 +1,30 @@
-import { describe, test, expect, beforeEach, afterEach } from '@jest/globals'
+import { describe, test, expect, beforeEach, afterEach, jest} from '@jest/globals'
 import request from 'supertest'
 import { app } from '../app'
 import { createAuditLog } from '../lib/audit-logs'
-import { generateAccessToken, generateImpersonationToken, verifyAccessToken } from '../lib/auth-utils'
+import { generateAccessToken,  verifyAccessToken } from '../lib/auth-utils'
 import { UserRole } from '../types/user'
 import { resetExportJobs } from '../services/exportQueue'
 
 // Mock services
 jest.mock('../lib/audit-logs', () => ({
-  createAuditLog: jest.fn().mockResolvedValue({ id: 'audit-123' }),
-  getAuditLogById: jest.fn().mockResolvedValue(null),
-  listAuditLogs: jest.fn().mockResolvedValue([])
+  createAuditLog: jest.fn().mockResolvedValue({ id: 'audit-123' } as never),
+  getAuditLogById: jest.fn().mockResolvedValue(null as never),
+  listAuditLogs: jest.fn().mockResolvedValue([] as never)
 }))
 
 jest.mock('../services/session', () => ({
-  recordSession: jest.fn().mockResolvedValue(undefined),
-  validateSession: jest.fn().mockResolvedValue(true),
-  forceRevokeUserSessions: jest.fn().mockResolvedValue(undefined),
-  revokeAllUserSessions: jest.fn().mockResolvedValue(undefined)
+  recordSession: jest.fn().mockResolvedValue(undefined as never),
+  validateSession: jest.fn().mockResolvedValue(true as never),
+  forceRevokeUserSessions: jest.fn().mockResolvedValue(undefined as never),
+  revokeAllUserSessions: jest.fn().mockResolvedValue(undefined as never)
 }))
 
 jest.mock('../lib/prismaScope', () => ({
   getPrisma: jest.fn(() => ({
     user: {
-      findUnique: jest.fn().mockImplementation(({ where }) => {
+      findUnique: jest.fn().mockImplementation((args: any) => {
+        const where = args.where
         if (where.id === 'target-user-id') {
           return { id: 'target-user-id', role: UserRole.USER }
         }

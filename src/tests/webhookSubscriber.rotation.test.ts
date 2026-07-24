@@ -12,6 +12,10 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from '@jest/globals'
 import knex, { Knex } from 'knex'
 import { WebhookSubscriberRepository } from '../repositories/webhookSubscriberRepository.js'
+import { decryptField } from '../lib/encryption.js'
+
+// Signing secrets are encrypted at rest (a test key is configured globally in
+// jest.setup.cjs), so reads of the raw `secret` column return ciphertext.
 
 // ─── Conditional suite ────────────────────────────────────────────────────────
 
@@ -146,7 +150,9 @@ describeDb('WebhookSubscriberRepository – upsert & secret rotation', () => {
 
       // Must have exactly one row — no duplicates
       expect(all).toHaveLength(1)
-      expect(all[0].secret).toBe('new-secret')
+      // Stored secret is ciphertext at rest; decrypt to compare.
+      expect(all[0].secret).not.toBe('new-secret')
+      expect(decryptField(all[0].secret)).toBe('new-secret')
       expect(all[0].events).toEqual(['vault_created', 'vault_completed'])
     })
 
@@ -198,8 +204,9 @@ describeDb('WebhookSubscriberRepository – upsert & secret rotation', () => {
       expect(rowsA).toHaveLength(1)
       expect(rowsB).toHaveLength(1)
       // Org A's secret must remain untouched when org B upserts the same URL
-      expect(rowsA[0].secret).toBe('secret-a')
-      expect(rowsB[0].secret).toBe('secret-b')
+      // (stored encrypted at rest, so decrypt to compare).
+      expect(decryptField(rowsA[0].secret)).toBe('secret-a')
+      expect(decryptField(rowsB[0].secret)).toBe('secret-b')
     })
 
     it('preserves delivery history (dead letter rows) across re-registration', async () => {
@@ -284,9 +291,9 @@ describeDb('WebhookSubscriberRepository – upsert & secret rotation', () => {
       const result = await repo.rotateSecret(sub.id, ORG_B, 'attacker-secret')
       expect(result).toBeNull()
 
-      // Confirm the row is unchanged
+      // Confirm the row is unchanged (stored encrypted, so decrypt to compare)
       const row = await db('webhook_subscribers').where({ id: sub.id }).first()
-      expect(row.secret).toBe('secret-a')
+      expect(decryptField(row.secret)).toBe('secret-a')
     })
 
     it('overwrites previous_secret on a second rotation', async () => {

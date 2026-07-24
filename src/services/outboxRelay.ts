@@ -1,6 +1,7 @@
 import { db } from '../db/index.js'
 import { dispatchWebhookEvent } from './webhooks.js'
 import { ETLBatchRepository } from '../repositories/etlBatchRepository.js'
+import { isPaused } from './pauseStore.js'
 
 const MAX_ATTEMPTS = 5
 
@@ -8,8 +9,14 @@ const MAX_ATTEMPTS = 5
  * Claims unprocessed outbox rows using SKIP LOCKED,
  * dispatches them to webhook delivery and ETL enqueue,
  * and marks them processed.
+ *
+ * When the global webhook-delivery pause flag is active the relay returns 0
+ * immediately, leaving all outbox rows untouched for later replay.
  */
 export async function relayOutboxBatch(batchSize = 50): Promise<number> {
+  if (isPaused()) {
+    return 0
+  }
   return await db.transaction(async (trx) => {
     // Claim unprocessed outbox rows (SKIP LOCKED)
     const rows = await trx('vault_outbox')
@@ -81,3 +88,22 @@ export async function relayOutboxBatch(batchSize = 50): Promise<number> {
     return rows.length
   })
 }
+
+/**
+ * Replays all recorded outbox events for a single vault to an optional target subscriber.
+ * Preserves the original event ordering (by created_at or id asc) and does not modify the outbox state.
+ * Returns the number of events replayed.
+ */
+export async function replayForVault(vaultId: string, subscriberId?: string): Promise<number> {
+  const rows = await db('vault_outbox')
+    .whereRaw("payload->'data'->>'vaultId' = ?", [vaultId])
+    .orderBy('created_at', 'asc')
+
+  for (const row of rows) {
+    const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload
+    await dispatchWebhookEvent(payload, subscriberId)
+  }
+
+  return rows.length
+}
+

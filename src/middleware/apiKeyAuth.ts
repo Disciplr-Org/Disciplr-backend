@@ -11,7 +11,8 @@ export const authenticateApiKey = (requiredScopes: ApiScope[] = []): RequestHand
       return
     }
 
-    const validation = await validateApiKey(apiKey, requiredScopes)
+    const clientIp = (req.ip || req.header('x-forwarded-for') || 'unknown') as string
+    const validation = await validateApiKey(apiKey, requiredScopes, clientIp)
     if (!validation.valid) {
       if (validation.reason === 'forbidden') {
         res.status(403).json({ error: 'API key does not have the required scopes.' })
