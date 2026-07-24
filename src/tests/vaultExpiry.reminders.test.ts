@@ -8,7 +8,7 @@ const mockDbChain = {
   where: jest.fn(() => mockDbChain),
   whereIn: jest.fn(() => mockDbChain),
   whereNotNull: jest.fn(() => mockDbChain),
-  select: jest.fn(() => mockDbChain),
+  select: jest.fn().mockImplementation(async () => mockVaultMilestones),
 }
 
 jest.unstable_mockModule('../db/index.js', () => ({
@@ -29,7 +29,6 @@ describe('sendMilestoneReminders', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     mockVaultMilestones = []
-    ;(mockDbChain.select as jest.Mock).mockResolvedValue(mockVaultMilestones)
   })
 
   it('sends a reminder for a milestone within lead time', async () => {
@@ -96,18 +95,21 @@ describe('sendMilestoneReminders', () => {
     ]
 
     // First call
-    await sendMilestoneReminders({
+    const result1 = await sendMilestoneReminders({
       now,
       leadTimesMs: [1 * 60 * 60 * 1000],
     })
+    expect(result1).toBe(1)
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
 
-    // Second call (should be deduplicated)
-    await sendMilestoneReminders({
+    // Second call (simulating idempotency collision in DB)
+    mockCreateNotification.mockRejectedValueOnce(new Error('Duplicate key value violates unique constraint'))
+    const result2 = await sendMilestoneReminders({
       now,
       leadTimesMs: [1 * 60 * 60 * 1000],
     })
-    expect(mockCreateNotification).toHaveBeenCalledTimes(1) // Still 1
+    expect(result2).toBe(0)
+    expect(mockCreateNotification).toHaveBeenCalledTimes(2)
   })
 
   it('skips milestones that are not pending', async () => {

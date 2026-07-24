@@ -1,5 +1,5 @@
-import { afterAll, beforeEach, describe, expect, it, jest } from '@jest/globals'
-import crypto from 'node:crypto'
+import { afterAll, beforeEach, describe, expect, it, jest, mock } from 'bun:test'
+import crypto, { randomUUID } from 'node:crypto'
 import type { Request, Response } from 'express'
 import {
   createJob,
@@ -20,7 +20,7 @@ const buildDownloadToken = (jobId: string, userId: string, ttlSeconds = 3600): s
 
 const signDownloadTokenMock = jest.fn(buildDownloadToken)
 
-jest.unstable_mockModule('../middleware/auth.js', () => ({
+mock.module('../middleware/auth.js', () => ({
   authenticate: (_req: Request, _res: Response, next: () => void) => next(),
   requireAdmin: (_req: Request, _res: Response, next: () => void) => next(),
   signDownloadToken: signDownloadTokenMock,
@@ -83,7 +83,7 @@ const createMockResponse = (): MockResponse => {
 
 const createMockJobSystem = () => ({
   enqueue: jest.fn(() => ({
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     type: 'export.generate',
     runAt: new Date().toISOString(),
     maxAttempts: 3,

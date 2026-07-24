@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import knex, { Knex } from 'knex'
+import { beforeAll, afterAll, beforeEach, describe, expect, it } from 'bun:test'
 import { ETLBatchRepository } from './etlBatchRepository.js'
 
 const TEST_DB_URL = process.env.DATABASE_URL
@@ -9,24 +10,33 @@ function uuid(seed: number): string {
   return `00000000-0000-4000-a000-${hex}`
 }
 
-describe('ETLBatchRepository', () => {
-  let db: Knex
+const describeWithDb = TEST_DB_URL ? describe : describe.skip
+
+describeWithDb('ETLBatchRepository', () => {
+  let db: Knex | null = null
   let repo: ETLBatchRepository
 
   beforeAll(async () => {
+    if (!TEST_DB_URL) return
+
     db = knex({
       client: 'pg',
       connection: TEST_DB_URL,
     })
+    // Ensure connection is established before any test runs
+    await db.raw('SELECT 1')
     repo = new ETLBatchRepository(db)
   })
 
   beforeEach(async () => {
+    if (!db) return
     await db('etl_batches').del()
   })
 
   afterAll(async () => {
-    await db.destroy()
+    if (db) {
+      await db.destroy()
+    }
   })
 
   describe('create', () => {

@@ -126,7 +126,7 @@ describe('ensureSorobanBootPrecheck', () => {
   afterEach(() => resetSorobanBootResult())
 
   it('runs the precheck on first call', async () => {
-    expect(await ensureSorobanBootPrecheck(undefined, () => null)).toEqual({ ran: false })
+    expect(await ensureSorobanBootPrecheck(okFetch(), () => null)).toEqual({ ran: false })
   })
 
   it('returns cached result without re-running on subsequent calls', async () => {

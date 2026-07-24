@@ -39,3 +39,58 @@ export const CURRENT_EMBEDDING_MODEL_VERSION = process.env.EMBEDDING_MODEL_VERSI
 export const createEmbeddingProvider = (
   modelVersion: string = CURRENT_EMBEDDING_MODEL_VERSION,
 ): EmbeddingProvider => new DeterministicEmbeddingProvider(modelVersion)
+
+// ── Drift detection ───────────────────────────────────────────────────────────
+
+export interface EmbeddingVersionCount {
+  modelVersion: string
+  count: number
+  isCurrent: boolean
+}
+
+export interface EmbeddingDriftReport {
+  currentModelVersion: string
+  totalEmbeddings: number
+  staleCount: number
+  currentCount: number
+  versions: EmbeddingVersionCount[]
+}
+
+/**
+ * Query DB interface used by detectEmbeddingDrift — narrow so tests can
+ * inject a simple fake without a real Knex instance.
+ */
+export interface EmbeddingDriftDb {
+  (table: 'milestone_embeddings'): {
+    select(col: string): { count(col: string): { as(alias: string): any }; groupBy(col: string): Promise<Array<{ model_version: string; count: string | number }>> }
+    count(col: string): { as(alias: string): any }
+    groupBy(col: string): Promise<Array<{ model_version: string; count: string | number }>>
+  }
+}
+
+/**
+ * Returns a drift report grouping stored embeddings by model_version vs the
+ * active provider version. An embedding is "stale" when its model_version
+ * differs from currentModelVersion.
+ */
+export async function detectEmbeddingDrift(
+  db: { (table: string): any },
+  currentModelVersion: string = CURRENT_EMBEDDING_MODEL_VERSION,
+): Promise<EmbeddingDriftReport> {
+  const rows: Array<{ model_version: string; count: string | number }> = await db('milestone_embeddings')
+    .select('model_version')
+    .count('milestone_id as count')
+    .groupBy('model_version')
+
+  const versions: EmbeddingVersionCount[] = rows.map((row) => ({
+    modelVersion: row.model_version,
+    count: Number(row.count),
+    isCurrent: row.model_version === currentModelVersion,
+  }))
+
+  const totalEmbeddings = versions.reduce((s, v) => s + v.count, 0)
+  const currentCount = versions.filter((v) => v.isCurrent).reduce((s, v) => s + v.count, 0)
+  const staleCount = totalEmbeddings - currentCount
+
+  return { currentModelVersion, totalEmbeddings, staleCount, currentCount, versions }
+}

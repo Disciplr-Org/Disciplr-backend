@@ -11,7 +11,7 @@ import {
   listVerifierProfiles,
   InvalidVerifierStatusTransitionError,
   transitionVerifier,
-  updateVerifierProfile,
+  updateVerifierProfile, 
 } from '../services/verifiers.js'
 import { isValidStellarAddress } from '../services/vaultValidation.js'
 import { AppError } from '../middleware/errorHandler.js'

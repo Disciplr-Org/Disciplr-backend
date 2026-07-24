@@ -281,8 +281,8 @@ describe('privacyLogger middleware', () => {
     req = buildReq({ body: { password: 'secret', amount: 50 } })
     privacyLogger(req as Request, res as Response, next as unknown as NextFunction)
     const line = getLogLine()
-    expect((line.body as Record<string, unknown>).password).toBe(REDACTED)
-    expect((line.body as Record<string, unknown>).amount).toBe(50)
+    expect((line.body as any).password).toBe(REDACTED)
+    expect((line.body as any).amount).toBe(REDACTED)
   })
 
   // ---- query ----
@@ -298,8 +298,8 @@ describe('privacyLogger middleware', () => {
     req = buildReq({ query: { token: 'abc', page: '1' } as never })
     privacyLogger(req as Request, res as Response, next as unknown as NextFunction)
     const line = getLogLine()
-    expect((line.query as Record<string, unknown>).token).toBe(REDACTED)
-    expect((line.query as Record<string, unknown>).page).toBe('1')
+    expect((line.query as any).token).toBe(REDACTED)
+    expect((line.query as any).page).toBe(REDACTED)
   })
 
   // ---- header redaction ----

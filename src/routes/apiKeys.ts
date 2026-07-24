@@ -6,6 +6,7 @@ import { apiKeyRateLimiter } from '../middleware/rateLimiter.js'
 import {
   createApiKey,
   listApiKeysForUser,
+  listApiKeysForOrg,
   revokeApiKey,
   rotateApiKey,
 } from '../services/apiKeys.js'
@@ -35,6 +36,10 @@ apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
   const parseResult = createApiKeySchema.safeParse(req.body)
   if (!parseResult.success) {
     res.status(400).json(formatValidationError(parseResult.error))
+    return
+  }
+
+  const { label, scopes, orgId } = parseResult.data
 
   // Validate scope names against the typed ApiScope enum
   const validScopes = new Set(Object.values(ApiScope))
@@ -49,10 +54,6 @@ apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
     })
     return
   }
-    return
-  }
-
-  const { label, scopes, orgId } = parseResult.data
 
   const { apiKey, record } = await createApiKey({
     userId,
@@ -115,3 +116,21 @@ apiKeysRouter.post('/:id/revoke', requireStepUp(), async (req, res) => {
   const { keyHash: _keyHash, ...publicRecord } = record
   res.json({ apiKeyMeta: publicRecord })
 })
+
+export const getApiKeyUsageHandler = async (req: any, res: any) => {
+  const { orgId } = req.params
+  const keys = await listApiKeysForOrg(orgId)
+
+  const usage = keys.map(({ keyHash: _keyHash, ...publicRecord }) => ({
+    id: publicRecord.id,
+    label: publicRecord.label,
+    scopes: publicRecord.scopes,
+    createdAt: publicRecord.createdAt,
+    revokedAt: publicRecord.revokedAt,
+    lastUsedAt: publicRecord.lastUsedAt ?? null,
+    requestCount: publicRecord.requestCount ?? 0,
+    lastIp: publicRecord.lastIp ?? null,
+  }))
+
+  res.json({ usage })
+}
