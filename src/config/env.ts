@@ -60,6 +60,24 @@ export const envSchema = z
         "REDIS_URL must be a valid Redis connection URL (starting with redis:// or rediss://)",
       ),
 
+    // ── Field encryption (envelope encryption for reversible secrets) ──
+    //
+    // Two ways to configure, in priority order:
+    //   1. FIELD_ENCRYPTION_KEYS – JSON array of { kid, key } objects, where
+    //      `key` is a base64-encoded 32-byte (AES-256) key. The FIRST entry is
+    //      the active key used to encrypt new data; the remaining entries are
+    //      retained so ciphertext written under an older key id still decrypts
+    //      after a rotation.
+    //   2. FIELD_ENCRYPTION_KEY – a single base64-encoded 32-byte key, treated
+    //      as the active key under the reserved key id "default". Convenient for
+    //      development / single-key deployments.
+    //
+    // Validation of the actual key material (length, base64) is performed in
+    // src/lib/encryption.ts so that decryption failures surface with precise,
+    // security-conscious error messages rather than as opaque Zod issues.
+    FIELD_ENCRYPTION_KEY: z.string().optional(),
+    FIELD_ENCRYPTION_KEYS: z.string().optional(),
+
     // ── Auth / secrets ──────────────────────────────────────
     JWT_SECRET: z
       .string()
@@ -81,6 +99,8 @@ export const envSchema = z
       .string()
       .regex(/^\d+[smhd]$/, "invalid duration format")
       .default("7d"),
+    JWT_ISSUER: z.string().min(1, "JWT_ISSUER is required").default("disciplr"),
+    JWT_AUDIENCE: z.string().min(1, "JWT_AUDIENCE is required").default("disciplr-api"),
     DOWNLOAD_SECRET: z
       .string()
       .min(16, "must be at least 16 characters")
@@ -158,6 +178,14 @@ export const envSchema = z
     ENABLE_JOB_SCHEDULER: z.string().optional(),
     NOTIFICATION_PROVIDER: z.enum(["email", "console"]).default("console"),
 
+    // ── SMTP / Email provider ────────────────────────────────────
+    SMTP_HOST: z.string().optional(),
+    SMTP_PORT: positiveInt(587),
+    SMTP_USER: z.string().optional(),
+    SMTP_PASS: z.string().optional(),
+    SMTP_FROM: z.string().optional(),
+    SMTP_SECURE: z.string().optional(),
+
     // ── ETL ───────────────────────────────────────────────────────
     ETL_INTERVAL_MINUTES: positiveInt(5),
     ENABLE_ETL_WORKER: z.string().optional(),
@@ -189,7 +217,6 @@ export const envSchema = z
 
     // ── Misc / Limits ───────────────────────────────────────
     MAX_JSON_BODY_SIZE: z.string().default("500kb"),
-    NOTIFICATION_PROVIDER: z.string().optional(),
     HORIZON_LAG_THRESHOLD: nonNegativeInt(10),
     HORIZON_SHUTDOWN_TIMEOUT_MS: positiveInt(30_000),
 
@@ -219,6 +246,19 @@ export const envSchema = z
     HTTP_KEEPALIVE_TIMEOUT_MS: positiveInt(45_000),
     HTTP_HEADERS_TIMEOUT_MS: positiveInt(61_000),
     HTTP_REQUEST_TIMEOUT_MS: positiveInt(120_000),
+
+    // ── OpenTelemetry / Tracing ───────────────────────────────────
+    OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional(),
+    OTEL_SERVICE_NAME: z.string().optional(),
+    OTEL_TRACES_SAMPLER: z.enum(['always_on', 'always_off', 'traceidratio']).optional(),
+    OTEL_TRACES_SAMPLER_ARG: z
+      .string()
+      .optional()
+      .transform((v) => {
+        if (v === undefined || v === '') return undefined
+        const n = Number.parseFloat(v)
+        return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined
+      }),
 
     // ── Admin / Debug ──────────────────────────────────────────────
     ADMIN_API_KEY: z.string().default(""),
@@ -275,7 +315,7 @@ let _validated: Env | undefined;
  */
 export function getEnv(): Env {
   if (!_validated) {
-    initEnv()
+    throw new Error("Env not initialized");
   }
   return _validated!;
 }
@@ -439,4 +479,25 @@ export function validateEnv(raw?: Record<string, string | undefined>): {
 /** Warnings emitted during validation (not hard failures). */
 export function getJwtKeys(env: Env): JwtKey[] {
   return (env as any).JWT_KEYS as JwtKey[];
+}
+
+/**
+ * Raw field-encryption configuration, read directly from the environment.
+ *
+ * Resolved independently of the full {@link initEnv} validation so the
+ * encryption helpers (src/lib/encryption.ts) can be used in isolation — e.g. in
+ * unit tests — without requiring a complete, valid application environment.
+ * The actual key material (base64, 32-byte length, key-id uniqueness) is
+ * validated in src/lib/encryption.ts, where decryption failures can surface
+ * precise, security-conscious errors.
+ *
+ * @param env  Defaults to `process.env` — pass a custom record in tests.
+ */
+export function getFieldEncryptionConfig(
+  env: Record<string, string | undefined> = process.env,
+): { key?: string; keys?: string } {
+  return {
+    key: env.FIELD_ENCRYPTION_KEY,
+    keys: env.FIELD_ENCRYPTION_KEYS,
+  };
 }

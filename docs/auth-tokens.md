@@ -124,6 +124,8 @@ This behavior is always enforced (it never fails open) and audit logs are writte
 |---------------------|---------|-------------|
 | `JWT_ACCESS_SECRET` | `fallback-access-secret` | Secret for signing access tokens |
 | `JWT_REFRESH_SECRET` | `fallback-refresh-secret` | Secret for signing refresh tokens |
+| `JWT_ISSUER` | `disciplr` | Expected issuer claim (`iss`) for access tokens |
+| `JWT_AUDIENCE` | `disciplr-api` | Expected audience claim (`aud`) for access tokens |
 | `JWT_ACCESS_EXPIRES_IN` | `15m` | Access token lifetime |
 | `JWT_REFRESH_EXPIRES_IN` | `7d` | Refresh token lifetime |
 | `SESSIONS_CLEANUP_INTERVAL_MS` | `86400000` (24 h) | How often the cleanup job runs |

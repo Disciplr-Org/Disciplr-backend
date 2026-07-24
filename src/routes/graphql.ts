@@ -7,38 +7,50 @@ import {
   GraphQLFloat,
   GraphQLInt,
   GraphQLBoolean,
+  GraphQLError,
 } from 'graphql'
 import { createHandler } from 'graphql-http/lib/use/express'
 import depthLimit from 'graphql-depth-limit'
 import DataLoader from 'dataloader'
-import { requireOrgRole } from '../middleware/orgAuth.js'
+import { requireOrgAccess } from '../middleware/orgAuth.js'
 import { getVaultById, listVaults } from '../services/vaultStore.js'
 import { getAnalyticsByPeriod } from '../services/analytics.service.js'
 import { listVerifications, VerificationRecord } from '../services/verifiers.js'
 import { authenticate } from '../middleware/auth.js'
 
-// --- DataLoaders ---
-// To avoid N+1 queries, we batch fetching verifications by targetId
-const createLoaders = () => {
-  return {
-    verificationsLoader: new DataLoader<string, VerificationRecord[]>(async (targetIds) => {
-      // In a real DB, we'd query WHERE target_id IN (...targetIds)
-      // Reusing existing service which fetches all:
-      const allVerifications = await listVerifications()
-      
-      const grouped = new Map<string, VerificationRecord[]>()
-      targetIds.forEach(id => grouped.set(id, []))
-      
-      for (const v of allVerifications) {
-        if (grouped.has(v.targetId)) {
-          grouped.get(v.targetId)!.push(v)
-        }
-      }
-      
-      return targetIds.map(id => grouped.get(id) || [])
+export const GRAPHQL_MAX_DEPTH = 5
+
+interface GqlContext {
+  user: { userId: string; role?: string } | undefined
+  orgId: string
+  loaders: ReturnType<typeof createLoaders>
+}
+
+// Throws a GraphQL-layer Forbidden error if the caller's org doesn't match
+function assertOrgScope(context: GqlContext, resourceOrgId: string | null | undefined): void {
+  if (!resourceOrgId || resourceOrgId !== context.orgId) {
+    throw new GraphQLError('Forbidden: resource does not belong to your organization', {
+      extensions: { code: 'FORBIDDEN' },
     })
   }
 }
+
+// --- DataLoaders ---
+// Batch-fetch verifications by targetId (org-scoped: only load IDs from within the org).
+const createLoaders = (orgVaultIds: Set<string>) => ({
+  verificationsLoader: new DataLoader<string, VerificationRecord[]>(async (targetIds) => {
+    const allVerifications = await listVerifications()
+    const grouped = new Map<string, VerificationRecord[]>()
+    targetIds.forEach(id => grouped.set(id, []))
+    for (const v of allVerifications) {
+      // Only surface verifications whose targetId is a vault/milestone in this org
+      if (grouped.has(v.targetId) && orgVaultIds.has(v.targetId)) {
+        grouped.get(v.targetId)!.push(v)
+      }
+    }
+    return targetIds.map(id => grouped.get(id) ?? [])
+  }),
+})
 
 // --- Types ---
 
@@ -52,7 +64,7 @@ const ValidationType = new GraphQLObjectType({
     evidenceHash: { type: GraphQLString },
     disputed: { type: GraphQLBoolean },
     timestamp: { type: GraphQLString },
-  }
+  },
 })
 
 const MilestoneType = new GraphQLObjectType({
@@ -69,11 +81,10 @@ const MilestoneType = new GraphQLObjectType({
     createdAt: { type: GraphQLString },
     validations: {
       type: new GraphQLList(ValidationType),
-      resolve: (milestone, args, context) => {
-        return context.loaders.verificationsLoader.load(milestone.id)
-      }
-    }
-  })
+      resolve: (milestone, _args, context: GqlContext) =>
+        context.loaders.verificationsLoader.load(milestone.id),
+    },
+  }),
 })
 
 const AnalyticsType = new GraphQLObjectType({
@@ -87,7 +98,7 @@ const AnalyticsType = new GraphQLObjectType({
     activeCapital: { type: GraphQLString },
     successRate: { type: GraphQLFloat },
     lastUpdated: { type: GraphQLString },
-  }
+  },
 })
 
 const VaultType = new GraphQLObjectType({
@@ -106,19 +117,14 @@ const VaultType = new GraphQLObjectType({
     milestones: { type: new GraphQLList(MilestoneType) },
     validations: {
       type: new GraphQLList(ValidationType),
-      resolve: (vault, args, context) => {
-        return context.loaders.verificationsLoader.load(vault.id)
-      }
+      resolve: (vault, _args, context: GqlContext) =>
+        context.loaders.verificationsLoader.load(vault.id),
     },
     analytics: {
       type: AnalyticsType,
-      resolve: async (vault, args, context) => {
-        // Just return overall analytics for now or period specific
-        // based on existing services. We'll use 30d period as an example
-        return await getAnalyticsByPeriod('30d')
-      }
-    }
-  })
+      resolve: async (_vault, _args, _context: GqlContext) => getAnalyticsByPeriod('30d'),
+    },
+  }),
 })
 
 // --- Queries ---
@@ -129,13 +135,12 @@ const RootQuery = new GraphQLObjectType({
     vault: {
       type: VaultType,
       args: { id: { type: GraphQLString } },
-      resolve: async (_, args, context) => {
-        // Enforce org-scoping here implicitly if services did it, but 
-        // since we just have getVaultById, we check orgId logic if present.
-        // For now, reuse getVaultById.
+      resolve: async (_root, args, context: GqlContext) => {
         const vault = await getVaultById(args.id)
+        if (!vault) return null
+        assertOrgScope(context, vault.orgId)
         return vault
-      }
+      },
     },
     vaults: {
       type: new GraphQLList(VaultType),
@@ -143,37 +148,47 @@ const RootQuery = new GraphQLObjectType({
         filter: { type: GraphQLString },
         cursor: { type: GraphQLString },
       },
-      resolve: async (_, args, context) => {
-        const vaults = await listVaults()
-        // Here we could apply cursor and filter logic
-        return vaults
-      }
-    }
-  }
+      resolve: async (_root, _args, context: GqlContext) => {
+        const all = await listVaults()
+        return all.filter(v => v.orgId === context.orgId)
+      },
+    },
+  },
 })
 
-const schema = new GraphQLSchema({
-  query: RootQuery,
-})
+const schema = new GraphQLSchema({ query: RootQuery })
 
 // --- Router ---
 
 export const graphqlRouter = Router()
 
-// Apply authentication and org-scoping middleware to the graphql route
-// The user prompt requested applying org-auth middleware. 
 graphqlRouter.use(
   authenticate,
-  requireOrgRole(['admin', 'member', 'viewer']), // standard roles
+  requireOrgAccess('admin', 'member', 'viewer'),
   createHandler({
     schema,
-    context: (req) => {
-      return {
-        user: (req as any).raw?.user,
-        orgId: (req as any).raw?.orgId,
-        loaders: createLoaders(),
+    context: async (req) => {
+      const raw = (req as any).raw
+      const orgId: string = raw?.params?.orgId ?? raw?.orgId ?? ''
+
+      if (!orgId) {
+        throw new GraphQLError('Unauthorized: orgId missing from request', {
+          extensions: { code: 'UNAUTHORIZED' },
+        })
       }
+
+      // Pre-fetch org vaults to seed DataLoader scope (once per request)
+      const allVaults = await listVaults()
+      const orgVaultIds = new Set(
+        allVaults.filter(v => v.orgId === orgId).map(v => v.id),
+      )
+
+      return {
+        user: raw?.user,
+        orgId,
+        loaders: createLoaders(orgVaultIds),
+      } satisfies GqlContext
     },
-    validationRules: [depthLimit(5)], // Bound query depth to prevent abusive nested queries
-  })
+    validationRules: [depthLimit(GRAPHQL_MAX_DEPTH)],
+  }),
 )

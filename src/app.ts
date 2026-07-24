@@ -1,4 +1,5 @@
 import { httpMetricsMiddleware } from './observability/httpMetrics.js';
+import { tracingMiddleware } from './observability/tracingMiddleware.js';
 import cors from 'cors'
 import express from 'express'
 import helmet from 'helmet'
@@ -8,9 +9,16 @@ import { csrfProtection } from './middleware/auth.js'
 import { AUTH_JSON_MAX_BYTES, JOBS_JSON_MAX_BYTES } from './middleware/requestBodyLimits.js'
 import { adminRouter } from './routes/admin.js'
 import { notificationsRouter } from './routes/notifications.js'
+import { metricsRouter } from './routes/metrics.js'
+import { authenticate } from './middleware/auth.js'
+import { requireAdmin } from './middleware/rbac.js'
+import { metricsRateLimiter } from './middleware/rateLimiter.js'
+import webhookRouter from './routes/webhooks.js'
+import { errorHandler } from './middleware/errorHandler.js'
 
 export const app = express()
 app.use(httpMetricsMiddleware);
+app.use(tracingMiddleware);
 
 // ---------------------------------------------------------------------------
 // Helmet — API-only hardened configuration
@@ -150,7 +158,6 @@ const corsOptions: cors.CorsOptions = {
 
 app.use(cors(corsOptions))
 
-app.use(csrfProtection)
 // Route-specific parsers must run before the global parser so tighter limits
 // still apply to chunked requests that omit Content-Length.
 app.use('/api/auth', express.json({ limit: AUTH_JSON_MAX_BYTES }))
@@ -164,13 +171,17 @@ app.use((_req, res, next) => {
 
 app.use(privacyLogger)
 
-// Core routes mounted here for test compatibility
+// ── Core routes ─────────────────────────────────────────────────────────────
 app.use('/api/admin', adminRouter)
-import { metricsRouter } from './routes/metrics.js';
-import { metricsAuth } from './middleware/metricsAuth.js'
-import { metricsRateLimiter } from './middleware/rateLimiter.js'
+app.use('/api/notifications', notificationsRouter)
 
-// Register metrics endpoint with token/IP-guard and rate limiter
-app.use('/api/metrics', metricsAuth, metricsRateLimiter, metricsRouter);
+// Metrics endpoint — admin-guarded and rate-limited
+app.use('/api/metrics', authenticate, requireAdmin, metricsRateLimiter, metricsRouter)
+
+// Webhook subscriber management — org-scoped
+app.use('/api/webhooks', webhookRouter)
+
+// ── Error handling (must be last) ────────────────────────────────────────────
+app.use(errorHandler)
 
 // Additional routes are mounted in index.ts

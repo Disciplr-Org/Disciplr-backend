@@ -6,7 +6,7 @@ import type {
   PersistedMilestone,
   PersistedVault,
 } from "../types/vaults.js";
-import { getOrSet, invalidate, invalidatePrefix } from "../lib/cache.js";
+import { getOrSet, getOrLoad, invalidate, invalidatePrefix } from "../lib/cache.js";
 
 type UpdateableVaultField =
   | "amount"
@@ -120,6 +120,12 @@ export const createVaultWithMilestones = async (
   const orgId = input.orgId;
 
   if (!client) {
+    if (process.env.NODE_ENV !== "development") {
+      console.warn(
+        "CRITICAL WARNING: Postgres client is unavailable. Falling back to in-memory vault store. Data will NOT be persisted across restarts! This is unexpected outside of development."
+      );
+    }
+
     const vault: PersistedVault = {
       id: vaultId,
       amount: input.amount,
@@ -445,19 +451,19 @@ export const getVaultById = async (
   id: string,
 ): Promise<PersistedVault | null> => {
   // 1. Try to get orgId from cache mapping `vault:${id}:org`
-  const orgId = await getOrSet<string | null>(`vault:${id}:org`, 300, async () => {
+  const orgId = await getOrLoad<string | null>(`vault:${id}:org`, 300, async () => {
     const allVaults = await listVaults();
     const vault = allVaults.find((v) => v.id === id) ?? null;
     return vault ? (vault.orgId || null) : null;
   });
 
   if (orgId) {
-    return getOrSet<PersistedVault | null>(`vault:${id}`, 300, async () => {
+    return getOrLoad<PersistedVault | null>(`vault:${id}`, 300, async () => {
       const allVaults = await listVaults();
       return allVaults.find((v) => v.id === id) ?? null;
     }, orgId);
   } else {
-    return getOrSet<PersistedVault | null>(`vault:${id}`, 300, async () => {
+    return getOrLoad<PersistedVault | null>(`vault:${id}`, 300, async () => {
       const allVaults = await listVaults();
       return allVaults.find((v) => v.id === id) ?? null;
     });

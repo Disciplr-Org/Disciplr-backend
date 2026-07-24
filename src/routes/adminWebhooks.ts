@@ -8,6 +8,7 @@ import { replayForVault } from '../services/outboxRelay.js'
 import { strictRateLimiter } from '../middleware/rateLimiter.js'
 import {
   replayDeadLetter,
+  replayWindow,
   upsertSubscriber,
   rotateSubscriberSecret,
   listSubscribers,
@@ -15,6 +16,8 @@ import {
   removeEgressAllowlistEntry,
   listEgressAllowlist,
   updateSubscriberFieldPolicy,
+  getSubscriberDeliveryStats,
+  parseWindowMs,
 } from '../services/webhooks.js'
 import { isPaused, pauseDelivery, resumeDelivery } from '../services/pauseStore.js'
 import { isValidFieldPolicy, FieldPolicy } from '../utils/webhookFieldMasking.js'
@@ -278,6 +281,83 @@ adminWebhooksRouter.post('/resume', (req: Request, res: Response) => {
   res.status(200).json({ paused: false })
 })
 
+/**
+ * POST /api/admin/webhooks/:id/replay
+ *
+ * Replays all dead-letter entries for a subscriber within a time window.
+ * Uses the existing signing and delivery path (HMAC-SHA256, schema versioning).
+ *
+ * Idempotent: provide a `replay_marker` string — re-using the same marker
+ * returns the cached result without re-sending deliveries.
+ *
+ * Rate-bounded: max 500 events per request by default (override via `max_events`).
+ *
+ * Body:
+ *   { start_time (ISO 8601), end_time (ISO 8601), replay_marker?, max_events? }
+ *
+ * Response 200:
+ *   { replayed: true, count, success_count, failure_count, replay_marker? }
+ */
+adminWebhooksRouter.post('/:id/replay', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params
+    const { start_time, end_time, replay_marker, max_events } = req.body ?? {}
+
+    if (!start_time || typeof start_time !== 'string') {
+      res.status(400).json({ error: 'start_time is required (ISO 8601)' })
+      return
+    }
+    if (!end_time || typeof end_time !== 'string') {
+      res.status(400).json({ error: 'end_time is required (ISO 8601)' })
+      return
+    }
+    if (replay_marker !== undefined && typeof replay_marker !== 'string') {
+      res.status(400).json({ error: 'replay_marker must be a string' })
+      return
+    }
+    if (max_events !== undefined && (!Number.isInteger(max_events) || max_events < 1)) {
+      res.status(400).json({ error: 'max_events must be a positive integer' })
+      return
+    }
+
+    const result = await replayWindow(id, start_time, end_time, {
+      replayMarker: replay_marker,
+      maxEvents: max_events,
+    })
+
+    if (!result.replayed) {
+      res.status(404).json({ error: result.error })
+      return
+    }
+
+    createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: 'webhook.window_replay',
+      target_type: 'webhook_subscriber',
+      target_id: id,
+      metadata: {
+        startTime: start_time,
+        endTime: end_time,
+        replayMarker: replay_marker,
+        count: result.count,
+        successCount: result.successCount,
+        failureCount: result.failureCount,
+      },
+    })
+
+    res.status(200).json({
+      replayed: true,
+      count: result.count,
+      success_count: result.successCount,
+      failure_count: result.failureCount,
+      ...(replay_marker ? { replay_marker } : {}),
+    })
+  } catch (error) {
+    console.error('Error replaying webhook time window:', error)
+    res.status(500).json({ error: 'Failed to replay webhook time window' })
+  }
+})
+
 // ── Egress allowlist CRUD ─────────────────────────────────────────────────────
 
 /**
@@ -365,6 +445,45 @@ adminWebhooksRouter.delete('/egress-allowlist', async (req: Request, res: Respon
   } catch (error) {
     console.error('Error removing egress allowlist entry:', error)
     res.status(500).json({ error: 'Failed to remove egress allowlist entry' })
+  }
+})
+
+/**
+ * GET /api/admin/webhooks/:id/stats?window=24h
+ *
+ * Returns aggregated delivery analytics for a webhook subscriber over a
+ * configurable time window. Admin-only.
+ *
+ * Query params:
+ *   window – time window string, e.g. "1h", "24h", "48h", "72h", "3d" (default: "24h", max: 72h)
+ *
+ * Response 200: { subscriber_id, window, window_start, window_end,
+ *   attempt_count, success_count, failure_count, success_rate,
+ *   p50_latency_ms, p95_latency_ms, last_failure_reason, breaker_state }
+ */
+adminWebhooksRouter.get('/:id/stats', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params
+    const rawWindow = typeof req.query.window === 'string' ? req.query.window : '24h'
+
+    if (parseWindowMs(rawWindow) === null) {
+      res.status(400).json({
+        error: 'Invalid window parameter. Use a value like "1h", "24h", "72h", or "3d" (max 72h).',
+      })
+      return
+    }
+
+    const stats = await getSubscriberDeliveryStats(id, rawWindow)
+
+    if (stats === null) {
+      res.status(404).json({ error: 'Subscriber not found' })
+      return
+    }
+
+    res.status(200).json(stats)
+  } catch (error) {
+    console.error('Error fetching webhook subscriber stats:', error)
+    res.status(500).json({ error: 'Failed to fetch subscriber stats' })
   }
 })
 

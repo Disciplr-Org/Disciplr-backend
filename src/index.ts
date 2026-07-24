@@ -5,10 +5,11 @@ import { initEnv, getEnv } from "./config/index.js";
 initEnv();
 
 import { ensureSorobanBootPrecheck } from "./services/sorobanBoot.js";
+import { initTracing, shutdownTracing } from "./observability/tracing.js";
 
 import { app } from "./app.js";
 import { bootstrapApp } from "./app-bootstrap.js";
-import { startExpirationChecker } from "./services/expirationScheduler.js";
+import { startExpirationChecker, startCohortRefreshScheduler } from "./services/expirationScheduler.js";
 import { orgVaultsRouter } from "./routes/orgVaults.js";
 import { orgAnalyticsRouter } from "./routes/orgAnalytics.js";
 import { orgMembersRouter } from "./routes/orgMembers.js";
@@ -24,16 +25,17 @@ import {
 import { initializeDatabase, closeDatabase } from "./db/database.js";
 import { etlWorker } from "./services/etlWorker.js";
 import { createShutdownHandler } from "./server/shutdown.js";
-import { getEnv } from "./config/index.js";
 import { createNotificationService } from "./services/notifications/factory.js";
 
 const env = getEnv();
 const PORT = env.PORT;
 
+// Initialize distributed tracing (no-op when OTEL_EXPORTER_OTLP_ENDPOINT is unset)
+initTracing();
+
 // Initialize SQLite database for analytics
 initializeDatabase();
 
-const env = getEnv();
 const notificationService = createNotificationService(
   env.NOTIFICATION_PROVIDER,
 );
@@ -46,6 +48,7 @@ const ETL_INTERVAL_MINUTES = env.ETL_INTERVAL_MINUTES;
 const server = app.listen(PORT, () => {
   console.log(`Disciplr API listening on http://localhost:${PORT}`);
   startExpirationChecker();
+  startCohortRefreshScheduler();
   if (env.ENABLE_ETL_WORKER !== "false") {
     etlWorker.start(ETL_INTERVAL_MINUTES);
   }

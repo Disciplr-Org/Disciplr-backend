@@ -1,6 +1,7 @@
 import type { WebhookSubscriber, WebhookDeliveryPayload, WebhookDeliveryResult } from './webhooks.js'
 import { checkBreaker, recordBreakerSuccess, recordBreakerFailure, getCircuitBreakerConfig, breakerCache, deadLetter } from './webhooks.js'
 import { retryWithBackoff } from '../utils/retry.js'
+import { getTracer } from '../observability/tracing.js'
 
 // ── Concurrency configuration ────────────────────────────────────────────────
 
@@ -199,81 +200,101 @@ export class BoundedWebhookDispatcher {
    * Does NOT throw; errors are logged and delivery fails gracefully.
    */
   private async dispatch(delivery: WebhookDelivery): Promise<void> {
-    const { subscriber, payload } = delivery
-    const config = getCircuitBreakerConfig()
+    const tracer = getTracer()
+    return tracer.withSpan(
+      `webhook.deliver`,
+      async (span) => {
+        const { subscriber, payload } = delivery
+        span.setAttribute('webhook.subscriber_id', subscriber.id)
+        span.setAttribute('webhook.url', subscriber.url)
+        span.setAttribute('webhook.event_type', payload.eventType)
+        span.setAttribute('webhook.event_id', payload.eventId)
+        span.setAttribute('webhook.organization_id', payload.organizationId)
 
-    try {
-      let attempts = 0
-      let lastStatusCode: number | undefined
+        const config = getCircuitBreakerConfig()
 
-      // ── Circuit breaker check ──────────────────────────────
-      const breaker = await checkBreaker(subscriber.id, config)
-      if (!breaker.allowed) {
-        await deadLetter(
-          subscriber.id,
-          payload,
-          breaker.shortCircuitReason ?? 'Circuit breaker open',
-          0,
-        )
-        return
-      }
+        try {
+          let attempts = 0
+          let lastStatusCode: number | undefined
 
-      // Track in-flight probes for half-open state
-      const isHalfOpenProbe = breakerCache.get(subscriber.id)?.state === 'HALF_OPEN'
-      if (isHalfOpenProbe) {
-        import('./webhooks.js').then((m) => {
-          m.inFlightProbes.add(subscriber.id)
-        })
-      }
+          // ── Circuit breaker check ──────────────────────────────
+          const breaker = await checkBreaker(subscriber.id, config)
+          if (!breaker.allowed) {
+            span.setAttribute('webhook.circuit_breaker_blocked', true)
+            span.setStatus({ code: 'ERROR', message: breaker.shortCircuitReason ?? 'Circuit breaker open' })
+            await deadLetter(
+              subscriber.id,
+              payload,
+              breaker.shortCircuitReason ?? 'Circuit breaker open',
+              0,
+            )
+            return
+          }
 
-      try {
-        await retryWithBackoff(
-          async () => {
-            attempts += 1
-            lastStatusCode = await this.deliverOnce(subscriber, payload)
-          },
-          {
-            maxAttempts: 3,
-            initialBackoffMs: 1_000,
-            maxBackoffMs: 30_000,
-            backoffMultiplier: 2,
-            jitterFactor: 0.25,
-          },
-        )
+          // Track in-flight probes for half-open state
+          const isHalfOpenProbe = breakerCache.get(subscriber.id)?.state === 'HALF_OPEN'
+          if (isHalfOpenProbe) {
+            import('./webhooks.js').then((m) => {
+              m.inFlightProbes.add(subscriber.id)
+            })
+          }
 
-        // ── Success — reset breaker ──────────────────────────
-        if (isHalfOpenProbe) {
-          import('./webhooks.js').then((m) => {
-            m.inFlightProbes.delete(subscriber.id)
-          })
+          try {
+            await retryWithBackoff(
+              async () => {
+                attempts += 1
+                lastStatusCode = await this.deliverOnce(subscriber, payload)
+              },
+              {
+                maxAttempts: 3,
+                initialBackoffMs: 1_000,
+                maxBackoffMs: 30_000,
+                backoffMultiplier: 2,
+                jitterFactor: 0.25,
+              },
+            )
+
+            // ── Success — reset breaker ──────────────────────────
+            if (isHalfOpenProbe) {
+              import('./webhooks.js').then((m) => {
+                m.inFlightProbes.delete(subscriber.id)
+              })
+            }
+            await recordBreakerSuccess(subscriber.id)
+
+            span.setAttribute('webhook.status_code', lastStatusCode ?? 0)
+            span.setAttribute('webhook.attempts', attempts)
+            span.setStatus({ code: 'OK' })
+          } catch (err: any) {
+            if (isHalfOpenProbe) {
+              import('./webhooks.js').then((m) => {
+                m.inFlightProbes.delete(subscriber.id)
+              })
+            }
+
+            console.error(
+              `[Webhooks] delivery failed for subscriber ${subscriber.id}:`,
+              err?.message,
+            )
+            const error = err?.message ?? 'Unknown error'
+
+            span.setAttribute('webhook.attempts', attempts)
+            span.setStatus({ code: 'ERROR', message: error })
+
+            // ── Failure — record in breaker ─────────────────────
+            await recordBreakerFailure(subscriber.id, config)
+
+            await deadLetter(subscriber.id, payload, error, attempts)
+          }
+        } catch (err: any) {
+          console.error(
+            `[BoundedWebhookDispatcher] Fatal error in dispatch for ${delivery.subscriber.id}:`,
+            err?.message,
+          )
+          span.setStatus({ code: 'ERROR', message: err?.message ?? 'Fatal error' })
         }
-        await recordBreakerSuccess(subscriber.id)
-
-        // Return success (not used in bounded dispatcher, but consistent with API)
-      } catch (err: any) {
-        if (isHalfOpenProbe) {
-          import('./webhooks.js').then((m) => {
-            m.inFlightProbes.delete(subscriber.id)
-          })
-        }
-
-        console.error(
-          `[Webhooks] delivery failed for subscriber ${subscriber.id}:`,
-          err?.message,
-        )
-        const error = err?.message ?? 'Unknown error'
-
-        // ── Failure — record in breaker ─────────────────────
-        await recordBreakerFailure(subscriber.id, config)
-
-        await deadLetter(subscriber.id, payload, error, attempts)
-      }
-    } catch (err: any) {
-      console.error(
-        `[BoundedWebhookDispatcher] Fatal error in dispatch for ${delivery.subscriber.id}:`,
-        err?.message,
-      )
-    }
+      },
+    )
   }
 
   /**

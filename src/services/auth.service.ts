@@ -135,8 +135,9 @@ export class AuthService {
         const jti = randomUUID()
         const sessionId = randomUUID()
         const lastLoginAt = new Date()
-        const accessToken = generateAccessToken({ userId: user.id, role: user.role, jti })
-        const refreshTokenValue = generateRefreshToken({ userId: user.id })
+        const env = getEnv()
+        const accessToken = generateAccessToken({ userId: user.id, role: user.role, jti }, env)
+        const refreshTokenValue = generateRefreshToken({ userId: user.id }, env)
         const accessExpiresAt = new Date(Date.now() + 15 * 60 * 1000) // 15 minutes
         const tokenHash = hashToken(refreshTokenValue)
 
@@ -171,7 +172,7 @@ export class AuthService {
 
     static async refresh(token: string) {
         try {
-            const payload = verifyRefreshToken(token)
+            const payload = verifyRefreshToken(token, getEnv())
 
             // Look up by hash — we never store the raw token
             const tokenHash = hashToken(token)
@@ -196,8 +197,9 @@ export class AuthService {
             })
 
             const jti = randomUUID()
-            const newAccessToken = generateAccessToken({ userId: storedToken.user.id, role: storedToken.user.role, jti })
-            const newRefreshTokenValue = generateRefreshToken({ userId: storedToken.user.id })
+            const env = getEnv()
+            const newAccessToken = generateAccessToken({ userId: storedToken.user.id, role: storedToken.user.role, jti }, env)
+            const newRefreshTokenValue = generateRefreshToken({ userId: storedToken.user.id }, env)
 
             // 1. Record new session for access token
             const accessExpiresAt = new Date(Date.now() + 15 * 60 * 1000)

@@ -11,10 +11,12 @@ import { config } from '../config/index.js'
  * Redacted paths cover:
  * - Authorization headers
  * - Passwords and tokens
- * - API keys and secrets
+ * - API keys and secrets — both camelCase and snake_case variants
  * - Cookies
  * - Email addresses
  * - Vault-related sensitive data (creator, destinations)
+ * - OAuth fields: client_secret (POST /api/oauth/token uses snake_case per RFC 6749)
+ * - Webhook fields: secret, new_secret (adminWebhooks rotate-secret uses snake_case)
  */
 export function createLogger(): Logger {
   const isDev = config.nodeEnv === 'development'
@@ -37,7 +39,11 @@ export function createLogger(): Logger {
         'req.body.apiKey',
         'req.body.api_key',
         'req.body.secret',
+        // snake_case: POST /api/admin/webhooks/subscribers/:id/rotate-secret sends { new_secret }
+        'req.body.new_secret',
         'req.body.clientSecret',
+        // snake_case: POST /api/oauth/token sends { client_secret } per RFC 6749
+        'req.body.client_secret',
         'req.body.creator',
         'req.body.successDestination',
         'req.body.failureDestination',

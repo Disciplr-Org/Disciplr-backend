@@ -1,59 +1,61 @@
-import db from '../db/index.js'
-import type { Knex } from 'knex'
-import type { Team, CreateTeamInput } from '../types/enterprise.js'
+import db from "../db/index.js";
+import type { Knex } from "knex";
+import type { Team, CreateTeamInput } from "../types/enterprise.js";
 
 export const createTeam = async (input: CreateTeamInput): Promise<Team> => {
-  const [team] = await db('teams')
+  const [team] = await db("teams")
     .insert({
       name: input.name,
       slug: input.slug,
       organization_id: input.organization_id,
       metadata: input.metadata ? JSON.stringify(input.metadata) : null,
     })
-    .returning('*')
-  return team
-}
+    .returning("*");
+  return team;
+};
 
 export const getTeamById = async (id: string): Promise<Team | null> => {
-  return db('teams').where({ id }).first()
-}
+  return db("teams").where({ id }).first();
+};
 
-export const listTeamsByOrganization = async (organizationId: string): Promise<Team[]> => {
-  return db('teams').where({ organization_id: organizationId }).select('*')
-}
+export const listTeamsByOrganization = async (
+  organizationId: string,
+): Promise<Team[]> => {
+  return db("teams").where({ organization_id: organizationId }).select("*");
+};
 
 export interface TeamRollupEntry {
-  teamId: string
-  name: string
-  slug: string
-  vaultCount: number
-  totalCapital: string
-  activeVaults: number
-  completedVaults: number
-  failedVaults: number
-  milestoneCount: number
-  milestonesCompleted: number
-  slashRate: number
+  teamId: string;
+  name: string;
+  slug: string;
+  vaultCount: number;
+  totalCapital: string;
+  activeVaults: number;
+  completedVaults: number;
+  failedVaults: number;
+  milestoneCount: number;
+  milestonesCompleted: number;
+  slashRate: number;
 }
 
 export interface TeamRollupResult {
-  orgId: string
-  teams: TeamRollupEntry[]
+  orgId: string;
+  teams: TeamRollupEntry[];
   orgTotals: {
-    teamCount: number
-    vaultCount: number
-    totalCapital: string
-    activeVaults: number
-    completedVaults: number
-    failedVaults: number
-    milestoneCount: number
-    milestonesCompleted: number
-    slashRate: number
-  }
-  generatedAt: string
+    teamCount: number;
+    vaultCount: number;
+    totalCapital: string;
+    activeVaults: number;
+    completedVaults: number;
+    failedVaults: number;
+    milestoneCount: number;
+    milestonesCompleted: number;
+    slashRate: number;
+  };
+  generatedAt: string;
 }
 
-type RollupRow = Record<string, string | number>
+type RollupRow = Record<string, string | number>;
 
 const ROLLUP_SQL = `WITH deduped_team_vaults AS (
   SELECT v.id AS vault_id,
@@ -108,20 +110,21 @@ FROM teams t
 LEFT JOIN team_vault_stats vs ON vs.team_id = t.id
 LEFT JOIN team_milestone_stats ms ON ms.team_id = t.id
 WHERE t.organization_id = ?
-ORDER BY t.name`
+ORDER BY t.name`;
 
 export const getTeamRollup = async (
   orgId: string,
-  queryRunner: Pick<Knex, 'raw'> = db,
+  queryRunner: Pick<Knex, "raw"> = db,
 ): Promise<TeamRollupResult> => {
-  const raw = await queryRunner.raw(ROLLUP_SQL, [orgId, orgId, orgId])
+  const raw = await queryRunner.raw(ROLLUP_SQL, [orgId, orgId, orgId]);
 
-  const rows: RollupRow[] = (raw as { rows: RollupRow[] }).rows ?? (raw as RollupRow[])
+  const rows: RollupRow[] =
+    (raw as { rows: RollupRow[] }).rows ?? (raw as RollupRow[]);
 
   const teams: TeamRollupEntry[] = rows.map((r) => {
-    const failed = Number(r.failed_vaults)
-    const completed = Number(r.completed_vaults)
-    const resolved = failed + completed
+    const failed = Number(r.failed_vaults);
+    const completed = Number(r.completed_vaults);
+    const resolved = failed + completed;
     return {
       teamId: String(r.team_id),
       name: String(r.name),
@@ -134,42 +137,45 @@ export const getTeamRollup = async (
       milestoneCount: Number(r.total_milestones),
       milestonesCompleted: Number(r.completed_milestones),
       slashRate: resolved > 0 ? Number((failed / resolved).toFixed(4)) : 0,
-    }
-  })
+    };
+  });
 
   const orgTotals = teams.reduce(
     (acc, t) => {
-      acc.vaultCount += t.vaultCount
-      acc.activeVaults += t.activeVaults
-      acc.completedVaults += t.completedVaults
-      acc.failedVaults += t.failedVaults
-      acc.milestoneCount += t.milestoneCount
-      acc.milestonesCompleted += t.milestonesCompleted
-      acc.totalCapital = (Number(acc.totalCapital) + Number(t.totalCapital)).toString()
-      return acc
+      acc.vaultCount += t.vaultCount;
+      acc.activeVaults += t.activeVaults;
+      acc.completedVaults += t.completedVaults;
+      acc.failedVaults += t.failedVaults;
+      acc.milestoneCount += t.milestoneCount;
+      acc.milestonesCompleted += t.milestonesCompleted;
+      acc.totalCapital = (
+        Number(acc.totalCapital) + Number(t.totalCapital)
+      ).toString();
+      return acc;
     },
     {
       teamCount: teams.length,
       vaultCount: 0,
-      totalCapital: '0',
+      totalCapital: "0",
       activeVaults: 0,
       completedVaults: 0,
       failedVaults: 0,
       milestoneCount: 0,
       milestonesCompleted: 0,
       slashRate: 0,
-    } as TeamRollupResult['orgTotals'],
-  )
+    } as TeamRollupResult["orgTotals"],
+  );
 
-  const orgResolved = orgTotals.completedVaults + orgTotals.failedVaults
-  orgTotals.slashRate = orgResolved > 0
-    ? Number((orgTotals.failedVaults / orgResolved).toFixed(4))
-    : 0
+  const orgResolved = orgTotals.completedVaults + orgTotals.failedVaults;
+  orgTotals.slashRate =
+    orgResolved > 0
+      ? Number((orgTotals.failedVaults / orgResolved).toFixed(4))
+      : 0;
 
   return {
     orgId,
     teams,
     orgTotals,
     generatedAt: new Date().toISOString(),
-  }
-}
+  };
+};

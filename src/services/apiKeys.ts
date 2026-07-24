@@ -338,7 +338,12 @@ const findMatchingRecord = async (apiKey: string): Promise<{ record: ApiKeyRecor
       const fingerprintPart = parts[0]
       const argonPart = parts.slice(1).join('$argon2id$')
 
-      if (fingerprintPart === secretHash) {
+      const fpA = Buffer.from(fingerprintPart, 'hex')
+      const fpB = Buffer.from(secretHash, 'hex')
+      const fingerprintMatches =
+        fpA.length === fpB.length && timingSafeEqual(fpA, fpB)
+
+      if (fingerprintMatches) {
         try {
           const ok = await argon2.verify(argonPart, parsed.secret)
           if (ok) return { record: candidate, secret: parsed.secret }
@@ -350,7 +355,10 @@ const findMatchingRecord = async (apiKey: string): Promise<{ record: ApiKeyRecor
     }
 
     // Legacy store: plain sha256 fingerprint
-    if (stored === secretHash) {
+    const legacyA = Buffer.from(stored, 'hex')
+    const legacyB = Buffer.from(secretHash, 'hex')
+    const legacyMatch = legacyA.length === legacyB.length && timingSafeEqual(legacyA, legacyB)
+    if (legacyMatch) {
       // Rolling re-hash: create argon2 and persist combined format
       const argonHash = await argon2.hash(parsed.secret, ARGON2_OPTIONS)
       candidate.keyHash = `${secretHash}$argon2id$${argonHash}`
