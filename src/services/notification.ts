@@ -5,7 +5,7 @@ import type {
   NotificationListOptions,
   NotificationListResult,
 } from '../types/notification.js'
-import { isNotificationEnabled } from '../models/notificationPreferences.js'
+import { isNotificationEnabled, ALLOWED_CHANNELS } from '../models/notificationPreferences.js'
 import { decodeCursor, encodeCursor } from '../utils/pagination.js'
 
 // Minimal structured logger — emits JSON to stdout, no PII (no user_id, title, message)
@@ -28,6 +28,9 @@ const log = {
 
 export const createNotification = async (input: CreateNotificationInput): Promise<Notification | null> => {
   const channel = input.channel ?? 'email'
+  if (!(ALLOWED_CHANNELS as readonly string[]).includes(channel)) {
+    throw new Error(`Unsupported notification channel: "${channel}". Allowed channels: ${ALLOWED_CHANNELS.join(', ')}`)
+  }
   const enabled = await isNotificationEnabled(input.organization_id, input.type, channel)
   if (!enabled) {
     return null
