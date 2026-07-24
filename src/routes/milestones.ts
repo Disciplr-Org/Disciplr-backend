@@ -63,8 +63,8 @@ milestonesRouter.post('/', authenticate, requireUser, (req: Request, res: Respon
 })
 
 // GET /api/vaults/:vaultId/milestones
-milestonesRouter.get('/', async (req: Request, res: Response) => {
-milestonesRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+milestonesRouter.get('/', authenticate, async (req: Request, res: Response) => {
+milestonesRouter.get('/', authenticate, (req: Request, res: Response, next: NextFunction) => {
   const { vaultId } = req.params
   const vault = vaults.find((v) => v.id === vaultId)
 
@@ -259,7 +259,7 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, async (req:
 
 // GET /api/vaults/:vaultId/milestones/:id/approval-status
 // Get detailed approval status for a milestone
-milestonesRouter.get('/:id/approval-status', async (req: Request, res: Response, next: NextFunction) => {
+milestonesRouter.get('/:id/approval-status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { vaultId, id } = req.params
 
