@@ -4,7 +4,7 @@ import { requireVerifier, requireAdmin } from '../middleware/rbac.js'
 import { recordVerification, listVerifications, VerificationConflictError } from '../services/verifiers.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { AppError } from '../middleware/errorHandler.js'
-import { createEvidenceReference, EvidenceReferenceValidationError } from '../services/evidence.js'
+import { createEvidenceReference, EvidenceReferenceValidationError, EvidenceReference } from '../services/evidence.js'
 import { db } from '../db/knex.js'
 import { retryWithBackoff } from '../utils/retry.js'
 import {
@@ -194,12 +194,7 @@ interface BulkCheckInResult {
     disputed: boolean
     timestamp: string
   }
-  evidenceReference?: {
-    id: string
-    verificationId: string
-    evidenceHash: string
-    evidenceReferenceUrl: string
-  }
+  evidenceReference?: EvidenceReference
 }
 
 interface BulkCheckInResponse {
@@ -324,7 +319,7 @@ verificationsRouter.post('/bulk', authenticate, requireVerifier, async (req: Req
         }
       } else if (error instanceof AppError) {
         itemResult.error = {
-          code: error.statusCode === 400 ? 'BAD_REQUEST' : error.statusCode === 409 ? 'CONFLICT' : 'INTERNAL_ERROR',
+          code: error.code,
           message: error.message,
         }
       } else {
