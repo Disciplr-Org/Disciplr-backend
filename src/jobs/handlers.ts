@@ -56,7 +56,8 @@ export const createDefaultJobHandlers = (
   },
   'deadline.check': async (payload, context) => {
     await sleep(30)
-    const expiredCount = await markVaultExpiries()
+    const batchSize = payload.batchSize ?? 100
+    const expiredCount = await markVaultExpiries({ limit: batchSize })
     const target = payload.vaultId ?? 'all-active-vaults'
     const deadline = payload.deadlineIso ?? 'not-provided'
     logJob(
