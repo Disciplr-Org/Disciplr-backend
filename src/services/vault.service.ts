@@ -25,20 +25,12 @@ export class VaultService {
   }
 
   static async getVaultById(id: string): Promise<Vault | null> {
-    try {
-      const result = await pool.query('SELECT * FROM vaults WHERE id = $1', [id]);
-      return result.rows[0] ?? null;
-    } catch {
-      return null;
-    }
+    const result = await pool.query('SELECT * FROM vaults WHERE id = $1', [id]);
+    return result.rows[0] ?? null;
   }
 
   static async updateVaultStatus(id: string, status: VaultStatus | string): Promise<void> {
-    try {
-      await pool.query('UPDATE vaults SET status = $1 WHERE id = $2', [status, id]);
-    } catch (error) {
-      console.error('Error updating vault status:', error);
-    }
+    await pool.query('UPDATE vaults SET status = $1 WHERE id = $2', [status, id]);
   }
 
   static async getVaultsByUser(address: string): Promise<Vault[]> {
