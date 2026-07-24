@@ -1,5 +1,37 @@
-import { Knex } from 'knex';
-import { sanitizeObject, isValidField } from '../lib/validation.js';
+import { Knex } from 'knex'
+
+const PROTECTED_QUERY_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function sanitizeObject(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeObject(item))
+  }
+
+  if (!isPlainObject(value)) {
+    return value
+  }
+
+  const sanitized: Record<string, unknown> = Object.create(null)
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    const normalizedKey = key.toLowerCase()
+    if (PROTECTED_QUERY_KEYS.has(normalizedKey)) {
+      continue
+    }
+
+    sanitized[key] = sanitizeObject(nestedValue)
+  }
+
+  return sanitized
+}
+
+function isValidField(column: string, allowedColumns: string[]): boolean {
+  return typeof column === 'string' && allowedColumns.includes(column)
+}
 
 /**
  * Supported operators for filtering.

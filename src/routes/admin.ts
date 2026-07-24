@@ -891,12 +891,10 @@ adminRouter.get('/db/metrics', metricsRateLimiter, async (req: Request, res: Res
           total: metrics.pool.totalConnections,
           capacity: metrics.pool.poolSize,
         },
-        slowQueries: metrics.slowQueries.map((query) => ({
-          hash: query.queryHash,
-          pattern: query.queryPattern,
-          maxDurationMs: query.duration,
-          occurrences: query.count,
-          lastOccurred: query.lastOccurred,
+        slowQueries: metrics.slowQueries.map((entry) => ({
+          fingerprint: entry.fingerprint,
+          durationMs: entry.durationMs,
+          capturedAt: entry.capturedAt,
         })),
         warnings: metrics.warnings,
       },

@@ -9,7 +9,6 @@ import { createNotificationService } from "./notifications/factory.js";
 const BATCH_SIZE = 50;
 
 let intervalId: ReturnType<typeof setInterval> | null = null;
-// PASTE LOCATION 1: Tracker variables for the materialized view refresh job
 let cohortIntervalId: ReturnType<typeof setInterval> | null = null;
 let lastRefreshSuccess = true;
 let lastRefreshError: Error | null = null;
@@ -174,7 +173,6 @@ export const stopExpirationChecker = (): void => {
   }
 };
 
-// PASTE LOCATION 2: Appended the cohort refresh scheduler engine and deep health probe hook
 export const startCohortRefreshScheduler = (intervalMs = 3_600_000): void => {
   if (cohortIntervalId) return;
 
