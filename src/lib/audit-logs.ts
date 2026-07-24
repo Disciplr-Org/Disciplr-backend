@@ -1,6 +1,6 @@
 import { db } from '../db/knex.js'
 import type { Knex } from 'knex'
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { redact } from '../middleware/privacy-logger.js'
 
 export type AuditLogMetadata = Record<string, unknown>
@@ -27,7 +27,7 @@ export type AuditLogFilters = {
   offset?: number
 }
 
-const makeId = (): string => `audit-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+const makeId = (): string => randomUUID()
 
 export const AUDIT_LOG_GENESIS_HASH = '0'.repeat(64)
 

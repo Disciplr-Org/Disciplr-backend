@@ -247,6 +247,24 @@ describe('BackfillCursorStore.resetCursor', () => {
 })
 
 // ---------------------------------------------------------------------------
+// recordProgress
+// ---------------------------------------------------------------------------
+
+describe('BackfillCursorStore.recordProgress', () => {
+  it('stores tuple-shaped throughput samples when progress is recorded', async () => {
+    const db = makeMockDb()
+    const store = new BackfillCursorStore(db)
+
+    await store.recordProgress('job-a', 3)
+
+    const insertArg = db._qb.insert.mock.calls[0][0] as Record<string, unknown>
+    expect(insertArg.processed).toBe(3)
+    expect(insertArg.samples).toEqual(expect.stringContaining('3'))
+    expect(insertArg.samples).toEqual(expect.stringContaining('['))
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Resumption continuity (stateful)
 //
 // Core invariant: a process resuming from cursor C must claim the range

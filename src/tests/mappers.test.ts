@@ -50,7 +50,7 @@ describe('toPublicVault', () => {
     expect(dto.id).toBe('vault-001')
     expect(dto.creator).toBe('GCREATOR123')
     expect(dto.amount).toBe('1000')
-    expect(dto.status).toBe('ACTIVE')
+    expect(dto.status).toBe('active')
     expect(dto.successDestination).toBe('GSUCCESS789')
     expect(dto.failureDestination).toBe('GFAILURE000')
   })
@@ -92,22 +92,22 @@ describe('toPublicVault', () => {
 
   it('maps PENDING status correctly', () => {
     const dto = toPublicVault(makeVault({ status: VaultStatus.PENDING }))
-    expect(dto.status).toBe('PENDING')
+    expect(dto.status).toBe('pending')
   })
 
   it('maps COMPLETED status correctly', () => {
     const dto = toPublicVault(makeVault({ status: VaultStatus.COMPLETED }))
-    expect(dto.status).toBe('COMPLETED')
+    expect(dto.status).toBe('completed')
   })
 
   it('maps FAILED status correctly', () => {
     const dto = toPublicVault(makeVault({ status: VaultStatus.FAILED }))
-    expect(dto.status).toBe('FAILED')
+    expect(dto.status).toBe('failed')
   })
 
   it('maps CANCELLED status correctly', () => {
     const dto = toPublicVault(makeVault({ status: VaultStatus.CANCELLED }))
-    expect(dto.status).toBe('CANCELLED')
+    expect(dto.status).toBe('cancelled')
   })
 
   it('handles optional organization_id being absent', () => {
