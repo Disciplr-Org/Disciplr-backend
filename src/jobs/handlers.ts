@@ -13,6 +13,8 @@ import {
   processDeferredReminders,
 } from '../services/vaultExpiry.service.js'
 import { cleanupExpiredSessions } from '../services/session.js'
+import { purgeSoftDeletedVaults } from '../services/retention.js'
+import { createAuditLog } from '../lib/audit-logs.js'
 import { relayOutboxBatch } from '../services/outboxRelay.js'
 import { runReindexBatches } from '../services/evidenceReindex.js'
 import { renderOrgAnalyticsSnapshot } from '../services/analytics.service.js'
@@ -184,6 +186,25 @@ export const createDefaultJobHandlers = (
       'sessions.cleanup',
       `deleted=${deleted} batchSize=${batchSize} attempt=${context.attempt}`,
     )
+  },
+  'retention.purge': async (payload, context) => {
+    const batchSize = payload.batchSize ?? 1000
+    const result = await purgeSoftDeletedVaults(payload.organizationId, batchSize)
+    const message = `organization=${payload.organizationId} deletedVaults=${result.deletedVaults} deletedMilestones=${result.deletedMilestones} batchSize=${batchSize}`
+    logJob('retention.purge', `${message} attempt=${context.attempt}`)
+
+    await createAuditLog({
+      actor_user_id: 'system',
+      organization_id: payload.organizationId,
+      action: 'retention.purge',
+      target_type: 'organization',
+      target_id: payload.organizationId,
+      metadata: {
+        deleted_vaults: result.deletedVaults,
+        deleted_milestones: result.deletedMilestones,
+        batch_size: batchSize,
+      },
+    })
   },
   'outbox.relay': async (payload, context) => {
     const count = await relayOutboxBatch()

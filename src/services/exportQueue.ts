@@ -8,6 +8,12 @@ import { createGzip, gzipSync } from 'node:zlib'
 import { maskPii, sanitizePrivacyPayload, sanitizePrivacyString } from '../utils/privacy.js'
 import { resolveS3Config, uploadToS3, sanitizeS3KeySegment } from '../services/exportS3.js'
 
+export const EXPORT_STREAM_CONFIG = {
+  CHUNK_SIZE_BYTES: 512 * 1024,
+  MEMORY_CEILING_BYTES: 512 * 1024 * 1024,
+  SLOW_CONSUMER_RPS: 10,
+} as const
+
 export type ExportFormat = 'csv' | 'json' | 'ndjson'
 export type ExportScope = 'vaults' | 'transactions' | 'analytics' | 'all'
 export type JobStatus = 'pending' | 'running' | 'done' | 'failed'

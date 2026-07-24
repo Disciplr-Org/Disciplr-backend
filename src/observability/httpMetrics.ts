@@ -28,7 +28,10 @@ export const recordMetricsDirectly = (req: Request, res: Response, durationInSec
   let route = 'NOT_FOUND';
   
   if (req.route && req.route.path) {
-    route = req.route.path;
+    // Prepend req.baseUrl (the router's mount prefix) so that routes from
+    // different sub-routers with overlapping path patterns (e.g. /:id) are
+    // recorded as distinct labels (e.g. /api/webhooks/:id vs /api/orgs/:id).
+    route = (req.baseUrl ?? '') + req.route.path;
   }
 
   httpRequestsTotal.inc({ method, route, status_class: statusClass });

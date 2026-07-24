@@ -121,6 +121,12 @@ export const createVaultWithMilestones = async (
   const orgId = input.orgId;
 
   if (!client) {
+    if (process.env.NODE_ENV !== "development") {
+      console.warn(
+        "CRITICAL WARNING: Postgres client is unavailable. Falling back to in-memory vault store. Data will NOT be persisted across restarts! This is unexpected outside of development."
+      );
+    }
+
     const vault: PersistedVault = {
       id: vaultId,
       amount: input.amount,
