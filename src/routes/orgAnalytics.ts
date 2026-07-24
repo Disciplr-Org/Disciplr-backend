@@ -1,5 +1,5 @@
 import { orgAnalyticsRateLimiter } from '../middleware/rateLimiter.js'
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireOrgAccess, requireOrgRole } from '../middleware/orgAuth.js'
 import { vaults, Vault } from './vaults.js'
@@ -7,6 +7,8 @@ import { getTeamRollup } from '../services/team.js'
 import { getOrgReports } from '../services/analyticsReports.js'
 import { resolveS3Config, getExportSignedUrl } from '../services/exportS3.js'
 import { parsePaginationParams, paginateArray } from '../utils/pagination.js'
+import { getCohortRetention } from '../services/cohortRetention.js'
+import db from '../db/index.js'
 
 export const orgAnalyticsRouter = Router();
 
@@ -84,7 +86,6 @@ orgAnalyticsRouter.get(
       const range = req.query.range
         ? parseInt(req.query.range as string, 10)
         : undefined;
-      const db = req.app.get("db");
 
       const data = await getCohortRetention(db, range);
 

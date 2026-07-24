@@ -1,4 +1,4 @@
-import { Pool } from 'pg'
+import { Pool, PoolConfig } from 'pg'
 
 interface PoolMetrics {
   availableConnections: number
@@ -20,23 +20,22 @@ interface DBHealthMetrics {
 
 /**
  * Extract pool statistics from pg.Pool
- * Safely accesses pool internals without exposing sensitive data
+ * Uses the documented Pool public API to avoid relying on internal fields.
  */
-function getPoolStats(pool: any): PoolMetrics {
-  // pg.Pool stores client information in private properties
-  const idleClients = pool._idle?.length ?? 0
-  const waitingClients = pool._waitingClients?.length ?? 0
-  const allClients = pool._clients?.length ?? idleClients + waitingClients
+function getPoolStats(pool: Pool): PoolMetrics {
+  const idleClients = pool.idleCount ?? 0
+  const waitingClients = pool.waitingCount ?? 0
+  const totalClients = pool.totalCount ?? idleClients + waitingClients
 
-  // Get configuration (should always be available)
-  const poolConfig = pool.options || pool.config || {}
+  // Get configuration from the documented public Pool API
+  const poolConfig = (pool.options ?? {}) as PoolConfig
   const max = poolConfig.max ?? 10
   const min = poolConfig.min ?? 2
 
   return {
     availableConnections: Math.max(0, idleClients),
     waitingClients: Math.max(0, waitingClients),
-    totalConnections: Math.max(0, allClients ?? idleClients + waitingClients),
+    totalConnections: Math.max(0, totalClients),
     poolSize: {
       min: min,
       max: max,

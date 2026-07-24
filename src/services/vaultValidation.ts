@@ -3,6 +3,8 @@ import { utcTimestampSchema } from '../lib/validation.js'
 import { StrKey } from '@stellar/stellar-sdk'
 export { flattenZodErrors } from '../lib/validation.js'
 
+const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/
+
 // ─── Soroban-aligned constants ───────────────────────────────────────────────
 
 /** Minimum vault / milestone amount (inclusive). Maps to contract lower-bound. */
