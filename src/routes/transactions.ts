@@ -60,10 +60,6 @@ transactionsRouter.get(
         query = query.orderBy('stellar_timestamp', 'desc')
       }
 
-      // Get total count for pagination
-      const totalCount = await query.clone().count('* as total').first()
-      const total = parseInt(String(totalCount?.total || '0'))
-
       // Apply pagination (Cursor-based)
       const limit = Math.min(100, parseInt(String(req.cursorPagination?.limit || '20')))
       const cursor = req.cursorPagination?.cursor
