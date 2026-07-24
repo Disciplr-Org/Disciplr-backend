@@ -209,7 +209,6 @@ export const envSchema = z
 
     // ── Misc / Limits ───────────────────────────────────────
     MAX_JSON_BODY_SIZE: z.string().default("500kb"),
-    NOTIFICATION_PROVIDER: z.string().optional(),
     HORIZON_LAG_THRESHOLD: nonNegativeInt(10),
     HORIZON_SHUTDOWN_TIMEOUT_MS: positiveInt(30_000),
 
