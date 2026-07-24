@@ -4,7 +4,6 @@ import { authenticate } from '../middleware/auth.js'
 import { requireOrgAccess } from '../middleware/orgAuth.js'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray, encodeCursor, decodeCursor } from '../utils/pagination.js'
-import { vaults } from './vaults.js'
 import db from '../db/index.js'
 import type { Knex } from 'knex'
 import { createHash } from 'node:crypto'
@@ -22,20 +21,53 @@ orgVaultsRouter.get(
     allowedSortFields: ['createdAt', 'amount', 'endTimestamp', 'status'],
     allowedFilterFields: ['status', 'creator'],
   }),
-  (req: Request, res: Response) => {
+  async (req: Request, res: Response) => {
     const { orgId } = req.params
-    let result = vaults.filter((v) => v.orgId === orgId)
 
-    if (req.filters) {
-      result = applyFilters(result, req.filters)
+    try {
+      const rows = await db('vaults')
+        .where('organization_id', orgId)
+        .whereNull('deleted_at')
+        .select(
+          'id',
+          'creator',
+          'verifier',
+          'amount',
+          'status',
+          'organization_id',
+          'start_date',
+          'end_date',
+          'created_at',
+          'updated_at',
+        )
+
+      let result = rows.map((row: Record<string, unknown>) => ({
+        id: row.id,
+        creator: row.creator,
+        verifier: row.verifier,
+        amount: row.amount,
+        status: row.status,
+        orgId: row.organization_id,
+        startTimestamp: row.start_date,
+        endTimestamp: row.end_date,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }))
+
+      if (req.filters) {
+        result = applyFilters(result, req.filters)
+      }
+
+      if (req.sort) {
+        result = applySort(result, req.sort)
+      }
+
+      const paginatedResult = paginateArray(result, req.pagination!)
+      res.json(paginatedResult)
+    } catch (error) {
+      console.error('Error listing org vaults:', error)
+      res.status(500).json({ error: 'Internal server error' })
     }
-
-    if (req.sort) {
-      result = applySort(result, req.sort)
-    }
-
-    const paginatedResult = paginateArray(result, req.pagination!)
-    res.json(paginatedResult)
   },
 )
 
