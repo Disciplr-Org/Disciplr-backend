@@ -33,7 +33,9 @@ const authUserSelect = {
   lastLoginAt: true,
 } as const
 
-const formatAuthUser = (user: { id: string; role: UserRole; lastLoginAt: Date | null }) => ({
+// `role` accepts both the local UserRole enum and Prisma's generated
+// $Enums.UserRole (a plain string-literal union with the same members).
+const formatAuthUser = (user: { id: string; role: UserRole | string; lastLoginAt: Date | null }) => ({
   id: user.id,
   role: user.role,
   lastLoginAt: user.lastLoginAt?.toISOString() ?? null,

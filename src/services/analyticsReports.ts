@@ -63,7 +63,9 @@ export async function saveOrgReport(
     data: {
       orgId: report.orgId,
       s3Key: report.s3Key,
-      localBuffer: report.localBuffer ?? null,
+      // Prisma 6 types Bytes columns as Uint8Array<ArrayBuffer>; Buffer is a
+      // compatible runtime value but its ArrayBufferLike generic needs the cast.
+      localBuffer: (report.localBuffer ?? null) as Uint8Array<ArrayBuffer> | null,
       snapshotAt: new Date(report.snapshotAt),
       sizeBytes: report.sizeBytes,
     },
@@ -76,7 +78,7 @@ export async function saveOrgReport(
     orgId: saved.orgId,
     createdAt: saved.createdAt.toISOString(),
     s3Key: saved.s3Key ?? undefined,
-    localBuffer: saved.localBuffer ?? undefined,
+    localBuffer: saved.localBuffer ? Buffer.from(saved.localBuffer) : undefined,
     snapshotAt: saved.snapshotAt.toISOString(),
     sizeBytes: saved.sizeBytes,
   }

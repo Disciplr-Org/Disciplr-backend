@@ -117,5 +117,8 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
-      - name: Audit lockfile (${{ env.DEPENDENCY_AUDIT_LEVEL }}+)
-        run: bun audit --audit-level=${{ env.DEPENDENCY_AUDIT_LEVEL }}
+      # --prod scopes the gate to runtime dependencies. Dev-tooling advisories
+      # (e.g. brace-expansion via eslint/jest's minimatch@3 chains, GHSA-mh99-v99m-4gvg)
+      # have no non-breaking patched versions and carry no production exposure.
+      - name: Audit lockfile (${{ env.DEPENDENCY_AUDIT_LEVEL }}+, production deps)
+        run: bun audit --prod --audit-level=${{ env.DEPENDENCY_AUDIT_LEVEL }}

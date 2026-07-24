@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
+import { defaultRateLimiter } from '../middleware/rateLimiter.js'
 import { completeVault } from '../services/vaultTransitions.js'
 import { vaults } from './vaults.js'
 import { requireUser, requireVerifier } from '../middleware/rbac.js'
@@ -27,6 +28,8 @@ import { getVaultById } from '../services/vaultStore.js'
 import { AppError } from '../middleware/errorHandler.js'
 
 export const milestonesRouter = Router({ mergeParams: true })
+
+milestonesRouter.use(defaultRateLimiter)
 
 // POST /api/vaults/:vaultId/milestones
 milestonesRouter.post('/', authenticate, requireUser, (req: Request, res: Response, next: NextFunction) => {
