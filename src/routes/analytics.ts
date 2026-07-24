@@ -4,6 +4,7 @@ import { authenticateApiKey } from '../middleware/apiKeyAuth.js'
 import { listMilestoneEvents } from '../services/milestones.js'
 import { utcNow } from '../utils/timestamps.js'
 import { readAnalyticsSummary } from '../db/database.js'
+import { ApiScope } from '../types/auth.js'
 
 export const analyticsRouter = Router()
 
@@ -96,14 +97,14 @@ analyticsRouter.get('/summary', authenticate, async (_req, res) => {
   }
 })
 
-analyticsRouter.get('/overview', authenticateApiKey(['read:analytics']), (_req, res) => {
+analyticsRouter.get('/overview', authenticateApiKey([ApiScope.ReadAnalytics]), (_req, res) => {
   res.status(200).json({
     generatedAt: utcNow(),
     status: 'ok',
   })
 })
 
-analyticsRouter.get('/vaults', authenticateApiKey(['read:vaults']), (_req, res) => {
+analyticsRouter.get('/vaults', authenticateApiKey([ApiScope.ReadVaults]), (_req, res) => {
   res.status(200).json({
     vaults: [],
     generatedAt: utcNow(),
@@ -118,7 +119,7 @@ analyticsRouter.get('/vaults/:id', authenticate, (req, res) => {
   })
 })
 
-analyticsRouter.get('/milestones/trends', authenticateApiKey(['read:analytics']), (req, res) => {
+analyticsRouter.get('/milestones/trends', authenticateApiKey([ApiScope.ReadAnalytics]), (req, res) => {
   const from = parseIsoDate(req.query.from)
   const to = parseIsoDate(req.query.to)
   const groupBy = req.query.groupBy === 'week' ? 'week' : 'day'
@@ -163,7 +164,7 @@ analyticsRouter.get('/milestones/trends', authenticateApiKey(['read:analytics'])
   })
 })
 
-analyticsRouter.get('/behavior', authenticateApiKey(['read:analytics']), (req, res) => {
+analyticsRouter.get('/behavior', authenticateApiKey([ApiScope.ReadAnalytics]), (req, res) => {
   const userId = typeof req.query.userId === 'string' ? req.query.userId.trim() : ''
   const baseScorePerSuccess = Number(req.query.baseScorePerSuccess ?? 10)
   const penaltyPerFailure = Number(req.query.penaltyPerFailure ?? 5)

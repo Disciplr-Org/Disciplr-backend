@@ -1,5 +1,10 @@
 import { UserRole } from './user.js'
 
+export enum ApiScope {
+  ReadAnalytics = 'read:analytics',
+  ReadVaults = 'read:vaults',
+}
+
 export interface AuthenticatedUser {
   userId: string
 }
