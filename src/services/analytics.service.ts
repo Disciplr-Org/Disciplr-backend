@@ -88,24 +88,6 @@ export function getOrgAnalyticsBatched(
     completedMilestones,
   }
 }
-import { getOrSet, getOrLoad, invalidate } from '../lib/cache.js'
-
-export async function getOverallAnalytics(orgId?: string): Promise<VaultAnalytics> {
-  return getOrLoad('analytics:overall', 300, async () => {
-    const summary = await readAnalyticsSummary()
-    
-    return {
-      totalVaults: summary.total_vaults,
-      activeVaults: summary.active_vaults,
-      completedVaults: summary.completed_vaults,
-      failedVaults: summary.failed_vaults,
-      totalLockedCapital: summary.total_locked_capital,
-      activeCapital: summary.active_capital,
-      successRate: summary.success_rate,
-      lastUpdated: summary.last_updated,
-    }
-  }, orgId)
-}
 
 export async function getOverallAnalytics(
   orgId?: string,
