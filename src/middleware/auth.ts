@@ -225,8 +225,15 @@ export function authorize(allowedRoles: UserRole[]) {
 }
 
 /** Generate a time-limited, HMAC-signed download token */
-const DOWNLOAD_SECRET =
-  process.env.DOWNLOAD_SECRET ?? "change-me-in-production";
+const DOWNLOAD_SECRET = process.env.DOWNLOAD_SECRET;
+
+if (!DOWNLOAD_SECRET) {
+  throw new Error(
+    "DOWNLOAD_SECRET environment variable is required. Set it to a strong, random secret to secure export download tokens."
+  );
+}
+
+const DOWNLOAD_SECRET_TYPED = DOWNLOAD_SECRET as string;
 
 export function signDownloadToken(
   jobId: string,
@@ -236,7 +243,7 @@ export function signDownloadToken(
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
   const payload = `${jobId}:${userId}:${exp}`;
   const sig = crypto
-    .createHmac("sha256", DOWNLOAD_SECRET)
+    .createHmac("sha256", DOWNLOAD_SECRET_TYPED)
     .update(payload)
     .digest("hex");
   return Buffer.from(JSON.stringify({ jobId, userId, exp, sig })).toString(
@@ -255,7 +262,7 @@ export function verifyDownloadToken(
     if (Date.now() / 1000 > exp) return null;
 
     const expected = crypto
-      .createHmac("sha256", DOWNLOAD_SECRET)
+      .createHmac("sha256", DOWNLOAD_SECRET_TYPED)
       .update(`${jobId}:${userId}:${exp}`)
       .digest("hex");
 

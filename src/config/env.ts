@@ -103,8 +103,7 @@ export const envSchema = z
     JWT_AUDIENCE: z.string().min(1, "JWT_AUDIENCE is required").default("disciplr-api"),
     DOWNLOAD_SECRET: z
       .string()
-      .min(16, "must be at least 16 characters")
-      .default("change-me-in-production-long-secret"),
+      .min(16, "must be at least 16 characters"),
 
     // JWT key rotation support – JSON encoded array of {kid, secret, retiredAt?}
     JWT_KEYS: z
@@ -374,16 +373,12 @@ export function initEnv(
       { key: "JWT_SECRET", sentinel: "change-me-in-production-long-secret" },
       { key: "JWT_ACCESS_SECRET", sentinel: "fallback-access-secret-long" },
       { key: "JWT_REFRESH_SECRET", sentinel: "fallback-refresh-secret-long" },
-      {
-        key: "DOWNLOAD_SECRET",
-        sentinel: "change-me-in-production-long-secret",
-      },
     ];
 
     for (const { key, sentinel } of insecureDefaults) {
       if (validated[key] === sentinel) {
         const w: EnvWarning = {
-          variable: key,
+          field: key,
           message: `${key} is using its insecure default value`,
         };
         warnings.push(w);
@@ -416,7 +411,7 @@ export function initEnv(
   );
   if (present.length > 0 && present.length < sorobanVars.length) {
     const w: EnvWarning = {
-      variable: "SOROBAN_*",
+      field: "SOROBAN_*",
       message:
         "Partial Soroban configuration detected; submit mode will be disabled",
     };

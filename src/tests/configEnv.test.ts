@@ -49,4 +49,23 @@ describe('Environment Loader', () => {
       ).toThrow(/NOTIFICATION_PROVIDER/);
     });
   });
+
+  describe('DOWNLOAD_SECRET', () => {
+    it('requires DOWNLOAD_SECRET to be set (security regression test)', () => {
+      expect(() =>
+        validateEnv({ ...BASE_ENV }),
+      ).toThrow(/DOWNLOAD_SECRET/);
+    });
+
+    it('accepts a valid DOWNLOAD_SECRET value', () => {
+      const { env } = validateEnv({ ...BASE_ENV, DOWNLOAD_SECRET: 'secure-secret-key-16-chars' });
+      expect(env.DOWNLOAD_SECRET).toBe('secure-secret-key-16-chars');
+    });
+
+    it('rejects DOWNLOAD_SECRET shorter than 16 characters', () => {
+      expect(() =>
+        validateEnv({ ...BASE_ENV, DOWNLOAD_SECRET: 'short' }),
+      ).toThrow(/must be at least 16 characters/);
+    });
+  });
 });
