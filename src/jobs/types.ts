@@ -83,6 +83,7 @@ export interface EmbeddingsReindexJobPayload {
 
 export interface SavedSearchEvaluateJobPayload {
   searchId?: string
+  batchSize?: number
 }
 
 export interface JobPayloadByType {
@@ -202,7 +203,10 @@ export const isPayloadForJobType = (
           (typeof payload.maxBatchesPerRun === 'number' && payload.maxBatchesPerRun > 0))
       )
     case 'saved-search.evaluate':
-      return payload.searchId === undefined || typeof payload.searchId === 'string'
+      return (
+        (payload.searchId === undefined || typeof payload.searchId === 'string') &&
+        (payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0))
+      )
     default:
       return false
   }

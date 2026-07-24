@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { NotificationService } from '../services/notifications/factory.js'
 import { processJob as processExportJob } from '../services/exportQueue.js'
-import type { JobHandler, JobType } from './types.js'
+import type { EnqueueOptions, JobHandler, JobPayloadByType, JobType } from './types.js'
 import { TransactionETLService } from '../services/transactionETL.js'
 import { MilestoneEmbeddingSource, ReindexCursorStore } from '../services/evidenceReindex.js'
 import { EmbeddingProvider } from '../services/embeddingProvider.js'
@@ -44,9 +44,16 @@ export interface EmbeddingReindexDependencies {
   embeddingProvider: EmbeddingProvider
 }
 
+export type JobEnqueuer = <T extends JobType>(
+  type: T,
+  payload: JobPayloadByType[T],
+  options?: EnqueueOptions,
+) => void
+
 export const createDefaultJobHandlers = (
   notificationService: NotificationService,
   embeddingReindex: EmbeddingReindexDependencies,
+  enqueueJob?: JobEnqueuer,
 ): JobHandlerRegistry => ({
   'notification.send': async (payload, context) => {
     await notificationService.send(payload.recipient, payload.subject, payload.body)
@@ -208,6 +215,7 @@ export const createDefaultJobHandlers = (
   },
   'saved-search.evaluate': async (payload, context) => {
     const now = new Date()
+    const batchSize = payload.batchSize ?? 50
 
     let searchQuery = db('org_vault_searches').where({ alerts_enabled: true })
     if (payload.searchId) {
@@ -219,17 +227,21 @@ export const createDefaultJobHandlers = (
       )
     }
 
-    const searches = await searchQuery.select('*')
+    const limit = payload.searchId ? 1 : batchSize + 1
+    const searches = await searchQuery.orderBy('id', 'asc').limit(limit).select('*')
+    const hasMore = !payload.searchId && searches.length > batchSize
+    const batch = hasMore ? searches.slice(0, batchSize) : searches
+
     let evaluated = 0
     let notified = 0
 
-    for (const search of searches) {
+    for (const search of batch) {
       try {
         const queryDef = typeof search.query_definition === 'string'
           ? JSON.parse(search.query_definition)
           : search.query_definition
 
-        const limit = Math.min(100, Math.max(1, queryDef.limit ?? 20))
+        const queryLimit = Math.min(100, Math.max(1, queryDef.limit ?? 20))
 
         let vaultQuery = db('vaults')
           .where('organization_id', search.org_id)
@@ -245,7 +257,7 @@ export const createDefaultJobHandlers = (
 
         const sortField = queryDef.sort_by ?? 'created_at'
         const sortOrder = (queryDef.sort_order ?? 'desc') as 'asc' | 'desc'
-        vaultQuery = vaultQuery.orderBy(sortField, sortOrder).orderBy('id', 'desc').limit(limit)
+        vaultQuery = vaultQuery.orderBy(sortField, sortOrder).orderBy('id', 'desc').limit(queryLimit)
 
         const rows = await vaultQuery
         const ids: string[] = rows.map((r: { id: string }) => r.id)
@@ -269,6 +281,11 @@ export const createDefaultJobHandlers = (
         const msg = evalError instanceof Error ? evalError.message : String(evalError)
         logJob('saved-search.evaluate', `error evaluating search=${search.id}: ${msg}`)
       }
+    }
+
+    if (hasMore && enqueueJob) {
+      enqueueJob('saved-search.evaluate', { batchSize: payload.batchSize })
+      logJob('saved-search.evaluate', `enqueued continuation job batchSize=${batchSize}`)
     }
 
     logJob(
