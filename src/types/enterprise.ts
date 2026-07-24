@@ -29,7 +29,9 @@ export interface EnterpriseMilestone {
   status: MilestoneStatus;
 }
 
-export type EnterpriseResponse<T> = T | { data: T };
+export type EnterpriseResponse<T> =
+  | { wrapped: true; data: T }
+  | { wrapped: false; value: T };
 
 export interface Organization {
   id: string;
