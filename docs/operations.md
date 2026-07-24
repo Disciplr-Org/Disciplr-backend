@@ -340,6 +340,42 @@ ADMIN_API_KEY=some-secret-value
 
 This samples 10% of healthy, fast requests but always logs 5xx errors, 504 responses, and any request taking over 500ms.
 
+## Backfill Progress and Pause/Resume Control
+
+Long-running backfill jobs (e.g. the milestone-evidence embedding reindex) can be observed and controlled by admins via the following endpoints. All write actions are audit-logged.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/admin/backfills` | List all known backfill jobs with cursor, processed count, paused status, and ETA |
+| `POST` | `/api/admin/backfills/:name/pause` | Pause a backfill; preserves the cursor so resume continues without reprocessing |
+| `POST` | `/api/admin/backfills/:name/resume` | Resume a paused backfill from its saved cursor |
+
+### Pause/Resume behaviour
+
+A paused backfill stops claiming new work at the start of the next batch. The cursor saved from the last completed batch is preserved. On resume, processing continues from that cursor with no gaps or duplicate processing.
+
+### Audit actions
+
+| Action | Trigger |
+|--------|---------|
+| `backfill.pause` | `POST /api/admin/backfills/:name/pause` |
+| `backfill.resume` | `POST /api/admin/backfills/:name/resume` |
+
+### Example curl commands
+
+```bash
+# List all backfill jobs
+curl -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:3000/api/admin/backfills
+
+# Pause a job
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://localhost:3000/api/admin/backfills/milestone-evidence-embedding-reindex/pause
+
+# Resume a job
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://localhost:3000/api/admin/backfills/milestone-evidence-embedding-reindex/resume
+```
+
 ## Runbooks
 
 | Scenario | Runbook |

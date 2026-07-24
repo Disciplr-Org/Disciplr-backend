@@ -9,7 +9,7 @@ import { initTracing, shutdownTracing } from "./observability/tracing.js";
 
 import { app } from "./app.js";
 import { bootstrapApp } from "./app-bootstrap.js";
-import { startExpirationChecker } from "./services/expirationScheduler.js";
+import { startExpirationChecker, startCohortRefreshScheduler } from "./services/expirationScheduler.js";
 import { orgVaultsRouter } from "./routes/orgVaults.js";
 import { orgAnalyticsRouter } from "./routes/orgAnalytics.js";
 import { orgMembersRouter } from "./routes/orgMembers.js";
@@ -48,6 +48,7 @@ const ETL_INTERVAL_MINUTES = env.ETL_INTERVAL_MINUTES;
 const server = app.listen(PORT, () => {
   console.log(`Disciplr API listening on http://localhost:${PORT}`);
   startExpirationChecker();
+  startCohortRefreshScheduler();
   if (env.ENABLE_ETL_WORKER !== "false") {
     etlWorker.start(ETL_INTERVAL_MINUTES);
   }

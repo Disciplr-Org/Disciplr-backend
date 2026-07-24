@@ -13,8 +13,17 @@ import {
   processDeferredReminders,
 } from '../services/vaultExpiry.service.js'
 import { cleanupExpiredSessions } from '../services/session.js'
+import { purgeSoftDeletedVaults } from '../services/retention.js'
+import { createAuditLog } from '../lib/audit-logs.js'
 import { relayOutboxBatch } from '../services/outboxRelay.js'
 import { runReindexBatches } from '../services/evidenceReindex.js'
+import { renderOrgAnalyticsSnapshot } from '../services/analytics.service.js'
+import {
+  saveOrgReport,
+  getAllOrgIds,
+  checkAndIncrementReportQuota,
+} from '../services/analyticsReports.js'
+import { resolveS3Config, uploadToS3 } from '../services/exportS3.js'
 import db from '../db/index.js'
 
 type JobHandlerRegistry = {
@@ -108,6 +117,44 @@ export const createDefaultJobHandlers = (
       `scope=${payload.scope} entity=${entity} reason=${reason} attempt=${context.attempt}`,
     )
   },
+  'analytics.report.generate': async (payload, context) => {
+    const s3Config = resolveS3Config()
+    const orgIds = payload.orgIds ?? getAllOrgIds()
+    let generated = 0
+    let skipped = 0
+
+    for (const orgId of orgIds) {
+      if (!checkAndIncrementReportQuota(orgId)) {
+        logJob('analytics.report.generate', `quota_exceeded orgId=${orgId}`)
+        skipped++
+        continue
+      }
+
+      try {
+        const snapshot = renderOrgAnalyticsSnapshot(orgId)
+        const json = JSON.stringify(snapshot)
+        const buf = Buffer.from(json, 'utf8')
+        const ts = new Date().toISOString().replace(/[:.]/g, '-')
+        const key = `analytics-reports/${orgId}/${ts}.json`
+
+        if (s3Config) {
+          await uploadToS3(s3Config, key, buf, 'application/json')
+          saveOrgReport({ orgId, s3Key: key, snapshotAt: snapshot.snapshotAt, sizeBytes: buf.byteLength })
+        } else {
+          saveOrgReport({ orgId, localBuffer: buf, snapshotAt: snapshot.snapshotAt, sizeBytes: buf.byteLength })
+        }
+        generated++
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        logJob('analytics.report.generate', `error orgId=${orgId}: ${msg}`)
+      }
+    }
+
+    logJob(
+      'analytics.report.generate',
+      `generated=${generated} skipped=${skipped} attempt=${context.attempt} job_id=${context.jobId}`,
+    )
+  },
   'export.generate': async (payload, context) => {
     await processExportJob(payload.exportJobId, undefined, context.attempt)
     logJob(
@@ -139,6 +186,25 @@ export const createDefaultJobHandlers = (
       'sessions.cleanup',
       `deleted=${deleted} batchSize=${batchSize} attempt=${context.attempt}`,
     )
+  },
+  'retention.purge': async (payload, context) => {
+    const batchSize = payload.batchSize ?? 1000
+    const result = await purgeSoftDeletedVaults(payload.organizationId, batchSize)
+    const message = `organization=${payload.organizationId} deletedVaults=${result.deletedVaults} deletedMilestones=${result.deletedMilestones} batchSize=${batchSize}`
+    logJob('retention.purge', `${message} attempt=${context.attempt}`)
+
+    await createAuditLog({
+      actor_user_id: 'system',
+      organization_id: payload.organizationId,
+      action: 'retention.purge',
+      target_type: 'organization',
+      target_id: payload.organizationId,
+      metadata: {
+        deleted_vaults: result.deletedVaults,
+        deleted_milestones: result.deletedMilestones,
+        batch_size: batchSize,
+      },
+    })
   },
   'outbox.relay': async (payload, context) => {
     const count = await relayOutboxBatch()

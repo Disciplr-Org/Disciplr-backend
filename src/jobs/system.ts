@@ -8,6 +8,7 @@ import {
 } from './queue.js'
 import { type EnqueueOptions, type JobPayloadByType, type JobType } from './types.js'
 import { recoverPendingExportJobs } from '../services/exportQueue.js'
+import { listOrganizations } from '../services/organization.js'
 import {
   createNotificationService,
   type NotificationService,
@@ -194,8 +195,10 @@ export class BackgroundJobSystem {
     this.queue.registerHandler('deadline.check', handlers['deadline.check'])
     this.queue.registerHandler('oracle.call', handlers['oracle.call'])
     this.queue.registerHandler('analytics.recompute', handlers['analytics.recompute'])
+    this.queue.registerHandler('analytics.report.generate', handlers['analytics.report.generate'])
     this.queue.registerHandler('export.generate', handlers['export.generate'])
     this.queue.registerHandler('sessions.cleanup', handlers['sessions.cleanup'])
+    this.queue.registerHandler('retention.purge', handlers['retention.purge'])
     this.queue.registerHandler('outbox.relay', handlers['outbox.relay'])
     this.queue.registerHandler('embeddings.reindex', handlers['embeddings.reindex'])
     this.queue.registerHandler('saved-search.evaluate', handlers['saved-search.evaluate'])
@@ -301,6 +304,10 @@ export class BackgroundJobSystem {
       process.env.SAVED_SEARCH_EVAL_INTERVAL_MS,
       15 * 60_000, // 15 minutes
     )
+    const analyticsReportIntervalMs = parsePositiveInteger(
+      process.env.ANALYTICS_REPORT_INTERVAL_MS,
+      24 * 60 * 60_000, // 24 hours
+    )
 
     this.schedulerRegistry.registerJob({
       name: 'deadline.check',
@@ -334,6 +341,36 @@ export class BackgroundJobSystem {
       },
     })
 
+    const retentionPurgeIntervalMs = parsePositiveInteger(
+      process.env.RETENTION_PURGE_INTERVAL_MS,
+      86_400_000,
+    )
+    const retentionPurgeBatchSize = parsePositiveInteger(
+      process.env.RETENTION_PURGE_BATCH_SIZE,
+      500,
+    )
+
+    this.schedulerRegistry.registerJob({
+      name: 'retention.purge',
+      intervalMs: retentionPurgeIntervalMs,
+      immediate: true,
+      initialDelayMs: 20_000,
+      execute: async () => {
+        try {
+          const organizations = await listOrganizations()
+          for (const org of organizations) {
+            this.enqueue('retention.purge', {
+              organizationId: org.id,
+              batchSize: retentionPurgeBatchSize,
+            })
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          console.error(`[jobs:retention.purge] failed to enqueue jobs: ${message}`)
+        }
+      },
+    })
+
     this.schedulerRegistry.registerJob({
       name: 'outbox.relay',
       intervalMs: outboxRelayIntervalMs,
@@ -360,6 +397,15 @@ export class BackgroundJobSystem {
       immediate: false,
       execute: () => {
         this.enqueue('saved-search.evaluate', {})
+      },
+    })
+
+    this.schedulerRegistry.registerJob({
+      name: 'analytics.report.generate',
+      intervalMs: analyticsReportIntervalMs,
+      immediate: false,
+      execute: () => {
+        this.enqueue('analytics.report.generate', {})
       },
     })
   }

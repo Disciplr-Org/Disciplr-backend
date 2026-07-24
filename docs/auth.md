@@ -46,6 +46,11 @@ Endpoint: `POST /api/auth/register`
 - Audit log metadata excludes email addresses and other request-body PII.
 - High-impact admin actions may require a fresh step-up assertion before proceeding.
 
+## Breached Passwords & Refresh Reuse Protections
+
+- **Breached password rejection:** When enabled via `AUTH_BREACHED_PASSWORDS` (comma-separated, case-insensitive list) or `AUTH_BREACHED_PASSWORDS_ENABLED`, the server rejects registration and password-change requests that match known-breached passwords. Rejections emit a security audit event but never log raw passwords.
+- **Refresh-token reuse detection:** If a refresh token that has already been rotated/revoked is seen again (indicative of token theft or replay), the server revokes the entire refresh-token family for that user, revokes all sessions, and emits a security audit event. This detection is enforced and never fails open.
+
 ## Role Definitions
 
 Disciplr defines three primary user roles with a hierarchical access model: **USER** < **VERIFIER** < **ADMIN**.

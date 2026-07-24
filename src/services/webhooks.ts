@@ -37,6 +37,7 @@ export interface WebhookSubscriber {
   rotatedAt: string | null
   events: string[]
   active: boolean
+  orgId?: string
   createdAt: string
   schemaVersion: number
   /**
@@ -46,6 +47,7 @@ export interface WebhookSubscriber {
   fieldPolicy: FieldPolicy
 }
 
+export const DEFAULT_MAX_REPLAY_EVENTS = 500
 export const LATEST_SCHEMA_VERSION = 2
 export const DEFAULT_SCHEMA_VERSION = 1
 export const SUPPORTED_SCHEMA_VERSIONS = new Set([1, 2])
@@ -66,6 +68,20 @@ export interface WebhookDeliveryResult {
   success: boolean
   error?: string
   attempts: number
+}
+
+export interface ReplayWindowOptions {
+  replayMarker?: string
+  maxEvents?: number
+}
+
+export interface ReplayWindowResult {
+  replayed: boolean
+  count: number
+  successCount: number
+  failureCount: number
+  replayMarker?: string
+  error?: string
 }
 
 export type BreakerStateValue = 'CLOSED' | 'OPEN' | 'HALF_OPEN'
@@ -424,34 +440,60 @@ export const verifySignature = (secret: string, body: string, signature: string)
   return timingSafeEqual(Buffer.from(expected, 'utf8'), Buffer.from(signature, 'utf8'))
 }
 
-/**
- * Verifies a signature against a subscriber's current secret and, when within
- * the rotation grace window, also against the previous secret.
- *
- * This lets subscribers that have not yet updated their secret still pass
- * verification until the grace window closes.
- *
- * Returns `true` if at least one of the valid secrets matches.
- */
-export const verifySignatureWithGrace = (
-  subscriber: WebhookSubscriber,
-  body: string,
-  signature: string,
-): boolean => {
-  if (verifySignature(subscriber.secret, body, signature)) return true
-  if (isPreviousSecretInGrace(subscriber)) {
-    return verifySignature(subscriber.previousSecret!, body, signature)
+export const addSubscriber = (
+  url: string,
+  secret: string,
+  events: string[],
+  orgId?: string,
+  active = true,
+): WebhookSubscriber => {
+  if (!isUrlAllowed(url)) {
+    throw new Error(`Webhook URL not permitted: ${url}`)
   }
-  return false
+
+  const subscriber: WebhookSubscriber = {
+    id: randomUUID(),
+    url,
+    secret,
+    events: [...events],
+    active,
+    orgId,
+    createdAt: new Date().toISOString(),
+  }
+
+  subscribers.set(subscriber.id, subscriber)
+  return subscriber
 }
 
-// ── Egress allowlist ──────────────────────────────────────────────────────────
+export const removeSubscriber = (id: string, orgId?: string): boolean => {
+  const subscriber = subscribers.get(id)
+  if (!subscriber) {
+    return false
+  }
 
-export interface EgressAllowlistEntry {
-  id: string
-  organizationId: string
-  host: string
-  createdAt: string
+  if (orgId && subscriber.orgId !== orgId) {
+    return false
+  }
+
+  return subscribers.delete(id)
+}
+
+export const listSubscribers = (orgId?: string): WebhookSubscriber[] =>
+  Array.from(subscribers.values()).filter((s) => s.active && (!orgId || s.orgId === orgId))
+
+export const updateSubscriberSecret = (id: string, secret: string, orgId?: string): WebhookSubscriber | null => {
+  const subscriber = subscribers.get(id)
+  if (!subscriber) {
+    return null
+  }
+
+  if (orgId && subscriber.orgId !== orgId) {
+    return null
+  }
+
+  const updated = { ...subscriber, secret }
+  subscribers.set(id, updated)
+  return updated
 }
 
 /**
@@ -789,6 +831,8 @@ export const dispatchWebhookEvent = async (
         inFlightProbes.add(subscriber.id)
       }
 
+      const deliveryStart = Date.now()
+
       try {
         await retryWithBackoff(
           async () => {
@@ -804,11 +848,14 @@ export const dispatchWebhookEvent = async (
           },
         )
 
+        const latencyMs = Date.now() - deliveryStart
+
         // ── Success — reset breaker ──────────────────────────
         if (isHalfOpenProbe) {
           inFlightProbes.delete(subscriber.id)
         }
-        await recordBreakerSuccess(subscriber.id, config)
+        await recordBreakerSuccess(subscriber.id)
+        await persistDeliveryAttempt(subscriber.id, payload, true, latencyMs, lastStatusCode, attempts)
 
         return {
           subscriberId: subscriber.id,
@@ -818,22 +865,24 @@ export const dispatchWebhookEvent = async (
           attempts,
         }
       } catch (err: any) {
+        const latencyMs = Date.now() - deliveryStart
+
         if (isHalfOpenProbe) {
           inFlightProbes.delete(subscriber.id)
         }
-
-  const eligible = await repo.findByEvent(payload.organizationId, payload.eventType)
-
-  // Enqueue all subscribers to the bounded dispatcher
-  // Returns immediately; dispatcher handles concurrency internally
-  for (const subscriber of eligible) {
-    webhookDispatcher.enqueue(subscriber, payload)
-  }
-
-  // For backwards compatibility, return empty array immediately
-  // Real results are logged internally by the dispatcher
-  // Callers should not depend on timing of these results
-  return []
+        await recordBreakerFailure(subscriber.id, config)
+        const reason = err?.message ?? 'Delivery failed'
+        await deadLetter(subscriber.id, payload, reason, attempts)
+        return {
+          subscriberId: subscriber.id,
+          url: subscriber.url,
+          success: false,
+          error: reason,
+          attempts,
+        }
+      }
+    }),
+  )
 }
 
 export const deadLetter = async (
@@ -853,6 +902,31 @@ export const deadLetter = async (
     })
   } catch (err: any) {
     console.error(`[Webhooks] failed to persist dead letter:`, err?.message)
+  }
+}
+
+const persistDeliveryAttempt = async (
+  subscriberId: string,
+  payload: WebhookDeliveryPayload,
+  success: boolean,
+  latencyMs: number,
+  statusCode: number | undefined,
+  attemptNumber: number,
+  error?: string,
+): Promise<void> => {
+  try {
+    await db('webhook_delivery_attempts').insert({
+      subscriber_id: subscriberId,
+      event_id: payload.eventId,
+      event_type: payload.eventType,
+      success,
+      latency_ms: latencyMs,
+      status_code: statusCode ?? null,
+      attempt_number: attemptNumber,
+      error: error ?? null,
+    })
+  } catch (err: any) {
+    console.error(`[Webhooks] failed to persist delivery attempt:`, err?.message)
   }
 }
 
@@ -883,6 +957,133 @@ export const replayDeadLetter = async (
   }
 }
 
+/**
+ * Replays all dead-letter entries for a subscriber within a time window.
+ *
+ * Idempotent when a `replayMarker` is provided — re-using the same marker
+ * returns the original result without re-sending deliveries.
+ *
+ * Rate-bounded by `maxEvents` (default DEFAULT_MAX_REPLAY_EVENTS) to avoid
+ * flooding the subscriber. Reuses the existing signing and delivery path
+ * (`deliverOnce`) so payload schema versioning, HMAC signing, and circuit
+ * breaker logic are applied consistently.
+ */
+export const replayWindow = async (
+  subscriberId: string,
+  startTime: string,
+  endTime: string,
+  options: ReplayWindowOptions = {},
+): Promise<ReplayWindowResult> => {
+  const maxEvents = options.maxEvents ?? DEFAULT_MAX_REPLAY_EVENTS
+
+  // Validate subscriber exists
+  const subscriber = await repo.findById(subscriberId)
+  if (!subscriber) {
+    return { replayed: false, count: 0, successCount: 0, failureCount: 0, error: 'Subscriber not found' }
+  }
+
+  // Validate time range
+  const start = new Date(startTime)
+  const end = new Date(endTime)
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+    return { replayed: false, count: 0, successCount: 0, failureCount: 0, error: 'Invalid time range' }
+  }
+  if (start >= end) {
+    return { replayed: false, count: 0, successCount: 0, failureCount: 0, error: 'start_time must be before end_time' }
+  }
+
+  // Check replay marker for idempotency
+  if (options.replayMarker) {
+    const existing = await db('webhook_replay_markers')
+      .where({ replay_marker: options.replayMarker })
+      .first()
+    if (existing) {
+      if (existing.status === 'completed') {
+        return {
+          replayed: true,
+          count: existing.total_count,
+          successCount: existing.success_count,
+          failureCount: existing.failure_count,
+          replayMarker: existing.replay_marker,
+        }
+      }
+      return {
+        replayed: false,
+        count: 0,
+        successCount: 0,
+        failureCount: 0,
+        replayMarker: options.replayMarker,
+        error: 'Replay already in progress',
+      }
+    }
+  }
+
+  // Query dead letters for this subscriber in the time window
+  const deadLetters = await db('webhook_dead_letters')
+    .where('subscriber_id', subscriberId)
+    .where('failed_at', '>=', start.toISOString())
+    .where('failed_at', '<=', end.toISOString())
+    .orderBy('failed_at', 'asc')
+    .limit(maxEvents)
+
+  if (deadLetters.length === 0) {
+    return { replayed: true, count: 0, successCount: 0, failureCount: 0, replayMarker: options.replayMarker }
+  }
+
+  // Create replay marker record
+  let markerId: string | undefined
+  if (options.replayMarker) {
+    const [marker] = await db('webhook_replay_markers')
+      .insert({
+        subscriber_id: subscriberId,
+        start_time: start.toISOString(),
+        end_time: end.toISOString(),
+        replay_marker: options.replayMarker,
+        status: 'in_progress',
+        total_count: deadLetters.length,
+      })
+      .returning('id')
+    markerId = marker.id
+  }
+
+  // Replay each dead letter using the existing signing and delivery path
+  let successCount = 0
+  let failureCount = 0
+  const errors: Array<{ eventId: string; error: string }> = []
+
+  for (const dl of deadLetters) {
+    try {
+      await deliverOnce(subscriber, dl.payload)
+      await db('webhook_dead_letters').where({ id: dl.id }).update({ replayed_at: new Date().toISOString() })
+      successCount++
+    } catch (err: any) {
+      failureCount++
+      errors.push({ eventId: dl.event_id, error: err?.message ?? 'Delivery failed' })
+    }
+  }
+
+  // Update replay marker record
+  if (markerId) {
+    await db('webhook_replay_markers')
+      .where({ id: markerId })
+      .update({
+        status: 'completed',
+        success_count: successCount,
+        failure_count: failureCount,
+        errors: errors.length > 0 ? JSON.stringify(errors) : null,
+        completed_at: new Date(),
+      })
+  }
+
+  return {
+    replayed: true,
+    count: deadLetters.length,
+    successCount,
+    failureCount,
+    replayMarker: options.replayMarker,
+  }
+}
+
 export const getBreakerStatesForMetrics = async (): Promise<{
   closed: number
   open: number
@@ -898,4 +1099,61 @@ export const getBreakerStatesForMetrics = async (): Promise<{
     else if (s.state === 'HALF_OPEN') halfOpen++
   }
   return { closed, open, halfOpen }
+}
+
+export const MAX_STATS_WINDOW_MS = 72 * 60 * 60 * 1000
+
+/**
+ * Parses a window string like "24h" or "3d" into milliseconds.
+ * Accepts hours (h) up to 72 and days (d) up to 3. Returns null for invalid input.
+ */
+export const parseWindowMs = (raw: string): number | null => {
+  const m = /^(\d+)(h|d)$/.exec(raw.trim())
+  if (!m) return null
+  const n = Number(m[1])
+  if (!Number.isFinite(n) || n <= 0) return null
+  const ms = m[2] === 'd' ? n * 24 * 60 * 60 * 1000 : n * 60 * 60 * 1000
+  if (ms > MAX_STATS_WINDOW_MS) return null
+  return ms
+}
+
+export interface SubscriberDeliveryStats {
+  subscriber_id: string
+  window: string
+  window_start: string
+  window_end: string
+  attempt_count: number
+  success_count: number
+  failure_count: number
+  success_rate: number
+  p50_latency_ms: number | null
+  p95_latency_ms: number | null
+  last_failure_reason: string | null
+  breaker_state: BreakerStateValue | null
+}
+
+/**
+ * Returns aggregated delivery analytics for a webhook subscriber over a bounded
+ * time window. Returns null when the subscriber does not exist.
+ */
+export const getSubscriberDeliveryStats = async (
+  subscriberId: string,
+  windowParam: string = '24h',
+): Promise<SubscriberDeliveryStats | null> => {
+  const subscriber = await repo.findById(subscriberId)
+  if (!subscriber) return null
+
+  const windowMs = parseWindowMs(windowParam) ?? 24 * 60 * 60 * 1000
+  const windowEnd = new Date()
+  const windowStart = new Date(windowEnd.getTime() - windowMs)
+
+  const stats = await repo.getDeliveryStats(subscriberId, windowStart, windowEnd)
+
+  return {
+    subscriber_id: subscriberId,
+    window: windowParam,
+    window_start: windowStart.toISOString(),
+    window_end: windowEnd.toISOString(),
+    ...stats,
+  }
 }

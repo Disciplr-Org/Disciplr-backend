@@ -47,6 +47,7 @@ import {
 import { runReindexBatches, EMBEDDING_REINDEX_JOB_NAME } from '../services/evidenceReindex.js'
 import { MilestoneRepository } from '../repositories/milestoneRepository.js'
 import { BackfillCursorStore } from '../services/backfillCursorStore.js'
+import { TransactionETLService } from '../services/transactionETL.js'
 
 export const adminRouter = Router()
 
@@ -644,6 +645,40 @@ adminRouter.post('/overrides/vaults/:id/cancel', requireStepUp(), async (req, re
   })
 })
 
+adminRouter.get('/transaction-etl/drift-report', async (req, res) => {
+  try {
+    const etl = new TransactionETLService({ horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org', batchSize: Number(req.query.batchSize) || 50 })
+    const report = await etl.reconcileVaults()
+    res.status(200).json(report)
+  } catch (error) {
+    console.error('Error generating drift report:', error)
+    res.status(500).json({ error: 'Failed to generate drift report' })
+  }
+})
+
+adminRouter.post('/vaults/:id/auto-repair', requireStepUp(), async (req, res) => {
+  try {
+    const { id } = req.params
+    const etl = new TransactionETLService({ horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org', batchSize: 50 })
+    
+    const result = await etl.autoRepairVault(id, req.user!.userId)
+    
+    if (!result.success) {
+      if (result.message.includes('dispute/hold')) {
+        res.status(409).json({ error: result.message })
+        return
+      }
+      res.status(400).json({ error: result.message })
+      return
+    }
+    
+    res.status(200).json(result)
+  } catch (error) {
+    console.error('Error auto-repairing vault:', error)
+    res.status(500).json({ error: 'Failed to auto-repair vault' })
+  }
+})
+
 // User Management Endpoints
 adminRouter.get('/users', async (req, res) => {
   try {
@@ -856,12 +891,10 @@ adminRouter.get('/db/metrics', metricsRateLimiter, async (req: Request, res: Res
           total: metrics.pool.totalConnections,
           capacity: metrics.pool.poolSize,
         },
-        slowQueries: metrics.slowQueries.map((query) => ({
-          hash: query.queryHash,
-          pattern: query.queryPattern,
-          maxDurationMs: query.duration,
-          occurrences: query.count,
-          lastOccurred: query.lastOccurred,
+        slowQueries: metrics.slowQueries.map((entry) => ({
+          fingerprint: entry.fingerprint,
+          durationMs: entry.durationMs,
+          capturedAt: entry.capturedAt,
         })),
         warnings: metrics.warnings,
       },
@@ -1038,5 +1071,67 @@ adminRouter.post('/embeddings/reembed', requireConfirmationToken('embeddings.for
   } catch (error) {
     console.error('Error triggering embedding re-embed:', error)
     res.status(500).json({ error: 'Failed to trigger re-embed' })
+  }
+})
+
+/**
+ * GET /api/admin/backfills
+ * List all known backfill jobs with cursor, processed count, paused status, and ETA.
+ */
+adminRouter.get('/backfills', async (req: Request, res: Response) => {
+  try {
+    const store = new BackfillCursorStore(db)
+    const data = await store.listProgress()
+    res.status(200).json({ data })
+  } catch (error) {
+    console.error('Error listing backfill progress:', error)
+    res.status(500).json({ error: 'Failed to list backfill progress' })
+  }
+})
+
+/**
+ * POST /api/admin/backfills/:name/pause
+ * Pause a running backfill job. The cursor is preserved so resume continues from
+ * the same position without reprocessing already-done ranges.
+ */
+adminRouter.post('/backfills/:name/pause', async (req: Request, res: Response) => {
+  try {
+    const { name } = req.params
+    const store = new BackfillCursorStore(db)
+    await store.pause(name)
+    await createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: 'backfill.pause',
+      target_type: 'backfill',
+      target_id: name,
+      metadata: {},
+    })
+    res.status(200).json({ paused: true, jobName: name })
+  } catch (error) {
+    console.error('Error pausing backfill:', error)
+    res.status(500).json({ error: 'Failed to pause backfill' })
+  }
+})
+
+/**
+ * POST /api/admin/backfills/:name/resume
+ * Resume a paused backfill job from its saved cursor.
+ */
+adminRouter.post('/backfills/:name/resume', async (req: Request, res: Response) => {
+  try {
+    const { name } = req.params
+    const store = new BackfillCursorStore(db)
+    await store.resume(name)
+    await createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: 'backfill.resume',
+      target_type: 'backfill',
+      target_id: name,
+      metadata: {},
+    })
+    res.status(200).json({ paused: false, jobName: name })
+  } catch (error) {
+    console.error('Error resuming backfill:', error)
+    res.status(500).json({ error: 'Failed to resume backfill' })
   }
 })

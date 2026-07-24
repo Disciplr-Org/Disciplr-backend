@@ -9,6 +9,8 @@ This backend supports scoped API keys for server-to-server access. Keys are inte
 - Stored records keep only a SHA-256 hash of the secret plus metadata.
 - Revocation is soft-state through `revoked_at`, so revoked keys remain auditable.
 - If both `x-api-key` and user auth headers are present, `x-api-key` takes precedence on API-key protected routes. An invalid API key is rejected even if a bearer token is also present.
+- **Constant-time comparison:** All secret-material comparisons (both the SHA-256 fingerprint pre-check and the argon2id verification path) use `crypto.timingSafeEqual` from Node.js. Plain string equality (`===`) is never used on key material, preventing timing side-channel attacks.
+- **Uniform failure:** Malformed, unknown, and revoked keys all return `{ valid: false, reason: '...' }` from `validateApiKey`; no different code path or exception leaks distinguishing information to the caller.
 
 ## Endpoints
 

@@ -458,6 +458,7 @@ export class TransactionETLService {
     driftDetected: number
     missingOnChain: number
     errors: number
+    driftedVaults: any[]
   }> {
     const config = getSorobanConfig()
     if (!config) {
@@ -483,6 +484,7 @@ export class TransactionETLService {
       driftDetected: 0,
       missingOnChain: 0,
       errors: 0,
+      driftedVaults: [] as any[],
     }
 
     try {
@@ -527,7 +529,7 @@ export class TransactionETLService {
 
             if (driftFields.length > 0) {
               result.driftDetected += 1
-              logVaultDriftAnomaly('vault_state_drift', {
+              const driftInfo = {
                 vaultId: vault.id,
                 driftedFields: driftFields,
                 persisted: {
@@ -540,7 +542,9 @@ export class TransactionETLService {
                   amount: onChainState.amount,
                   verifier: onChainState.verifier,
                 },
-              })
+              }
+              result.driftedVaults.push(driftInfo)
+              logVaultDriftAnomaly('vault_state_drift', driftInfo)
             }
 
             result.checked += 1
@@ -571,6 +575,65 @@ export class TransactionETLService {
       console.error('Vault reconciliation failed:', error)
       throw error
     }
+  }
+
+  /**
+   * Auto-repairs a drifted vault based on its on-chain state.
+   */
+  async autoRepairVault(vaultId: string, adminUserId: string): Promise<{ success: boolean; message: string; repairedFields?: string[] }> {
+    const config = getSorobanConfig()
+    if (!config) {
+      return { success: false, message: 'Soroban not configured' }
+    }
+
+    const vault = await db('vaults')
+      .where('id', vaultId)
+      .select('id', 'status', 'amount', 'verifier', 'success_destination', 'failure_destination')
+      .first()
+
+    if (!vault) {
+      return { success: false, message: 'Vault not found' }
+    }
+
+    if (vault.status === 'disputed') {
+      return { success: false, message: 'Cannot auto-repair a manual admin dispute/hold state' }
+    }
+
+    const onChainState = await getSorobanClient().getVault(config, vaultId)
+    if (!onChainState) {
+      return { success: false, message: 'Vault missing on-chain' }
+    }
+
+    const driftFields = this.compareVaultStates(vault, onChainState)
+    if (driftFields.length === 0) {
+      return { success: true, message: 'No drift detected' }
+    }
+
+    const updates: any = {}
+    if (driftFields.includes('status')) updates.status = onChainState.status
+    if (driftFields.includes('amount')) updates.amount = onChainState.amount
+    if (driftFields.includes('verifier')) updates.verifier = onChainState.verifier
+
+    await db('vaults').where('id', vaultId).update(updates)
+
+    const { createAuditLog } = await import('../lib/audit-logs.js')
+    await createAuditLog({
+      actor_user_id: adminUserId,
+      action: 'admin.vault.auto_repair',
+      target_type: 'vault',
+      target_id: vaultId,
+      metadata: {
+        drifted_fields: driftFields,
+        previous_state: {
+          status: vault.status,
+          amount: vault.amount,
+          verifier: vault.verifier,
+        },
+        new_state: updates
+      }
+    })
+
+    return { success: true, message: 'Vault auto-repaired successfully', repairedFields: driftFields }
   }
 
   /**
