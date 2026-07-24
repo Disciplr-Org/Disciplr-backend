@@ -1,10 +1,7 @@
-import { z } from 'zod'
+import { z, ZodError } from 'zod'
 import { UserRole } from '../types/user.js'
-import {
-  hasTimezoneDesignator,
-  isValidISO8601,
-  parseAndNormalizeToUTC,
-} from '../utils/timestamps.js'
+import { hasTimezoneDesignator, isValidISO8601, parseAndNormalizeToUTC } from '../utils/timestamps.js'
+
 
 export const registerSchema = z.object({
     email: z.string().email(),
@@ -14,7 +11,7 @@ export const registerSchema = z.object({
 
 export const loginSchema = z.object({
     email: z.string().email(),
-    password: z.string(),
+    password: z.string().min(8),
 })
 
 export const refreshSchema = z.object({
@@ -59,54 +56,72 @@ export const utcTimestampSchema = z
     }
   })
 
-/**
- * Security utility to prevent prototype pollution and other malicious query patterns
- */
 
-const DANGEROUS_KEYS = ['__proto__', 'constructor', 'prototype']
 
-/**
- * Recursively removes dangerous keys from an object to prevent prototype pollution.
- * 
- * @param obj - The object to sanitize
- * @returns A deep copy of the object with dangerous keys removed
- */
-export function sanitizeObject<T>(obj: T): T {
-  if (obj === null || typeof obj !== 'object') {
-    return obj
-  }
+export const nonEmptyString = z.string().trim().min(1)
 
-  if (Array.isArray(obj)) {
-    return obj.map(item => sanitizeObject(item)) as unknown as T
-  }
+export const notificationPayloadSchema = z.object({
+  recipient: nonEmptyString,
+  subject: nonEmptyString,
+  body: nonEmptyString,
+})
 
-  const result: any = {}
-  
-  for (const [key, value] of Object.entries(obj)) {
-    if (DANGEROUS_KEYS.includes(key)) {
-      continue
-    }
+export const deadlineCheckPayloadSchema = z.object({
+  triggerSource: z.enum(['manual', 'scheduler']),
+  vaultId: z.string().optional(),
+  deadlineIso: z.string().optional(),
+})
 
-    result[key] = sanitizeObject(value)
-  }
+export const oracleCallPayloadSchema = z.object({
+  oracle: nonEmptyString,
+  symbol: nonEmptyString,
+  requestId: z.string().optional(),
+})
 
-  return result as T
-}
+export const analyticsRecomputePayloadSchema = z.object({
+  scope: z.enum(['global', 'vault', 'user']),
+  entityId: z.string().optional(),
+  reason: z.string().optional(),
+})
 
-/**
- * Validates that a field is in the allowlist and doesn't contain nested object paths
- * if they are not explicitly allowed.
- */
-export function isValidField(field: string, allowlist: string[]): boolean {
-  if (!field || typeof field !== 'string') return false
-  
-  // Prevent any attempt at nested property access via dot notation if not explicitly in allowlist
-  if (field.includes('.') || field.includes('[') || field.includes(']')) {
-    return allowlist.includes(field)
-  }
-  
-  return allowlist.includes(field)
-}
+export const retentionPurgePayloadSchema = z.object({
+  organizationId: nonEmptyString,
+  batchSize: z.number().int().min(1).optional(),
+})
+
+export const enqueueJobSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('notification.send'),
+    payload: notificationPayloadSchema,
+    maxAttempts: z.number().int().min(1).max(10).optional(),
+    delayMs: z.number().int().min(0).max(60000).optional(),
+  }),
+  z.object({
+    type: z.literal('deadline.check'),
+    payload: deadlineCheckPayloadSchema,
+    maxAttempts: z.number().int().min(1).max(10).optional(),
+    delayMs: z.number().int().min(0).max(60000).optional(),
+  }),
+  z.object({
+    type: z.literal('oracle.call'),
+    payload: oracleCallPayloadSchema,
+    maxAttempts: z.number().int().min(1).max(10).optional(),
+    delayMs: z.number().int().min(0).max(60000).optional(),
+  }),
+  z.object({
+    type: z.literal('analytics.recompute'),
+    payload: analyticsRecomputePayloadSchema,
+    maxAttempts: z.number().int().min(1).max(10).optional(),
+    delayMs: z.number().int().min(0).max(60000).optional(),
+  }),
+  z.object({
+    type: z.literal('retention.purge'),
+    payload: retentionPurgePayloadSchema,
+    maxAttempts: z.number().int().min(1).max(10).optional(),
+    delayMs: z.number().int().min(0).max(60000).optional(),
+  }),
+])
+
 export interface ValidationErrorField {
   path: string
   message: string
@@ -137,3 +152,4 @@ export const buildValidationError = (fields: ValidationErrorField[]) => ({
 })
 
 export const formatValidationError = (error: z.ZodError) => buildValidationError(flattenZodErrors(error))
+

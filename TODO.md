@@ -1,29 +1,20 @@
-# Health Endpoints Expansion TODO
+# TODO
 
-## Plan
-Expand `GET /api/health` and add `GET /api/health/deep` to include DB connectivity, migration status, background job system health, and (if enabled) Horizon listener heartbeat. Keep the lightweight endpoint fast and safe for public exposure.
-
-## Steps
-
-- [x] 1. Rewrite `src/services/healthService.ts`
-- [x] 2. Rewrite `src/routes/health.ts`
-- [x] 3. Update `src/controllers/healthController.ts`
-- [x] 4. Expand `src/tests/health.deep.test.ts`
-- [x] 5. Run tests to verify
-
----
-
-# API Versioning & Deprecation TODO
-
-## Plan
-Introduce URL-based API versioning (`/api/v1`) with backward-compatible legacy aliases (`/api/...`). Implement deprecation headers for all legacy endpoints and document the migration path for clients.
+## Plan confirmation (pre-edit)
+- Implement admin suspend + reinstate endpoints (POST /api/admin/verifiers/:userId/suspend and .../reinstate)
+- Wire suspend/reinstate to verifier status transitions (suspended <-> pending/approved as "prior active")
+- Ensure suspended verifiers are rejected by validateMilestoneMultiVerifier() during multi-verifier milestone approvals
+- Add audit logging for both lifecycle transitions and blocked approval attempts
+- Add tests covering:
+  - suspend sets deactivated/suspended status correctly and writes audit log
+  - reinstate restores prior state
+  - suspended verifier cannot approve milestones; historical votes remain
 
 ## Steps
-
-- [x] 1. Create `src/config/versions.ts` — version constants, sunset timeline, successor-path helper
-- [x] 2. Create `src/middleware/versioning.ts` — deprecation header middleware + `mountVersionedRoute()` helper
-- [x] 3. Modify `src/index.ts` — dual-register all routes via `mountVersionedRoute()`
-- [x] 4. Create `docs/API_VERSIONING.md` — strategy, header semantics, deprecation timeline, client migration guide
-- [x] 5. Create `src/tests/apiVersioning.test.ts` — verify v1 has no headers, legacy has `Deprecation`/`Sunset`/`Link`
-- [x] 6. Run tests and lint (runtime unavailable in this environment; code verified logically)
+1. Inspect current milestone multi-approval flow and where validateMilestoneMultiVerifier is used.
+2. Update services/milestones.ts to block suspended/deactivated verifiers (query verifier status).
+3. Update adminVerifiers routes to add reinstate path and correct lifecycle transitions (and audit).
+4. Implement service helpers in services/verifiers.ts for reinstate "prior active state".
+5. Add/modify tests in tests/ for lifecycle + multi-verifier approval blocking.
+6. Run test suite.
 

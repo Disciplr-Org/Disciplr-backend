@@ -3,25 +3,55 @@ import { EmailNotificationProvider } from './email.provider.js'
 import { ConsoleNotificationProvider } from './console.provider.js'
 
 export class NotificationService {
-  private static providers: Record<string, NotificationProvider> = {
-    email: new EmailNotificationProvider(),
-    console: new ConsoleNotificationProvider(),
+  constructor(
+    private readonly providers: Record<string, NotificationProvider>,
+    private readonly defaultProviderName: string,
+  ) {
+    this.assertProviderExists(defaultProviderName)
   }
 
-  static getProvider(name?: string): NotificationProvider {
-    const providerName = name || process.env.NOTIFICATION_PROVIDER || 'console'
+  getProvider(name?: string): NotificationProvider {
+    const providerName = name ?? this.defaultProviderName
     const provider = this.providers[providerName]
-    
+
     if (!provider) {
-      console.warn(`Provider ${providerName} not found, falling back to console`)
-      return this.providers.console
+      const availableProviders = Object.keys(this.providers).sort().join(', ')
+      throw new Error(
+        `Unknown notification provider "${providerName}". Available providers: ${availableProviders}`,
+      )
     }
-    
+
     return provider
   }
 
-  static async send(recipient: string, subject: string, body: string, providerName?: string): Promise<void> {
+  async send(
+    recipient: string,
+    subject: string,
+    body: string,
+    providerName?: string,
+  ): Promise<void> {
     const provider = this.getProvider(providerName)
     await provider.send(recipient, subject, body)
   }
+
+  private assertProviderExists(providerName: string): void {
+    if (!this.providers[providerName]) {
+      const availableProviders = Object.keys(this.providers).sort().join(', ')
+      throw new Error(
+        `Unknown default notification provider "${providerName}". Available providers: ${availableProviders}`,
+      )
+    }
+  }
+}
+
+export const buildNotificationProviderRegistry = (): Record<string, NotificationProvider> => ({
+  email: new EmailNotificationProvider(),
+  console: new ConsoleNotificationProvider(),
+})
+
+export const createNotificationService = (
+  defaultProviderName: string,
+  providers: Record<string, NotificationProvider> = buildNotificationProviderRegistry(),
+): NotificationService => {
+  return new NotificationService(providers, defaultProviderName)
 }

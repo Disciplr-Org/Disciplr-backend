@@ -104,3 +104,42 @@ it("rejects empty update payload", async () => {
     (error) => (error as { status?: number }).status === 400,
   );
 });
+
+it("revision advances after each successful update", async () => {
+  const { vault } = await createVaultWithMilestones(buildVaultInput());
+  const rev0 = await getVaultRevisionById(vault.id);
+  assert.notEqual(rev0, null);
+
+  await updateVaultById(vault.id, rev0!, { status: "active" });
+  const rev1 = await getVaultRevisionById(vault.id);
+
+  assert.notEqual(rev1, null);
+  assert.notEqual(rev0, rev1, "revision must change after update");
+
+  // Old revision is now stale
+  await assert.rejects(
+    () => updateVaultById(vault.id, rev0!, { status: "completed" }),
+    (error) => (error as { status?: number }).status === 409,
+  );
+});
+
+it("three concurrent updates: exactly one succeeds", async () => {
+  const { vault } = await createVaultWithMilestones(buildVaultInput());
+  const revision = await getVaultRevisionById(vault.id);
+  assert.notEqual(revision, null);
+
+  const results = await Promise.allSettled([
+    updateVaultById(vault.id, revision!, { status: "active" }),
+    updateVaultById(vault.id, revision!, { status: "failed" }),
+    updateVaultById(vault.id, revision!, { status: "cancelled" }),
+  ]);
+
+  const fulfilled = results.filter((r) => r.status === "fulfilled");
+  const rejected = results.filter((r) => r.status === "rejected");
+
+  assert.equal(fulfilled.length, 1, "exactly one update should succeed");
+  assert.equal(rejected.length, 2, "two updates should be rejected with 409");
+  for (const r of rejected) {
+    assert.equal((r as PromiseRejectedResult).reason?.status, 409);
+  }
+});

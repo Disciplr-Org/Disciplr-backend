@@ -66,6 +66,21 @@ Example:
 
 State-change actions use specific names: `verifier.approved`, `verifier.suspended`, `verifier.deactivated`, and `verifier.reactivated`. Non-status profile edits use `verifier.updated`.
 
+## Verification Decision Transaction Guarantee
+
+`POST /api/verifications` writes two rows atomically:
+
+1. The verification record (`verifications` table via `recordVerification`).
+2. The audit log entry (`audit_logs` table via `createAuditLog`).
+
+Both writes are wrapped in a single **Knex transaction** (`db.transaction`). If either write fails the entire transaction is rolled back, so it is impossible to have a verification row without a corresponding audit trail, or vice-versa.
+
+`createEvidenceReference` (Prisma `$queryRaw`) runs **after** the Knex transaction commits because Prisma uses a separate connection pool and cannot join a Knex transaction. It is safe to call after commit because it is idempotent (`ON CONFLICT (verification_id) DO UPDATE`).
+
+The transaction call is wrapped in `retryWithBackoff` with a serialization-error predicate so transient PostgreSQL serialization failures (`could not serialize`, `deadlock`) are automatically retried with exponential back-off.
+
+Both `recordVerification` and `createAuditLog` accept an optional `trx?: Knex.Transaction` parameter; when provided they use the transaction client instead of the global pool.
+
 ## Anti-Spoofing Rule
 
 Verifier workflow routes chain `authenticate`, `requireVerifier`, and `requireActiveVerifier`. `requireActiveVerifier` loads the registry profile for `req.user.userId`, requires `status === "approved"`, and attaches the profile to `req.verifier`.

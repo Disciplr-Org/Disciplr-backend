@@ -1,35 +1,45 @@
 import { Router } from 'express'
 import { BackgroundJobSystem } from '../jobs/system.js'
 import { healthService } from '../services/healthService.js'
+import { getSecurityMetricsSnapshot } from '../security/abuse-monitor.js'
+import type { AbuseMonitor } from '../services/abuse-monitor.js'
 
-export const createHealthRouter = (jobSystem: BackgroundJobSystem): Router => {
+export const createHealthRouter = (
+  jobSystem: BackgroundJobSystem,
+  privacyAbuseMonitor?: AbuseMonitor,
+): Router => {
   const router = Router()
 
   router.get('/', async (req, res) => {
     const isDeep = req.query.deep === '1'
 
-    const healthData: any = {
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      uptime: process.uptime(),
-      jobs: jobSystem.getMetrics(),
+    if (isDeep) {
+      const deepStatus = await healthService.buildDeepHealthStatus(jobSystem)
+      return res.status(deepStatus.status === 'error' ? 503 : 200).json(deepStatus)
     }
 
-    if (isDeep) {
-      const [database, horizon] = await Promise.all([
-        healthService.checkDatabase(),
-        healthService.checkHorizon(),
-      ])
+    return res.status(200).json(healthService.buildHealthStatus('disciplr-api', jobSystem))
+  })
 
-      healthData.details = { database, horizon }
+  router.get('/deep', async (req, res) => {
+    const deepStatus = await healthService.buildDeepHealthStatus(jobSystem)
+    return res.status(deepStatus.status === 'error' ? 503 : 200).json(deepStatus)
+  })
 
-      if (database.status === 'down' || horizon.status === 'down') {
-        healthData.status = 'error'
-        return res.status(503).json(healthData)
+  router.get('/security', async (req, res) => {
+    const globalMetrics = getSecurityMetricsSnapshot()
+    const securityData: Record<string, unknown> = {
+      ...globalMetrics,
+      timestamp: new Date().toISOString(),
+    }
+
+    if (privacyAbuseMonitor) {
+      securityData.privacy = {
+        categoryCounts: privacyAbuseMonitor.getCategoryCounts(),
       }
     }
 
-    return res.status(200).json(healthData)
+    return res.status(200).json(securityData)
   })
 
   return router

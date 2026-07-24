@@ -121,3 +121,74 @@ export class VaultNotFoundError extends Error {
 ```
 
 Routes catch and convert to HTTP responses.
+
+## Request-Scoped Prisma Client (AsyncLocalStorage)
+
+### Problem
+
+Services previously imported the Prisma singleton directly:
+
+```typescript
+import { prisma } from '../lib/prisma.js'
+```
+
+This makes it impossible to share a single `$transaction` client across multiple
+helpers called within the same request without threading the client through every
+argument list.
+
+### Solution
+
+`src/lib/prismaScope.ts` exposes an `AsyncLocalStorage<{ prisma }>` store and a
+`getPrisma()` helper.  Services call `getPrisma()` instead of using the
+singleton import directly.  The `withRequestPrisma` middleware populates the
+store at the start of every request.
+
+```
+Request → withRequestPrisma → ALS store = { prisma: singleton }
+                            → route handler
+                                → ServiceA.method()   ← getPrisma() == store.prisma
+                                → ServiceB.method()   ← getPrisma() == store.prisma
+```
+
+### Using $transaction across services
+
+Because all helpers in a request share the same ALS context you can wrap them in
+a transaction at the route layer without changing service signatures:
+
+```typescript
+// route handler
+const result = await getPrisma().$transaction(async (tx) => {
+  prismaStorage.run({ prisma: tx as any }, async () => {
+    await UserService.softDeleteUser(userId)   // getPrisma() → tx
+    await AuthService.logout(refreshToken)     // getPrisma() → tx
+  })
+})
+```
+
+### getPrisma() fallback
+
+If called outside an active ALS context (background jobs, scripts, tests that
+don't use the middleware) `getPrisma()` returns the global singleton.  No
+callers break.
+
+### Files
+
+| File | Role |
+|---|---|
+| `src/lib/prismaScope.ts` | ALS store + `getPrisma()` |
+| `src/middleware/withRequestPrisma.ts` | Express middleware that seeds the store |
+| `src/tests/prismaScope.test.ts` | Unit tests |
+
+### Service migration checklist
+
+Replace direct singleton imports with `getPrisma()`:
+
+```typescript
+// Before
+import { prisma } from '../lib/prisma.js'
+await prisma.refreshToken.updateMany(...)
+
+// After
+import { getPrisma } from '../lib/prismaScope.js'
+await getPrisma().refreshToken.updateMany(...)
+```
