@@ -178,6 +178,14 @@ export const envSchema = z
     ENABLE_JOB_SCHEDULER: z.string().optional(),
     NOTIFICATION_PROVIDER: z.enum(["email", "console"]).default("console"),
 
+    // ── SMTP / Email provider ────────────────────────────────────
+    SMTP_HOST: z.string().optional(),
+    SMTP_PORT: positiveInt(587),
+    SMTP_USER: z.string().optional(),
+    SMTP_PASS: z.string().optional(),
+    SMTP_FROM: z.string().optional(),
+    SMTP_SECURE: z.string().optional(),
+
     // ── ETL ───────────────────────────────────────────────────────
     ETL_INTERVAL_MINUTES: positiveInt(5),
     ENABLE_ETL_WORKER: z.string().optional(),
@@ -209,7 +217,6 @@ export const envSchema = z
 
     // ── Misc / Limits ───────────────────────────────────────
     MAX_JSON_BODY_SIZE: z.string().default("500kb"),
-    NOTIFICATION_PROVIDER: z.string().optional(),
     HORIZON_LAG_THRESHOLD: nonNegativeInt(10),
     HORIZON_SHUTDOWN_TIMEOUT_MS: positiveInt(30_000),
 
@@ -295,7 +302,7 @@ let _validated: Env | undefined;
  */
 export function getEnv(): Env {
   if (!_validated) {
-    initEnv()
+    throw new Error("Env not initialized");
   }
   return _validated!;
 }
