@@ -198,10 +198,15 @@ transactionsRouter.get(
       const userId = req.authUser!.userId
       const vaultId = req.params.vaultId
 
-      // Verify user owns the vault
+      // Verify user owns the vault or has access via organization
       const vault = await db('vaults')
-        .where('id', vaultId)
-        .where('user_id', userId)
+        .leftJoin('memberships', 'vaults.organization_id', 'memberships.organization_id')
+        .where('vaults.id', vaultId)
+        .where(function() {
+          this.where('vaults.creator', userId)
+              .orWhere('memberships.user_id', userId)
+        })
+        .select('vaults.*')
         .first()
 
       if (!vault) {
@@ -210,7 +215,6 @@ transactionsRouter.get(
       }
 
       let query = db('transactions')
-        .where('user_id', userId)
         .where('vault_id', vaultId)
 
       // Apply filters (same as main endpoint)
