@@ -1,5 +1,5 @@
 import knex from 'knex'
-import pg from 'pg'
+import { Pool } from 'pg'
 
 const knexConfig = {
   client: 'pg',
@@ -22,7 +22,7 @@ const knexConfig = {
 
 export const db = knex(knexConfig)
 
-export const pool = new pg.Pool({
+export const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 })
