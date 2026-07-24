@@ -11,9 +11,12 @@ import {
   cancelVault,
   checkExpiredVaults,
   completeVault,
+  disputeVault,
   failVault,
+  resolveDispute,
 } from "../services/vaultTransitions.js";
 import { setVaults, type Vault } from "../routes/vaults.js";
+import { UserRole } from "../types/user.js";
 
 type VaultAction =
   | "activate"
@@ -257,5 +260,86 @@ describe("Vault transition invariants", () => {
       }),
       { numRuns: 100 },
     );
+  });
+});
+
+describe("disputeVault / resolveDispute", () => {
+  beforeEach(() => {
+    setVaults([]);
+    resetMilestonesTable();
+  });
+
+  it("rejects a non-admin requester regardless of the requesterId supplied", () => {
+    const vault = makeVault({ status: "active" });
+    setVaults([vault]);
+
+    const result = disputeVault(vault.id, "user-1", UserRole.USER);
+    expect(result.success).toBe(false);
+    expect(vault.status).toBe("active");
+  });
+
+  it("rejects a requester whose id happens to equal the vault creator's id but whose role is not admin", () => {
+    const vault = makeVault({ status: "active", creator: "same-id" });
+    setVaults([vault]);
+
+    // Regression guard for the original bug: authorization must come from a verified
+    // role, not from comparing requesterId to a second caller-supplied id.
+    const result = disputeVault(vault.id, "same-id", UserRole.USER);
+    expect(result.success).toBe(false);
+    expect(vault.status).toBe("active");
+  });
+
+  it("allows an admin to place an active vault into disputed", () => {
+    const vault = makeVault({ status: "active" });
+    setVaults([vault]);
+
+    const result = disputeVault(vault.id, "admin-1", UserRole.ADMIN);
+    expect(result.success).toBe(true);
+    expect(vault.status).toBe("disputed");
+  });
+
+  it("refuses to dispute a vault not in a disputable status", () => {
+    const vault = makeVault({ status: "draft" });
+    setVaults([vault]);
+
+    const result = disputeVault(vault.id, "admin-1", UserRole.ADMIN);
+    expect(result.success).toBe(false);
+    expect(vault.status).toBe("draft");
+  });
+
+  it("returns an error for an unknown vault id", () => {
+    const result = disputeVault("does-not-exist", "admin-1", UserRole.ADMIN);
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("Vault not found");
+  });
+
+  it("rejects a non-admin from resolving a disputed vault", () => {
+    const vault = makeVault({ status: "disputed" });
+    setVaults([vault]);
+
+    const result = resolveDispute(vault.id, "user-1", UserRole.USER, "active");
+    expect(result.success).toBe(false);
+    expect(vault.status).toBe("disputed");
+  });
+
+  it.each(["active", "completed", "failed"] as const)(
+    "allows an admin to resolve a disputed vault to %s",
+    (target) => {
+      const vault = makeVault({ status: "disputed" });
+      setVaults([vault]);
+
+      const result = resolveDispute(vault.id, "admin-1", UserRole.ADMIN, target);
+      expect(result.success).toBe(true);
+      expect(vault.status).toBe(target);
+    },
+  );
+
+  it("refuses to resolve a vault that is not currently disputed", () => {
+    const vault = makeVault({ status: "active" });
+    setVaults([vault]);
+
+    const result = resolveDispute(vault.id, "admin-1", UserRole.ADMIN, "active");
+    expect(result.success).toBe(false);
+    expect(vault.status).toBe("active");
   });
 });
