@@ -119,12 +119,12 @@ export const createDefaultJobHandlers = (
   },
   'analytics.report.generate': async (payload, context) => {
     const s3Config = resolveS3Config()
-    const orgIds = payload.orgIds ?? getAllOrgIds()
+    const orgIds = payload.orgIds ?? (await getAllOrgIds())
     let generated = 0
     let skipped = 0
 
     for (const orgId of orgIds) {
-      if (!checkAndIncrementReportQuota(orgId)) {
+      if (!(await checkAndIncrementReportQuota(orgId))) {
         logJob('analytics.report.generate', `quota_exceeded orgId=${orgId}`)
         skipped++
         continue
@@ -139,9 +139,9 @@ export const createDefaultJobHandlers = (
 
         if (s3Config) {
           await uploadToS3(s3Config, key, buf, 'application/json')
-          saveOrgReport({ orgId, s3Key: key, snapshotAt: snapshot.snapshotAt, sizeBytes: buf.byteLength })
+          await saveOrgReport({ orgId, s3Key: key, snapshotAt: snapshot.snapshotAt, sizeBytes: buf.byteLength })
         } else {
-          saveOrgReport({ orgId, localBuffer: buf, snapshotAt: snapshot.snapshotAt, sizeBytes: buf.byteLength })
+          await saveOrgReport({ orgId, localBuffer: buf, snapshotAt: snapshot.snapshotAt, sizeBytes: buf.byteLength })
         }
         generated++
       } catch (err) {

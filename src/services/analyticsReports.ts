@@ -1,13 +1,15 @@
 /**
- * In-memory store for per-org analytics report records.
+ * Store for per-org analytics report records.
  *
  * Each report entry holds a reference to the S3 key (or a local JSON buffer
- * when S3 is not configured) for the rendered snapshot.  Signed download URLs
+ * when S3 is not configured) for the rendered snapshot. Signed download URLs
  * are generated on demand from the stored S3 key.
  *
  * Retention: reports older than ANALYTICS_REPORT_RETENTION_DAYS are pruned
  * automatically whenever a new report is saved for that org.
  */
+
+import { prisma } from '../lib/prisma.js'
 
 const DEFAULT_RETENTION_DAYS =
   Number.parseInt(process.env.ANALYTICS_REPORT_RETENTION_DAYS ?? '30', 10) || 30
@@ -28,85 +30,122 @@ export interface AnalyticsReport {
   sizeBytes: number
 }
 
-// Keyed by orgId -> AnalyticsReport[]  (sorted oldest-first)
-const _store = new Map<string, AnalyticsReport[]>()
-
-export function _resetReportsStore(): void {
-  _store.clear()
+export async function _resetReportsStore(): Promise<void> {
+  await prisma.analyticsReport.deleteMany()
 }
 
 /** Return a shallow copy of all reports for an org, newest-first. */
-export function getOrgReports(orgId: string): AnalyticsReport[] {
-  return (_store.get(orgId) ?? []).slice().reverse()
+export async function getOrgReports(orgId: string): Promise<AnalyticsReport[]> {
+  const reports = await prisma.analyticsReport.findMany({
+    where: { orgId },
+    orderBy: { createdAt: 'desc' },
+  })
+  return reports.map((r) => ({
+    id: r.id,
+    orgId: r.orgId,
+    createdAt: r.createdAt.toISOString(),
+    s3Key: r.s3Key ?? undefined,
+    localBuffer: r.localBuffer ?? undefined,
+    snapshotAt: r.snapshotAt.toISOString(),
+    sizeBytes: r.sizeBytes,
+  }))
 }
 
 /**
  * Persist a new report record for an org and purge stale entries.
  * Returns the saved report.
  */
-export function saveOrgReport(
+export async function saveOrgReport(
   report: Omit<AnalyticsReport, 'id' | 'createdAt'>,
   retentionDays = DEFAULT_RETENTION_DAYS,
-): AnalyticsReport {
-  const { randomUUID } = require('node:crypto') as typeof import('node:crypto')
-  const saved: AnalyticsReport = {
-    id: randomUUID(),
-    createdAt: new Date().toISOString(),
-    ...report,
+): Promise<AnalyticsReport> {
+  const saved = await prisma.analyticsReport.create({
+    data: {
+      orgId: report.orgId,
+      s3Key: report.s3Key,
+      localBuffer: report.localBuffer ?? null,
+      snapshotAt: new Date(report.snapshotAt),
+      sizeBytes: report.sizeBytes,
+    },
+  })
+
+  await purgeOldReports(report.orgId, retentionDays)
+  
+  return {
+    id: saved.id,
+    orgId: saved.orgId,
+    createdAt: saved.createdAt.toISOString(),
+    s3Key: saved.s3Key ?? undefined,
+    localBuffer: saved.localBuffer ?? undefined,
+    snapshotAt: saved.snapshotAt.toISOString(),
+    sizeBytes: saved.sizeBytes,
   }
-
-  const list = _store.get(report.orgId) ?? []
-  list.push(saved)
-  _store.set(report.orgId, list)
-
-  purgeOldReports(report.orgId, retentionDays)
-  return saved
 }
 
 /** Remove reports older than `retentionDays` for the given org. */
-function purgeOldReports(orgId: string, retentionDays: number): void {
+async function purgeOldReports(orgId: string, retentionDays: number): Promise<void> {
   const cutoff = new Date()
   cutoff.setUTCDate(cutoff.getUTCDate() - retentionDays)
-  const cutoffIso = cutoff.toISOString()
 
-  const list = _store.get(orgId)
-  if (!list) return
-
-  const kept = list.filter((r) => r.createdAt >= cutoffIso)
-  if (kept.length !== list.length) {
-    _store.set(orgId, kept)
-  }
+  await prisma.analyticsReport.deleteMany({
+    where: {
+      orgId,
+      createdAt: { lt: cutoff },
+    },
+  })
 }
 
 /** All org IDs that currently have at least one stored report. */
-export function getAllOrgIds(): string[] {
-  return Array.from(_store.keys())
+export async function getAllOrgIds(): Promise<string[]> {
+  const reports = await prisma.analyticsReport.findMany({
+    select: { orgId: true },
+    distinct: ['orgId'],
+  })
+  return reports.map((r) => r.orgId)
 }
 
-/** Daily in-memory quota counters (orgId -> date -> count). */
-const _quotaCounters = new Map<string, Map<string, number>>()
-
-export function _resetQuotaCounters(): void {
-  _quotaCounters.clear()
+export async function _resetQuotaCounters(): Promise<void> {
+  await prisma.analyticsReportQuota.deleteMany()
 }
 
-const utcDate = (d = new Date()): string => d.toISOString().slice(0, 10)
+const utcDate = (d = new Date()): Date => {
+  const iso = d.toISOString().slice(0, 10)
+  return new Date(iso)
+}
 
 /**
  * Check and increment the per-org report-generation quota for today.
  * Returns true when allowed, false when the daily cap is exhausted.
  */
-export function checkAndIncrementReportQuota(
+export async function checkAndIncrementReportQuota(
   orgId: string,
   dailyLimit = DEFAULT_REPORT_QUOTA,
-): boolean {
+): Promise<boolean> {
   const today = utcDate()
-  if (!_quotaCounters.has(orgId)) {
-    _quotaCounters.set(orgId, new Map())
+  
+  const quota = await prisma.analyticsReportQuota.upsert({
+    where: {
+      orgId_date: {
+        orgId,
+        date: today,
+      },
+    },
+    update: {},
+    create: {
+      orgId,
+      date: today,
+      count: 0,
+    },
+  })
+
+  if (quota.count >= dailyLimit) {
+    return false
   }
-  const byDate = _quotaCounters.get(orgId)!
-  const current = byDate.get(today) ?? 0
-  if (current >= dailyLimit) return false
-  byDate.set(today, current + 1)
+
+  await prisma.analyticsReportQuota.update({
+    where: { id: quota.id },
+    data: { count: { increment: 1 } },
+  })
+
   return true
 }
