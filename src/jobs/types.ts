@@ -10,6 +10,7 @@ export const JOB_TYPES = [
   'export.generate',
   'vault.reconcile',
   'sessions.cleanup',
+  'retention.purge',
   'outbox.relay',
   'embeddings.reindex',
   'saved-search.evaluate',
@@ -72,6 +73,11 @@ export interface SessionsCleanupJobPayload {
   batchSize?: number
 }
 
+export interface RetentionPurgeJobPayload {
+  organizationId: string
+  batchSize?: number
+}
+
 export interface OutboxRelayJobPayload {
   batchSize?: number
 }
@@ -84,7 +90,6 @@ export interface EmbeddingsReindexJobPayload {
 export interface SavedSearchEvaluateJobPayload {
   searchId?: string
 }
-
 export interface JobPayloadByType {
   'notification.send': NotificationJobPayload
   'deadline.check': DeadlineCheckJobPayload
@@ -97,6 +102,7 @@ export interface JobPayloadByType {
   'export.generate': ExportGenerateJobPayload
   'vault.reconcile': VaultReconcileJobPayload
   'sessions.cleanup': SessionsCleanupJobPayload
+  'retention.purge': RetentionPurgeJobPayload
   'outbox.relay': OutboxRelayJobPayload
   'embeddings.reindex': EmbeddingsReindexJobPayload
   'saved-search.evaluate': SavedSearchEvaluateJobPayload
@@ -117,7 +123,7 @@ export interface EnqueueOptions {
   maxAttempts?: number
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> => {
+export const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === 'object' && value !== null
 }
 
@@ -193,6 +199,11 @@ export const isPayloadForJobType = (
       )
     case 'sessions.cleanup':
       return payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0)
+    case 'retention.purge':
+      return (
+        isNonEmptyString(payload.organizationId) &&
+        (payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0))
+      )
     case 'outbox.relay':
       return true
     case 'embeddings.reindex':

@@ -13,12 +13,20 @@
 const LEGACY_MODEL_VERSION = 'legacy-unversioned'
 
 exports.up = async function up(knex) {
+  // Guard: skip if the milestone_embeddings table does not exist
+  // (e.g. when pgvector extension is unavailable and the table was never created).
+  const hasTable = await knex.schema.hasTable('milestone_embeddings')
+  if (!hasTable) return
+
   await knex.schema.alterTable('milestone_embeddings', (table) => {
     table.string('model_version', 128).notNullable().defaultTo(LEGACY_MODEL_VERSION)
   })
 }
 
 exports.down = async function down(knex) {
+  const hasTable = await knex.schema.hasTable('milestone_embeddings')
+  if (!hasTable) return
+
   await knex.schema.alterTable('milestone_embeddings', (table) => {
     table.dropColumn('model_version')
   })
