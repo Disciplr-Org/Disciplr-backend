@@ -59,13 +59,13 @@ export const config: AppConfig = {
   get logLevel() { return process.env.LOG_LEVEL ?? 'info' },
   get port() { 
     try { return getEnv().PORT } catch (err: any) { 
-      if (err.message === 'Env not initialized') return process.env.PORT ? Number(process.env.PORT) : 3000;
+      if (err.message.startsWith('Environment not validated yet')) return process.env.PORT ? Number(process.env.PORT) : 3000;
       throw err;
     }
   },
   get serviceName() {
     try { return getEnv().SERVICE_NAME } catch (err: any) { 
-      if (err.message === 'Env not initialized') return process.env.SERVICE_NAME ?? 'disciplr-backend';
+      if (err.message.startsWith('Environment not validated yet')) return process.env.SERVICE_NAME ?? 'disciplr-backend';
       throw err;
     }
   },
@@ -73,13 +73,13 @@ export const config: AppConfig = {
     try {
       return parseCorsOrigins(getEnv().CORS_ORIGINS, this.env)
     } catch (err: any) {
-      if (err.message === 'Env not initialized') return parseCorsOrigins(process.env.CORS_ORIGINS, this.env);
+      if (err.message.startsWith('Environment not validated yet')) return parseCorsOrigins(process.env.CORS_ORIGINS, this.env);
       throw err;
     }
   },
   get maxJsonBodySize() {
     try { return getEnv().MAX_JSON_BODY_SIZE } catch (err: any) { 
-      if (err.message === 'Env not initialized') return process.env.MAX_JSON_BODY_SIZE ?? '500kb';
+      if (err.message.startsWith('Environment not validated yet')) return process.env.MAX_JSON_BODY_SIZE ?? '500kb';
       throw err;
     }
   }

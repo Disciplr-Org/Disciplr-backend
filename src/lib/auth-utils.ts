@@ -134,7 +134,7 @@ export const generateAccessToken = (payload: { userId: string; role: string; jti
     expiresIn: (process.env.JWT_IMPERSONATION_EXPIRES_IN || '15m') as any,
     issuer,
     audience,
-    header: { alg: 'HS256', kid: currentKey.kid },
+    header: { kid: currentKey.kid, alg: 'HS256' },
   });
 };
 
@@ -163,7 +163,7 @@ export const generateRefreshToken = (payload: { userId: string }, env?: Env): st
   }
   return jwt.sign(payload, currentKey.secret, {
     expiresIn: (process.env.JWT_REFRESH_EXPIRES_IN || '7d') as any,
-    header: { alg: 'HS256', kid: currentKey.kid },
+    header: { kid: currentKey.kid, alg: 'HS256' },
   });
 };
 

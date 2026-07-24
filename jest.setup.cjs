@@ -10,3 +10,10 @@ if (!process.env.FIELD_ENCRYPTION_KEY && !process.env.FIELD_ENCRYPTION_KEYS) {
   // 32 zero bytes, base64-encoded — test-only, never use in production.
   process.env.FIELD_ENCRYPTION_KEY = Buffer.alloc(32, 0).toString('base64')
 }
+
+// DOWNLOAD_SECRET became a required env var (no default) with the hardening of
+// export download tokens. Seed a deterministic test-only value so initEnv()
+// and src/middleware/auth.ts (which throws at import when unset) work in tests.
+if (!process.env.DOWNLOAD_SECRET) {
+  process.env.DOWNLOAD_SECRET = 'test-download-secret-not-for-production'
+}

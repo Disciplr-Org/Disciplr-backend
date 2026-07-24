@@ -103,8 +103,7 @@ export const envSchema = z
     JWT_AUDIENCE: z.string().min(1, "JWT_AUDIENCE is required").default("disciplr-api"),
     DOWNLOAD_SECRET: z
       .string()
-      .min(16, "must be at least 16 characters")
-      .default("change-me-in-production-long-secret"),
+      .min(16, "must be at least 16 characters"),
 
     // JWT key rotation support – JSON encoded array of {kid, secret, retiredAt?}
     JWT_KEYS: z
@@ -316,7 +315,7 @@ let _validated: Env | undefined;
  */
 export function getEnv(): Env {
   if (!_validated) {
-    throw new Error("Env not initialized");
+    throw new Error("Environment not validated yet — call initEnv() first");
   }
   return _validated!;
 }
@@ -375,10 +374,6 @@ export function initEnv(
       { key: "JWT_SECRET", sentinel: "change-me-in-production-long-secret" },
       { key: "JWT_ACCESS_SECRET", sentinel: "fallback-access-secret-long" },
       { key: "JWT_REFRESH_SECRET", sentinel: "fallback-refresh-secret-long" },
-      {
-        key: "DOWNLOAD_SECRET",
-        sentinel: "change-me-in-production-long-secret",
-      },
     ];
 
     for (const { key, sentinel } of insecureDefaults) {

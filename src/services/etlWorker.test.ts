@@ -384,7 +384,10 @@ describe('ETLWorker', () => {
 // ---------------------------------------------------------------------------
 
 describe('resolveETLConfig', () => {
-  const baseVars = { DATABASE_URL: 'postgres://localhost/test' }
+  const baseVars = {
+    DATABASE_URL: 'postgres://localhost/test',
+    DOWNLOAD_SECRET: 'test-download-secret-not-for-production',
+  }
 
   function makeEnv(overrides: Record<string, string | undefined> = {}): Env {
     return envSchema.parse({ ...baseVars, ...overrides })
