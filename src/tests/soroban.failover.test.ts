@@ -332,7 +332,7 @@ describe('submitTransaction failover (via createDefaultSorobanClient)', () => {
     )
 
     await expect(client.submitVaultCreation(BASE_CONFIG, VAULT_ARGS)).rejects.toThrow(
-      'Soroban transaction did not succeed',
+      'transaction_pending',
     )
 
     // sendTransaction was called exactly once on the primary; secondary was never used
@@ -472,7 +472,7 @@ describe('submitTransaction failover (via createDefaultSorobanClient)', () => {
     const primaryServer: MockServer = {
       getAccount: jest
         .fn<MockServer['getAccount']>()
-        .mockRejectedValue(new Error('account does not exist on the network')),
+        .mockRejectedValue(new Error('source account not found')),
       prepareTransaction: jest.fn(),
       sendTransaction: jest.fn(),
       getTransaction: jest.fn(),
@@ -485,7 +485,7 @@ describe('submitTransaction failover (via createDefaultSorobanClient)', () => {
     )
 
     await expect(client.submitVaultCreation(BASE_CONFIG, VAULT_ARGS)).rejects.toThrow(
-      'account does not exist',
+      'source account not found',
     )
 
     // Secondary was never tried — non-network errors are not retried across endpoints

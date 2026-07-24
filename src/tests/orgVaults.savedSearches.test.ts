@@ -1,3 +1,6 @@
+// Prevent initEnv() from calling process.exit(1) during module import
+process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://dummy:dummy@dummy/dummy'
+
 import { describe, it, expect, beforeEach, jest } from '@jest/globals'
 import {
   validateAndSanitizeQueryDefinition,
