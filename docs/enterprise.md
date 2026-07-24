@@ -15,6 +15,19 @@ Enterprise access is managed through the `enterpriseGuard` middleware. Eligibili
 - **Non-Enterprise Users**: Receive a `403 Forbidden` response.
 - **Unauthenticated Requests**: Receive a `401 Unauthorized` response.
 - **Unauthorized Access Attempts**: Logged to the security audit trail with the `security.enterprise_denied` event.
+- **Misconfigured/Absent Tier**: Defaults to **deny** (fail-closed). If `isEnterprise` is missing, `null`, or `false`, or if `enterpriseId` is absent or empty, the request is rejected with `403`.
+
+## Access Decision Matrix
+
+The table below documents every combination that `enterpriseGuard` evaluates. Tests in `src/tests/enterpriseGuard.test.ts` cover each row.
+
+| `req.user` | `isEnterprise` | `enterpriseId` | Decision | HTTP |
+|------------|----------------|----------------|----------|------|
+| absent | — | — | Unauthenticated | 401 |
+| present | `false` | any | Non-enterprise | 403 |
+| present | `undefined` / `null` | any | Fail-closed (missing tier) | 403 |
+| present | `true` | absent / `""` | Misconfiguration | 403 |
+| present | `true` | valid string | Allowed | next() |
 
 ## Exposure Controls
 The Enterprise API implements strict data exposure controls to prevent leakage of internal metadata:

@@ -260,6 +260,80 @@ The validation logic is covered by comprehensive tests including:
 }
 ```
 
+---
+
+## Org-Scoped Saved Vault Searches
+
+Operators can persist a named query against an org's vault set and optionally subscribe to change notifications when the result set shifts.
+
+### Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST`   | `/api/orgs/:orgId/vault-searches` | owner, admin | Create a saved search |
+| `GET`    | `/api/orgs/:orgId/vault-searches` | owner, admin, member | List all saved searches |
+| `GET`    | `/api/orgs/:orgId/vault-searches/:searchId` | owner, admin, member | Get one saved search |
+| `DELETE` | `/api/orgs/:orgId/vault-searches/:searchId` | owner, admin | Delete a saved search |
+
+### Request body — POST
+
+```json
+{
+  "name": "Active high-value vaults",
+  "query_definition": {
+    "status": "active",
+    "amount_min": "10000",
+    "sort_by": "created_at",
+    "sort_order": "desc",
+    "limit": 50
+  },
+  "alerts_enabled": true,
+  "alert_recipient": "ops@example.com",
+  "alert_frequency_ms": 3600000
+}
+```
+
+#### `query_definition` fields
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `q` | string | Free-text search; injection chars stripped; max 200 chars |
+| `status` | string | One of: `draft`, `active`, `completed`, `failed`, `cancelled` |
+| `verifier` | string | Stellar address; max 256 chars |
+| `amount_min` | string | Non-negative numeric string |
+| `amount_max` | string | Non-negative numeric string |
+| `date_from` | string | ISO 8601 date |
+| `date_to` | string | ISO 8601 date |
+| `sort_by` | string | One of: `created_at`, `amount`, `end_date`, `status` |
+| `sort_order` | string | `asc` or `desc` |
+| `limit` | number | Integer 1–100 |
+
+#### Constraints
+
+- **Per-org cap**: maximum **20** saved searches per org (HTTP 422 on overflow).
+- **Alert frequency floor**: `alert_frequency_ms` must be ≥ `3,600,000` ms (1 hour).
+- `alert_recipient` is required when `alerts_enabled` is `true`.
+
+### Alert subscriptions
+
+When `alerts_enabled` is `true` the periodic evaluation job re-runs the saved query on a schedule (default every 15 minutes, controlled by `SAVED_SEARCH_EVAL_INTERVAL_MS`). If the result set has changed since the last evaluation (detected by SHA-256 hash comparison), a notification is dispatched to `alert_recipient` via the configured notification provider.
+
+The per-search evaluation frequency is controlled by `alert_frequency_ms`. A search is only evaluated if `now >= last_evaluated_at + alert_frequency_ms`.
+
+### Database
+
+| Table | Migration |
+|-------|-----------|
+| `org_vault_searches` | `db/migrations/20260628100000_create_org_vault_searches.cjs` |
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SAVED_SEARCH_EVAL_INTERVAL_MS` | `900000` (15 min) | How often the evaluation job runs |
+
+---
+
 ## Soroban Transaction Polling and Timeout
 
 When `onChain.mode` is `"submit"`, the backend sends the transaction to the Soroban RPC and then polls `getTransaction` until the tx reaches a terminal state.

@@ -6,7 +6,13 @@ import type { BackgroundJobSystem } from '../jobs/system.js'
 import { Readable, Transform } from 'node:stream'
 import { createGzip, gzipSync } from 'node:zlib'
 import { maskPii, sanitizePrivacyPayload, sanitizePrivacyString } from '../utils/privacy.js'
-import { resolveS3Config, uploadToS3 } from '../services/exportS3.js'
+import { resolveS3Config, uploadToS3, sanitizeS3KeySegment } from '../services/exportS3.js'
+
+export const EXPORT_STREAM_CONFIG = {
+  CHUNK_SIZE_BYTES: 512 * 1024,
+  MEMORY_CEILING_BYTES: 512 * 1024 * 1024,
+  SLOW_CONSUMER_RPS: 10,
+} as const
 
 export type ExportFormat = 'csv' | 'json' | 'ndjson'
 export type ExportScope = 'vaults' | 'transactions' | 'analytics' | 'all'
@@ -37,6 +43,7 @@ export type DlqMetricsHook = (event: DlqMetricsEvent) => void
 export interface ExportJob {
   id: string
   userId: string
+  orgId?: string
   isAdmin: boolean
   targetUserId?: string
   scope: ExportScope
@@ -57,6 +64,7 @@ export interface ExportJob {
 
 export interface EnqueueExportJobInput {
   userId: string
+  orgId?: string
   isAdmin: boolean
   targetUserId?: string
   scope: ExportScope
@@ -69,6 +77,7 @@ export interface EnqueueExportJobInput {
 interface ExportJobRecord {
   id: string
   requester_user_id: string
+  org_id?: string | null
   requester_is_admin: boolean
   target_user_id: string | null
   scope: ExportScope
@@ -206,6 +215,7 @@ const sanitizeExportTelemetry = (
 const toExportJob = (record: ExportJobRecord): ExportJob => ({
   id: record.id,
   userId: record.requester_user_id,
+  orgId: record.org_id ?? undefined,
   isAdmin: record.requester_is_admin,
   targetUserId: record.target_user_id ?? undefined,
   scope: record.scope,
@@ -227,6 +237,7 @@ const toExportJob = (record: ExportJobRecord): ExportJob => ({
 const toRecord = (job: ExportJob): ExportJobRecord => ({
   id: job.id,
   requester_user_id: job.userId,
+  org_id: job.orgId ?? null,
   requester_is_admin: job.isAdmin,
   target_user_id: job.targetUserId ?? null,
   scope: job.scope,
@@ -734,6 +745,7 @@ export const enqueueExportJob = async (
 
   const created = await exportJobRepository.create({
     userId: input.userId,
+    orgId: input.orgId,
     isAdmin: input.isAdmin,
     targetUserId: input.targetUserId,
     scope: input.scope,
@@ -785,7 +797,9 @@ export async function processJob(
     const s3Config = resolveS3Config()
     let s3Key: string | undefined
     if (s3Config) {
-      const key = `exports/${job.id}/${filename}`
+      const safeJobId = sanitizeS3KeySegment(job.id)
+      const safeFilename = sanitizeS3KeySegment(filename ?? `export-${job.id}`)
+      const key = `exports/${safeJobId}/${safeFilename}`
       const contentType = job.format === 'csv'
         ? 'text/csv; charset=utf-8'
         : job.format === 'json'

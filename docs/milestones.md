@@ -316,3 +316,132 @@ getEmbeddingReindexProgress()
 support methods, `BackfillCursorStore`, the embedding provider, and the `embeddings.reindex` job
 handler — all against lightweight in-memory fakes, so the suite runs without a live database (no
 `DATABASE_URL` or pgvector required).
+
+---
+
+## Bulk Milestone Check-in
+
+### POST /api/verifications/bulk
+
+Submits multiple milestone check-ins in a single request. Each item is validated and applied independently; failures are reported per-item without aborting the entire batch.
+
+**Authentication:** Required (JWT Bearer token)
+**Authorization:** VERIFIER role required
+**Idempotency:** Yes - repeated submissions for the same targetId return conflict error
+
+#### Request
+
+- **Method:** POST
+- **Path:** `/api/verifications/bulk`
+- **Headers:**
+  - `Authorization: Bearer <jwt-token>`
+  - `Content-Type: application/json`
+- **Body:** Array of check-in items
+
+```json
+[
+  {
+    "targetId": "milestone-1",
+    "result": "approved",
+    "disputed": false,
+    "evidenceHash": "a".repeat(64),
+    "evidenceReferenceUrl": "https://s3.example.com/evidence.pdf"
+  },
+  {
+    "targetId": "milestone-2",
+    "result": "rejected",
+    "disputed": true,
+    "evidenceHash": "b".repeat(64),
+    "evidenceReferenceUrl": "https://s3.example.com/evidence2.pdf"
+  }
+]
+```
+
+#### Response
+
+**Success (200):**
+```json
+{
+  "results": [
+    {
+      "targetId": "milestone-1",
+      "success": true,
+      "verification": {
+        "id": "ver-1",
+        "verifierUserId": "verifier-1",
+        "targetId": "milestone-1",
+        "result": "approved",
+        "evidenceHash": "a".repeat(64),
+        "disputed": false,
+        "timestamp": "2024-01-01T00:00:00.000Z"
+      },
+      "evidenceReference": {
+        "id": "ev-1",
+        "verificationId": "ver-1",
+        "evidenceHash": "a".repeat(64),
+        "evidenceReferenceUrl": "https://s3.example.com/evidence.pdf"
+      }
+    },
+    {
+      "targetId": "milestone-2",
+      "success": false,
+      "error": {
+        "code": "CONFLICT",
+        "message": "conflicting verification decision already exists"
+      }
+    }
+  ],
+  "summary": {
+    "total": 2,
+    "succeeded": 1,
+    "failed": 1
+  }
+}
+```
+
+#### Error Codes
+
+| Code | Description |
+|---|---|
+| `BAD_REQUEST` | Invalid request data (missing/invalid fields) |
+| `VALIDATION_ERROR` | Evidence reference validation failed |
+| `CONFLICT` | Verification decision already exists for this targetId |
+| `INTERNAL_ERROR` | Unexpected server error |
+
+#### Constraints
+
+- **Batch Size:** Maximum 100 items per request
+- **Per-item Validation:** Each item is validated independently
+- **Partial Failure:** One failed item does not abort the entire batch
+- **Idempotency:** Retrying the same batch returns consistent results
+
+#### Authorization Rules
+
+1. **Role Check:** User must have VERIFIER role
+2. **Active Verifier:** Verifier account must be active
+3. **Per-item Authorization:** All items use the authenticated verifier's userId
+
+#### Events
+
+Successful check-ins emit:
+- `verification.decision.recorded` audit log for each successful item
+- Evidence reference created for each successful item
+
+#### Security Considerations
+
+- Verifier identity verified from authenticated JWT context
+- Per-item isolation prevents one bad item from affecting others
+- Bounded batch size prevents resource exhaustion
+- All validation attempts logged with actor information
+
+#### Testing
+
+Tests live in `src/tests/verifications.bulk.test.ts` and cover:
+- Request validation (array format, empty array, batch size cap)
+- Per-item validation (missing fields, invalid formats)
+- Mixed success/failure scenarios
+- Batch size cap enforcement
+- Idempotent retry behavior
+- Duplicate items in batch
+- Authorization requirements
+

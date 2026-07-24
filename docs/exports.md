@@ -93,20 +93,22 @@ POST /api/exports/me?scope=all&format=csv&columns={"vaults":["id","status"],"tra
 
 When `EXPORT_S3_BUCKET` and `EXPORT_S3_REGION` are both configured, completed exports are uploaded to S3 using streaming multipart upload via `@aws-sdk/lib-storage`. The export job record stores the S3 key instead of the file bytes.
 
-On poll, `GET /api/exports/status/:jobId` returns a short-lived pre-signed S3 URL instead of the local download token.
+On completion, `GET /api/exports/status/:jobId` returns a proxied download link (`/api/exports/:id/download`) rather than exposing long-lived raw S3 signed URLs directly.
 
 **Environment variables**:
 
-| Variable                   | Required | Default | Description                                    |
-| -------------------------- | -------- | ------- | ---------------------------------------------- |
-| `EXPORT_S3_BUCKET`         | No       | –       | S3 bucket name for export storage             |
-| `EXPORT_S3_REGION`         | No       | –       | AWS region for the S3 bucket                  |
-| `EXPORT_SIGNED_URL_TTL_S`  | No       | `3600`  | Signed URL expiration in seconds (1 hour)     |
+| Variable                        | Required | Default | Description                                    |
+| ------------------------------- | -------- | ------- | ---------------------------------------------- |
+| `EXPORT_S3_BUCKET`              | No       | –       | S3 bucket name for export storage             |
+| `EXPORT_S3_REGION`              | No       | –       | AWS region for the S3 bucket                  |
+| `EXPORT_SIGNED_URL_TTL_S`       | No       | `3600`  | Default fallback signed URL expiration in seconds |
+| `EXPORT_SIGNED_URL_SHORT_TTL_S` | No       | `60`    | Short-lived S3 signed URL TTL for proxied downloads |
 
 **Behavior**:
 - When S3 is configured, `result_data` remains `NULL` in the database and the `s3_key` column contains the S3 object key.
 - When S3 is not configured, `result_data` stores the generated file bytes and `s3_key` remains `NULL`.
-- The status endpoint returns either a signed S3 URL (when S3 is enabled) or a local `/api/exports/download/:token` URL (when S3 is disabled).
+- The status endpoint returns the authenticated download endpoint `/api/exports/:id/download`.
+- When accessing `GET /api/exports/:id/download`, callers are re-authenticated and verified for organization ownership. When S3 is configured, a short-lived signed URL (default 60s TTL) is issued.
 
 ## Durability and retries
 
@@ -115,14 +117,15 @@ On poll, `GET /api/exports/status/:jobId` returns a short-lived pre-signed S3 UR
 - On worker startup, any export jobs left in `pending` or `running` state are re-enqueued.
 - Request-level idempotency is supported through the `Idempotency-Key` header. Reusing the same key with a different request shape returns `409`.
 
-## Security
+## Security & Proxied Download Re-Authorization
 
-- Non-admin users only export their own data.
-- Admin exports can target a specific user or all users.
-- Status polling is restricted to the requesting user unless the caller is an admin.
-- Download links are signed and time-limited.
-- CSV cells that start with spreadsheet formula prefixes such as `=`, `+`, `-`, `@`, tab, or carriage return are prefixed with `'` to mitigate formula injection.
-- Column selection is validated against an allowlist to prevent exposure of unintended data.
+- **Authenticated Proxied Downloads (`GET /api/exports/:id/download`)**: Requires valid authentication bearer token.
+- **Per-Object Organization Ownership & Authorization**: The caller's organization ID is verified against the export job's owning organization. Cross-tenant or unauthorized access attempts are rejected with `403 Forbidden`.
+- **Short-Lived S3 Presigned Links**: S3 presigned URLs are generated with short expiration windows (e.g. 60 seconds) during proxied downloads and are never embedded in list/status responses without authorization.
+- **Audit Logging**: Every download attempt is recorded in tamper-evident audit logs (`export.download`) with the requesting principal, export job ID, and organization context.
+- Non-admin users only export and access their own organization's data. Admin exports can target specific users or global data.
+- CSV cells starting with formula prefixes (`=`, `+`, `-`, `@`, tab, carriage return) are prefixed with `'` to prevent formula injection.
+- Column selection is validated against an allowlist.
 
 ## Per-tenant export quotas
 

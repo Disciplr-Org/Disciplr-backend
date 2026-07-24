@@ -469,3 +469,84 @@ export const metricsRateLimiter = createRateLimiter({
 - **Query Execution Plans:** Optional EXPLAIN ANALYZE integration
 - **Performance Baselines:** Track metrics against expected SLAs
 - **Alerting Integration:** Send warnings to PagerDuty/Slack when thresholds exceeded
+
+---
+
+## Slow-Query Ring Buffer
+
+### Overview
+
+In addition to the aggregated `SlowQueryTracker`, the service maintains an in-process **ring buffer** that records every individual slow query as it happens. Entries are fingerprints only — raw parameter values are never stored.
+
+**Endpoint:** `GET /api/admin/db/slow-queries`
+**Authentication:** Required (Bearer token)
+**Authorization:** Admin only
+**Response:** Entries ordered oldest → newest
+
+### Configuration
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `SLOW_QUERY_THRESHOLD_MS` | `200` | Minimum duration (ms) before a query is captured |
+| `SLOW_QUERY_BUFFER_SIZE` | `100` | Maximum entries in the ring buffer (oldest evicted on overflow) |
+
+### Response Format
+
+```json
+{
+  "data": {
+    "count": 2,
+    "thresholdMs": 200,
+    "bufferSize": 100,
+    "entries": [
+      {
+        "fingerprint": "select * from vaults where id = ?",
+        "durationMs": 312,
+        "capturedAt": "2026-06-28T00:00:01.000Z"
+      },
+      {
+        "fingerprint": "select * from transactions where user_id = ? and status = ?",
+        "durationMs": 485,
+        "capturedAt": "2026-06-28T00:00:05.000Z"
+      }
+    ]
+  }
+}
+```
+
+### Fingerprinting
+
+SQL strings are normalized before storage to strip all literal values:
+
+| Pattern | Replaced with |
+|---------|---------------|
+| Quoted strings `'value'` | `?` |
+| Integer literals `42` | `?` |
+| Float literals `3.14` | `?` |
+| Positional params `$1`, `$2` | `?` |
+
+Whitespace is collapsed and the fingerprint is capped at 200 characters.
+
+### Knex Integration
+
+`captureSlowQuery` is called automatically via Knex event hooks in `src/db/knex.ts`:
+
+- `query` — records start time keyed by `__knexQueryUid`
+- `query-response` — computes elapsed time and calls `captureSlowQuery`
+- `query-error` — same as above, so failed slow queries are also captured
+
+### Memory Footprint
+
+Each entry holds a fingerprint string (≤200 chars), a number, and an ISO timestamp string. At the default buffer size of 100 entries this is well under 100 KB.
+
+## HTTP Performance Metrics (RED)
+
+### `http_requests_total`
+* **Type**: Counter
+* **Description**: Total number of inbound HTTP requests.
+* **Labels**: `method`, `route`, `status_class`
+
+### `http_request_duration_seconds`
+* **Type**: Histogram
+* **Description**: Latency distribution tracking for processed HTTP requests in seconds.
+* **Labels**: `method`, `route`, `status_class`

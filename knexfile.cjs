@@ -4,7 +4,10 @@
  */
 module.exports = {
   client: 'pg',
-  connection: process.env.DATABASE_URL,
+  connection: {
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
+  },
   migrations: {
     directory: './db/migrations',
     extension: 'cjs',

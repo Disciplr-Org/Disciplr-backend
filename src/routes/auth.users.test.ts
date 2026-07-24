@@ -1,4 +1,4 @@
-import { jest } from '@jest/globals'
+import { jest, mock, describe, it, expect, beforeEach } from 'bun:test'
 import express from 'express'
 import request from 'supertest'
 import { UserRole } from '../types/user.js'
@@ -51,9 +51,9 @@ const prisma = {
   },
 }
 
-jest.unstable_mockModule('../lib/prisma.js', () => ({ prisma }))
-jest.unstable_mockModule('../lib/audit-logs.js', () => ({ createAuditLog }))
-jest.unstable_mockModule('../middleware/auth.js', () => ({
+mock.module('../lib/prisma.js', () => ({ prisma }))
+mock.module('../lib/audit-logs.js', () => ({ createAuditLog }))
+mock.module('../middleware/auth.js', () => ({
   authenticate: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
     req.user = {
       userId: req.header('x-test-user-id') ?? 'admin-user-id',
@@ -62,7 +62,7 @@ jest.unstable_mockModule('../middleware/auth.js', () => ({
     next()
   },
 }))
-jest.unstable_mockModule('../services/auth.service.js', () => ({
+mock.module('../services/auth.service.js', () => ({
   AuthService: {
     register: jest.fn(),
     login: jest.fn(),
@@ -70,7 +70,7 @@ jest.unstable_mockModule('../services/auth.service.js', () => ({
     logout: jest.fn(),
   },
 }))
-jest.unstable_mockModule('../services/session.js', () => ({
+mock.module('../services/session.js', () => ({
   revokeSession: jest.fn(),
   revokeAllUserSessions: jest.fn(),
 }))
