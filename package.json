@@ -21,6 +21,7 @@
     "migrate:rollback": "knex migrate:rollback --knexfile knexfile.cjs",
     "migrate:status": "knex migrate:status --knexfile knexfile.cjs",
     "openapi:generate": "tsx src/docs/generate-spec.ts",
+    "openapi:typecheck": "tsc --noEmit -p tsconfig.docs.json",
     "openapi:lint": "redocly lint docs/openapi.yaml",
     "openapi:validate": "redocly stats docs/openapi.yaml"
   },
