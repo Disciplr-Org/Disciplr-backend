@@ -96,6 +96,19 @@ function readStringField(record: DecodedPayload, key: string): string | undefine
   return typeof value === 'string' ? value : undefined
 }
 
+/**
+ * Converts a primitive-typed unknown value to its string representation.
+ * Returns undefined if the value is null, undefined, an object, or an array —
+ * i.e. anything that cannot be meaningfully rendered as a numeric string.
+ */
+function readPrimitiveAsString(value: unknown): string | undefined {
+  if (value == null) return undefined
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') {
+    return String(value)
+  }
+  return undefined
+}
+
 function readDateField(record: DecodedPayload, key: string): Date | undefined {
   const value = record[key]
 
@@ -203,6 +216,15 @@ function parseVaultPayload(
 
   const vaultId = readStringField(nativeVal, 'vaultId') ??
     readStringField(nativeVal, 'vault_id')
+
+  // Reject the event immediately if vaultId is absent — all downstream
+  // processors require it, and the validators below also check it, but we
+  // do this early to avoid constructing a payload with a missing required
+  // field (which would cause a TS2322 assignability error and a runtime gap).
+  if (!vaultId) {
+    console.error('Vault event missing required vaultId field')
+    return null
+  }
 
   let payload: VaultEventPayload
 
@@ -319,7 +341,7 @@ function parseMilestonePayload(xdrData: string): MilestoneEventPayload | null {
     description: readStringField(nativeVal, 'description') ?? '',
     targetAmount: nativeVal.targetAmount == null && nativeVal.amount == null
       ? undefined
-      : (nativeVal.targetAmount ?? nativeVal.amount).toString(),
+      : readPrimitiveAsString(nativeVal.targetAmount ?? nativeVal.amount),
     deadline: readDateField(nativeVal, 'deadline') ??
       readDateField(nativeVal, 'due_date')
   } as MilestoneEventPayload
