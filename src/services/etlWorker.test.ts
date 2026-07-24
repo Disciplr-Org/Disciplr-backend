@@ -4,8 +4,16 @@
  * Uses dependency injection (the optional third constructor argument) to avoid
  * jest.mock() hoisting, which is not supported in ts-jest ESM mode.
  */
+import '../tests/initTestEnv.js'
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals'
-import { ETLWorker, type ETLWorkerOptions } from './etlWorker.js'
+import {
+  ETLWorker,
+  resolveETLConfig,
+  TESTNET_HORIZON_URL,
+  TESTNET_NETWORK_PASSPHRASE,
+  type ETLWorkerOptions,
+} from './etlWorker.js'
+import { envSchema, type Env } from '../config/env.js'
 import type { TransactionETLService } from './transactionETL.js'
 import type { ETLBatchResult, ETLConfig } from '../types/transactions.js'
 
@@ -368,5 +376,91 @@ describe('ETLWorker', () => {
       expect(capturedSignal.aborted).toBe(false)
       await worker.stop()
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// resolveETLConfig
+// ---------------------------------------------------------------------------
+
+describe('resolveETLConfig', () => {
+  const baseVars = { DATABASE_URL: 'postgres://localhost/test' }
+
+  function makeEnv(overrides: Record<string, string | undefined> = {}): Env {
+    return envSchema.parse({ ...baseVars, ...overrides })
+  }
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  it('uses HORIZON_URL and STELLAR_NETWORK_PASSPHRASE from the validated env', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const config = resolveETLConfig(
+      makeEnv({
+        HORIZON_URL: 'https://horizon.stellar.org',
+        STELLAR_NETWORK_PASSPHRASE: 'Public Global Stellar Network ; September 2015',
+      }),
+    )
+
+    expect(config.horizonUrl).toBe('https://horizon.stellar.org')
+    expect(config.networkPassphrase).toBe(
+      'Public Global Stellar Network ; September 2015',
+    )
+    expect(warnSpy).not.toHaveBeenCalled()
+  })
+
+  it('falls back to testnet defaults outside production with an explicit warning', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const config = resolveETLConfig(makeEnv())
+
+    expect(config.horizonUrl).toBe(TESTNET_HORIZON_URL)
+    expect(config.networkPassphrase).toBe(TESTNET_NETWORK_PASSPHRASE)
+
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    const logged = JSON.parse(warnSpy.mock.calls[0][0] as string)
+    expect(logged.event).toBe('config.testnet_default')
+    expect(logged.variables).toEqual(['HORIZON_URL', 'STELLAR_NETWORK_PASSPHRASE'])
+  })
+
+  it('warns only about the variable that actually fell back', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    resolveETLConfig(makeEnv({ HORIZON_URL: 'https://horizon.stellar.org' }))
+
+    const logged = JSON.parse(warnSpy.mock.calls[0][0] as string)
+    expect(logged.variables).toEqual(['STELLAR_NETWORK_PASSPHRASE'])
+  })
+
+  it('fails closed in production when the testnet fallback would be used', () => {
+    expect(() => resolveETLConfig(makeEnv({ NODE_ENV: 'production' }))).toThrow(
+      /Refusing to start in production/,
+    )
+  })
+
+  it('starts normally in production when both variables are set', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const config = resolveETLConfig(
+      makeEnv({
+        NODE_ENV: 'production',
+        HORIZON_URL: 'https://horizon.stellar.org',
+        STELLAR_NETWORK_PASSPHRASE: 'Public Global Stellar Network ; September 2015',
+      }),
+    )
+
+    expect(config.horizonUrl).toBe('https://horizon.stellar.org')
+    expect(warnSpy).not.toHaveBeenCalled()
+  })
+
+  it('parses backfill bounds from the validated env', () => {
+    jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const config = resolveETLConfig(
+      makeEnv({
+        ETL_BACKFILL_FROM: '2026-01-01T00:00:00Z',
+        ETL_BACKFILL_TO: '2026-02-01T00:00:00Z',
+      }),
+    )
+
+    expect(config.backfillFrom).toEqual(new Date('2026-01-01T00:00:00Z'))
+    expect(config.backfillTo).toEqual(new Date('2026-02-01T00:00:00Z'))
   })
 })
