@@ -47,8 +47,10 @@ The `TransactionETLService` handles:
   - `vault_id`: Filter by vault ID
   - `date_from`, `date_to`: Date range filter
   - `amount_min`, `amount_max`: Amount range filter
-  - `page`, `pageSize`: Pagination
-  - `sortBy`, `sortOrder`: Sorting options
+  - `page`: Page number for page-based pagination
+  - `limit`: Number of items per page (default: 20, max: 100)
+  - `cursor`: Opaque cursor for cursor-based pagination
+  - `sortBy`, `sortOrder`: Sorting options (for page-based)
 
 #### GET /api/transactions/:id
 - Returns specific transaction details
@@ -220,7 +222,7 @@ curl -H "Authorization: Bearer <token>" \
 
 ### Response Format
 
-#### List Response
+#### List Response (Cursor-based)
 ```json
 {
   "data": [
@@ -242,11 +244,22 @@ curl -H "Authorization: Bearer <token>" \
   ],
   "pagination": {
     "limit": 20,
-    "offset": 0,
-    "total": 100,
-    "has_more": true,
+    "next_cursor": "base64-encoded-cursor",
+    "has_more": true
+  }
+}
+```
+
+#### List Response (Page-based)
+```json
+{
+  "data": [...],
+  "pagination": {
     "page": 1,
-    "pageSize": 20
+    "limit": 20,
+    "total": 100,
+    "total_pages": 5,
+    "has_more": true
   }
 }
 ```

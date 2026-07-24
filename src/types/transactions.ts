@@ -59,3 +59,32 @@ export interface VaultReference {
   success_destination: string
   failure_destination: string
 }
+
+// ---------------------------------------------------------------------------
+// ETL Batch tracking
+// ---------------------------------------------------------------------------
+
+export type ETLBatchStatus = 'pending' | 'running' | 'completed' | 'failed'
+
+export interface ETLBatch {
+  batch_id: string
+  status: ETLBatchStatus
+  operations_fetched: number
+  transactions_inserted: number
+  transactions_skipped: number
+  started_at: Date | null
+  finished_at: Date | null
+  duration_ms: number | null
+  error_message: string | null
+  created_at: Date
+}
+
+export interface ETLBatchResult {
+  batchId: string
+  status: ETLBatchStatus
+  operationsFetched: number
+  transactionsInserted: number
+  transactionsSkipped: number
+  durationMs: number
+  error?: string
+}

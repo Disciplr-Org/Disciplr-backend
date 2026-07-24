@@ -1,45 +1,65 @@
 import { Router } from 'express'
-import { requireUserAuth } from '../middleware/userAuth.js'
-import { createApiKey, listApiKeysForUser, revokeApiKey } from '../services/apiKeys.js'
+import { z } from 'zod'
+import { requireUserAuth } from '../middleware/auth.js'
+import { requireStepUp } from '../middleware/stepUp.js'
+import { apiKeyRateLimiter } from '../middleware/rateLimiter.js'
+import {
+  createApiKey,
+  listApiKeysForUser,
+  listApiKeysForOrg,
+  revokeApiKey,
+  rotateApiKey,
+} from '../services/apiKeys.js'
+import { formatValidationError } from '../lib/validation.js'
+import { createAuditLog } from '../lib/audit-logs.js'
+import { ApiScope } from '../types/auth.js'
 
 export const apiKeysRouter = Router()
 
 apiKeysRouter.use(requireUserAuth)
 
-apiKeysRouter.get('/', (req, res) => {
+const createApiKeySchema = z.object({
+  label: z.string().trim().min(1, 'label is required.'),
+  scopes: z.array(z.string().trim().min(1, 'scope must be a non-empty string.')),
+  orgId: z.string().trim().optional(),
+})
+
+apiKeysRouter.get('/', async (req, res) => {
   const userId = req.authUser!.userId
-  const apiKeys = listApiKeysForUser(userId).map(({ keyHash: _keyHash, ...publicRecord }) => publicRecord)
+  const apiKeys = (await listApiKeysForUser(userId)).map(({ keyHash: _keyHash, ...publicRecord }) => publicRecord)
 
   res.json({ apiKeys })
 })
 
-apiKeysRouter.post('/', (req, res) => {
+apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
   const userId = req.authUser!.userId
-  const { label, scopes, orgId } = req.body as {
-    label?: string
-    scopes?: unknown
-    orgId?: string
-  }
-
-  if (!label?.trim()) {
-    res.status(400).json({ error: 'label is required.' })
+  const parseResult = createApiKeySchema.safeParse(req.body)
+  if (!parseResult.success) {
+    res.status(400).json(formatValidationError(parseResult.error))
     return
   }
 
-  if (!Array.isArray(scopes)) {
-    res.status(400).json({ error: 'scopes must be an array of scope strings.' })
+  const { label, scopes, orgId } = parseResult.data
+
+  // Validate scope names against the typed ApiScope enum
+  const validScopes = new Set(Object.values(ApiScope))
+  const invalidIndex = scopes.findIndex((s: string) => !validScopes.has(s))
+  if (invalidIndex !== -1) {
+    res.status(400).json({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid request payload',
+        fields: [{ path: `scopes[${invalidIndex}]`, message: 'Invalid scope', code: 'invalid_value' }],
+      },
+    })
     return
   }
 
-  const normalizedScopes = scopes
-    .map((scope) => (typeof scope === 'string' ? scope.trim() : ''))
-    .filter(Boolean)
-
-  const { apiKey, record } = createApiKey({
+  const { apiKey, record } = await createApiKey({
     userId,
     orgId: orgId?.trim() || undefined,
-    label: label.trim(),
-    scopes: normalizedScopes,
+    label,
+    scopes,
   })
 
   const { keyHash: _keyHash, ...publicRecord } = record
@@ -49,15 +69,68 @@ apiKeysRouter.post('/', (req, res) => {
   })
 })
 
-apiKeysRouter.post('/:id/revoke', (req, res) => {
+apiKeysRouter.post('/:id/rotate', apiKeyRateLimiter, async (req, res) => {
   const userId = req.authUser!.userId
-  const record = revokeApiKey(req.params.id, userId)
+  const rotated = await rotateApiKey({
+    apiKeyId: req.params.id,
+    userId,
+  })
+
+  if (!rotated) {
+    res.status(404).json({ error: 'API key not found.' })
+    return
+  }
+
+  createAuditLog({
+    actor_user_id: userId,
+    action: 'api_key.rotated',
+    target_type: 'api_key',
+    target_id: rotated.record.id,
+    metadata: { label: rotated.record.label, scopes: rotated.record.scopes },
+  })
+
+  const { keyHash: _keyHash, ...publicRecord } = rotated.record
+  res.status(200).json({
+    apiKey: rotated.apiKey,
+    apiKeyMeta: publicRecord,
+  })
+})
+
+apiKeysRouter.post('/:id/revoke', requireStepUp(), async (req, res) => {
+  const userId = req.authUser!.userId
+  const record = await revokeApiKey(req.params.id, userId)
 
   if (!record) {
     res.status(404).json({ error: 'API key not found.' })
     return
   }
 
+  createAuditLog({
+    actor_user_id: userId,
+    action: 'api_key.revoked',
+    target_type: 'api_key',
+    target_id: record.id,
+    metadata: { label: record.label, scopes: record.scopes },
+  })
+
   const { keyHash: _keyHash, ...publicRecord } = record
   res.json({ apiKeyMeta: publicRecord })
 })
+
+export const getApiKeyUsageHandler = async (req: any, res: any) => {
+  const { orgId } = req.params
+  const keys = await listApiKeysForOrg(orgId)
+
+  const usage = keys.map(({ keyHash: _keyHash, ...publicRecord }) => ({
+    id: publicRecord.id,
+    label: publicRecord.label,
+    scopes: publicRecord.scopes,
+    createdAt: publicRecord.createdAt,
+    revokedAt: publicRecord.revokedAt,
+    lastUsedAt: publicRecord.lastUsedAt ?? null,
+    requestCount: publicRecord.requestCount ?? 0,
+    lastIp: publicRecord.lastIp ?? null,
+  }))
+
+  res.json({ usage })
+}

@@ -3,43 +3,35 @@
  * @returns { Promise<void> }
  */
 exports.up = async function(knex) {
-  await knex.schema.createTable('milestones', (table) => {
-    // Primary key
-    table.string('id', 64).primary();
-    
-    // Foreign key matching the vaults table ID format
-    table.string('vault_id', 64)
-      .notNullable()
-      .references('id')
-      .inTable('vaults')
-      .onDelete('CASCADE')
-      .onUpdate('CASCADE');
+  // Ensure the enum exists only once (some earlier migrations may create it).
+  await knex.raw(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'milestone_status') THEN
+        CREATE TYPE milestone_status AS ENUM ('pending', 'submitted', 'approved', 'rejected');
+      END IF;
+    END
+    $$;
+  `);
 
-    table.string('title', 255).notNullable();
-    table.text('description');
-    table.string('type', 100).notNullable();
-    
-    // JSONB is ideal for storing flexible criteria (hash/document/oracle/verifier)
-    table.jsonb('criteria').notNullable();
-    
-    table.integer('weight').notNullable().defaultTo(0);
-    table.timestamp('due_date', { useTz: true });
-    
-    // Status enum mimicking the style used in the baseline migration
-    table.enu('status', ['pending', 'submitted', 'approved', 'rejected'], {
-        useNative: true,
-        enumName: 'milestone_status'
-    }).notNullable().defaultTo('pending');
+  await knex.raw(`
+    CREATE TABLE IF NOT EXISTS milestones (
+      id VARCHAR(64) PRIMARY KEY,
+      vault_id VARCHAR(64) NOT NULL REFERENCES vaults(id) ON DELETE CASCADE ON UPDATE CASCADE,
+      title VARCHAR(255) NOT NULL,
+      description TEXT,
+      type VARCHAR(100) NOT NULL,
+      criteria JSONB NOT NULL,
+      weight INTEGER NOT NULL DEFAULT 0,
+      due_date TIMESTAMPTZ,
+      status milestone_status NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
 
-    table.timestamp('created_at', { useTz: true }).notNullable().defaultTo(knex.fn.now());
-    table.timestamp('updated_at', { useTz: true }).notNullable().defaultTo(knex.fn.now());
-  });
-
-  // Indexes to optimize repository list queries
-  await knex.schema.alterTable('milestones', (table) => {
-    table.index(['vault_id'], 'idx_milestones_vault_id');
-    table.index(['status'], 'idx_milestones_status');
-  });
+    CREATE INDEX IF NOT EXISTS idx_milestones_vault_id ON milestones(vault_id);
+    CREATE INDEX IF NOT EXISTS idx_milestones_status ON milestones(status);
+  `);
 };
 
 /**
@@ -47,7 +39,8 @@ exports.up = async function(knex) {
  * @returns { Promise<void> }
  */
 exports.down = async function(knex) {
-  // Drop table, then drop the custom enum type
-  await knex.schema.dropTableIfExists('milestones');
-  await knex.raw('DROP TYPE IF EXISTS milestone_status');
+  // Use CASCADE because earlier migrations (validations, etc.) may have
+  // foreign keys referencing milestones that haven't been dropped yet at
+  // this point in the rollback order.
+  await knex.raw('DROP TABLE IF EXISTS milestones CASCADE');
 };

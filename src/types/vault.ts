@@ -16,6 +16,7 @@ export interface Vault {
   success_destination: string;
   failure_destination: string;
   status: VaultStatus;
+  organization_id?: string;
   deadline: Date;
   created_at: Date;
   updated_at: Date;

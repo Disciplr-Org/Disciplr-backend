@@ -21,6 +21,48 @@ The `endTimestamp` field on `POST /api/vaults` is validated as follows:
 | Impossible date (`2025-02-30T00:00:00Z`) | 400 — invalid date |
 | Past date | 400 — must be future |
 
+## Request examples
+
+### Valid payloads (timezone required)
+
+```json
+{
+  "startDate": "2026-06-01T09:00:00Z",
+  "endDate": "2026-06-30T17:00:00+02:00",
+  "milestones": [
+    {
+      "title": "Kickoff",
+      "dueDate": "2026-06-07T12:00:00-04:00",
+      "amount": "100"
+    }
+  ]
+}
+```
+
+### Invalid payloads (missing timezone)
+
+```json
+{
+  "endDate": "2026-06-30T17:00:00"
+}
+```
+
+Expected error excerpt:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "fields": [
+      {
+        "path": "endDate",
+        "message": "must include timezone (Z or +/-HH:MM)"
+      }
+    ]
+  }
+}
+```
+
 ## Server-side utilities
 
 All timestamp operations are centralized in `src/utils/timestamps.ts`:
@@ -31,6 +73,18 @@ All timestamp operations are centralized in `src/utils/timestamps.ts`:
 | `isValidISO8601(value)` | Validates format + timezone + calendar correctness |
 | `parseAndNormalizeToUTC(value)` | Converts any offset to UTC `Z` |
 | `formatTimestamp(iso, options?)` | Localized formatting via `Intl.DateTimeFormat` |
+
+## Deadline transitions
+
+Vault deadline checks compare the stored `end_date` timestamp against the current UTC instant. The scheduler, `deadline.check` job handler, and service-level vault expiry path share `markVaultExpiries()` so boundary behavior stays consistent.
+
+| Case | Example at `now = 2026-04-25T12:00:00.000Z` | Result |
+|------|---------------------------------------------|--------|
+| Just before deadline | `end_date = 2026-04-25T12:00:00.001Z` | Stays active |
+| Exactly at deadline | `end_date = 2026-04-25T12:00:00.000Z` | Fails |
+| Just after deadline | `end_date = 2026-04-25T11:59:59.999Z` | Fails |
+
+Offset timestamps are normalized by JavaScript `Date` parsing before comparison, so `2026-04-25T07:59:59.999-04:00` is treated as `2026-04-25T11:59:59.999Z`. Repeated deadline checks are idempotent because only `active` vaults are eligible for transition. The interval scheduler applies the shared comparison in batches of 50 vaults per tick.
 
 ## Frontend guidance
 

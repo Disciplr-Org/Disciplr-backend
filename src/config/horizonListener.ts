@@ -1,14 +1,8 @@
+import { getEnv } from './index.js'
+
 /**
  * Configuration loader for Horizon Listener service
- * 
- * Loads and validates configuration from environment variables:
- * - HORIZON_URL: Stellar Horizon API endpoint (required)
- * - CONTRACT_ADDRESS: Comma-separated list of Soroban contract addresses to monitor (required)
- * - START_LEDGER: Initial ledger to start from if no cursor exists (optional)
- * - RETRY_MAX_ATTEMPTS: Maximum retry attempts for transient errors (optional, default: 3)
- * - RETRY_BACKOFF_MS: Initial backoff delay in milliseconds (optional, default: 100)
  */
-
 export interface HorizonListenerConfig {
   horizonUrl: string
   contractAddresses: string[]
@@ -16,97 +10,68 @@ export interface HorizonListenerConfig {
   retryMaxAttempts: number
   retryBackoffMs: number
   shutdownTimeoutMs: number
-  lagThreshold: number
-}
-
-function parseNonNegativeInteger(value: string | undefined, fallback?: number): number | undefined {
-  if (value === undefined) return fallback
-
-  const normalizedValue = value.trim()
-  if (normalizedValue.length === 0) return fallback
-  if (!/^\d+$/.test(normalizedValue)) return Number.NaN
-
-  return Number.parseInt(normalizedValue, 10)
+  lagThreshold?: number
 }
 
 /**
- * Load configuration from environment variables
- * Provides default values for optional settings
+ * Load configuration from validated environment.
+ * The validation is already performed by initEnv().
  */
 export function loadHorizonListenerConfig(): HorizonListenerConfig {
-  const horizonUrl = process.env.HORIZON_URL
-  const contractAddressRaw = process.env.CONTRACT_ADDRESS
-  const startLedgerRaw = process.env.START_LEDGER
-  const retryMaxAttemptsRaw = process.env.RETRY_MAX_ATTEMPTS
-  const retryBackoffMsRaw = process.env.RETRY_BACKOFF_MS
-  const lagThresholdRaw = process.env.HORIZON_LAG_THRESHOLD
-
-  // Parse CONTRACT_ADDRESS as comma-separated list
+  const env = getEnv()
+  
+  const contractAddressRaw = env.CONTRACT_ADDRESS
+  
   const contractAddresses = contractAddressRaw
-    ? contractAddressRaw.split(',').map(addr => addr.trim()).filter(addr => addr.length > 0)
+    ? contractAddressRaw.split(',').map((addr) => addr.trim()).filter((addr) => addr.length > 0)
     : []
 
-  // Parse optional numeric values with defaults
-  const startLedger = parseNonNegativeInteger(startLedgerRaw)
-  const retryMaxAttempts = parseNonNegativeInteger(retryMaxAttemptsRaw, 3) as number
-  const retryBackoffMs = parseNonNegativeInteger(retryBackoffMsRaw, 100) as number
-  const shutdownTimeoutMs = 30000 // 30 seconds default
-
   return {
-    horizonUrl: horizonUrl ?? '',
+    horizonUrl: env.HORIZON_URL ?? '',
     contractAddresses,
-    startLedger,
-    retryMaxAttempts,
-    retryBackoffMs,
-    shutdownTimeoutMs,
-    lagThreshold,
+    startLedger: env.START_LEDGER,
+    retryMaxAttempts: env.RETRY_MAX_ATTEMPTS,
+    retryBackoffMs: env.RETRY_BACKOFF_MS,
+    shutdownTimeoutMs: env.HORIZON_SHUTDOWN_TIMEOUT_MS,
+    lagThreshold: env.HORIZON_LAG_THRESHOLD,
   }
 }
 
 /**
- * Validate required configuration
- * Logs errors and exits with non-zero status if validation fails
+ * Validate required configuration fields and numeric bounds.
+ * Logs structured JSON errors and exits with code 1 if validation fails.
  */
 export function validateHorizonListenerConfig(config: HorizonListenerConfig): void {
   const errors: string[] = []
 
-  // Check required fields
   if (!config.horizonUrl || config.horizonUrl.trim().length === 0) {
     errors.push('HORIZON_URL is required but not set')
+  } else if (!/^https?:\/\/.+/.test(config.horizonUrl)) {
+    errors.push('HORIZON_URL must be a valid HTTP or HTTPS URL')
   }
 
   if (!config.contractAddresses || config.contractAddresses.length === 0) {
     errors.push('CONTRACT_ADDRESS is required but not set or empty')
   }
 
-  // Validate numeric values
-  if (config.startLedger !== undefined && (isNaN(config.startLedger) || config.startLedger < 0)) {
-    errors.push('START_LEDGER must be a non-negative number')
-  }
-
-  if (isNaN(config.retryMaxAttempts) || config.retryMaxAttempts < 0) {
-    errors.push('RETRY_MAX_ATTEMPTS must be a non-negative number')
-  }
-
-  if (isNaN(config.retryBackoffMs) || config.retryBackoffMs < 0) {
-    errors.push('RETRY_BACKOFF_MS must be a non-negative number')
-  }
-
-  if (isNaN(config.lagThreshold) || config.lagThreshold < 0) {
-    errors.push('HORIZON_LAG_THRESHOLD must be a non-negative number')
-  }
-
-  // If validation fails, log errors and exit
   if (errors.length > 0) {
-    console.error('Configuration validation failed:')
-    errors.forEach(error => console.error(`  - ${error}`))
+    console.error(
+      JSON.stringify({
+        level: 'fatal',
+        event: 'config.horizon_validation_failed',
+        service: 'disciplr-backend',
+        message: 'Horizon listener configuration validation failed — aborting startup',
+        errors: errors.map((e) => `  - ${e}`),
+        timestamp: new Date().toISOString(),
+      }),
+    )
     process.exit(1)
   }
 }
 
 /**
- * Load and validate configuration
- * This is the main entry point for configuration management
+ * Load and validate configuration.
+ * Main entry point for Horizon listener configuration management.
  */
 export function getValidatedConfig(): HorizonListenerConfig {
   const config = loadHorizonListenerConfig()

@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto'
 import { TransactionETLService } from '../services/transactionETL.js'
-import type { ETLConfig } from '../types/transactions.js'
+import type { ETLBatchResult, ETLConfig } from '../types/transactions.js'
 
 const DEFAULT_DRAIN_TIMEOUT_MS = 30_000
 
@@ -16,6 +17,15 @@ export class ETLWorker {
   private activeRun: Promise<void> | null = null
   private abortController: AbortController | null = null
 
+  /**
+   * The batch ID for the *current* scheduled tick.
+   *
+   * A new UUID is generated once per tick (in `executeRun`) and reused on
+   * every retry of that same tick so the ETL service can detect and skip
+   * already-completed work.
+   */
+  private currentBatchId: string | null = null
+
   constructor(
     config: ETLConfig,
     options: ETLWorkerOptions = {},
@@ -28,24 +38,27 @@ export class ETLWorker {
         : DEFAULT_DRAIN_TIMEOUT_MS
   }
 
+  // ---------------------------------------------------------------------------
+  // Public API
+  // ---------------------------------------------------------------------------
+
   /**
-   * Start the ETL worker with periodic syncs
+   * Start the ETL worker with periodic syncs.
    */
   start(intervalMinutes = 5): void {
     if (this.isRunning) {
-      console.log('ETL worker is already running')
+      console.log('[ETLWorker] Already running')
       return
     }
 
-    console.log(`Starting ETL worker with ${intervalMinutes} minute intervals`)
+    console.log(`[ETLWorker] Starting with ${intervalMinutes}-minute intervals`)
     this.isRunning = true
 
-    // Kick off an immediate run
     this.executeRun()
 
     this.interval = setInterval(() => {
       this.executeRun()
-    }, intervalMinutes * 60 * 1000)
+    }, intervalMinutes * 60 * 1_000)
   }
 
   /**
@@ -56,9 +69,7 @@ export class ETLWorker {
    * 3. Waits up to `drainTimeoutMs` for the run to finish before returning.
    */
   async stop(): Promise<void> {
-    if (!this.isRunning) {
-      return
-    }
+    if (!this.isRunning) return
 
     console.log('[ETLWorker] Stop requested – draining in-flight run...')
     this.isRunning = false
@@ -68,14 +79,10 @@ export class ETLWorker {
       this.interval = null
     }
 
-    // Ask the in-flight run to abort at its next checkpoint
     this.abortController?.abort()
 
     if (this.activeRun !== null) {
-      const drain = this.activeRun.then(
-        () => {},
-        () => {},
-      )
+      const drain = this.activeRun.then(() => {}, () => {})
       const drainTimeout = new Promise<void>((resolve) => {
         setTimeout(() => {
           console.warn(
@@ -84,7 +91,6 @@ export class ETLWorker {
           resolve()
         }, this.drainTimeoutMs)
       })
-
       await Promise.race([drain, drainTimeout])
     }
 
@@ -96,13 +102,10 @@ export class ETLWorker {
    * No-op if the worker is not running or a run is already active.
    */
   async runETL(): Promise<void> {
-    if (!this.isRunning || this.activeRun !== null) {
-      return
-    }
+    if (!this.isRunning || this.activeRun !== null) return
 
     this.executeRun()
 
-    // Await the run we just started so callers can know when it finishes
     if (this.activeRun !== null) {
       await this.activeRun
     }
@@ -125,34 +128,45 @@ export class ETLWorker {
 
   /**
    * Fire-and-forget run that tracks its own promise in `activeRun`.
-   * Skips silently if not running or another run is already active.
+   *
+   * A fresh batch ID is generated for each new tick.  The same ID is reused
+   * if `executeRun` is called again while `currentBatchId` is still set
+   * (which shouldn't happen in normal operation, but is safe regardless).
    */
   private executeRun(): void {
-    if (!this.isRunning || this.activeRun !== null) {
-      return
-    }
+    if (!this.isRunning || this.activeRun !== null) return
+
+    // Generate a stable batch ID for this tick
+    this.currentBatchId = randomUUID()
+    const batchId = this.currentBatchId
 
     this.abortController = new AbortController()
     const { signal } = this.abortController
 
     this.activeRun = this.etlService
-      .runETL(signal)
+      .runETL()
+      .then(() => {
+        console.log(`[ETLWorker] Batch ${batchId} completed`)
+      })
       .catch((error: unknown) => {
         if (signal.aborted) {
           console.log('[ETLWorker] In-flight run aborted during shutdown')
         } else {
-          console.error('[ETLWorker] Run failed:', error)
+          console.error('[ETLWorker] Unexpected run error:', error)
         }
       })
       .finally(() => {
         this.activeRun = null
         this.abortController = null
+        this.currentBatchId = null
       })
   }
 }
 
+// ---------------------------------------------------------------------------
+// Default singleton
+// ---------------------------------------------------------------------------
 
-// Default configuration
 const defaultConfig: ETLConfig = {
   horizonUrl: process.env.HORIZON_URL ?? 'https://horizon-testnet.stellar.org',
   networkPassphrase:

@@ -1,0 +1,1449 @@
+openapi: 3.1.0
+info:
+  title: Disciplr API
+  version: 0.1.0
+  description: API documentation for Disciplr backend
+servers:
+  - url: /api
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    PaginationCursor:
+      def:
+        type: object
+        shape:
+          limit:
+            def:
+              type: number
+              checks: []
+            type: number
+            minValue: -.inf
+            maxValue: .inf
+            isInt: false
+            isFinite: true
+            format: null
+          cursor:
+            def:
+              type: optional
+              innerType:
+                def:
+                  type: string
+                type: string
+                format: null
+                minLength: null
+                maxLength: null
+            type: optional
+          next_cursor:
+            def:
+              type: optional
+              innerType:
+                def:
+                  type: string
+                type: string
+                format: null
+                minLength: null
+                maxLength: null
+            type: optional
+          has_more:
+            def:
+              type: boolean
+            type: boolean
+          count:
+            def:
+              type: number
+              checks: []
+            type: number
+            minValue: -.inf
+            maxValue: .inf
+            isInt: false
+            isFinite: true
+            format: null
+      type: object
+    ErrorEnvelope:
+      def:
+        type: object
+        shape:
+          error:
+            def:
+              type: object
+              shape:
+                code:
+                  def:
+                    type: string
+                  type: string
+                  format: null
+                  minLength: null
+                  maxLength: null
+                message:
+                  def:
+                    type: string
+                  type: string
+                  format: null
+                  minLength: null
+                  maxLength: null
+                details:
+                  def:
+                    type: optional
+                    innerType:
+                      def:
+                        type: unknown
+                      type: unknown
+                  type: optional
+                requestId:
+                  def:
+                    type: optional
+                    innerType:
+                      def:
+                        type: string
+                      type: string
+                      format: null
+                      minLength: null
+                      maxLength: null
+                  type: optional
+            type: object
+      type: object
+    Vault:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        creator:
+          type: string
+        amount:
+          type: string
+        status:
+          type: string
+          enum:
+            - active
+            - completed
+            - failed
+            - cancelled
+        startTimestamp:
+          type: string
+          format: date-time
+        endTimestamp:
+          type: string
+          format: date-time
+        successDestination:
+          type: string
+        failureDestination:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - creator
+        - amount
+        - status
+        - startTimestamp
+        - endTimestamp
+        - successDestination
+        - failureDestination
+        - createdAt
+    Milestone:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        vaultId:
+          type: string
+          format: uuid
+        description:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - verified
+        createdAt:
+          type: string
+          format: date-time
+        verifiedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - vaultId
+        - description
+        - status
+        - createdAt
+    ExportRequest:
+      type: object
+      properties:
+        format:
+          type: string
+          enum:
+            - csv
+            - json
+          description: Output format for the export
+          example: json
+        scope:
+          type: string
+          enum:
+            - vaults
+            - transactions
+            - analytics
+            - all
+          description: Data scope for the export
+          example: all
+        targetUserId:
+          type: string
+          description: Target user ID (admin-only exports)
+          example: user_123
+      required:
+        - format
+        - scope
+    ExportJobResponse:
+      type: object
+      properties:
+        jobId:
+          type: string
+          description: Export job identifier
+          example: job_abc123
+        statusUrl:
+          type: string
+          description: URL to poll for job status
+          example: /api/exports/status/job_abc123
+        pollIntervalMs:
+          type: number
+          description: Recommended polling interval in milliseconds
+          example: 1000
+      required:
+        - jobId
+        - statusUrl
+        - pollIntervalMs
+    ExportJobStatus:
+      type: object
+      properties:
+        jobId:
+          type: string
+          example: job_abc123
+        status:
+          type: string
+          enum:
+            - pending
+            - running
+            - done
+            - failed
+          example: done
+        attempts:
+          type: number
+          example: 1
+        maxAttempts:
+          type: number
+          example: 3
+        completedAt:
+          type: string
+          format: date-time
+          example: 2026-06-02T10:00:00Z
+        downloadUrl:
+          type: string
+          description: Download URL (present when status is done)
+          example: /api/exports/download/token_xyz
+        expiresInSeconds:
+          type: number
+          example: 3600
+        error:
+          type: string
+          description: Error message if status is failed
+      required:
+        - jobId
+        - status
+        - attempts
+        - maxAttempts
+  parameters: {}
+paths:
+  /api/health:
+    get:
+      summary: Check API health
+      tags:
+        - Health
+      responses:
+        "200":
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  timestamp:
+                    type: string
+                    format: date-time
+                  uptime:
+                    type: number
+                  service:
+                    type: string
+                  jobs: {}
+                required:
+                  - status
+                  - timestamp
+                  - uptime
+                  - service
+  /api/auth/register:
+    post:
+      summary: Register a new user
+      tags:
+        - Auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+                role:
+                  type: string
+                  enum:
+                    - USER
+                    - VERIFIER
+                    - ADMIN
+              required:
+                - email
+                - password
+      responses:
+        "201":
+          description: User registered successfully
+          content:
+            application/json:
+              schema: {}
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema: {}
+  /api/auth/login:
+    post:
+      summary: Login user
+      tags:
+        - Auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+              required:
+                - email
+                - password
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema: {}
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: {}
+  /api/vaults:
+    get:
+      summary: List vaults
+      tags:
+        - Vaults
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Paginated list of vaults
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Vault"
+                  pagination: {}
+                required:
+                  - data
+    post:
+      summary: Create a new vault
+      tags:
+        - Vaults
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                creator:
+                  type: string
+                amount:
+                  type: string
+                endTimestamp:
+                  type: string
+                  format: date-time
+                successDestination:
+                  type: string
+                failureDestination:
+                  type: string
+                milestones:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      description:
+                        type: string
+                    required:
+                      - description
+              required:
+                - creator
+                - amount
+                - endTimestamp
+                - successDestination
+                - failureDestination
+      responses:
+        "201":
+          description: Vault created
+          content:
+            application/json:
+              schema: {}
+  /api/vaults/{vaultId}/milestones:
+    get:
+      summary: Get milestones for a vault
+      tags:
+        - Milestones
+      parameters:
+        - name: vaultId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of milestones
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  milestones:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Milestone"
+                required:
+                  - milestones
+  /api/jobs/enqueue:
+    post:
+      summary: Enqueue a background job
+      tags:
+        - Jobs
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type:
+                  type: string
+                payload: {}
+                delayMs:
+                  type: number
+                maxAttempts:
+                  type: number
+              required:
+                - type
+      responses:
+        "202":
+          description: Job enqueued
+          content:
+            application/json:
+              schema: {}
+  /api/analytics/summary:
+    get:
+      summary: Get analytics summary
+      tags:
+        - Analytics
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Analytics summary
+          content:
+            application/json:
+              schema: {}
+  /api/jobs/metrics:
+    get:
+      summary: Get queue metrics
+      tags:
+        - Jobs
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Queue metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  running:
+                    type: boolean
+                  queueDepth:
+                    type: number
+                  delayedJobs:
+                    type: number
+                  activeJobs:
+                    type: number
+                  totals:
+                    type: object
+                    properties:
+                      executions:
+                        type: number
+                      failed:
+                        type: number
+                    required:
+                      - executions
+                      - failed
+                required:
+                  - running
+                  - queueDepth
+                  - delayedJobs
+                  - activeJobs
+                  - totals
+  /api/jobs/deadletters:
+    get:
+      summary: List dead-letter jobs
+      tags:
+        - Jobs
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of dead-letter jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deadLetters:
+                    type: array
+                    items: {}
+                required:
+                  - deadLetters
+  /api/jobs/deadletters/{id}:
+    get:
+      summary: Get a dead-letter job by ID
+      tags:
+        - Jobs
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Dead-letter job details
+        "404":
+          description: Job not found
+  /api/jobs/deadletters/{id}/replay:
+    post:
+      summary: Replay a dead-letter job
+      tags:
+        - Jobs
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "202":
+          description: Job replayed
+        "404":
+          description: Job not found
+  /api/jobs/health:
+    get:
+      summary: Get queue health status
+      tags:
+        - Jobs
+      responses:
+        "200":
+          description: Queue health
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ok
+                      - degraded
+                      - down
+                  timestamp:
+                    type: string
+                    format: date-time
+                  queue:
+                    type: object
+                    properties:
+                      running:
+                        type: boolean
+                      queueDepth:
+                        type: number
+                      delayedJobs:
+                        type: number
+                      activeJobs:
+                        type: number
+                      failureRate:
+                        type: number
+                    required:
+                      - running
+                      - queueDepth
+                      - delayedJobs
+                      - activeJobs
+                      - failureRate
+                required:
+                  - status
+                  - timestamp
+                  - queue
+  /api/transactions:
+    get:
+      summary: Get user transaction history
+      tags:
+        - Transactions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: vault_id
+          in: query
+          schema:
+            type: string
+        - name: date_from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: date_to
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: amount_min
+          in: query
+          schema:
+            type: string
+        - name: amount_max
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: {}
+                  pagination: {}
+                required:
+                  - data
+  /api/transactions/{id}:
+    get:
+      summary: Get transaction by ID
+      tags:
+        - Transactions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction details
+        "404":
+          description: Transaction not found
+  /api/transactions/vault/{vaultId}:
+    get:
+      summary: Get transactions for a vault
+      tags:
+        - Transactions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: vaultId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Vault transactions
+        "404":
+          description: Vault not found
+  /api/analytics/vaults:
+    get:
+      summary: Get vault analytics
+      tags:
+        - Analytics
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Vault analytics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vaults:
+                    type: array
+                    items: {}
+                  generatedAt:
+                    type: string
+                    format: date-time
+                required:
+                  - vaults
+                  - generatedAt
+  /api/analytics/vaults/{id}:
+    get:
+      summary: Get vault analytics by ID
+      tags:
+        - Analytics
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Vault analytics
+  /api/analytics/milestones/trends:
+    get:
+      summary: Get milestone trends
+      tags:
+        - Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - name: groupBy
+          in: query
+          schema:
+            type: string
+            enum:
+              - day
+              - week
+      responses:
+        "200":
+          description: Milestone trends
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  from:
+                    type: string
+                    format: date-time
+                  to:
+                    type: string
+                    format: date-time
+                  groupBy:
+                    type: string
+                    enum:
+                      - day
+                      - week
+                  buckets:
+                    type: array
+                    items: {}
+                required:
+                  - from
+                  - to
+                  - groupBy
+                  - buckets
+  /api/analytics/behavior:
+    get:
+      summary: Get user behavior analytics
+      tags:
+        - Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: baseScorePerSuccess
+          in: query
+          schema:
+            type: integer
+            default: 10
+        - name: penaltyPerFailure
+          in: query
+          schema:
+            type: integer
+            default: 5
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: User behavior score
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                  successes:
+                    type: number
+                  failures:
+                    type: number
+                  behaviorScore:
+                    type: number
+                  evaluatedFrom:
+                    type:
+                      - string
+                      - "null"
+                    format: date-time
+                  evaluatedTo:
+                    type:
+                      - string
+                      - "null"
+                    format: date-time
+                required:
+                  - userId
+                  - successes
+                  - failures
+                  - behaviorScore
+                  - evaluatedFrom
+                  - evaluatedTo
+  /api/admin/users:
+    get:
+      summary: List all users (admin)
+      tags:
+        - Admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: role
+          in: query
+          schema:
+            type: string
+            enum:
+              - USER
+              - VERIFIER
+              - ADMIN
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - ACTIVE
+              - INACTIVE
+              - SUSPENDED
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: includeDeleted
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: List of users
+  /api/admin/users/{id}/role:
+    patch:
+      summary: Update user role
+      tags:
+        - Admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              def:
+                type: object
+                shape:
+                  role:
+                    def:
+                      type: enum
+                      entries:
+                        USER: USER
+                        VERIFIER: VERIFIER
+                        ADMIN: ADMIN
+                    type: enum
+                    enum:
+                      USER: USER
+                      VERIFIER: VERIFIER
+                      ADMIN: ADMIN
+                    options:
+                      - USER
+                      - VERIFIER
+                      - ADMIN
+              type: object
+      responses:
+        "200":
+          description: Role updated
+        "400":
+          description: Invalid role
+        "404":
+          description: User not found
+  /api/admin/users/{id}/status:
+    patch:
+      summary: Update user status
+      tags:
+        - Admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              def:
+                type: object
+                shape:
+                  status:
+                    def:
+                      type: enum
+                      entries:
+                        ACTIVE: ACTIVE
+                        INACTIVE: INACTIVE
+                        SUSPENDED: SUSPENDED
+                    type: enum
+                    enum:
+                      ACTIVE: ACTIVE
+                      INACTIVE: INACTIVE
+                      SUSPENDED: SUSPENDED
+                    options:
+                      - ACTIVE
+                      - INACTIVE
+                      - SUSPENDED
+              type: object
+      responses:
+        "200":
+          description: Status updated
+        "404":
+          description: User not found
+  /api/admin/users/{id}:
+    delete:
+      summary: Delete user (soft or hard)
+      tags:
+        - Admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: hard
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: User deleted
+        "400":
+          description: Cannot delete own account
+        "404":
+          description: User not found
+  /api/admin/users/{id}/restore:
+    post:
+      summary: Restore a soft-deleted user
+      tags:
+        - Admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: User restored
+        "400":
+          description: User not deleted
+        "404":
+          description: User not found
+  /api/admin/users/{userId}/revoke-sessions:
+    post:
+      summary: Revoke all user sessions
+      tags:
+        - Admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Sessions revoked
+  /api/admin/audit-logs:
+    get:
+      summary: List audit logs
+      tags:
+        - Admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: actor_user_id
+          in: query
+          schema:
+            type: string
+        - name: action
+          in: query
+          schema:
+            type: string
+        - name: target_type
+          in: query
+          schema:
+            type: string
+        - name: target_id
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Audit logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  audit_logs:
+                    type: array
+                    items: {}
+                  count:
+                    type: number
+                  total:
+                    type: number
+                  limit:
+                    type: number
+                  offset:
+                    type: number
+                  has_more:
+                    type: boolean
+                required:
+                  - audit_logs
+                  - count
+                  - total
+                  - offset
+                  - has_more
+  /api/admin/audit-logs/{id}:
+    get:
+      summary: Get audit log by ID
+      tags:
+        - Admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Audit log details
+        "404":
+          description: Not found
+  /api/admin/overrides/vaults/{id}/cancel:
+    post:
+      summary: Admin override to cancel a vault
+      tags:
+        - Admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              def:
+                type: object
+                shape:
+                  reasonCode:
+                    def:
+                      type: enum
+                      entries:
+                        USER_REQUEST: USER_REQUEST
+                        FRAUD_DETECTED: FRAUD_DETECTED
+                        SYSTEM_ERROR: SYSTEM_ERROR
+                        POLICY_VIOLATION: POLICY_VIOLATION
+                        EMERGENCY_ADMIN_ACTION: EMERGENCY_ADMIN_ACTION
+                        COMPLIANCE_REQUIREMENT: COMPLIANCE_REQUIREMENT
+                        TESTING_CLEANUP: TESTING_CLEANUP
+                    type: enum
+                    enum:
+                      USER_REQUEST: USER_REQUEST
+                      FRAUD_DETECTED: FRAUD_DETECTED
+                      SYSTEM_ERROR: SYSTEM_ERROR
+                      POLICY_VIOLATION: POLICY_VIOLATION
+                      EMERGENCY_ADMIN_ACTION: EMERGENCY_ADMIN_ACTION
+                      COMPLIANCE_REQUIREMENT: COMPLIANCE_REQUIREMENT
+                      TESTING_CLEANUP: TESTING_CLEANUP
+                    options:
+                      - USER_REQUEST
+                      - FRAUD_DETECTED
+                      - SYSTEM_ERROR
+                      - POLICY_VIOLATION
+                      - EMERGENCY_ADMIN_ACTION
+                      - COMPLIANCE_REQUIREMENT
+                      - TESTING_CLEANUP
+                  reason:
+                    def:
+                      type: optional
+                      innerType:
+                        def:
+                          type: string
+                        type: string
+                        format: null
+                        minLength: null
+                        maxLength: null
+                    type: optional
+                  idempotencyKey:
+                    def:
+                      type: optional
+                      innerType:
+                        def:
+                          type: string
+                        type: string
+                        format: null
+                        minLength: null
+                        maxLength: null
+                    type: optional
+                  details:
+                    def:
+                      type: optional
+                      innerType:
+                        def:
+                          type: string
+                        type: string
+                        format: null
+                        minLength: null
+                        maxLength: null
+                    type: optional
+              type: object
+      responses:
+        "200":
+          description: Vault cancelled
+        "400":
+          description: Invalid reason code
+        "404":
+          description: Vault not found
+        "409":
+          description: Vault already cancelled or not cancellable
+  /api/exports/me:
+    post:
+      summary: Enqueue a personal data export job
+      tags:
+        - Exports
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            enum:
+              - csv
+              - json
+            description: Output format for the export
+            example: json
+          required: true
+          description: Output format for the export
+          name: format
+          in: query
+        - schema:
+            type: string
+            enum:
+              - vaults
+              - transactions
+              - analytics
+              - all
+            description: Data scope for the export
+            example: all
+          required: true
+          description: Data scope for the export
+          name: scope
+          in: query
+      responses:
+        "202":
+          description: Export job enqueued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportJobResponse"
+        "400":
+          description: Invalid format or scope
+          content:
+            application/json:
+              schema: {}
+        "409":
+          description: Idempotency key conflict
+        "429":
+          description: Export quota exceeded
+  /api/exports/admin:
+    post:
+      summary: Enqueue an admin export job (all users or target user)
+      tags:
+        - Exports
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            enum:
+              - csv
+              - json
+            description: Output format for the export
+            example: json
+          required: true
+          description: Output format for the export
+          name: format
+          in: query
+        - schema:
+            type: string
+            enum:
+              - vaults
+              - transactions
+              - analytics
+              - all
+            description: Data scope for the export
+            example: all
+          required: true
+          description: Data scope for the export
+          name: scope
+          in: query
+        - schema:
+            type: string
+            description: Target user ID (admin-only exports)
+            example: user_123
+          required: false
+          description: Target user ID (admin-only exports)
+          name: targetUserId
+          in: query
+      responses:
+        "202":
+          description: Export job enqueued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportJobResponse"
+        "400":
+          description: Invalid format or scope
+          content:
+            application/json:
+              schema: {}
+        "403":
+          description: Admin access required
+        "409":
+          description: Idempotency key conflict
+        "429":
+          description: Export quota exceeded
+  /api/exports/status/{jobId}:
+    get:
+      summary: Poll export job status
+      tags:
+        - Exports
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Export job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportJobStatus"
+        "403":
+          description: Access denied
+        "404":
+          description: Job not found
+  /api/exports/download/{token}:
+    get:
+      summary: Download completed export file
+      tags:
+        - Exports
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Signed download token from status response
+      responses:
+        "200":
+          description: Export file content
+          content:
+            application/json:
+              schema: {}
+            text/csv:
+              schema: {}
+        "401":
+          description: Invalid or expired download token
+        "404":
+          description: Export not ready or not found
+  /api/admin/db/metrics:
+    get:
+      summary: Get database pool metrics
+      tags:
+        - Admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Database metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      timestamp:
+                        type: string
+                        format: date-time
+                      isHealthy:
+                        type: boolean
+                      pool:
+                        type: object
+                        properties:
+                          available:
+                            type: number
+                          waiting:
+                            type: number
+                          total:
+                            type: number
+                          capacity:
+                            type: number
+                        required:
+                          - available
+                          - waiting
+                          - total
+                          - capacity
+                      slowQueries:
+                        type: array
+                        items: {}
+                      warnings:
+                        type: array
+                        items:
+                          type: string
+                    required:
+                      - timestamp
+                      - isHealthy
+                      - pool
+                      - slowQueries
+                      - warnings
+                required:
+                  - data
+webhooks: {}

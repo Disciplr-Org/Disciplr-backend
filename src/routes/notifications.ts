@@ -1,49 +1,74 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
+import { queryParser } from '../middleware/queryParser.js'
+import type { NotificationReadStatus } from '../types/notification.js'
 import {
   listUserNotifications,
-  markAsRead,
   markAllAsRead,
+  markAsRead,
 } from '../services/notification.js'
+import { AppError } from '../middleware/errorHandler.js'
+
+const ALLOWED_STATUSES: NotificationReadStatus[] = ['all', 'read', 'unread']
 
 export const notificationsRouter = Router()
 
-// All notifications routes require authentication
 notificationsRouter.use(authenticate)
 
-// GET /api/notifications - List current user's notifications
-notificationsRouter.get('/', async (req: Request, res: Response) => {
-  if (!req.user) {
-    res.status(401).json({ error: 'Unauthenticated' })
-    return
-  }
-  const notifications = await listUserNotifications(req.user.userId)
-  res.json(notifications)
-})
+notificationsRouter.get(
+  '/',
+  queryParser(),
+  async (req: Request, res: Response, next: NextFunction) => {
+    if (!req.user) {
+      return next(AppError.unauthorized('Unauthenticated'))
+    }
 
-// PATCH /api/notifications/:id/read - Mark a notification as read
-notificationsRouter.patch('/:id/read', async (req: Request, res: Response) => {
+    const rawStatus = String(req.query.status ?? 'all').toLowerCase() as NotificationReadStatus
+    if (!ALLOWED_STATUSES.includes(rawStatus)) {
+      return next(AppError.badRequest('Invalid status filter. Use all, read, or unread.'))
+    }
+
+    const includeArchived = ['true', '1'].includes(String(req.query.includeArchived ?? '').toLowerCase())
+    const limit = req.cursorPagination?.limit ?? 20
+    const cursor = req.cursorPagination?.cursor
+
+    try {
+      const notifications = await listUserNotifications(req.user!.userId, {
+        cursor,
+        limit,
+        includeArchived,
+        readStatus: rawStatus,
+      })
+
+      res.json(notifications)
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Invalid cursor') {
+        return next(AppError.badRequest('Invalid cursor'))
+      }
+      return next(error)
+    }
+  },
+)
+
+notificationsRouter.patch('/:id/read', async (req: Request, res: Response, next: NextFunction) => {
   if (!req.user) {
-    res.status(401).json({ error: 'Unauthenticated' })
-    return
+    return next(AppError.unauthorized('Unauthenticated'))
   }
-  const { id } = req.params
-  const notification = await markAsRead(id, req.user.userId)
-  
+
+  const notification = await markAsRead(req.params.id, req.user.userId)
+
   if (!notification) {
-    res.status(404).json({ error: 'Notification not found' })
-    return
+    return next(AppError.notFound('Notification not found'))
   }
-  
+
   res.json(notification)
 })
 
-// POST /api/notifications/read-all - Mark all as read
-notificationsRouter.post('/read-all', async (req: Request, res: Response) => {
+notificationsRouter.post('/read-all', async (req: Request, res: Response, next: NextFunction) => {
   if (!req.user) {
-    res.status(401).json({ error: 'Unauthenticated' })
-    return
+    return next(AppError.unauthorized('Unauthenticated'))
   }
-  const count = await markAllAsRead(req.user.userId)
-  res.json({ message: `Marked ${count} notifications as read` })
+
+  const updated = await markAllAsRead(req.user.userId)
+  res.json({ updated })
 })

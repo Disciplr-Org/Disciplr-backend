@@ -1,4 +1,5 @@
 import { ParsedEvent } from '../../types/horizonSync.js'
+import { HorizonEvent } from '../../services/eventParser.js'
 
 /**
  * Mocked Horizon event fixtures for testing
@@ -205,6 +206,235 @@ export function createMockValidationEvent(overrides: Partial<ParsedEvent> = {}):
     payload: {
       ...mockMilestoneValidatedEvent.payload,
       ...(overrides.payload || {})
+    }
+  }
+}
+
+// Edge case fixtures for testing
+
+// Vault created event with minimum valid values
+export const mockVaultCreatedMinValues: ParsedEvent = {
+  eventId: 'min123:0',
+  transactionHash: 'min123',
+  eventIndex: 0,
+  ledgerNumber: 1,
+  eventType: 'vault_created',
+  payload: {
+    vaultId: 'v',
+    creator: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    amount: '0.0000001',
+    startTimestamp: new Date('2024-01-01T00:00:00Z'),
+    endTimestamp: new Date('2024-01-01T00:00:01Z'),
+    successDestination: 'GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+    failureDestination: 'GCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC',
+    status: 'active'
+  }
+}
+
+// Vault created event with maximum valid values
+export const mockVaultCreatedMaxValues: ParsedEvent = {
+  eventId: 'max456:0',
+  transactionHash: 'max456',
+  eventIndex: 0,
+  ledgerNumber: 999999999,
+  eventType: 'vault_created',
+  payload: {
+    vaultId: 'vault-' + 'x'.repeat(100),
+    creator: 'GZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ',
+    amount: '999999999.9999999',
+    startTimestamp: new Date('2020-01-01T00:00:00Z'),
+    endTimestamp: new Date('2030-12-31T23:59:59Z'),
+    successDestination: 'GYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY',
+    failureDestination: 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    status: 'active'
+  }
+}
+
+// Milestone created event with edge case values
+export const mockMilestoneCreatedEdgeCases: ParsedEvent = {
+  eventId: 'edge789:0',
+  transactionHash: 'edge789',
+  eventIndex: 0,
+  ledgerNumber: 12345,
+  eventType: 'milestone_created',
+  payload: {
+    milestoneId: 'milestone-' + 'a'.repeat(255),
+    vaultId: 'vault-edge',
+    title: 't'.repeat(255),
+    description: 'd'.repeat(1000),
+    targetAmount: '0.0000001',
+    deadline: new Date('2030-12-31T23:59:59Z')
+  }
+}
+
+// Validation event with special characters in evidence hash
+export const mockValidationSpecialChars: ParsedEvent = {
+  eventId: 'spec012:0',
+  transactionHash: 'spec012',
+  eventIndex: 0,
+  ledgerNumber: 12345,
+  eventType: 'milestone_validated',
+  payload: {
+    validationId: 'validation-special-chars-123',
+    milestoneId: 'milestone-special',
+    validatorAddress: 'GSPECIALXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    validationResult: 'pending_review',
+    evidenceHash: 'hash_with_underscores_and-hyphens123',
+    validatedAt: new Date('2024-06-15T10:30:00Z')
+  }
+}
+
+// Invalid fixtures for negative testing
+
+// Vault created with invalid Stellar address
+export const mockVaultCreatedInvalidAddress: ParsedEvent = {
+  eventId: 'inv001:0',
+  transactionHash: 'inv001',
+  eventIndex: 0,
+  ledgerNumber: 12345,
+  eventType: 'vault_created',
+  payload: {
+    vaultId: 'vault-invalid',
+    creator: 'INVALID_ADDRESS_FORMAT',
+    amount: '1000.0000000',
+    startTimestamp: new Date('2024-01-01T00:00:00Z'),
+    endTimestamp: new Date('2024-12-31T00:00:00Z'),
+    successDestination: 'GSUCCESSXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    failureDestination: 'GFAILUREXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    status: 'active'
+  }
+}
+
+// Vault created with invalid amount
+export const mockVaultCreatedInvalidAmount: ParsedEvent = {
+  eventId: 'inv002:0',
+  transactionHash: 'inv002',
+  eventIndex: 0,
+  ledgerNumber: 12345,
+  eventType: 'vault_created',
+  payload: {
+    vaultId: 'vault-invalid-amount',
+    creator: 'GCREATORXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    amount: 'invalid_amount',
+    startTimestamp: new Date('2024-01-01T00:00:00Z'),
+    endTimestamp: new Date('2024-12-31T00:00:00Z'),
+    successDestination: 'GSUCCESSXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    failureDestination: 'GFAILUREXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    status: 'active'
+  }
+}
+
+// Milestone created with past deadline
+export const mockMilestoneCreatedPastDeadline: ParsedEvent = {
+  eventId: 'inv003:0',
+  transactionHash: 'inv003',
+  eventIndex: 0,
+  ledgerNumber: 12345,
+  eventType: 'milestone_created',
+  payload: {
+    milestoneId: 'milestone-past',
+    vaultId: 'vault-past',
+    title: 'Past Milestone',
+    description: 'This should be rejected',
+    targetAmount: '500.0000000',
+    deadline: new Date('2020-01-01T00:00:00Z') // Past date
+  }
+}
+
+// Validation event with invalid evidence hash
+export const mockValidationInvalidEvidenceHash: ParsedEvent = {
+  eventId: 'inv004:0',
+  transactionHash: 'inv004',
+  eventIndex: 0,
+  ledgerNumber: 12345,
+  eventType: 'milestone_validated',
+  payload: {
+    validationId: 'validation-invalid-hash',
+    milestoneId: 'milestone-invalid',
+    validatorAddress: 'GVALIDATORXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    validationResult: 'approved',
+    evidenceHash: 'hash@with$special#chars!',
+    validatedAt: new Date('2024-03-15T10:30:00Z')
+  }
+}
+
+// Event with unknown fields (should be rejected by strict validation)
+export const mockVaultCreatedWithUnknownFields: ParsedEvent = {
+  eventId: 'inv005:0',
+  transactionHash: 'inv005',
+  eventIndex: 0,
+  ledgerNumber: 12345,
+  eventType: 'vault_created',
+  payload: {
+    vaultId: 'vault-unknown',
+    creator: 'GCREATORXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    amount: '1000.0000000',
+    startTimestamp: new Date('2024-01-01T00:00:00Z'),
+    endTimestamp: new Date('2024-12-31T00:00:00Z'),
+    successDestination: 'GSUCCESSXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    failureDestination: 'GFAILUREXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+    status: 'active',
+    unknownField: 'this should cause rejection',
+    anotherUnknownField: 123
+  } as any
+}
+
+// Collection of all edge case events
+export const allEdgeCaseEvents: ParsedEvent[] = [
+  mockVaultCreatedMinValues,
+  mockVaultCreatedMaxValues,
+  mockMilestoneCreatedEdgeCases,
+  mockValidationSpecialChars
+]
+
+// Collection of all invalid events
+export const allInvalidEvents: ParsedEvent[] = [
+  mockVaultCreatedInvalidAddress,
+  mockVaultCreatedInvalidAmount,
+  mockMilestoneCreatedPastDeadline,
+  mockValidationInvalidEvidenceHash,
+  mockVaultCreatedWithUnknownFields
+]
+
+// Helper function to create events with prototype pollution attempts
+export function createPrototypePollutionEvent(): ParsedEvent {
+  const pollutedEvent = { ...mockVaultCreatedEvent }
+  
+  // Add prototype pollution properties
+  Object.defineProperty(pollutedEvent.payload, '__proto__', {
+    value: { polluted: true },
+    enumerable: true,
+    writable: true,
+    configurable: true
+  })
+  
+  Object.defineProperty(pollutedEvent.payload, 'constructor', {
+    value: { prototype: { hacked: true } },
+    enumerable: true,
+    writable: true,
+    configurable: true
+  })
+  
+  return pollutedEvent
+}
+
+// Helper function to create events with null/undefined values
+export function createNullUndefinedEvent(): ParsedEvent {
+  return {
+    eventId: 'nullundef:0',
+    transactionHash: 'nullundef',
+    eventIndex: 0,
+    ledgerNumber: 12345,
+    eventType: 'vault_created',
+    payload: {
+      vaultId: null as any,
+      creator: undefined as any,
+      amount: null as any,
+      startTimestamp: undefined as any,
+      endTimestamp: null as any,
+      successDestination: undefined as any,
+      failureDestination: null as any,
+      status: 'active'
     }
   }
 }

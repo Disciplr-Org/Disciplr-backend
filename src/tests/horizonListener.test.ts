@@ -42,6 +42,7 @@ describe('HorizonListener', () => {
       retryMaxAttempts: 3,
       retryBackoffMs: 100,
       shutdownTimeoutMs: 30000,
+      lagThreshold: 30,
     }
   })
 

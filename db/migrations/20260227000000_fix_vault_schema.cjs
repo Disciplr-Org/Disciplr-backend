@@ -15,6 +15,11 @@
 
 const MIGRATION = 'fix_vault_schema'
 
+// PostgreSQL requires that new enum values added via ALTER TYPE ... ADD VALUE
+// be committed before they can be referenced (e.g. by ALTER COLUMN SET DEFAULT).
+// Knex wraps migrations in a transaction by default, so disable it here.
+exports.config = { transaction: false }
+
 /** Structured log helper — never logs row data. */
 function log(step, status, extra) {
   const entry = { migration: MIGRATION, step, status }

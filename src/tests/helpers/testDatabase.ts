@@ -26,7 +26,12 @@ export interface DbState {
 export async function setupTestDatabase(): Promise<Knex> {
   const db = knex({
     client: 'pg',
-    connection: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/disciplr_test'
+    connection: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/disciplr_test',
+    migrations: {
+      directory: './db/migrations',
+      extension: 'cjs',
+      tableName: 'knex_migrations',
+    },
   })
 
   // Run migrations to ensure schema is up to date
@@ -58,6 +63,9 @@ export async function cleanAllTables(db: Knex): Promise<void> {
   // Delete in order to respect foreign key constraints
   await db('validations').delete()
   await db('milestones').delete()
+  // vault_outbox references vaults and is written atomically by eventProcessor
+  // for vault lifecycle events; must be cleared before vaults to avoid FK violations
+  await db('vault_outbox').delete()
   await db('vaults').delete()
   await db('processed_events').delete()
   await db('failed_events').delete()

@@ -74,7 +74,7 @@ export function addOrgMember(member: OrgMember): void {
   if (already) {
     throw new Error(`User ${member.userId} is already a member of org ${member.orgId}.`)
   }
-  orgMembers = [...orgMembers, member]
+  orgMembers.push(member)
 }
 
 /**
@@ -83,16 +83,17 @@ export function addOrgMember(member: OrgMember): void {
  * Throws if the membership does not exist.
  */
 export function removeOrgMember(orgId: string, userId: string): void {
-  const member = orgMembers.find((m) => m.orgId === orgId && m.userId === userId)
-  if (!member) {
+  const idx = orgMembers.findIndex((m) => m.orgId === orgId && m.userId === userId)
+  if (idx === -1) {
     throw new Error('Membership not found.')
   }
+  const member = orgMembers[idx]
 
   if (isAdminRole(member.role) && countOrgAdmins(orgId) <= 1) {
     throw new LastAdminError()
   }
 
-  orgMembers = orgMembers.filter((m) => !(m.orgId === orgId && m.userId === userId))
+  orgMembers.splice(idx, 1)
 }
 
 /**
@@ -112,7 +113,5 @@ export function updateOrgMemberRole(orgId: string, userId: string, newRole: OrgR
     throw new LastAdminError()
   }
 
-  const updated = [...orgMembers]
-  updated[idx] = { ...current, role: newRole }
-  orgMembers = updated
+  orgMembers[idx].role = newRole
 }

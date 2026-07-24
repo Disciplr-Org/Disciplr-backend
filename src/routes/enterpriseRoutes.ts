@@ -1,10 +1,9 @@
 import { Router, Request, Response } from 'express';
-import { db } from '../db/knex';
-import { toPublicVault, toPublicMilestone } from '../utils/mappers';
-import { maskPii } from '../utils/privacy';
-import gr from 'debug';
+import { db } from '../db/knex.js';
+import { toPublicVault, toPublicMilestone } from '../utils/mappers.js';
+import { maskPii } from '../utils/privacy.js';
 
-const debug = gr('disciplr:api:enterprise');
+const debug = (msg: string, ...args: unknown[]) => { if (process.env.DEBUG) console.debug(msg, ...args) };
 const router = Router();
 
 /**

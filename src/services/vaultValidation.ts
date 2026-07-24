@@ -1,4 +1,9 @@
 import { z } from 'zod'
+import { utcTimestampSchema } from '../lib/validation.js'
+import { StrKey } from '@stellar/stellar-sdk'
+export { flattenZodErrors } from '../lib/validation.js'
+
+const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/
 
 // ─── Soroban-aligned constants ───────────────────────────────────────────────
 
@@ -8,15 +13,75 @@ export const VAULT_AMOUNT_MIN = 1
 /** Maximum vault / milestone amount (inclusive). Maps to i128 practical upper-bound. */
 export const VAULT_AMOUNT_MAX = 1_000_000_000
 
-/** Stellar strkey G-address: 'G' + 55 base-32 chars (A-Z, 2-7). */
-const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/
+/** Minimum number of milestones in a vault. */
+export const VAULT_MILESTONES_MIN = 1
+
+/** Maximum number of milestones in a vault. This caps request size and enforces operational limits. */
+export const VAULT_MILESTONES_MAX = 20
+
+// Mock exchange addresses requiring a memo.
+// GDHWBXJFCTBJ6ZQPK2E64JAOMHQOEOMWQ43Q5C3J6TEA6SNOFELWBVCY (Valid Classic 1) is the primary mock exchange for testing.
+export const MEMO_REQUIRED_EXCHANGES = new Set([
+  'GDHWBXJFCTBJ6ZQPK2E64JAOMHQOEOMWQ43Q5C3J6TEA6SNOFELWBVCY',
+])
+
+export function getClassicAddress(address: string): string {
+  try {
+    if (StrKey.isValidMed25519PublicKey(address)) {
+      const decoded = StrKey.decodeMed25519PublicKey(address)
+      return StrKey.encodeEd25519PublicKey(decoded.slice(0, 32))
+    }
+  } catch {
+    // ignore
+  }
+  return address
+}
+
+export function isUnsafeAddress(address: string): boolean {
+  try {
+    let pubkey: Buffer
+    if (StrKey.isValidEd25519PublicKey(address)) {
+      pubkey = StrKey.decodeEd25519PublicKey(address)
+    } else if (StrKey.isValidMed25519PublicKey(address)) {
+      pubkey = StrKey.decodeMed25519PublicKey(address).slice(0, 32)
+    } else {
+      return false
+    }
+    const allZeros = pubkey.every((b) => b === 0x00)
+    const allOnes = pubkey.every((b) => b === 0xff)
+    return allZeros || allOnes
+  } catch {
+    return true
+  }
+}
 
 // ─── Reusable field schemas ──────────────────────────────────────────────────
 
-// Zod v4 uses { error: '...' } instead of { required_error: '...' }
 const stellarAddressSchema = z
-  .string({ error: 'required' })
-  .regex(STELLAR_ADDRESS_RE, 'must be a valid Stellar public key')
+  .string({ message: 'required' })
+  .superRefine((val, ctx) => {
+    if (val.startsWith('C')) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Contract addresses are not allowed where an account is required',
+      })
+      return
+    }
+    try {
+      const isValid = StrKey.isValidEd25519PublicKey(val) || StrKey.isValidMed25519PublicKey(val)
+      if (!isValid) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'must be a valid Stellar public key',
+        })
+      }
+    } catch {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'must be a valid Stellar public key',
+      })
+    }
+  })
 
 /**
  * Amount field: stored as a string, but the value must parse to a finite
@@ -26,7 +91,7 @@ const stellarAddressSchema = z
 const amountStringSchema = z.preprocess(
   (val) => (typeof val === 'number' ? String(val) : val),
   z
-    .string({ error: 'required' })
+    .string({ message: 'required' })
     .refine(
       (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 },
       'must be a positive number',
@@ -37,18 +102,14 @@ const amountStringSchema = z.preprocess(
     ),
 )
 
-const isoTimestampSchema = z
-  .string({ error: 'required' })
-  .refine((v) => !isNaN(Date.parse(v)), 'must be a valid ISO timestamp')
-
 // ─── Milestone schema ────────────────────────────────────────────────────────
 
 const milestoneSchema = z.object({
   title: z
-    .string({ error: 'is required' })
+    .string({ message: 'is required' })
     .refine((v) => v.trim().length > 0, 'is required'),
   description: z.string().optional(),
-  dueDate: isoTimestampSchema,
+  dueDate: utcTimestampSchema,
   amount: amountStringSchema,
 })
 
@@ -57,8 +118,8 @@ const milestoneSchema = z.object({
 export const createVaultSchema = z
   .object({
     amount: amountStringSchema,
-    startDate: isoTimestampSchema,
-    endDate: isoTimestampSchema,
+    startDate: utcTimestampSchema,
+    endDate: utcTimestampSchema,
     verifier: stellarAddressSchema,
     destinations: z.object({
       success: stellarAddressSchema,
@@ -66,8 +127,22 @@ export const createVaultSchema = z
     }),
     milestones: z
       .array(milestoneSchema)
-      .min(1, 'must contain at least one item'),
+      .min(VAULT_MILESTONES_MIN, 'must contain at least one item')
+      .max(VAULT_MILESTONES_MAX, `must contain at most ${VAULT_MILESTONES_MAX} items`),
     creator: stellarAddressSchema.optional(),
+    orgId: z.string().uuid().optional(),
+    organizationId: z.string().uuid().optional(),
+    /**
+     * Grace window in seconds after a milestone dueDate during which check-in
+     * is still accepted. Must be a non-negative integer. Bounded at runtime by
+     * vault endDate. Defaults to 0 (no grace period).
+     */
+    lateCheckInWindowSecs: z
+      .number()
+      .int('must be an integer')
+      .min(0, 'must be non-negative')
+      .optional()
+      .default(0),
     onChain: z
       .object({
         mode: z.enum(['build', 'submit']).optional().default('build'),
@@ -116,27 +191,104 @@ export const createVaultSchema = z
         })
       }
     }
+
+    // Reject unsafe success/failure destination addresses
+    if (isUnsafeAddress(data.destinations.success)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Destination address cannot be a zero, burn, or unsafe address',
+        path: ['destinations', 'success'],
+      })
+    }
+    if (isUnsafeAddress(data.destinations.failure)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Destination address cannot be a zero, burn, or unsafe address',
+        path: ['destinations', 'failure'],
+      })
+    }
+
+    // Reject exchange destinations lacking a memo
+    const successClassic = getClassicAddress(data.destinations.success)
+    if (MEMO_REQUIRED_EXCHANGES.has(successClassic)) {
+      if (!StrKey.isValidMed25519PublicKey(data.destinations.success)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Destination is a known exchange that requires a memo. Use a muxed address.',
+          path: ['destinations', 'success'],
+        })
+      }
+    }
+    const failureClassic = getClassicAddress(data.destinations.failure)
+    if (MEMO_REQUIRED_EXCHANGES.has(failureClassic)) {
+      if (!StrKey.isValidMed25519PublicKey(data.destinations.failure)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Destination is a known exchange that requires a memo. Use a muxed address.',
+          path: ['destinations', 'failure'],
+        })
+      }
+    }
+
+    // Validate embedded muxed address memo ID range
+    if (StrKey.isValidMed25519PublicKey(data.destinations.success)) {
+      try {
+        const decoded = StrKey.decodeMed25519PublicKey(data.destinations.success)
+        const memoId = decoded.readBigUInt64BE(32)
+        if (memoId < 0n) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Invalid memo ID in success destination',
+            path: ['destinations', 'success'],
+          })
+        }
+      } catch {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Invalid or malformed muxed address for success destination',
+          path: ['destinations', 'success'],
+        })
+      }
+    }
+    if (StrKey.isValidMed25519PublicKey(data.destinations.failure)) {
+      try {
+        const decoded = StrKey.decodeMed25519PublicKey(data.destinations.failure)
+        const memoId = decoded.readBigUInt64BE(32)
+        if (memoId < 0n) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Invalid memo ID in failure destination',
+            path: ['destinations', 'failure'],
+          })
+        }
+      } catch {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Invalid or malformed muxed address for failure destination',
+          path: ['destinations', 'failure'],
+        })
+      }
+    }
   })
 
 export type ParsedCreateVaultInput = z.infer<typeof createVaultSchema>
 
-// ─── Error helpers ───────────────────────────────────────────────────────────
-
-const formatIssuePath = (path: ReadonlyArray<PropertyKey>): string =>
-  path
-    .filter((seg): seg is string | number => typeof seg === 'string' || typeof seg === 'number')
-    .reduce<string>((acc, seg, i) => {
-      if (typeof seg === 'number') return `${acc}[${seg}]`
-      return i === 0 ? seg : `${acc}.${seg}`
-    }, '')
-
 /**
- * Flatten a ZodError into a string array that matches the existing error
- * format, e.g. "amount must be a positive number",
- * "milestones[0].dueDate must be a valid ISO timestamp".
+ * Lazy-check whether a string is a valid Stellar ed25519 public key (G... address).
+ * Uses `@stellar/stellar-sdk` StrKey.isValidEd25519PublicKey but imports the
+ * library dynamically so cold-start cost is minimised.
  */
-export const flattenZodErrors = (error: z.ZodError): string[] =>
-  error.issues.map((issue) => {
-    const prefix = formatIssuePath(issue.path)
-    return prefix ? `${prefix} ${issue.message}` : issue.message
-  })
+export async function isValidStellarAddress(address: string): Promise<boolean> {
+  if (typeof address !== 'string') return false
+  // Quick regex check first to avoid importing the SDK for obvious failures
+  if (!STELLAR_ADDRESS_RE.test(address)) return false
+
+  try {
+    const mod = await import('@stellar/stellar-sdk')
+    // StrKey.isValidEd25519PublicKey is the canonical checksum+format check
+    return Boolean(mod?.StrKey?.isValidEd25519PublicKey?.(address))
+  } catch (err) {
+    // If the import fails for any reason, conservatively treat as invalid.
+    return false
+  }
+}

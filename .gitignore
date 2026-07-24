@@ -1,4 +1,5 @@
-node_modules
+node_modules/
+package-lock.json
 dist
 *.local
 .env
@@ -7,3 +8,4 @@ dist
 .DS_Store
 
 /src/generated/prisma
+coverage/

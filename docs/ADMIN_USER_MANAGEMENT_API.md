@@ -93,16 +93,18 @@ These endpoints support full verifier profile CRUD with backward-compatible mode
 - `GET /api/admin/verifiers`: list verifier profiles with aggregate verification stats.
 - `GET /api/admin/verifiers/:userId`: fetch a single verifier profile and stats.
 - `POST /api/admin/verifiers`: create a verifier profile.
-  - Body: `userId` (required), optional `displayName`, optional `metadata` object, optional `status` (`pending|approved|suspended`).
+  - Body: `userId` (required), optional `displayName`, optional `metadata` object, optional `status` (`pending|approved|suspended|deactivated`).
   - Returns `201` on create, `409` when the verifier already exists.
 - `PATCH /api/admin/verifiers/:userId`: partial update for `displayName`, `metadata`, and/or `status`.
-- `DELETE /api/admin/verifiers/:userId`: deletes verifier profile and linked verifications.
+- `DELETE /api/admin/verifiers/:userId`: legacy hard delete of the verifier profile and linked verifications.
 - `POST /api/admin/verifiers/:userId/approve`: compatibility endpoint to mark approved.
 - `POST /api/admin/verifiers/:userId/suspend`: compatibility endpoint to mark suspended.
+- `POST /api/admin/verifiers/:userId/deactivate`: deactivate an offboarded verifier.
+- `POST /api/admin/verifiers/:userId/reactivate`: move a deactivated verifier back to pending for re-approval.
 
 Observability + privacy notes:
-- Structured events are emitted for create/update/delete operations.
-- Logs intentionally include only a short user-id prefix to avoid unnecessary PII leakage.
+- Queryable audit records are written for create/update/delete and lifecycle operations.
+- Audit metadata is sanitized by the shared audit log helper.
 
 ## Security
 

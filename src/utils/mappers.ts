@@ -1,6 +1,6 @@
-import { Milestone } from '../types/horizonSync';
-import { Vault } from '../types/vault';
-import { EnterpriseVault, EnterpriseMilestone } from '../types/enterprise';
+import { Milestone } from '../types/horizonSync.js';
+import { Vault } from '../types/vault.js';
+import { EnterpriseVault, EnterpriseMilestone } from '../types/enterprise.js';
 
 /**
  * Maps an internal Vault model to a public EnterpriseVault DTO.
@@ -11,7 +11,7 @@ export function toPublicVault(vault: Vault): EnterpriseVault {
     id: vault.id,
     creator: vault.creator_address,
     amount: vault.amount,
-    status: vault.status,
+    status: vault.status as unknown as EnterpriseVault['status'],
     startTimestamp: vault.created_at.toISOString(),
     endTimestamp: vault.deadline.toISOString(),
     successDestination: vault.success_destination,

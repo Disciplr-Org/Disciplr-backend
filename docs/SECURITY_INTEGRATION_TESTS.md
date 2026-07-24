@@ -4,11 +4,13 @@
 
 The security integration tests (`tests/security.integration.test.ts`) provide comprehensive end-to-end testing of the vault API security features. These tests ensure that authentication, authorization, input validation, and audit logging work correctly across the entire request lifecycle.
 
+For the API-wide Helmet header contract and rationale, see `docs/helmet.md` and `src/tests/helmet.test.ts`.
+
 ## Test Coverage
 
 ### 1. Security Headers (3 tests)
 - **X-Content-Type-Options**: Verifies `nosniff` header is set via Helmet
-- **X-Frame-Options**: Ensures frame protection headers are present
+- **X-Frame-Options**: Intentionally absent because CSP `frame-ancestors 'none'` is enforced
 - **X-Timezone**: Confirms UTC timezone header is set on all responses
 
 ### 2. CORS (2 tests)
@@ -63,6 +65,11 @@ The security integration tests (`tests/security.integration.test.ts`) provide co
 - Role-based access control (USER, VERIFIER, ADMIN)
 - Resource-level permissions
 - Admin override capabilities
+- Verifier endpoint header isolation: `src/tests/verifications.rbac.test.ts`
+  proves that `/api/verifications` trusts the verified JWT role only, ignores
+  spoofed role headers such as `x-user-role` and `x-requested-role`, returns
+  401 before authorization for missing/expired JWTs, and enforces the verifier
+  role matrix (`POST` for VERIFIER/ADMIN, `GET` for ADMIN only).
 
 ### Input Validation
 - Stellar address format validation
@@ -77,9 +84,11 @@ The security integration tests (`tests/security.integration.test.ts`) provide co
 
 ### Security Headers
 - Content type protection
-- Frame protection
+- Frame protection via CSP `frame-ancestors` contract
 - CORS policy enforcement
 - Timezone standardization
+
+See `docs/helmet.md` for policy-level rationale and representative endpoint contract coverage.
 
 ## Test Architecture
 

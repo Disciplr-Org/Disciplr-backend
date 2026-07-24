@@ -1,9 +1,14 @@
+import { jest } from '@jest/globals'
 import {
+  hasTimezoneDesignator,
   isValidISO8601,
   parseAndNormalizeToUTC,
+  utcEndOfDay,
   utcNow,
+  utcStartOfDay,
   formatTimestamp,
 } from '../utils/timestamps.js'
+import { utcTimestampSchema } from '../lib/validation.js'
 
 // ── isValidISO8601 ──────────────────────────────────────────────
 
@@ -52,6 +57,18 @@ describe('isValidISO8601', () => {
     expect(isValidISO8601('2025-13-15T12:00:00Z')).toBe(false)
   })
 
+  it('rejects invalid hour (24)', () => {
+    expect(isValidISO8601('2025-06-15T24:00:00Z')).toBe(false)
+  })
+
+  it('rejects invalid minute (60)', () => {
+    expect(isValidISO8601('2025-06-15T12:60:00Z')).toBe(false)
+  })
+
+  it('rejects invalid second (60)', () => {
+    expect(isValidISO8601('2025-06-15T12:00:60Z')).toBe(false)
+  })
+
   it('rejects impossible day (Feb 30)', () => {
     expect(isValidISO8601('2025-02-30T12:00:00Z')).toBe(false)
   })
@@ -66,6 +83,23 @@ describe('isValidISO8601', () => {
 
   it('rejects Feb 29 in a non-leap year', () => {
     expect(isValidISO8601('2025-02-29T00:00:00Z')).toBe(false)
+  })
+})
+
+// ── hasTimezoneDesignator ─────────────────────────────────────
+
+describe('hasTimezoneDesignator', () => {
+  it('accepts Z suffix', () => {
+    expect(hasTimezoneDesignator('2025-06-15T12:30:00Z')).toBe(true)
+  })
+
+  it('accepts numeric offsets', () => {
+    expect(hasTimezoneDesignator('2025-06-15T12:30:00+05:30')).toBe(true)
+    expect(hasTimezoneDesignator('2025-06-15T12:30:00-04:00')).toBe(true)
+  })
+
+  it('rejects timestamps without timezone', () => {
+    expect(hasTimezoneDesignator('2025-06-15T12:30:00')).toBe(false)
   })
 })
 
@@ -93,6 +127,10 @@ describe('parseAndNormalizeToUTC', () => {
 
   it('throws on timestamp without timezone', () => {
     expect(() => parseAndNormalizeToUTC('2025-06-15T12:30:00')).toThrow('Invalid ISO 8601 timestamp')
+  })
+
+  it('throws on unparseable timestamp with invalid offset', () => {
+    expect(() => parseAndNormalizeToUTC('2025-01-01T00:00:00+99:99')).toThrow('Unparseable timestamp')
   })
 
   // DST edge cases: explicit offsets encode DST state at parse time.
@@ -167,6 +205,31 @@ describe('parseAndNormalizeToUTC', () => {
   })
 })
 
+// ── utcTimestampSchema ────────────────────────────────────────
+
+describe('utcTimestampSchema', () => {
+  it('normalizes offset timestamps to Z', () => {
+    const result = utcTimestampSchema.parse('2025-06-15T08:30:00-04:00')
+    expect(result).toBe('2025-06-15T12:30:00.000Z')
+  })
+
+  it('rejects missing timezone with a clear error', () => {
+    const result = utcTimestampSchema.safeParse('2025-06-15T12:30:00')
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues[0].message).toBe('must include timezone (Z or +/-HH:MM)')
+    }
+  })
+
+  it('rejects impossible dates even with timezone', () => {
+    const result = utcTimestampSchema.safeParse('2025-02-30T12:00:00Z')
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues[0].message).toBe('must be a valid ISO 8601 timestamp')
+    }
+  })
+})
+
 // ── utcNow ─────────────────────────────────────────────────────
 
 describe('utcNow', () => {
@@ -183,6 +246,30 @@ describe('utcNow', () => {
     const ts = new Date(now).getTime()
     expect(ts).toBeGreaterThanOrEqual(before)
     expect(ts).toBeLessThanOrEqual(after)
+  })
+})
+
+// ── utcStartOfDay / utcEndOfDay ───────────────────────────────
+
+describe('utcStartOfDay and utcEndOfDay', () => {
+  it('returns start and end of the UTC day for ISO input', () => {
+    const input = '2026-04-25T12:34:56.789Z'
+    expect(utcStartOfDay(input)).toBe('2026-04-25T00:00:00.000Z')
+    expect(utcEndOfDay(input)).toBe('2026-04-25T23:59:59.999Z')
+  })
+
+  it('accepts Date input', () => {
+    const input = new Date('2026-04-25T12:34:56.789Z')
+    expect(utcStartOfDay(input)).toBe('2026-04-25T00:00:00.000Z')
+    expect(utcEndOfDay(input)).toBe('2026-04-25T23:59:59.999Z')
+  })
+
+  it('defaults to the current UTC day when no value is provided', () => {
+    jest.useFakeTimers()
+    jest.setSystemTime(new Date('2026-04-25T12:34:56.789Z'))
+    expect(utcStartOfDay()).toBe('2026-04-25T00:00:00.000Z')
+    expect(utcEndOfDay()).toBe('2026-04-25T23:59:59.999Z')
+    jest.useRealTimers()
   })
 })
 

@@ -5,6 +5,7 @@ import { MilestoneService } from '../services/milestonesDb.js'
 import { MilestoneRepositoryEnhanced } from '../repositories/milestoneRepositoryEnhanced.js'
 import { utcNow } from '../utils/timestamps.js'
 import { db as knexDb } from '../db/index.js'
+import { readAnalyticsSummary } from '../db/database.js'
 
 export const analyticsRouter = Router()
 
@@ -91,17 +92,14 @@ const buildTrendBuckets = (
   return Array.from(buckets.values())
 }
 
-analyticsRouter.get('/summary', authenticate, (_req, res) => {
-  res.status(200).json({
-    total_vaults: 10,
-    active_vaults: 5,
-    completed_vaults: 3,
-    failed_vaults: 2,
-    total_locked_capital: '5000.0000000',
-    active_capital: '2500.0000000',
-    success_rate: 60.0,
-    last_updated: utcNow(),
-  })
+analyticsRouter.get('/summary', authenticate, async (_req, res) => {
+  try {
+    const summary = await readAnalyticsSummary()
+    res.status(200).json(summary)
+  } catch (error) {
+    console.error('Failed to read analytics summary', error)
+    res.status(500).json({ error: 'Failed to load analytics summary.' })
+  }
 })
 
 analyticsRouter.get('/overview', authenticateApiKey(['read:analytics']), (_req, res) => {

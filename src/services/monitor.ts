@@ -1,9 +1,17 @@
-import { Server } from '@stellar/stellar-sdk'
+import * as StellarSdk from '@stellar/stellar-sdk'
 import { db } from '../db/knex.js'
 import { getValidatedConfig } from '../config/horizonListener.js'
-import { markVaultExpiries } from './vault.js'
+import { markVaultExpiries } from './vaultExpiry.service.js'
+
+const HorizonServer = (StellarSdk as any).Horizon?.Server ?? (StellarSdk as any).Server
 
 let monitorInterval: NodeJS.Timeout | null = null
+let _latestLag: number | undefined
+
+/** Returns the most recent lag value measured by checkListenerLag, or undefined if not yet measured. */
+export function getLatestListenerLag(): number | undefined {
+  return _latestLag
+}
 
 /**
  * Checks the lag between the latest ledger on Horizon and the last processed ledger.
@@ -11,7 +19,7 @@ let monitorInterval: NodeJS.Timeout | null = null
 export const checkListenerLag = async (): Promise<void> => {
   try {
     const config = getValidatedConfig()
-    const server = new Server(config.horizonUrl)
+    const server = new HorizonServer(config.horizonUrl)
     
     // Fetch latest ledger from Horizon
     const ledgerPage = await server.ledgers().order('desc').limit(1).call()
@@ -28,8 +36,9 @@ export const checkListenerLag = async (): Promise<void> => {
     
     const lastProcessedLedger = state?.last_processed_ledger ?? config.startLedger ?? 0
     const lag = latestLedger - lastProcessedLedger
+    _latestLag = lag
 
-    if (lag > config.lagThreshold) {
+    if (config.lagThreshold !== undefined && lag > config.lagThreshold) {
       console.warn(`[Monitor] Horizon listener lag detected: ${lag} ledgers (Threshold: ${config.lagThreshold})`)
       console.warn(`[Monitor] Latest ledger: ${latestLedger}, Last processed: ${lastProcessedLedger}`)
     }

@@ -7,6 +7,15 @@
 const ISO8601_WITH_TZ =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/
 
+const TZ_DESIGNATOR = /(Z|[+-]\d{2}:\d{2})$/
+
+/**
+ * Returns true if the string ends with a timezone designator (Z or +/-HH:MM).
+ */
+export function hasTimezoneDesignator(value: string): boolean {
+  return TZ_DESIGNATOR.test(value)
+}
+
 /**
  * Validates that a value is a well-formed ISO 8601 datetime string
  * with a mandatory timezone designator (Z or ±HH:MM).

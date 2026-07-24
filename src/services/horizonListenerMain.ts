@@ -1,85 +1,110 @@
 /**
  * Horizon Listener Service Entry Point
- * 
- * This is the main entry point for the Horizon listener service.
- * It loads configuration, initializes the database, creates the EventProcessor
- * and HorizonListener instances, and starts the listener.
- * 
+ *
+ * Loads configuration, initialises the database, wires together the
+ * CheckpointStore, EventProcessor, and HorizonListener, then starts listening.
+ *
  * Usage:
  *   node dist/services/horizonListenerMain.js
- * 
+ *
  * Environment Variables:
- *   HORIZON_URL - Stellar Horizon API endpoint (required)
- *   CONTRACT_ADDRESS - Comma-separated list of contract addresses (required)
- *   START_LEDGER - Initial ledger to start from (optional)
- *   RETRY_MAX_ATTEMPTS - Maximum retry attempts (optional, default: 3)
- *   RETRY_BACKOFF_MS - Initial backoff delay in ms (optional, default: 100)
+ *   HORIZON_URL         - Stellar Horizon API endpoint (required)
+ *   CONTRACT_ADDRESS    - Comma-separated contract addresses (required)
+ *   START_LEDGER        - Ledger to start from when no checkpoint exists (optional)
+ *   RETRY_MAX_ATTEMPTS  - Max retry attempts (optional, default: 3)
+ *   RETRY_BACKOFF_MS    - Initial backoff delay in ms (optional, default: 100)
  */
 
 import { db } from '../db/knex.js'
 import { EventProcessor } from './eventProcessor.js'
 import { HorizonListener } from './horizonListener.js'
+import { CheckpointStore } from './checkpointStore.js'
 import { getValidatedConfig } from '../config/horizonListener.js'
 import { ProcessorConfig } from '../types/horizonSync.js'
 
-/**
- * Main function to start the Horizon listener service
- */
 async function main(): Promise<void> {
   try {
-    console.log('Initializing Horizon Listener Service...')
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'horizon.startup',
+        service: 'disciplr-backend',
+        message: 'Initialising Horizon Listener Service',
+        timestamp: new Date().toISOString(),
+      }),
+    )
 
-    // Load and validate configuration
     const config = getValidatedConfig()
-    console.log('Configuration loaded successfully')
-    console.log(`  Horizon URL: ${config.horizonUrl}`)
-    console.log(`  Contract Addresses: ${config.contractAddresses.join(', ')}`)
-    console.log(`  Start Ledger: ${config.startLedger ?? 'from cursor'}`)
-    console.log(`  Max Retry Attempts: ${config.retryMaxAttempts}`)
-    console.log(`  Retry Backoff: ${config.retryBackoffMs}ms`)
 
-    // Initialize database connection
-    console.log('Connecting to database...')
-    // Test database connection
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'horizon.config_loaded',
+        service: 'disciplr-backend',
+        horizonUrl: config.horizonUrl,
+        contractCount: config.contractAddresses.length,
+        contracts: config.contractAddresses,
+        startLedger: config.startLedger ?? 'from_checkpoint',
+        retryMaxAttempts: config.retryMaxAttempts,
+        retryBackoffMs: config.retryBackoffMs,
+        timestamp: new Date().toISOString(),
+      }),
+    )
+
+    // Verify database connectivity.
     await db.raw('SELECT 1')
-    console.log('Database connection established')
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'horizon.db_connected',
+        service: 'disciplr-backend',
+        timestamp: new Date().toISOString(),
+      }),
+    )
 
-    // Create EventProcessor instance
+    const checkpointStore = new CheckpointStore(db)
+
     const processorConfig: ProcessorConfig = {
       maxRetries: config.retryMaxAttempts,
-      retryBackoffMs: config.retryBackoffMs
+      retryBackoffMs: config.retryBackoffMs,
     }
     const eventProcessor = new EventProcessor(db, processorConfig)
-    console.log('EventProcessor initialized')
+    const horizonListener = new HorizonListener(config, eventProcessor, db, checkpointStore)
 
-    // Create HorizonListener instance
-    const horizonListener = new HorizonListener(config, eventProcessor, db)
-    console.log('HorizonListener initialized')
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'horizon.listener_starting',
+        service: 'disciplr-backend',
+        timestamp: new Date().toISOString(),
+      }),
+    )
 
-    // Start the listener
-    console.log('Starting Horizon listener...')
     await horizonListener.start()
 
-    console.log('Horizon Listener Service is running')
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'horizon.listener_running',
+        service: 'disciplr-backend',
+        timestamp: new Date().toISOString(),
+      }),
+    )
   } catch (error) {
-    // Handle startup errors gracefully
-    console.error('Failed to start Horizon Listener Service:')
-    
-    if (error instanceof Error) {
-      console.error(`  Error: ${error.message}`)
-      if (error.stack) {
-        console.error(`  Stack: ${error.stack}`)
-      }
-    } else {
-      console.error(`  Error: ${String(error)}`)
-    }
-
-    // Exit with non-zero status code
+    console.error(
+      JSON.stringify({
+        level: 'fatal',
+        event: 'horizon.startup_failed',
+        service: 'disciplr-backend',
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        timestamp: new Date().toISOString(),
+      }),
+    )
     process.exit(1)
   }
 }
 
-// Run the main function
 main().catch((error) => {
   console.error('Unhandled error in main:', error)
   process.exit(1)

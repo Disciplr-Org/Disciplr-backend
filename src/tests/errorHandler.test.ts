@@ -50,6 +50,13 @@ describe('AppError factories', () => {
     expect(e.code).toBe(ErrorCode.NOT_FOUND)
   })
 
+  it('notFound uses default message when none provided', () => {
+    const e = AppError.notFound()
+    expect(e.status).toBe(404)
+    expect(e.code).toBe(ErrorCode.NOT_FOUND)
+    expect(e.message).toBe('Not found')
+  })
+
   it('conflict produces 409', () => {
     const e = AppError.conflict('already exists')
     expect(e.status).toBe(409)
@@ -60,6 +67,48 @@ describe('AppError factories', () => {
     const e = AppError.internal()
     expect(e.status).toBe(500)
     expect(e.code).toBe(ErrorCode.INTERNAL_ERROR)
+  })
+
+  it('conflict produces 409', () => {
+    const e = AppError.conflict('resource conflict')
+    expect(e.status).toBe(409)
+    expect(e.code).toBe(ErrorCode.CONFLICT)
+    expect(e.message).toBe('resource conflict')
+  })
+
+  it('unprocessable produces 422', () => {
+    const e = AppError.unprocessable('cannot process')
+    expect(e.status).toBe(422)
+    expect(e.code).toBe(ErrorCode.UNPROCESSABLE)
+    expect(e.message).toBe('cannot process')
+  })
+
+  it('rateLimited produces 429 + RATE_LIMITED code', () => {
+    const e = AppError.rateLimited()
+    expect(e.status).toBe(429)
+    expect(e.code).toBe(ErrorCode.RATE_LIMITED)
+    expect(e.message).toBe('Too many requests')
+  })
+
+  it('rateLimited accepts a custom message', () => {
+    const e = AppError.rateLimited('slow down')
+    expect(e.status).toBe(429)
+    expect(e.code).toBe(ErrorCode.RATE_LIMITED)
+    expect(e.message).toBe('slow down')
+  })
+
+  it('payloadTooLarge produces 413 + PAYLOAD_TOO_LARGE code', () => {
+    const e = AppError.payloadTooLarge()
+    expect(e.status).toBe(413)
+    expect(e.code).toBe(ErrorCode.PAYLOAD_TOO_LARGE)
+    expect(e.message).toBe('Payload too large')
+  })
+
+  it('payloadTooLarge accepts a custom message', () => {
+    const e = AppError.payloadTooLarge('request body exceeds 1 MB limit')
+    expect(e.status).toBe(413)
+    expect(e.code).toBe(ErrorCode.PAYLOAD_TOO_LARGE)
+    expect(e.message).toBe('request body exceeds 1 MB limit')
   })
 })
 
@@ -136,6 +185,104 @@ describe('errorHandler middleware', () => {
     expect(res.body.error.code).toBe('FORBIDDEN')
     expect(res.body.error.message).toBe('no access')
   })
+
+  it('returns 404 for AppError.notFound', async () => {
+    const app = buildApp((_req, _res, next) => {
+      next(AppError.notFound('resource not found'))
+    })
+
+    const res = await request(app).get('/test')
+    expect(res.status).toBe(404)
+    expect(res.body.error.code).toBe('NOT_FOUND')
+    expect(res.body.error.message).toBe('resource not found')
+  })
+
+  it('returns 409 for AppError.conflict', async () => {
+    const app = buildApp((_req, _res, next) => {
+      next(AppError.conflict('resource already exists'))
+    })
+
+    const res = await request(app).get('/test')
+    expect(res.status).toBe(409)
+    expect(res.body.error.code).toBe('CONFLICT')
+    expect(res.body.error.message).toBe('resource already exists')
+  })
+
+  it('returns 422 for AppError.unprocessable', async () => {
+    const app = buildApp((_req, _res, next) => {
+      next(AppError.unprocessable('entity cannot be processed'))
+    })
+
+    const res = await request(app).get('/test')
+    expect(res.status).toBe(422)
+    expect(res.body.error.code).toBe('UNPROCESSABLE')
+    expect(res.body.error.message).toBe('entity cannot be processed')
+  })
+
+  it('does not include requestId when header is absent', async () => {
+    const app = buildApp((_req, _res, next) => {
+      next(AppError.badRequest('bad request'))
+    })
+
+    const res = await request(app).get('/test')
+    expect(res.status).toBe(400)
+    expect(res.body.error.requestId).toBeUndefined()
+  })
+
+  it('does not include details when not provided', async () => {
+    const app = buildApp((_req, _res, next) => {
+      next(AppError.badRequest('bad request'))
+    })
+
+    const res = await request(app).get('/test')
+    expect(res.status).toBe(400)
+    expect(res.body.error.details).toBeUndefined()
+  })
+
+  it('preserves error message for generic errors in logs but not response', async () => {
+    const app = buildApp((_req, _res, next) => {
+      const err = new Error('sensitive database info')
+      next(err)
+    })
+
+    const res = await request(app).get('/test')
+    expect(res.status).toBe(500)
+    expect(res.body.error.message).toBe('Internal server error')
+    expect(res.body.error.code).toBe('INTERNAL_ERROR')
+  })
+
+  it('handles generic error without requestId', async () => {
+    const app = buildApp((_req, _res, next) => {
+      next(new Error('generic error'))
+    })
+
+    const res = await request(app).get('/test')
+    expect(res.status).toBe(500)
+    expect(res.body.error.code).toBe('INTERNAL_ERROR')
+    expect(res.body.error.requestId).toBeUndefined()
+  })
+
+  it('returns 429 for AppError.rateLimited', async () => {
+    const app = buildApp((_req, _res, next) => {
+      next(AppError.rateLimited('slow down'))
+    })
+
+    const res = await request(app).get('/test')
+    expect(res.status).toBe(429)
+    expect(res.body.error.code).toBe('RATE_LIMITED')
+    expect(res.body.error.message).toBe('slow down')
+  })
+
+  it('returns 413 for AppError.payloadTooLarge', async () => {
+    const app = buildApp((_req, _res, next) => {
+      next(AppError.payloadTooLarge())
+    })
+
+    const res = await request(app).get('/test')
+    expect(res.status).toBe(413)
+    expect(res.body.error.code).toBe('PAYLOAD_TOO_LARGE')
+    expect(res.body.error.message).toBe('Payload too large')
+  })
 })
 
 // ─── notFound middleware ──────────────────────────────────────────────────────
@@ -150,5 +297,40 @@ describe('notFound middleware', () => {
     expect(res.status).toBe(404)
     expect(res.body.error.code).toBe('NOT_FOUND')
     expect(res.body.error.message).toContain('/does-not-exist')
+  })
+
+  it('echoes x-request-id in notFound response when provided', async () => {
+    const app = express()
+    app.use(notFound)
+    app.use(errorHandler)
+
+    const res = await request(app)
+      .get('/unknown-route')
+      .set('x-request-id', 'req-xyz-789')
+
+    expect(res.status).toBe(404)
+    expect(res.body.error.code).toBe('NOT_FOUND')
+    expect(res.body.error.requestId).toBe('req-xyz-789')
+  })
+
+  it('does not include requestId in notFound when header is absent', async () => {
+    const app = express()
+    app.use(notFound)
+    app.use(errorHandler)
+
+    const res = await request(app).get('/missing-route')
+    expect(res.status).toBe(404)
+    expect(res.body.error.requestId).toBeUndefined()
+  })
+
+  it('includes HTTP method in notFound error message', async () => {
+    const app = express()
+    app.use(notFound)
+    app.use(errorHandler)
+
+    const res = await request(app).post('/some-route')
+    expect(res.status).toBe(404)
+    expect(res.body.error.message).toContain('POST')
+    expect(res.body.error.message).toContain('/some-route')
   })
 })

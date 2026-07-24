@@ -11,6 +11,7 @@ import helmet from 'helmet'
 import cors from 'cors'
 import request from 'supertest'
 import { generateAccessToken } from '../src/lib/auth-utils.js'
+import { buildValidationError } from '../src/lib/validation.js'
 import { UserRole } from '../src/types/user.js'
 
 // ---------------------------------------------------------------------------
@@ -88,17 +89,15 @@ testApp.post('/api/vaults', authenticate, (req, res) => {
 
   // Basic validation
   if (parseFloat(amount) <= 0) {
-    return res.status(400).json({ 
-      error: 'Validation failed',
-      details: ['Amount must be positive']
-    })
+    return res.status(400).json(buildValidationError([
+      { path: 'amount', message: 'Amount must be positive', code: 'custom' },
+    ]))
   }
 
   if (!creator.startsWith('G') || creator.length !== 56) {
-    return res.status(400).json({
-      error: 'Validation failed', 
-      details: ['Invalid verifier address format']
-    })
+    return res.status(400).json(buildValidationError([
+      { path: 'creator', message: 'Invalid creator address format', code: 'custom' },
+    ]))
   }
 
   const vault = {
@@ -293,7 +292,8 @@ describe('Security Integration Tests', () => {
         .set('Authorization', `Bearer ${userToken()}`)
         .send(vaultBody({ amount: '-100' }))
       expect(res.status).toBe(400)
-      expect(res.body.details.some((d: string) => /amount/i.test(d))).toBe(true)
+      expect(res.body.error.code).toBe('VALIDATION_ERROR')
+      expect(res.body.error.fields.some((f: { path: string }) => f.path === 'amount')).toBe(true)
     })
 
     it('rejects amount of zero with 400', async () => {
@@ -310,7 +310,8 @@ describe('Security Integration Tests', () => {
         .set('Authorization', `Bearer ${userToken()}`)
         .send(vaultBody({ creator: 'not-a-stellar-address' }))
       expect(res.status).toBe(400)
-      expect(res.body.details.some((d: string) => /verifier/i.test(d))).toBe(true)
+      expect(res.body.error.code).toBe('VALIDATION_ERROR')
+      expect(res.body.error.fields.some((f: { path: string }) => f.path === 'creator')).toBe(true)
     })
 
     it('requires authentication to create a vault (401 without token)', async () => {

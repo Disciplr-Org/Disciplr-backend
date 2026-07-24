@@ -2,39 +2,57 @@ import { Knex } from 'knex'
 import { EventProcessor } from './eventProcessor.js'
 import { parseHorizonEvent, HorizonEvent } from './eventParser.js'
 import { HorizonListenerConfig } from '../config/horizonListener.js'
+import { CheckpointStore } from './checkpointStore.js'
 import { sleep } from '../utils/retry.js'
 
 /**
- * Horizon Listener Service
- * Connects to Stellar Horizon API to receive Soroban contract events
- * and processes them into database operations
+ * HorizonListener
+ *
+ * Connects to the Stellar Horizon API, streams Soroban contract events, and
+ * drives them through EventProcessor.  After each successful commit the
+ * CheckpointStore is updated so the service can resume from the correct ledger
+ * after a restart without reprocessing already-committed events.
+ *
+ * Restart / resume guarantee
+ * ──────────────────────────
+ * At startup the listener loads the stored checkpoint for every configured
+ * contract address.  The effective stream cursor is the MINIMUM confirmed
+ * ledger across all contracts, ensuring that a contract with no checkpoint (or
+ * a lower checkpoint) receives all missed events.  Events for contracts that
+ * are already ahead of the stream cursor are re-delivered but are silently
+ * skipped by the processed_events idempotency table — giving at-least-once
+ * delivery with no duplicate side-effects.
  */
 export class HorizonListener {
   private config: HorizonListenerConfig
   private eventProcessor: EventProcessor
   private db: Knex
+  private checkpointStore: CheckpointStore
   private running: boolean = false
   private shutdownRequested: boolean = false
   private inFlightEvents: number = 0
   private reconnectAttempts: number = 0
   private currentBackoffMs: number = 1000
 
-  // Stellar SDK Server instance (will be initialized when SDK is available)
-  private server: any = null
+  // Stellar SDK Server instance (initialised when SDK is available)
+  private server: unknown = null
 
   constructor(
     config: HorizonListenerConfig,
     eventProcessor: EventProcessor,
-    db: Knex
+    db: Knex,
+    checkpointStore?: CheckpointStore,
   ) {
     this.config = config
     this.eventProcessor = eventProcessor
     this.db = db
+    this.checkpointStore = checkpointStore ?? new CheckpointStore(db)
   }
 
   /**
-   * Start the Horizon listener
-   * Loads cursor from database and begins event streaming
+   * Start the listener.
+   * Loads per-contract cursors from the database and begins event streaming
+   * from the minimum ledger across all contracts.
    */
   async start(): Promise<void> {
     if (this.running) {
@@ -46,20 +64,17 @@ export class HorizonListener {
     this.running = true
     this.shutdownRequested = false
 
-    // Register signal handlers for graceful shutdown
     this.registerShutdownHandlers()
 
-    // Load cursor from database
-    const cursor = await this.loadCursor()
-    console.log(`Resuming from ledger: ${cursor}`)
+    const startLedger = await this.loadEffectiveStartLedger()
+    console.log(`Starting event stream from ledger: ${startLedger}`)
 
-    // Start event streaming with retry logic
-    await this.startEventStream(cursor)
+    await this.startEventStream(startLedger)
   }
 
   /**
-   * Stop the Horizon listener gracefully
-   * Waits for in-flight events to complete before closing connections
+   * Stop the listener gracefully.
+   * Waits for in-flight events to drain before closing the connection.
    */
   async stop(): Promise<void> {
     if (!this.running) {
@@ -70,125 +85,141 @@ export class HorizonListener {
     console.log('Stopping Horizon listener...')
     this.shutdownRequested = true
 
-    // Wait for in-flight events with timeout
     const shutdownStart = Date.now()
     while (this.inFlightEvents > 0) {
       const elapsed = Date.now() - shutdownStart
       if (elapsed > this.config.shutdownTimeoutMs) {
         console.warn(
           `Shutdown timeout exceeded (${this.config.shutdownTimeoutMs}ms). ` +
-          `${this.inFlightEvents} events still in flight. Force terminating.`
+          `${this.inFlightEvents} events still in flight. Force terminating.`,
         )
         break
       }
       await sleep(100)
     }
 
-    // Close Horizon connection
     if (this.server) {
-      // TODO: Close Stellar SDK connection when SDK is available
+      // TODO: close Stellar SDK connection when SDK is available
       this.server = null
     }
-
-    // Close database connection
-    // Note: We don't destroy the db connection here as it may be shared
-    // The caller should handle database cleanup
 
     this.running = false
     console.log('Horizon listener stopped')
   }
 
-  /**
-   * Check if the listener is currently running
-   */
+  /** True while the listener is actively streaming. */
   isRunning(): boolean {
     return this.running
   }
 
-  /**
-   * Load the last processed ledger cursor from database
-   * Returns START_LEDGER from config if no cursor exists
-   */
-  private async loadCursor(): Promise<number> {
-    try {
-      const state = await this.db('listener_state')
-        .where({ service_name: 'horizon_listener' })
-        .first()
+  // ── Private: cursor management ──────────────────────────────────────────────
 
-      if (state && state.last_processed_ledger) {
-        return state.last_processed_ledger
+  /**
+   * Load each contract's checkpoint and return the minimum confirmed ledger
+   * across all contracts.  Missing checkpoints fall back to config.startLedger.
+   */
+  async loadEffectiveStartLedger(): Promise<number> {
+    const defaultLedger = this.config.startLedger ?? 1
+    let minLedger = Infinity
+
+    for (const contractAddress of this.config.contractAddresses) {
+      try {
+        const checkpoint = await this.checkpointStore.getCheckpoint(contractAddress)
+        const ledger = checkpoint?.lastLedger ?? defaultLedger
+
+        console.log(
+          JSON.stringify({
+            level: 'info',
+            event: 'horizon.checkpoint_loaded',
+            service: 'disciplr-backend',
+            contractAddress,
+            lastLedger: ledger,
+            hasCheckpoint: checkpoint !== null,
+            timestamp: new Date().toISOString(),
+          }),
+        )
+
+        if (ledger < minLedger) minLedger = ledger
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            event: 'horizon.checkpoint_load_error',
+            service: 'disciplr-backend',
+            contractAddress,
+            error: error instanceof Error ? error.message : String(error),
+            timestamp: new Date().toISOString(),
+          }),
+        )
+        // Fail-safe: use default ledger so the contract is not silently skipped.
+        if (defaultLedger < minLedger) minLedger = defaultLedger
       }
-
-      // No cursor exists, use START_LEDGER from config or default to 1
-      return this.config.startLedger ?? 1
-    } catch (error) {
-      console.error('Error loading cursor from database:', error)
-      // Fall back to config or default
-      return this.config.startLedger ?? 1
     }
+
+    return minLedger === Infinity ? defaultLedger : minLedger
   }
 
   /**
-   * Update the cursor in the database after successful event processing
+   * Persist the confirmed checkpoint for a single contract.
+   * Errors are logged but not re-thrown — a checkpoint write failure means
+   * the event may be re-delivered on next restart, which idempotency absorbs.
    */
-  private async updateCursor(ledgerNumber: number): Promise<void> {
+  private async persistCheckpoint(
+    contractId: string,
+    ledger: number,
+    pagingToken: string,
+  ): Promise<void> {
     try {
-      await this.db('listener_state')
-        .insert({
-          service_name: 'horizon_listener',
-          last_processed_ledger: ledgerNumber,
-          last_processed_at: new Date(),
-          created_at: new Date(),
-          updated_at: new Date()
-        })
-        .onConflict('service_name')
-        .merge({
-          last_processed_ledger: ledgerNumber,
-          last_processed_at: new Date(),
-          updated_at: new Date()
-        })
+      await this.checkpointStore.upsertCheckpoint(contractId, ledger, pagingToken)
     } catch (error) {
-      // Log error but don't throw - cursor update failure shouldn't stop processing
-      console.error('Error updating cursor:', error)
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event: 'horizon.checkpoint_write_error',
+          service: 'disciplr-backend',
+          contractAddress: contractId,
+          ledger,
+          error: error instanceof Error ? error.message : String(error),
+          timestamp: new Date().toISOString(),
+        }),
+      )
     }
   }
 
-  /**
-   * Start event streaming from Horizon API with retry logic
-   */
+  // ── Private: streaming ───────────────────────────────────────────────────────
+
   private async startEventStream(startLedger: number): Promise<void> {
     while (this.running && !this.shutdownRequested) {
       try {
-        // TODO: Initialize Stellar SDK Server when available
-        // For now, this is a placeholder that will be replaced with actual SDK integration
+        // TODO: initialise Stellar SDK Server when available.
         // Example:
-        // import { Server } from '@stellar/stellar-sdk'
-        // this.server = new Server(this.config.horizonUrl)
-        
-        console.log('Horizon SDK not yet integrated - placeholder implementation')
-        console.log(`Would connect to: ${this.config.horizonUrl}`)
-        console.log(`Monitoring contracts: ${this.config.contractAddresses.join(', ')}`)
-        console.log(`Starting from ledger: ${startLedger}`)
+        //   import { Server } from '@stellar/stellar-sdk/horizon'
+        //   this.server = new Server(this.config.horizonUrl)
+        //   const stream = this.server.events()
+        //     .cursor(startLedger.toString())
+        //     .stream({
+        //       onmessage: (event) => this.handleEvent(event),
+        //       onerror:   (error)  => this.handleStreamError(error),
+        //     })
 
-        // TODO: Replace with actual Horizon event streaming
-        // Example:
-        // const eventStream = this.server
-        //   .events()
-        //   .cursor(startLedger.toString())
-        //   .stream({
-        //     onmessage: (event) => this.handleEvent(event),
-        //     onerror: (error) => this.handleStreamError(error)
-        //   })
+        console.log(
+          JSON.stringify({
+            level: 'info',
+            event: 'horizon.stream_placeholder',
+            service: 'disciplr-backend',
+            horizonUrl: this.config.horizonUrl,
+            contracts: this.config.contractAddresses,
+            startLedger,
+            timestamp: new Date().toISOString(),
+          }),
+        )
 
-        // Reset reconnect attempts on successful connection
         this.reconnectAttempts = 0
         this.currentBackoffMs = 1000
 
-        // For now, just wait to simulate running
+        // Placeholder: exit the loop after one iteration.
+        // In production the SDK stream callback drives execution.
         await sleep(1000)
-        
-        // In production, the stream would keep running until an error occurs
-        // For this placeholder, we'll break after one iteration
         break
       } catch (error) {
         await this.handleConnectionError(error as Error)
@@ -197,84 +228,108 @@ export class HorizonListener {
   }
 
   /**
-   * Handle individual event from Horizon stream
+   * Process one event from the Horizon stream.
+   *
+   * The event is filtered by contract address, parsed, processed (with
+   * idempotency), and — on success — the per-contract checkpoint is advanced.
    */
-  private async handleEvent(rawEvent: HorizonEvent): Promise<void> {
-    // Don't accept new events if shutdown requested
-    if (this.shutdownRequested) {
-      return
-    }
+  async handleEvent(rawEvent: HorizonEvent): Promise<void> {
+    if (this.shutdownRequested) return
 
     this.inFlightEvents++
 
     try {
-      // Filter by contract address
       if (!this.isEventFromConfiguredContract(rawEvent)) {
         return
       }
 
-      // Parse event
       const parseResult = parseHorizonEvent(rawEvent)
       if (!parseResult.success) {
-        console.error('Failed to parse event:', parseResult.error, parseResult.details)
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            event: 'horizon.event_parse_failed',
+            service: 'disciplr-backend',
+            error: parseResult.error,
+            details: parseResult.details,
+            timestamp: new Date().toISOString(),
+          }),
+        )
         return
       }
 
-      // Process event
       const result = await this.eventProcessor.processEvent(parseResult.event)
-      
+
       if (result.success) {
-        // Update cursor after successful processing
-        await this.updateCursor(rawEvent.ledger)
+        // Advance the checkpoint for the specific contract this event came from.
+        await this.persistCheckpoint(
+          rawEvent.contractId,
+          rawEvent.ledger,
+          rawEvent.pagingToken,
+        )
       } else {
-        console.error('Failed to process event:', result.error)
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            event: 'horizon.event_processing_failed',
+            service: 'disciplr-backend',
+            eventId: parseResult.event.eventId,
+            error: result.error,
+            timestamp: new Date().toISOString(),
+          }),
+        )
       }
     } catch (error) {
-      console.error('Error handling event:', error)
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event: 'horizon.event_handler_error',
+          service: 'disciplr-backend',
+          error: error instanceof Error ? error.message : String(error),
+          timestamp: new Date().toISOString(),
+        }),
+      )
     } finally {
       this.inFlightEvents--
     }
   }
 
-  /**
-   * Check if event is from a configured contract address
-   */
   private isEventFromConfiguredContract(event: HorizonEvent): boolean {
     return this.config.contractAddresses.includes(event.contractId)
   }
 
-  /**
-   * Handle connection errors with exponential backoff
-   */
   private async handleConnectionError(error: Error): Promise<void> {
     this.reconnectAttempts++
 
-    // Log at WARN level every 10 failed attempts
     if (this.reconnectAttempts % 10 === 0) {
       console.warn(
-        `Horizon connection failed ${this.reconnectAttempts} times. ` +
-        `Last error: ${error.message}`
+        JSON.stringify({
+          level: 'warn',
+          event: 'horizon.connection_error',
+          service: 'disciplr-backend',
+          attempts: this.reconnectAttempts,
+          error: error.message,
+          timestamp: new Date().toISOString(),
+        }),
       )
     }
 
-    // Wait with exponential backoff before retrying
     await sleep(this.currentBackoffMs)
-
-    // Increase backoff with cap at 60 seconds
-    this.currentBackoffMs = Math.min(this.currentBackoffMs * 2, 60000)
+    this.currentBackoffMs = Math.min(this.currentBackoffMs * 2, 60_000)
   }
 
-  /**
-   * Handle stream errors
-   */
   private handleStreamError(error: Error): void {
-    console.error('Horizon stream error:', error)
-    // The stream will automatically reconnect via the retry logic in startEventStream
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'horizon.stream_error',
+        service: 'disciplr-backend',
+        error: error.message,
+        timestamp: new Date().toISOString(),
+      }),
+    )
   }
 
-  /**
-   * Register SIGTERM and SIGINT handlers for graceful shutdown
-   */
   private registerShutdownHandlers(): void {
     const shutdownHandler = async () => {
       console.log('Shutdown signal received')
