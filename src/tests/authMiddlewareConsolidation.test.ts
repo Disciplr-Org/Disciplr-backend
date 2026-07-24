@@ -1,28 +1,45 @@
 ﻿import { Request, Response, NextFunction } from "express";
-import { getAuthenticatedUserId, requireUserAuth } from "../middleware/auth.js";
+import { getAuthenticatedUserId, authenticate } from "../middleware/auth.js";
 import { jest, describe, it, expect } from "@jest/globals";
 
 describe("Auth Middleware Consolidation", () => {
-  it("requireUserAuth sets authUser from x-user-id header", () => {
+  it("authenticate rejects x-user-id header (security regression test)", async () => {
     const req = {
       header: (name: string) =>
-        name === "x-user-id" ? "legacy-123" : undefined,
+        name === "x-user-id" ? "attacker-123" : undefined,
     } as any;
     const res = { status: jest.fn().mockReturnThis(), json: jest.fn() } as any;
     const next = jest.fn();
 
-    requireUserAuth(req, res, next);
+    await authenticate(req, res, next);
 
-    expect(req.authUser.userId).toBe("legacy-123");
-    expect(next).toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Unauthorized: Missing or malformed Authorization header",
+    });
+    expect(next).not.toHaveBeenCalled();
   });
 
-  it("requireUserAuth rejects missing auth", () => {
+  it("authenticate rejects Authorization: Bearer user: format (security regression test)", async () => {
+    const req = {
+      header: (name: string) =>
+        name === "authorization" ? "Bearer user:attacker-123" : undefined,
+    } as any;
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() } as any;
+    const next = jest.fn();
+
+    await authenticate(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("authenticate rejects missing auth", async () => {
     const req = { header: () => undefined } as any;
     const res = { status: jest.fn().mockReturnThis(), json: jest.fn() } as any;
     const next = jest.fn();
 
-    requireUserAuth(req, res, next);
+    await authenticate(req, res, next);
 
     expect(res.status).toHaveBeenCalledWith(401);
     expect(next).not.toHaveBeenCalled();

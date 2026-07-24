@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { requireUserAuth } from '../middleware/auth.js'
+import { authenticate } from '../middleware/auth.js'
 import { requireStepUp } from '../middleware/stepUp.js'
 import { apiKeyRateLimiter } from '../middleware/rateLimiter.js'
 import {
@@ -16,7 +16,7 @@ import { ApiScope } from '../types/auth.js'
 
 export const apiKeysRouter = Router()
 
-apiKeysRouter.use(requireUserAuth)
+apiKeysRouter.use(authenticate)
 
 const createApiKeySchema = z.object({
   label: z.string().trim().min(1, 'label is required.'),
@@ -25,14 +25,14 @@ const createApiKeySchema = z.object({
 })
 
 apiKeysRouter.get('/', async (req, res) => {
-  const userId = req.authUser!.userId
+  const userId = req.user.userId
   const apiKeys = (await listApiKeysForUser(userId)).map(({ keyHash: _keyHash, ...publicRecord }) => publicRecord)
 
   res.json({ apiKeys })
 })
 
 apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
-  const userId = req.authUser!.userId
+  const userId = req.user.userId
   const parseResult = createApiKeySchema.safeParse(req.body)
   if (!parseResult.success) {
     res.status(400).json(formatValidationError(parseResult.error))
@@ -70,7 +70,7 @@ apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
 })
 
 apiKeysRouter.post('/:id/rotate', apiKeyRateLimiter, async (req, res) => {
-  const userId = req.authUser!.userId
+  const userId = req.user.userId
   const rotated = await rotateApiKey({
     apiKeyId: req.params.id,
     userId,
@@ -97,7 +97,7 @@ apiKeysRouter.post('/:id/rotate', apiKeyRateLimiter, async (req, res) => {
 })
 
 apiKeysRouter.post('/:id/revoke', requireStepUp(), async (req, res) => {
-  const userId = req.authUser!.userId
+  const userId = req.user.userId
   const record = await revokeApiKey(req.params.id, userId)
 
   if (!record) {

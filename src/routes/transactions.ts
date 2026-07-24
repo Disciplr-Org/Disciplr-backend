@@ -2,21 +2,21 @@ import { Router, Request, Response } from 'express'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray, encodeCursor, decodeCursor } from '../utils/pagination.js'
 import db from '../db/index.js'
-import { requireUserAuth } from '../middleware/auth.js'
+import { authenticate } from '../middleware/auth.js'
 
 export const transactionsRouter = Router()
 
 // GET /api/transactions - Get user's transaction history
 transactionsRouter.get(
   '/',
-  requireUserAuth,
+  authenticate,
   queryParser({
     allowedSortFields: ['created_at', 'stellar_timestamp', 'amount', 'type', 'stellar_ledger'],
     allowedFilterFields: ['type', 'vault_id', 'date_from', 'date_to', 'amount_min', 'amount_max'],
   }),
   async (req: Request, res: Response) => {
     try {
-      const userId = req.authUser!.userId
+      const userId = req.user.userId
       let query = db('transactions').where('user_id', userId)
 
       // Apply filters
@@ -149,9 +149,9 @@ transactionsRouter.get(
 )
 
 // GET /api/transactions/:id - Get specific transaction
-transactionsRouter.get('/:id', requireUserAuth, async (req: Request, res: Response) => {
+transactionsRouter.get('/:id', authenticate, async (req: Request, res: Response) => {
   try {
-    const userId = req.authUser!.userId
+    const userId = req.user.userId
     const transactionId = req.params.id
 
     const transaction = await db('transactions')
@@ -188,14 +188,14 @@ transactionsRouter.get('/:id', requireUserAuth, async (req: Request, res: Respon
 // GET /api/transactions/vault/:vaultId - Get transactions for a specific vault
 transactionsRouter.get(
   '/vault/:vaultId',
-  requireUserAuth,
+  authenticate,
   queryParser({
     allowedSortFields: ['created_at', 'stellar_timestamp', 'amount', 'type'],
     allowedFilterFields: ['type', 'date_from', 'date_to', 'amount_min', 'amount_max'],
   }),
   async (req: Request, res: Response) => {
     try {
-      const userId = req.authUser!.userId
+      const userId = req.user.userId
       const vaultId = req.params.vaultId
 
       // Verify user owns the vault
