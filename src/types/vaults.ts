@@ -51,7 +51,7 @@ export interface PersistedVault {
   successDestination: string
   failureDestination: string
   creator: string | null
-  status: 'draft' | 'active' | 'completed' | 'failed' | 'cancelled'
+  status: 'draft' | 'active' | 'completed' | 'failed' | 'cancelled' | 'disputed'
   createdAt: string
   milestones: PersistedMilestone[]
   /** Grace window in seconds after a milestone dueDate during which check-in is still accepted. Bounded by vault endDate. */

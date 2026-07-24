@@ -460,7 +460,7 @@ export const getMilestoneApprovals = async (
 
   rows.forEach((row) => {
     const mapped = mapMilestoneApprovalRow(row)
-    grouped[row.approval_status].push(mapped)
+    grouped[row.approval_status as keyof typeof grouped].push(mapped)
   })
 
   return grouped

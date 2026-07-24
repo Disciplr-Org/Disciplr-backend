@@ -189,7 +189,7 @@ export class OTLPExporter implements SpanExporter {
       kind: 1, // SPAN_KIND_INTERNAL
       startTimeUnixNano: BigInt(s.startTime) * 1_000_000n,
       endTimeUnixNano: BigInt(s.endTime ?? s.startTime) * 1_000_000n,
-      status: { code: s.status.code === 'OK' ? 1 : 2, message: s.status.message ?? '' },
+      status: { code: s.status.code === 'OK' ? 1 : 2, message: 'message' in s.status ? s.status.message ?? '' : '' },
       attributes: Object.entries(s.attributes).map(([key, value]) => ({
         key,
         value: { stringValue: String(value) },

@@ -1,14 +1,14 @@
-import type { Store, Options, ClientRateLimitInfo } from 'express-rate-limit'
-import type Redis from 'ioredis'
+﻿import type { Store, Options, ClientRateLimitInfo } from 'express-rate-limit'
+import type { Redis } from 'ioredis'
 
 export class RedisStore implements Store {
   private redis: Redis
-  private prefix: string
+  private keyPrefix: string
   private windowMs: number
 
   constructor(redis: Redis, prefix: string = 'rl:') {
     this.redis = redis
-    this.prefix = prefix
+    this.keyPrefix = prefix
     this.windowMs = 60000 // Default, will be overridden in init()
   }
 
@@ -17,7 +17,7 @@ export class RedisStore implements Store {
   }
 
   async increment(key: string): Promise<ClientRateLimitInfo> {
-    const redisKey = `${this.prefix}${key}`
+    const redisKey = `${this.keyPrefix}${key}`
     try {
       // Use multi to INCR and get PTTL in one atomic round-trip
       const results = await this.redis
@@ -64,7 +64,7 @@ export class RedisStore implements Store {
   }
 
   async decrement(key: string): Promise<void> {
-    const redisKey = `${this.prefix}${key}`
+    const redisKey = `${this.keyPrefix}${key}`
     try {
       await this.redis.decr(redisKey)
     } catch (error) {
@@ -73,7 +73,7 @@ export class RedisStore implements Store {
   }
 
   async resetKey(key: string): Promise<void> {
-    const redisKey = `${this.prefix}${key}`
+    const redisKey = `${this.keyPrefix}${key}`
     try {
       await this.redis.del(redisKey)
     } catch (error) {

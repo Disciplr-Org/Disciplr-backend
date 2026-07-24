@@ -41,7 +41,8 @@ export class AnalyticsBatchLoader {
   private milestoneCache = new Map<string, MilestoneAggregate>()
   private _queryCount = 0
 
-  constructor(db: DbLike = defaultDb) {
+  // defaultDb is the shared analytics handle; tests inject a hermetic DbLike.
+  constructor(db: DbLike = defaultDb as unknown as DbLike) {
     this.db = db
   }
 

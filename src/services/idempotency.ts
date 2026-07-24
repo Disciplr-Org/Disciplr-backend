@@ -119,6 +119,10 @@ export async function getIdempotentResponse<T>(
       resolve = res
       reject = rej
     })
+    // A pending entry may be failed via failPendingIdempotentResponse() when no
+    // caller is awaiting it; keep one handler attached so the rejection never
+    // surfaces as an unhandled-rejection crash.
+    promise.catch(() => {})
 
     pendingIdempotencyRequests.set(internalKey, {
       hash,
@@ -309,3 +313,6 @@ export class IdempotencyService {
     })
   }
 }
+
+// Admin routes import the DB-backed store under this name.
+export { IdempotencyService as DbIdempotencyStore }

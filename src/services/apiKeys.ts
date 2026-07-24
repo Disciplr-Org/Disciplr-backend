@@ -1,7 +1,8 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import argon2 from 'argon2'
 import type { Pool } from 'pg'
-import type { ApiKeyAuthContext, ApiKeyRecord, ApiScope } from '../types/auth.js'
+import type { ApiKeyAuthContext, ApiKeyRecord } from '../types/auth.js'
+import { ApiScope } from '../types/auth.js'
 import { utcNow } from '../utils/timestamps.js'
 import { getPgPool } from '../db/pool.js'
 
@@ -76,7 +77,7 @@ const parseApiKey = (apiKey: string): { apiKeyId: string; secret: string } | nul
 const validApiScopes = new Set(Object.values(ApiScope))
 
 const normalizeScopes = (scopes: string[]): ApiScope[] => {
-  return Array.from(new Set(scopes.map((scope) => scope.trim()).filter(Boolean))).filter((scope) => validApiScopes.has(scope)).sort() as ApiScope[]
+  return Array.from(new Set(scopes.map((scope) => scope.trim()).filter(Boolean))).filter((scope) => validApiScopes.has(scope as ApiScope)).sort() as ApiScope[]
 }
 
 const normalizeScopeColumn = (scopes: string[] | string | null): ApiScope[] => {
@@ -126,7 +127,7 @@ const toRecord = (row: ApiKeyRow): ApiKeyRecord => ({
   scopes: normalizeScopeColumn(row.scopes),
   createdAt: asIsoString(row.created_at)!,
   revokedAt: asIsoString(row.revoked_at),
-  lastUsedAt: asIsoString(row.last_used_at),
+  lastUsedAt: asIsoString(row.last_used_at ?? null),
   requestCount: row.request_count ?? 0,
   lastIp: row.last_ip ?? null,
 })

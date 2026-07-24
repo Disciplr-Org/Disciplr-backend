@@ -39,7 +39,7 @@ class AsyncMutex {
   async runExclusive<T>(fn: () => Promise<T> | T): Promise<T> {
     // Acquire lock
     while (this.locked) {
-      await new Promise((resolve) => this.waitQueue.push(resolve))
+      await new Promise<void>((resolve) => this.waitQueue.push(resolve))
     }
     this.locked = true
 

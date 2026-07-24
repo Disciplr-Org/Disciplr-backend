@@ -106,7 +106,7 @@ const parseContractAddresses = (): string[] =>
     .filter((address) => address.length > 0)
 
 const isValidLedger = (value: unknown): value is number =>
-  Number.isInteger(value) && Number.isSafeInteger(value) && value >= 0
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 
 const isValidPagingToken = (value: unknown): value is string | null | undefined =>
   value === undefined || value === null || (typeof value === 'string' && value.trim().length > 0 && value.length <= 256)
@@ -652,7 +652,12 @@ adminRouter.post('/overrides/vaults/:id/cancel', requireStepUp(), async (req, re
 
 adminRouter.get('/transaction-etl/drift-report', async (req, res) => {
   try {
-    const etl = new TransactionETLService({ horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org', batchSize: Number(req.query.batchSize) || 50 })
+    const etl = new TransactionETLService({
+      horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org',
+      networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015',
+      batchSize: Number(req.query.batchSize) || 50,
+      maxRetries: 3,
+    })
     const report = await etl.reconcileVaults()
     res.status(200).json(report)
   } catch (error) {
@@ -664,7 +669,12 @@ adminRouter.get('/transaction-etl/drift-report', async (req, res) => {
 adminRouter.post('/vaults/:id/auto-repair', requireStepUp(), async (req, res) => {
   try {
     const { id } = req.params
-    const etl = new TransactionETLService({ horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org', batchSize: 50 })
+    const etl = new TransactionETLService({
+      horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org',
+      networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015',
+      batchSize: 50,
+      maxRetries: 3,
+    })
     
     const result = await etl.autoRepairVault(id, req.user!.userId)
     

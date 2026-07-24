@@ -40,7 +40,7 @@ export async function getOrgReports(orgId: string): Promise<AnalyticsReport[]> {
     where: { orgId },
     orderBy: { createdAt: 'desc' },
   })
-  return reports.map((r) => ({
+  return reports.map((r: any) => ({
     id: r.id,
     orgId: r.orgId,
     createdAt: r.createdAt.toISOString(),
@@ -101,7 +101,7 @@ export async function getAllOrgIds(): Promise<string[]> {
     select: { orgId: true },
     distinct: ['orgId'],
   })
-  return reports.map((r) => r.orgId)
+  return reports.map((r: any) => r.orgId)
 }
 
 export async function _resetQuotaCounters(): Promise<void> {

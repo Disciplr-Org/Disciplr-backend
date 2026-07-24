@@ -9,16 +9,17 @@ import {
   addSubscriber,
   listSubscribers,
   removeSubscriber,
-  updateSubscriberSecret,
+  rotateSubscriberSecret,
   isUrlAllowed,
+  type WebhookSubscriber,
 } from '../services/webhooks.js'
 
-const serializeSubscription = (subscription: { id: string; url: string; events: string[]; active: boolean; orgId?: string; createdAt: string }) => ({
+const serializeSubscription = (subscription: WebhookSubscriber) => ({
   id: subscription.id,
   url: subscription.url,
   events: subscription.events,
   active: subscription.active,
-  orgId: subscription.orgId,
+  orgId: subscription.orgId ?? subscription.organizationId,
   createdAt: subscription.createdAt,
 })
 
@@ -36,7 +37,7 @@ webhookRouter.post(
         return next(AppError.validation('Invalid request payload', formatValidationError(parseResult.error)))
       }
 
-      const { url, events, active } = parseResult.data
+      const { url, events } = parseResult.data
       if (!isUrlAllowed(url)) {
         return next(AppError.validation('Webhook URL not permitted', { field: 'url' }))
       }
@@ -47,18 +48,11 @@ webhookRouter.post(
       }
 
       const secret = randomUUID().replace(/-/g, '')
-      const subscription = addSubscriber(url, secret, events, orgId, active)
+      const subscription = await addSubscriber(orgId, url, secret, events)
 
       return res.status(201).json({
         secret,
-        subscription: {
-          id: subscription.id,
-          url: subscription.url,
-          events: subscription.events,
-          active: subscription.active,
-          orgId: subscription.orgId,
-          createdAt: subscription.createdAt,
-        },
+        subscription: serializeSubscription(subscription),
       })
     } catch (error) {
       return next(error)
@@ -76,8 +70,8 @@ webhookRouter.get(
         return next(AppError.badRequest('orgId is required'))
       }
 
-      const subscriptions = listSubscribers(orgId).map((subscription) => serializeSubscription(subscription))
-      return res.json({ subscriptions })
+      const subscribers = await listSubscribers(orgId)
+      return res.json({ subscriptions: subscribers.map(serializeSubscription) })
     } catch (error) {
       return next(error)
     }
@@ -94,7 +88,8 @@ webhookRouter.get(
         return next(AppError.badRequest('orgId is required'))
       }
 
-      const subscription = listSubscribers(orgId).find((item) => item.id === req.params.id)
+      const subscribers = await listSubscribers(orgId)
+      const subscription = subscribers.find((item) => item.id === req.params.id)
       if (!subscription) {
         return next(AppError.notFound('Webhook subscription not found'))
       }
@@ -121,13 +116,8 @@ webhookRouter.post(
         return next(AppError.badRequest('orgId is required'))
       }
 
-      const subscription = listSubscribers(orgId).find((item) => item.id === req.params.id)
-      if (!subscription) {
-        return next(AppError.notFound('Webhook subscription not found'))
-      }
-
       const secret = randomUUID().replace(/-/g, '')
-      const updated = updateSubscriberSecret(req.params.id, secret, orgId)
+      const updated = await rotateSubscriberSecret(req.params.id, orgId, secret)
       if (!updated) {
         return next(AppError.notFound('Webhook subscription not found'))
       }
@@ -149,7 +139,14 @@ webhookRouter.delete(
         return next(AppError.badRequest('orgId is required'))
       }
 
-      const deleted = removeSubscriber(req.params.id, orgId)
+      // Scope the delete to the caller's organization before removing.
+      const subscribers = await listSubscribers(orgId)
+      const subscription = subscribers.find((item) => item.id === req.params.id)
+      if (!subscription) {
+        return next(AppError.notFound('Webhook subscription not found'))
+      }
+
+      const deleted = await removeSubscriber(req.params.id)
       if (!deleted) {
         return next(AppError.notFound('Webhook subscription not found'))
       }
@@ -160,5 +157,8 @@ webhookRouter.delete(
     }
   },
 )
+
+// Some consumers import this router under the plural name.
+export const webhooksRouter = webhookRouter
 
 export default webhookRouter

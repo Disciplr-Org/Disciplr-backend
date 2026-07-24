@@ -24,6 +24,26 @@ export class VaultService {
     }
   }
 
+  /**
+   * Chronological on-chain activity for a vault, oldest first.
+   * Backed by the synced `transactions` table.
+   */
+  static async getVaultTimeline(id: string): Promise<Array<Record<string, unknown>>> {
+    try {
+      const result = await pool.query(
+        `SELECT id, tx_hash, type, amount, asset_code, created_at
+           FROM transactions
+          WHERE vault_id = $1
+          ORDER BY created_at ASC, id ASC`,
+        [id],
+      );
+      return result.rows;
+    } catch (error) {
+      console.error('Error fetching vault timeline:', error);
+      throw new Error('Database error during vault timeline lookup');
+    }
+  }
+
   static async getVaultById(id: string): Promise<Vault | null> {
     try {
       const result = await pool.query('SELECT * FROM vaults WHERE id = $1', [id]);

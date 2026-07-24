@@ -1,4 +1,13 @@
-import type { CreateVaultInput, PersistedVault, VaultCreateResponse } from '../types/vaults.js'
+import type {
+  CreateVaultInput,
+  PersistedVault,
+  VaultCreateResponse,
+  StakeInput,
+  StakeResponse,
+  StakeWithMemoInput,
+  StakeWithMemoResponse,
+} from '../types/vaults.js'
+import { MemoTooLongError } from '../types/vaults.js'
 import { retryWithBackoff, sleep, type RetryConfig } from '../utils/retry.js'
 import { StrKey } from '@stellar/stellar-sdk'
 import { AppError, SorobanTimeoutError } from '../middleware/errorHandler.js'
@@ -365,14 +374,14 @@ async function submitTransaction(
             .setTimeout(30)
             .build()
 
-          const prepared = await retryRpc('prepareTransaction', config, () =>
+          const prepared = await retryRpc<any>('prepareTransaction', config, () =>
             server.prepareTransaction(tx),
           )
           prepared.sign(keypair)
 
           // sendTransaction is retried on the SAME endpoint for transient network
           // errors; switching endpoints only happens if it never returns at all.
-          const response = await retryRpc('sendTransaction', config, () =>
+          const response = await retryRpc<any>('sendTransaction', config, () =>
             server.sendTransaction(prepared),
           )
           responseHash = response.hash
@@ -391,20 +400,30 @@ async function submitTransaction(
             jitterFactor: 0,
           }
 
-          const getResponse = await retryWithBackoff(
-            async () => {
-              if (Date.now() >= deadline) {
-                throw new SorobanTimeoutError(response.hash, config.submitTimeoutMs)
-              }
-              const result = await server.getTransaction(response.hash)
-              if (result.status === 'NOT_FOUND') {
-                throw Object.assign(new Error('transaction_pending'), { retryable: true })
-              }
-              return result
-            },
-            pollConfig,
-            (err) => !!(err as any).retryable,
-          )
+          let getResponse: { status: string }
+          try {
+            getResponse = await retryWithBackoff(
+              async () => {
+                if (Date.now() >= deadline) {
+                  throw new SorobanTimeoutError(response.hash, config.submitTimeoutMs)
+                }
+                const result = await server.getTransaction(response.hash)
+                if (result.status === 'NOT_FOUND') {
+                  throw Object.assign(new Error('transaction_pending'), { retryable: true })
+                }
+                return result
+              },
+              pollConfig,
+              (err) => !!(err as any).retryable,
+            )
+          } catch (err) {
+            // Poll attempts exhausted while the transaction was still pending:
+            // surface it as a terminal NOT_FOUND rather than the internal marker.
+            if (err instanceof Error && err.message === 'transaction_pending') {
+              throw new Error('Soroban transaction did not succeed: NOT_FOUND')
+            }
+            throw err
+          }
 
           if (getResponse.status !== 'SUCCESS') {
             throw new Error(`Soroban transaction did not succeed: ${getResponse.status}`)
@@ -464,20 +483,11 @@ export interface SorobanClient {
     config: SorobanConfig,
     args: Record<string, unknown>,
   ): Promise<{ txHash: string }>
-  getVault(
-    config: SorobanConfig,
-    vaultId: string,
-  ): Promise<OnChainVaultState | null>
-}
-
-export interface OnChainVaultState {
-  vault_id: string
-  amount: string
-  verifier: string
-  success_destination: string
-  failure_destination: string
-  status: 'active' | 'completed' | 'failed' | 'cancelled'
   submitStake(
+    config: SorobanConfig,
+    args: Record<string, unknown>,
+  ): Promise<{ txHash: string }>
+  submitStakeWithMemo(
     config: SorobanConfig,
     args: Record<string, unknown>,
   ): Promise<{ txHash: string }>
@@ -497,6 +507,19 @@ export interface OnChainVaultState {
     config: SorobanConfig,
     args: Record<string, unknown>,
   ): Promise<{ txHash: string }>
+  getVault(
+    config: SorobanConfig,
+    vaultId: string,
+  ): Promise<OnChainVaultState | null>
+}
+
+export interface OnChainVaultState {
+  vault_id: string
+  amount: string
+  verifier: string
+  success_destination: string
+  failure_destination: string
+  status: 'active' | 'completed' | 'failed' | 'cancelled'
 }
 
 type StellarSdkLoader = () => Promise<any>
@@ -527,7 +550,9 @@ const isRetryableSorobanRpcError = (error: Error): boolean => {
     message.includes('timeout') ||
     message.includes('timed out') ||
     message.includes('connection') ||
-    message.includes('network') ||
+    // Deliberately narrow: a bare 'network' would also match contract errors
+    // like "account does not exist on the network" and cause a wrong failover.
+    message.includes('network error') ||
     message.includes('econnreset') ||
     message.includes('econnrefused') ||
     message.includes('enotfound') ||
@@ -597,6 +622,18 @@ export const createDefaultSorobanClient = (
     )
   },
 
+  async submitStakeWithMemo(config, args) {
+    const { nativeToScVal, xdr } = await loadSdk()
+    const scVals = [
+      nativeToScVal(args.vaultId, { type: 'string' }),
+      nativeToScVal(args.amount, { type: 'string' }),
+    ]
+    if (typeof args.memo === 'string') {
+      scVals.push(xdr.ScVal.scvBytes(Buffer.from(args.memo, 'hex')))
+    }
+    return submitTransaction(config, 'stake_with_memo', scVals, loadSdk, pool)
+  },
+
   async submitCheckIn(config, args) {
     const { nativeToScVal, xdr } = await loadSdk()
     // evidence_hash is a 32-byte Buffer encoded as hex string from the backend.
@@ -657,21 +694,32 @@ export const createDefaultSorobanClient = (
       rpc: SorobanRpc,
       nativeToScVal,
       scValToNative,
+      TransactionBuilder,
+      BASE_FEE,
     } = await import('@stellar/stellar-sdk')
 
-    const server = new SorobanRpc.Server(config.rpcUrl)
+    const server = new SorobanRpc.Server(config.rpcUrl ?? config.rpcUrls[0])
     const contract = new Contract(config.contractId)
 
     try {
       const callOp = contract.call('get_vault', nativeToScVal(vaultId, { type: 'string' }))
 
-      const result = await server.simulateTransaction(callOp)
+      const account = await server.getAccount(config.sourceAccount)
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: config.networkPassphrase,
+      })
+        .addOperation(callOp)
+        .setTimeout(30)
+        .build()
 
-      if (result.result === undefined || result.result === null) {
+      const result = await server.simulateTransaction(tx)
+
+      if (!SorobanRpc.Api.isSimulationSuccess(result) || !result.result?.retval) {
         return null
       }
 
-      const decoded = scValToNative(result.result)
+      const decoded = scValToNative(result.result.retval)
 
       return {
         vault_id: decoded.vault_id || vaultId,
@@ -853,6 +901,48 @@ const buildPayload = (
         dueDate: milestone.dueDate,
       })),
     },
+  }
+}
+
+const buildStakePayload = (input: StakeInput): StakeResponse['payload'] => {
+  return {
+    contractId: input.onChain?.contractId ?? process.env.SOROBAN_CONTRACT_ID ?? DEFAULT_CONTRACT_ID,
+    networkPassphrase:
+      input.onChain?.networkPassphrase ?? process.env.SOROBAN_NETWORK_PASSPHRASE ?? 'Test SDF Network ; September 2015',
+    sourceAccount: input.onChain?.sourceAccount ?? process.env.SOROBAN_SOURCE_ACCOUNT ?? DEFAULT_SOURCE_ACCOUNT,
+    method: 'stake',
+    args: {
+      vaultId: input.vaultId,
+      amount: input.amount,
+      user: normalizeToClassicAddress(input.user),
+    },
+  }
+}
+
+const buildStakeWithMemoPayload = (
+  input: StakeWithMemoInput,
+): StakeWithMemoResponse['payload'] => {
+  const args: Record<string, unknown> = {
+    vaultId: input.vaultId,
+    amount: input.amount,
+    user: normalizeToClassicAddress(input.user),
+  }
+
+  if (input.memo !== undefined) {
+    const memoBytes = Buffer.from(input.memo, 'hex')
+    if (memoBytes.length > MEMO_MAX_BYTES) {
+      throw new MemoTooLongError(memoBytes.length, MEMO_MAX_BYTES)
+    }
+    args.memo = input.memo
+  }
+
+  return {
+    contractId: input.onChain?.contractId ?? process.env.SOROBAN_CONTRACT_ID ?? DEFAULT_CONTRACT_ID,
+    networkPassphrase:
+      input.onChain?.networkPassphrase ?? process.env.SOROBAN_NETWORK_PASSPHRASE ?? 'Test SDF Network ; September 2015',
+    sourceAccount: input.onChain?.sourceAccount ?? process.env.SOROBAN_SOURCE_ACCOUNT ?? DEFAULT_SOURCE_ACCOUNT,
+    method: 'stake_with_memo',
+    args,
   }
 }
 

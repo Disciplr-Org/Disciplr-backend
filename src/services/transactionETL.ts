@@ -473,6 +473,7 @@ export class TransactionETLService {
         driftDetected: 0,
         missingOnChain: 0,
         errors: 0,
+        driftedVaults: [],
       }
     }
 

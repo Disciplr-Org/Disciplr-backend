@@ -344,7 +344,7 @@ export async function findSimilar(
     LIMIT ${limit}
   `
 
-  return results.map((r) => ({
+  return results.map((r: any) => ({
     milestoneId: r.milestone_id,
     evidenceHash: r.evidence_hash,
     referenceUrl: r.reference_url,

@@ -43,7 +43,7 @@ apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
 
   // Validate scope names against the typed ApiScope enum
   const validScopes = new Set(Object.values(ApiScope))
-  const invalidIndex = scopes.findIndex((s: string) => !validScopes.has(s))
+  const invalidIndex = scopes.findIndex((s: string) => !validScopes.has(s as ApiScope))
   if (invalidIndex !== -1) {
     res.status(400).json({
       error: {
@@ -59,7 +59,7 @@ apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
     userId,
     orgId: orgId?.trim() || undefined,
     label,
-    scopes,
+    scopes: scopes as ApiScope[],
   })
 
   const { keyHash: _keyHash, ...publicRecord } = record

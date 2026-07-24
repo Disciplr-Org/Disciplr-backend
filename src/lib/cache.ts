@@ -1,4 +1,4 @@
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 import { randomUUID } from 'node:crypto';
 
 interface CacheEntry {
@@ -123,14 +123,19 @@ const DEL_SCRIPT = `
 
 function getCacheProvider() {
   if (!initialized) {
-    const redisUrl = process.env.REDIS_URL;
-    if (redisUrl && (redisUrl.startsWith('redis://') || redisUrl.startsWith('rediss://'))) {
-      redisClient = new Redis(redisUrl, {
-        maxRetriesPerRequest: 3,
-      });
-      redisClient.on('error', (err) => {
-        console.error('Redis client error:', err);
-      });
+    const env = process.env;
+    if (env.REDIS_URL) {
+      const redisUrl = env.REDIS_URL;
+      if (redisUrl.startsWith('redis://') || redisUrl.startsWith('rediss://')) {
+        redisClient = new Redis(redisUrl, {
+          maxRetriesPerRequest: 3,
+        });
+        redisClient.on('error', (err) => {
+          console.error('Redis client error:', err);
+        });
+      } else {
+        memoryCache = new InMemoryLRUCache();
+      }
     } else {
       memoryCache = new InMemoryLRUCache();
     }
@@ -169,7 +174,7 @@ async function pollForValue<T>(
 
 async function tryAcquireLock(rClient: Redis, lockKey: string, lockValue: string): Promise<boolean> {
   try {
-    const result = await rClient.set(lockKey, lockValue, 'NX', 'PX', LOCK_TTL_MS);
+    const result = await rClient.set(lockKey, lockValue, 'PX', LOCK_TTL_MS, 'NX');
     return result === 'OK';
   } catch {
     return false;

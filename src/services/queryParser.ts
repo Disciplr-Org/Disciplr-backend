@@ -111,7 +111,7 @@ export class QueryParser {
     const conditions: QueryCondition[] = [];
     
     // 0. Sanitize the entire query object to prevent prototype pollution
-    const safeQuery = sanitizeObject(query);
+    const safeQuery = sanitizeObject(query) as Record<string, any>;
     
     // 1. Parse filters
     if (safeQuery?.filter && typeof safeQuery.filter === 'object') {

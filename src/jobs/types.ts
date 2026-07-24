@@ -27,6 +27,8 @@ export interface NotificationJobPayload {
 export interface DeadlineCheckJobPayload {
   vaultId?: string
   deadlineIso?: string
+  /** Maximum number of vaults to expire per run. Defaults to 100 in the handler. */
+  batchSize?: number
   triggerSource: 'manual' | 'scheduler' | 'expiration-scheduler'
 }
 

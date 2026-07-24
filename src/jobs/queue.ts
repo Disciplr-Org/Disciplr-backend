@@ -435,7 +435,7 @@ export class InMemoryJobQueue {
   private async runJob(job: InternalQueuedJob<JobType>): Promise<void> {
     const handler = this.handlers.get(job.type)
     if (!handler) {
-      this.recordFailedJob(job, 'No handler registered')
+      this.moveToDeadLetter(job, 'No handler registered')
       return
     }
 
@@ -466,7 +466,7 @@ export class InMemoryJobQueue {
 
       // If the handler marked the error as non-retryable, record failure and skip retry
       if (error && (error as any).nonRetryable) {
-        this.recordFailedJob(job, message)
+        this.moveToDeadLetter(job, message)
       } else if (job.attempt < job.maxAttempts) {
         this.totals.retried += 1
         job.runAt = Date.now() + this.getRetryDelayMs(job.attempt)

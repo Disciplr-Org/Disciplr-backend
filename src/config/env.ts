@@ -244,6 +244,7 @@ export const envSchema = z
     //   - headersTimeout slightly > 60s accommodates ALB idle timeout defaults.
     //   - requestTimeout allows slower uploads/downloads but remains bounded.
     HTTP_KEEPALIVE_TIMEOUT_MS: positiveInt(45_000),
+    SHUTDOWN_DRAIN_MS: positiveInt(30_000),
     HTTP_HEADERS_TIMEOUT_MS: positiveInt(61_000),
     HTTP_REQUEST_TIMEOUT_MS: positiveInt(120_000),
 
@@ -383,7 +384,7 @@ export function initEnv(
     for (const { key, sentinel } of insecureDefaults) {
       if (validated[key] === sentinel) {
         const w: EnvWarning = {
-          variable: key,
+          field: key,
           message: `${key} is using its insecure default value`,
         };
         warnings.push(w);
@@ -416,7 +417,7 @@ export function initEnv(
   );
   if (present.length > 0 && present.length < sorobanVars.length) {
     const w: EnvWarning = {
-      variable: "SOROBAN_*",
+      field: "SOROBAN_*",
       message:
         "Partial Soroban configuration detected; submit mode will be disabled",
     };

@@ -26,7 +26,10 @@ export type AnalyticsSummaryRow = {
 const analyticsStorage = (process.env.ANALYTICS_STORAGE ?? '').toLowerCase()
 const shouldUsePostgres = analyticsStorage === 'postgres'
 
-const getPool = (): Pool => getPgPool()
+// getPgPool() returns null when DATABASE_URL is absent (e.g. unit tests that
+// never touch the DB). Callers only dereference the pool inside query helpers,
+// so defer the failure to first use rather than throwing at module load.
+const getPool = (): Pool => getPgPool() as Pool
 
 const initializePostgresSchema = async (pool: Pool): Promise<void> => {
   await pool.query(`

@@ -422,16 +422,17 @@ describe('submitTransaction failover (via createDefaultSorobanClient)', () => {
     await client.submitVaultCreation(BASE_CONFIG, VAULT_ARGS)
     expect(pool.getHealthStatuses().find((s) => s.maskedUrl.includes('primary'))?.status).toBe('degraded')
 
-    // Second call: primary fails again → down
+    // Second call: the (now-preferred) secondary fails too, so the degraded
+    // primary is retried, fails a second time and crosses the threshold → down.
     const alwaysFailServer2 = makeNetworkErrorServer('503 service unavailable')
     const client2 = createDefaultSorobanClient(
       makeFakeSdkWithRouting({
         [PRIMARY_URL]: alwaysFailServer2,
-        [SECONDARY_URL]: makeOkServer('tx-secondary-2'),
+        [SECONDARY_URL]: makeNetworkErrorServer('503 service unavailable'),
       }),
       pool,
     )
-    await client2.submitVaultCreation(BASE_CONFIG, VAULT_ARGS)
+    await expect(client2.submitVaultCreation(BASE_CONFIG, VAULT_ARGS)).rejects.toThrow()
     expect(pool.getHealthStatuses().find((s) => s.maskedUrl.includes('primary'))?.status).toBe('down')
   })
 

@@ -22,7 +22,9 @@ export class MilestoneService {
       vault_id: vaultId,
       title: description, // Using description as title for now
       description,
-      type: 'custom',
+      // 'document' is the only milestone variant whose criteria fields are all
+      // optional, making it the fit for free-form description milestones.
+      type: 'document' as const,
       criteria: {},
       weight: 1,
       status: 'pending' as const,

@@ -1,4 +1,5 @@
 import { getPrisma } from '../lib/prismaScope.js'
+import { getEnv } from '../config/env.js'
 import { hashPassword, comparePassword, generateAccessToken, generateRefreshToken, verifyRefreshToken, hashToken } from '../lib/auth-utils.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { RegisterInput, LoginInput } from '../lib/validation.js'
@@ -141,7 +142,7 @@ export class AuthService {
         const accessExpiresAt = new Date(Date.now() + 15 * 60 * 1000) // 15 minutes
         const tokenHash = hashToken(refreshTokenValue)
 
-        const loggedInUser = await prisma.$transaction(async (tx) => {
+        const loggedInUser = await prisma.$transaction(async (tx: any) => {
             const updatedUser = await tx.user.update({
                 where: { id: user.id },
                 data: { lastLoginAt },

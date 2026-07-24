@@ -19,6 +19,7 @@ export type AuditLog = {
 }
 
 export type AuditLogFilters = {
+  organization_id?: string
   actor_user_id?: string
   action?: string
   target_type?: string
@@ -124,6 +125,31 @@ export const computeAuditLogHash = (row: AuditLog, previousHash: string): string
   return createHash('sha256').update(content).digest('hex')
 }
 
+/** Hashes a row against its predecessor's hash (argument order used by the chain verifier). */
+export const hashAuditLogRow = (previousHash: string, row: AuditLog): string =>
+  computeAuditLogHash(row, previousHash)
+
+/** Normalizes an org id to the chain key: null selects the global (org-less) chain. */
+const getOrganizationChainKey = (organizationId?: string | null): string | null =>
+  organizationId || null
+
+/** Transaction-scoped variant of {@link lookupPreviousAuditLogHash}. */
+const getPreviousHash = async (
+  trx: typeof db,
+  organization_id?: string,
+): Promise<string> => {
+  const chainKey = getOrganizationChainKey(organization_id)
+
+  let query = trx('audit_logs')
+    .orderBy('created_at', 'desc')
+    .orderBy('id', 'desc')
+
+  query = chainKey === null ? query.whereNull('organization_id') : query.where('organization_id', chainKey)
+
+  const previous = await query.first()
+  return previous?.row_hash ?? AUDIT_LOG_GENESIS_HASH
+}
+
 export const lookupPreviousAuditLogHash = async (
   organization_id?: string,
 ): Promise<string> => {
@@ -141,6 +167,7 @@ export const lookupPreviousAuditLogHash = async (
 
 export const createAuditLog = async (
   entry: Omit<AuditLog, 'id' | 'created_at'> & { organization_id?: string },
+  outerTrx?: typeof db,
 ): Promise<AuditLog> => {
   if (auditLogWriterOverride) {
     return auditLogWriterOverride(entry)
@@ -167,7 +194,7 @@ export const createAuditLog = async (
     metadata: normalizedMetadata,
   }
 
-  return await db.transaction(async (trx) => {
+  const writeChained = async (trx: typeof db): Promise<AuditLog> => {
     const prevHash = await getPreviousHash(trx, auditLog.organization_id)
     const rowHash = hashAuditLogRow(prevHash, auditLog)
 
@@ -189,7 +216,14 @@ export const createAuditLog = async (
 
     const [insertedLog] = await trx('audit_logs').insert(insertPayload).returning('*')
     return insertedLog
-  })
+  }
+
+  // Reuse the caller's transaction when one is supplied so the audit row
+  // commits (or rolls back) atomically with the business write.
+  if (outerTrx) {
+    return writeChained(outerTrx)
+  }
+  return db.transaction(writeChained)
 }
 
 export const listAuditLogs = async (filters: AuditLogFilters = {}): Promise<AuditLog[]> => {
