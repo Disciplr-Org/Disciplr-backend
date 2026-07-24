@@ -1,6 +1,14 @@
 import { Milestone } from '../types/horizonSync.js';
-import { Vault } from '../types/vault.js';
-import { EnterpriseVault, EnterpriseMilestone } from '../types/enterprise.js';
+import { Vault, VaultStatus as InternalVaultStatus } from '../types/vault.js';
+import { EnterpriseVault, EnterpriseMilestone, VaultStatus as PublicVaultStatus } from '../types/enterprise.js';
+
+const STATUS_MAP: Record<InternalVaultStatus, PublicVaultStatus> = {
+  [InternalVaultStatus.PENDING]: 'pending',
+  [InternalVaultStatus.ACTIVE]: 'active',
+  [InternalVaultStatus.COMPLETED]: 'completed',
+  [InternalVaultStatus.FAILED]: 'failed',
+  [InternalVaultStatus.CANCELLED]: 'cancelled',
+};
 
 /**
  * Maps an internal Vault model to a public EnterpriseVault DTO.
@@ -11,7 +19,7 @@ export function toPublicVault(vault: Vault): EnterpriseVault {
     id: vault.id,
     creator: vault.creator_address,
     amount: vault.amount,
-    status: vault.status as unknown as EnterpriseVault['status'],
+    status: STATUS_MAP[vault.status],
     startTimestamp: vault.created_at.toISOString(),
     endTimestamp: vault.deadline.toISOString(),
     successDestination: vault.success_destination,
