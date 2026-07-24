@@ -46,10 +46,11 @@ export function isValidFieldPolicy(value: unknown): value is FieldPolicy {
 /**
  * Parses a FieldPolicy from JSONB, returning defaults for invalid/null input.
  */
-export function parseFieldPolicy(value: unknown): FieldPolicy {
+export function parseFieldPolicy(value: unknown, subscriberId?: string): FieldPolicy {
   if (isValidFieldPolicy(value)) {
     return value
   }
+  console.warn(`Invalid stored FieldPolicy for subscriber ${subscriberId || 'unknown'}: substituting default policy.`, { invalidValue: value })
   return { ...DEFAULT_FIELD_POLICY }
 }
 
