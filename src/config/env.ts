@@ -178,6 +178,14 @@ export const envSchema = z
     ENABLE_JOB_SCHEDULER: z.string().optional(),
     NOTIFICATION_PROVIDER: z.enum(["email", "console"]).default("console"),
 
+    // ── SMTP / Email provider ────────────────────────────────────
+    SMTP_HOST: z.string().optional(),
+    SMTP_PORT: positiveInt(587),
+    SMTP_USER: z.string().optional(),
+    SMTP_PASS: z.string().optional(),
+    SMTP_FROM: z.string().optional(),
+    SMTP_SECURE: z.string().optional(),
+
     // ── ETL ───────────────────────────────────────────────────────
     ETL_INTERVAL_MINUTES: positiveInt(5),
     ENABLE_ETL_WORKER: z.string().optional(),
