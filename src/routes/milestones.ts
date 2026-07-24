@@ -21,17 +21,17 @@ import {
   getVerifierProfile,
 } from '../services/verifiers.js'
 
-import { completeVault } from '../services/vaultTransitions.js'
-import { vaults } from './vaults.js'
+import { completeVault, transitionVaultStatus } from '../services/vaultTransitions.js'
 import { getVaultById } from '../services/vaultStore.js'
 import { AppError } from '../middleware/errorHandler.js'
+import db from '../db/index.js'
 
 export const milestonesRouter = Router({ mergeParams: true })
 
 // POST /api/vaults/:vaultId/milestones
-milestonesRouter.post('/', authenticate, requireUser, (req: Request, res: Response, next: NextFunction) => {
+milestonesRouter.post('/', authenticate, requireUser, async (req: Request, res: Response, next: NextFunction) => {
   const { vaultId } = req.params
-  const vault = vaults.find((v) => v.id === vaultId)
+  const vault = await getVaultById(vaultId)
 
   if (!vault) {
     return next(AppError.notFound('Vault not found'))
@@ -51,9 +51,9 @@ milestonesRouter.post('/', authenticate, requireUser, (req: Request, res: Respon
 })
 
 // GET /api/vaults/:vaultId/milestones
-milestonesRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
+milestonesRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   const { vaultId } = req.params
-  const vault = vaults.find((v) => v.id === vaultId)
+  const vault = await getVaultById(vaultId)
 
   if (!vault) {
     return next(AppError.notFound('Vault not found'))
@@ -64,10 +64,10 @@ milestonesRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
 })
 
 // PATCH /api/vaults/:vaultId/milestones/:id/verify
-milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, (req: Request, res: Response, next: NextFunction) => {
+milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, async (req: Request, res: Response, next: NextFunction) => {
   const { vaultId, id } = req.params
 
-  const vault = vaults.find((v) => v.id === vaultId)
+  const vault = await getVaultById(vaultId)
   if (!vault) {
     return next(AppError.notFound('Vault not found'))
   }
@@ -84,8 +84,11 @@ milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, (req: Reque
 
   let vaultCompleted = false
   if (allMilestonesVerified(vaultId) && vault.status === 'active') {
-    const result = completeVault(vaultId)
-    vaultCompleted = result.success
+    // Use DB-backed transition
+    const trxResult = await db.transaction(async (trx) => {
+      return await transitionVaultStatus(trx, vaultId, 'completed')
+    })
+    vaultCompleted = trxResult.success
   }
 
   res.json({ milestone: verified, vaultCompleted })
@@ -108,10 +111,8 @@ milestonesRouter.post('/:id/validate', authenticate, requireVerifier, async (req
     return next(AppError.validation('evidenceHash must be a valid hex string (32–128 characters)'))
   }
 
-  // Prefer DB-backed vault (has lateCheckInWindowSecs + PersistedMilestone.dueDate)
-  const persistedVault = await getVaultById(vaultId).catch(() => null)
-  const vault = persistedVault ?? vaults.find((v) => v.id === vaultId)
-
+  // Use DB-backed vault
+  const vault = await getVaultById(vaultId)
   if (!vault) {
     return next(AppError.notFound('Vault not found'))
   }
@@ -134,8 +135,11 @@ milestonesRouter.post('/:id/validate', authenticate, requireVerifier, async (req
 
   let vaultCompleted = false
   if (allMilestonesVerified(vaultId) && vault.status === 'active') {
-    const result = completeVault(vaultId)
-    vaultCompleted = result.success
+    // Use DB-backed transition
+    const trxResult = await db.transaction(async (trx) => {
+      return await transitionVaultStatus(trx, vaultId, 'completed')
+    })
+    vaultCompleted = trxResult.success
   }
 
   res.json({ milestone: result.milestone, vaultCompleted })
@@ -155,7 +159,7 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, async (req:
     }
 
     // Check vault exists
-    const vault = vaults.find((v) => v.id === vaultId)
+    const vault = await getVaultById(vaultId)
     if (!vault) {
       return next(AppError.notFound('Vault not found'))
     }
@@ -220,8 +224,11 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, async (req:
       }))
 
       if (allMilestonesMetThreshold(vaultId, approvalCounts, rejectionCounts, totalVerifierCounts) && vault.status === 'active') {
-        const result = completeVault(vaultId)
-        vaultCompleted = result.success
+        // Use DB-backed transition
+        const trxResult = await db.transaction(async (trx) => {
+          return await transitionVaultStatus(trx, vaultId, 'completed')
+        })
+        vaultCompleted = trxResult.success
       }
     }
 
@@ -250,7 +257,7 @@ milestonesRouter.get('/:id/approval-status', async (req: Request, res: Response,
     const { vaultId, id } = req.params
 
     // Check vault exists
-    const vault = vaults.find((v) => v.id === vaultId)
+    const vault = await getVaultById(vaultId)
     if (!vault) {
       return next(AppError.notFound('Vault not found'))
     }

@@ -1,5 +1,4 @@
-import { vaults, type Vault } from '../routes/vaults.js';
-import { allMilestonesVerified } from './milestones.js';
+import { allMilestonesVerified } from './milestones.js'
 import { type Knex } from 'knex';
 
 type TerminalStatus = 'completed' | 'failed' | 'cancelled';

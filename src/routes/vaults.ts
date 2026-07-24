@@ -28,23 +28,6 @@ import type { VaultCreateResponse } from '../types/vaults.js'
 
 export const vaultsRouter = Router()
 
-// In-memory fallback (for development / legacy support)
-export let vaults: any[] = []
-export const setVaults = (newVaults: any[]) => { vaults = newVaults }
-
-export interface Vault {
-  id: string
-  creator: string
-  amount: string
-  status: 'draft' | 'active' | 'completed' | 'failed' | 'cancelled'
-  startTimestamp: string
-  endTimestamp: string
-  successDestination: string
-  failureDestination: string
-  verifier?: string
-  createdAt: string
-}
-
 // GET /api/vaults
 vaultsRouter.get(
   '/',
@@ -182,16 +165,12 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
 // Returns 304 Not Modified if client holds current version
 vaultsRouter.get('/:id', authenticate, requireScopes(ApiScope.ReadVaults), async (req: Request, res: Response) => {
   try {
-    // Try DB-backed store first (falls back to in-memory automatically)
-    let vault = await getVaultById(req.params.id)
+    // Use DB-backed store
+    const vault = await getVaultById(req.params.id)
     
     if (!vault) {
-      // Legacy in-memory fallback
-      vault = vaults.find((v) => v.id === req.params.id)
-      if (!vault) {
-        res.status(404).json({ error: 'Vault not found' })
-        return
-      }
+      res.status(404).json({ error: 'Vault not found' })
+      return
     }
 
     // Compute ETag from vault revision (optimistic-concurrency version)
@@ -269,9 +248,7 @@ vaultsRouter.post('/:id/cancel', authenticate, async (req, res) => {
   const actorUserId = req.user!.userId
   const actorRole = req.user!.role
 
-  let existingVault = await VaultService.getVaultById(req.params.id)
-  if (!existingVault) existingVault = vaults.find((v) => v.id === req.params.id)
-
+  const existingVault = await VaultService.getVaultById(req.params.id)
   if (!existingVault) return res.status(404).json({ error: 'Vault not found' })
 
   if (actorUserId !== existingVault.creator && actorRole !== UserRole.ADMIN) {
@@ -281,9 +258,6 @@ vaultsRouter.post('/:id/cancel', authenticate, async (req, res) => {
   try {
     await VaultService.updateVaultStatus(req.params.id, 'cancelled' as any)
   } catch (_err) { /* non-fatal */ }
-
-  const arrayIndex = vaults.findIndex((v) => v.id === req.params.id)
-  if (arrayIndex !== -1) vaults[arrayIndex].status = 'cancelled'
 
   updateAnalyticsSummary()
   res.status(200).json({ message: 'Vault cancelled', id: req.params.id })
