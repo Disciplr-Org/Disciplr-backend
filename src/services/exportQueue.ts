@@ -178,7 +178,7 @@ export const ALLOWED_COLUMNS: Record<keyof ExportData, string[]> = {
   analytics: CSV_SCHEMAS.analytics.columns.map(c => c.key),
 }
 
-const hashExportRequest = (input: Pick<EnqueueExportJobInput, 'targetUserId' | 'scope' | 'format' | 'columns'>): string => {
+const hashExportRequest = (input: Pick<EnqueueExportJobInput, 'targetUserId' | 'scope' | 'format' | 'columns' | 'orgId' | 'isAdmin'>): string => {
   return crypto
     .createHash('sha256')
     .update(JSON.stringify({
@@ -186,6 +186,8 @@ const hashExportRequest = (input: Pick<EnqueueExportJobInput, 'targetUserId' | '
       scope: input.scope,
       format: input.format,
       columns: input.columns ?? null,
+      orgId: input.orgId ?? null,
+      isAdmin: input.isAdmin,
     }))
     .digest('hex')
 }
