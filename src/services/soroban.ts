@@ -464,19 +464,6 @@ export interface SorobanClient {
     config: SorobanConfig,
     args: Record<string, unknown>,
   ): Promise<{ txHash: string }>
-  getVault(
-    config: SorobanConfig,
-    vaultId: string,
-  ): Promise<OnChainVaultState | null>
-}
-
-export interface OnChainVaultState {
-  vault_id: string
-  amount: string
-  verifier: string
-  success_destination: string
-  failure_destination: string
-  status: 'active' | 'completed' | 'failed' | 'cancelled'
   submitStake(
     config: SorobanConfig,
     args: Record<string, unknown>,
@@ -497,6 +484,19 @@ export interface OnChainVaultState {
     config: SorobanConfig,
     args: Record<string, unknown>,
   ): Promise<{ txHash: string }>
+  getVault(
+    config: SorobanConfig,
+    vaultId: string,
+  ): Promise<OnChainVaultState | null>
+}
+
+export interface OnChainVaultState {
+  vault_id: string
+  amount: string
+  verifier: string
+  success_destination: string
+  failure_destination: string
+  status: 'active' | 'completed' | 'failed' | 'cancelled'
 }
 
 type StellarSdkLoader = () => Promise<any>
