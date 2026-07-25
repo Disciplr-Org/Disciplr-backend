@@ -1,136 +1,308 @@
-import { Request, Response, NextFunction } from 'express'
-import crypto from 'crypto'
-import jwt from 'jsonwebtoken'
-import { randomUUID } from 'node:crypto'
-import { recordSession, validateSession } from '../services/session.js'
-import { UserRole } from '../types/user.js'
+import { Request, Response, NextFunction } from "express";
+import crypto from "crypto";
+import jwt from "jsonwebtoken";
+import { randomUUID } from "node:crypto";
+import { recordSession, validateSession } from "../services/session.js";
+import { UserRole } from "../types/user.js";
+import { verifyAccessToken } from "../lib/auth-utils.js";
+import { config } from "../config/index.js";
 
-import { JWTPayload } from '../types/auth.js'
+import { JWTPayload } from "../types/auth.js";
 
-export type Role = 'user' | 'verifier' | 'admin'
+export type Role = "user" | "verifier" | "admin";
 
 // Use JWTPayload from types/auth.ts as source of truth, adding jti for sessions
-export type JwtPayload = JWTPayload & { jti?: string }
+export type JwtPayload = JWTPayload & { jti?: string };
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production'
+const JWT_SECRET = process.env.JWT_SECRET ?? "change-me-in-production";
 
-export async function authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
-     const authHeader = req.headers.authorization
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-          res.status(401).json({ error: 'Missing or malformed Authorization header' })
-          return
-     }
+export function csrfProtection(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  if (SAFE_METHODS.has(req.method)) {
+    next();
+    return;
+  }
 
-     const token = authHeader.slice(7)
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    next();
+    return;
+  }
 
-     try {
-          const payload = jwt.verify(token, JWT_SECRET) as JwtPayload
+  const origin = req.headers.origin as string | undefined;
+  const referer = req.headers.referer as string | undefined;
 
-          // Reject tokens with iat too far in the future (beyond clock tolerance)
-          const iat = (payload as any).iat as number | undefined
-          if (iat && iat > Math.floor(Date.now() / 1000) + 30) {
-               res.status(401).json({ error: 'Invalid token' })
-               return
-          }
+  if (!origin && !referer) {
+    next();
+    return;
+  }
 
-          if (payload.jti) {
-               const isValid = await validateSession(payload.jti)
+  const allowedOrigins = config.corsOrigins;
 
-               if (!isValid) {
-                    res.status(401).json({ error: 'Session revoked or expired' })
-                    return
-               }
-          }
+  if (origin) {
+    if (allowedOrigins === "*") {
+      next();
+      return;
+    }
+    if (Array.isArray(allowedOrigins) && allowedOrigins.includes(origin)) {
+      next();
+      return;
+    }
+  }
 
-          req.user = payload
-          next()
-     } catch (err) {
-          if (err instanceof jwt.TokenExpiredError) {
-               res.status(401).json({ error: 'Token expired' })
-          } else {
-               res.status(401).json({ error: 'Invalid token' })
-          }
-     }
+  if (!origin && referer) {
+    try {
+      const refererUrl = new URL(referer);
+      const refererOrigin = `${refererUrl.protocol}//${refererUrl.host}`;
+      if (allowedOrigins === "*") {
+        next();
+        return;
+      }
+      if (
+        Array.isArray(allowedOrigins) &&
+        allowedOrigins.includes(refererOrigin)
+      ) {
+        next();
+        return;
+      }
+    } catch {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+  }
+
+  res.status(403).json({ error: "Forbidden" });
 }
 
-export async function signToken(payload: Omit<JwtPayload, 'jti'>, expiresIn = '1h'): Promise<string> {
-     const jti = randomUUID()
-     const fullPayload = { ...payload, jti }
-     
-     // Calculate expiration date
-     // Default matches 1h (1 hour)
-     const durationMs = 60 * 60 * 1000 
-     const expiresAt = new Date(Date.now() + durationMs)
-     
-     await recordSession(payload.userId, jti, expiresAt)
-     
-     return jwt.sign(fullPayload, JWT_SECRET, { expiresIn } as jwt.SignOptions)
+export async function authenticate(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    res
+      .status(401)
+      .json({
+        error: "Unauthorized: Missing or malformed Authorization header",
+      });
+    return;
+  }
+
+  const token = authHeader.slice(7);
+
+  try {
+    // First try verifyAccessToken from lib/auth-utils.ts (which uses JWT_ACCESS_SECRET)
+    let payload: JwtPayload;
+    try {
+      payload = verifyAccessToken(token) as JwtPayload;
+    } catch {
+      // Fallback to legacy JWT_SECRET for backward compatibility
+      payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
+    }
+
+    // Reject tokens with iat too far in the future (beyond clock tolerance)
+    const iat = (payload as any).iat as number | undefined;
+    if (iat && iat > Math.floor(Date.now() / 1000) + 30) {
+      res.status(401).json({ error: "Unauthorized: Invalid token" });
+      return;
+    }
+
+    if (payload.jti) {
+      const isValid = await validateSession(payload.jti);
+
+      if (!isValid) {
+        res
+          .status(401)
+          .json({ error: "Unauthorized: Session revoked or expired" });
+        return;
+      }
+    }
+
+    req.user = payload;
+    next();
+  } catch (err) {
+    if (err instanceof jwt.TokenExpiredError) {
+      res.status(401).json({ error: "Unauthorized: Token expired" });
+    } else {
+      res.status(401).json({ error: "Unauthorized: Invalid token" });
+    }
+  }
+}
+
+export async function signToken(
+  payload: Omit<JwtPayload, "jti">,
+  expiresIn = "1h",
+): Promise<string> {
+  const jti = randomUUID();
+  const fullPayload = { ...payload, jti };
+
+  // Calculate expiration date
+  // Default matches 1h (1 hour)
+  const durationMs = 60 * 60 * 1000;
+  const expiresAt = new Date(Date.now() + durationMs);
+
+  await recordSession(payload.userId, jti, expiresAt);
+
+  return jwt.sign(fullPayload, JWT_SECRET, { expiresIn } as jwt.SignOptions);
 }
 
 export interface AuthenticatedRequest extends Request {
-    user?: JwtPayload
+  user?: JwtPayload;
+}
+
+export function getAuthenticatedUserId(req: Request): string | null {
+  const candidates = [
+    (req as any).user?.userId,
+    (req as any).user?.sub,
+    (req as any).authUser?.userId,
+    (req as any).authUser?.sub,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string") {
+      const trimmed = candidate.trim();
+      if (trimmed.length > 0) {
+        return trimmed;
+      }
+    }
+  }
+
+  return null;
 }
 
 export function requireAdmin(
-    req: AuthenticatedRequest,
-    res: Response,
-    next: NextFunction,
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
 ): void {
-    if (req.user?.role !== 'ADMIN') {
-        res.status(403).json({ error: 'Admin role required' })
-        return
-    }
-    next()
+  if (!req.user) {
+    res.status(401).json({ error: "Unauthorized: Authentication required" });
+    return;
+  }
+  // Block impersonation tokens from accessing admin endpoints
+  if (req.user.impersonator) {
+    res
+      .status(403)
+      .json({
+        error: "Forbidden: Impersonation tokens cannot access admin endpoints",
+      });
+    return;
+  }
+  if (req.user.role !== "ADMIN") {
+    res.status(403).json({ error: "Forbidden: Admin role required" });
+    return;
+  }
+  next();
 }
 
 export function authorize(allowedRoles: UserRole[]) {
-    return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
-        if (!req.user) {
-            res.status(401).json({ error: 'Unauthenticated' })
-            return
-        }
-
-        if (!allowedRoles.includes(req.user.role as UserRole)) {
-            res.status(403).json({
-                error: `Forbidden: requires role ${allowedRoles.join(' or ')}, got '${req.user.role}'`,
-            })
-            return
-        }
-
-        next()
+  return (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): void => {
+    if (!req.user) {
+      res.status(401).json({ error: "Unauthenticated" });
+      return;
     }
+
+    if (!allowedRoles.includes(req.user.role as UserRole)) {
+      res.status(403).json({
+        error: `Forbidden: requires role ${allowedRoles.join(" or ")}, got '${req.user.role}'`,
+      });
+      return;
+    }
+
+    next();
+  };
 }
 
 /** Generate a time-limited, HMAC-signed download token */
-const DOWNLOAD_SECRET = process.env.DOWNLOAD_SECRET ?? 'change-me-in-production'
+const DOWNLOAD_SECRET = process.env.DOWNLOAD_SECRET;
 
-export function signDownloadToken(jobId: string, userId: string, ttlSeconds = 3600): string {
-    const exp = Math.floor(Date.now() / 1000) + ttlSeconds
-    const payload = `${jobId}:${userId}:${exp}`
-    const sig = crypto.createHmac('sha256', DOWNLOAD_SECRET).update(payload).digest('hex')
-    return Buffer.from(JSON.stringify({ jobId, userId, exp, sig })).toString('base64url')
+if (!DOWNLOAD_SECRET) {
+  throw new Error(
+    "DOWNLOAD_SECRET environment variable is required. Set it to a strong, random secret to secure export download tokens."
+  );
+}
+
+const DOWNLOAD_SECRET_TYPED = DOWNLOAD_SECRET as string;
+
+export function signDownloadToken(
+  jobId: string,
+  userId: string,
+  ttlSeconds = 3600,
+): string {
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+  const payload = `${jobId}:${userId}:${exp}`;
+  const sig = crypto
+    .createHmac("sha256", DOWNLOAD_SECRET_TYPED)
+    .update(payload)
+    .digest("hex");
+  return Buffer.from(JSON.stringify({ jobId, userId, exp, sig })).toString(
+    "base64url",
+  );
 }
 
 export function verifyDownloadToken(
-    token: string,
+  token: string,
 ): { jobId: string; userId: string } | null {
-    try {
-        const { jobId, userId, exp, sig } = JSON.parse(
-            Buffer.from(token, 'base64url').toString(),
-        ) as { jobId: string; userId: string; exp: number; sig: string }
+  try {
+    const { jobId, userId, exp, sig } = JSON.parse(
+      Buffer.from(token, "base64url").toString(),
+    ) as { jobId: string; userId: string; exp: number; sig: string };
 
-        if (Date.now() / 1000 > exp) return null
+    if (Date.now() / 1000 > exp) return null;
 
-        const expected = crypto
-            .createHmac('sha256', DOWNLOAD_SECRET)
-            .update(`${jobId}:${userId}:${exp}`)
-            .digest('hex')
+    const expected = crypto
+      .createHmac("sha256", DOWNLOAD_SECRET_TYPED)
+      .update(`${jobId}:${userId}:${exp}`)
+      .digest("hex");
 
-        if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null
+    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)))
+      return null;
 
-        return { jobId, userId }
-    } catch {
-        return null
-    }
+    return { jobId, userId };
+  } catch {
+    return null;
+  }
 }
+/**
+ * @deprecated Use standard `authenticate` instead. Legacy mock auth for early dev. Tracking removal in #454
+ */
+export const requireUserAuth = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void => {
+  const headerUserId = req.header("x-user-id")?.trim();
+  let bearerUserId = null;
+  const authHeader = req.header("authorization");
+  if (authHeader) {
+    const match = /^Bearer\s+(.+)$/i.exec(authHeader);
+    if (match) {
+      const token = match[1].trim();
+      bearerUserId = token.startsWith("user:") ? token.slice(5) : token;
+    }
+  }
+  const userId = headerUserId || bearerUserId;
+
+  if (!userId) {
+    res.status(401).json({
+      error:
+        "Authentication required. Provide x-user-id header or Authorization: Bearer user:<user-id>.",
+    });
+    return;
+  }
+
+  // @ts-ignore - Preserving legacy property assignment
+  req.authUser = { userId };
+  next();
+};

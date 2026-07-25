@@ -1,6 +1,6 @@
 import { HorizonListener } from '../services/horizonListener.js'
 import { EventProcessor } from '../services/eventProcessor.js'
-import { HorizonListenerConfig } from '../config/horizonListener.js'
+import { HorizonListenerConfig, HorizonListenerConfigError, validateHorizonListenerConfig } from '../config/horizonListener.js'
 import { Knex } from 'knex'
 import { jest } from '@jest/globals'
 
@@ -113,6 +113,16 @@ describe('HorizonListener', () => {
       }
       const listener = new HorizonListener(multiConfig, mockEventProcessor, mockDb)
       expect(listener).toBeDefined()
+    })
+
+    it('should throw a typed error for invalid config', () => {
+      const invalidConfig = {
+        ...config,
+        horizonUrl: 'not-a-valid-url',
+        contractAddresses: [],
+      }
+
+      expect(() => validateHorizonListenerConfig(invalidConfig)).toThrow(HorizonListenerConfigError)
     })
   })
 })

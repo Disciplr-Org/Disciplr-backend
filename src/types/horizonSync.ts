@@ -8,6 +8,7 @@ export type EventType =
   | 'vault_cancelled'
   | 'milestone_created'
   | 'milestone_validated'
+  | 'settlement_summary'
 
 // Parsed Event Interface
 export interface ParsedEvent {
@@ -47,6 +48,14 @@ export interface ValidationEventPayload {
   validationResult: 'approved' | 'rejected' | 'pending_review'
   evidenceHash: string
   validatedAt: Date
+}
+
+/** Emitted by `claim` and `slash_on_miss` in the accountability_vault contract. */
+export interface SettlementSummaryEventPayload {
+  releasedAmount: string
+  slashedAmount: string
+  verifiedCount: number
+  finalStatus: 'completed' | 'slashed'
 }
 
 // Database Entity Interfaces
@@ -125,6 +134,23 @@ export interface HorizonListenerConfig {
 export interface ProcessorConfig {
   maxRetries: number
   retryBackoffMs: number
+  batchSize?: number
+}
+
+export interface BatchProcessingResult {
+  total: number
+  succeeded: number
+  failed: number
+  skipped: number
+  durationMs: number
+  results: ProcessingResult[]
+}
+
+export interface ProcessingResult {
+  success: boolean
+  eventId: string
+  error?: string
+  retryCount?: number
 }
 
 export interface RetryConfig {

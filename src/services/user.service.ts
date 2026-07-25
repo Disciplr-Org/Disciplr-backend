@@ -1,6 +1,6 @@
 import db from '../db/index.js'
 import { UserRole, UserStatus, User } from '../types/user.js'
-import { prisma } from '../lib/prisma.js'
+import { getPrisma } from '../lib/prismaScope.js'
 
 export interface UserFilters {
   role?: UserRole
@@ -30,7 +30,8 @@ export interface DeleteResult {
 
 export class UserService {
   async listUsers(filters: UserFilters = {}): Promise<PaginatedUsers> {
-    const { role, status, search, limit = 20, offset = 0, includeDeleted = false } = filters
+    const { role, status, search, offset = 0, includeDeleted = false } = filters
+    const limit = Math.min(100, filters.limit ?? 20)
 
     let query = db('users')
 
@@ -165,7 +166,7 @@ export class UserService {
         updatedAt: deletedAt
       })
 
-    await prisma.refreshToken.updateMany({
+    await getPrisma().refreshToken.updateMany({
       where: { userId: id },
       data: { revokedAt: deletedAt }
     })
@@ -184,11 +185,11 @@ export class UserService {
       return null
     }
 
-    await prisma.refreshToken.deleteMany({
+    await getPrisma().refreshToken.deleteMany({
       where: { userId: id }
     })
 
-    await prisma.vault.deleteMany({
+    await getPrisma().vault.deleteMany({
       where: { creatorId: id }
     })
 

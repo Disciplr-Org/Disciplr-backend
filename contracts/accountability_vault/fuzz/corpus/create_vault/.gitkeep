@@ -1,0 +1,3 @@
+# Seed corpus for the create_vault fuzz target.
+# Add raw binary seed files here to help the fuzzer start from known-interesting inputs.
+# Files are consumed by the `arbitrary` crate to populate FuzzInput structs.

@@ -1,0 +1,154 @@
+{
+    "name": "AccountabilityVault",
+    "functions": [
+        {
+            "name": "create_vault",
+            "params": [
+                "String",
+                "Address",
+                "VerifierSet",
+                "Option<Address>",
+                "Address",
+                "i128",
+                "Address",
+                "Address",
+                "u64",
+                "Vec<Milestone>",
+                "Address"
+            ],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "stake",
+            "params": [
+                "String",
+                "Address"
+            ],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "stake_from",
+            "params": [
+                "String",
+                "Address",
+                "Address"
+            ],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "check_in",
+            "params": [
+                "Address",
+                "u32",
+                "BytesN<32>"
+            ],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "extend_deadline",
+            "params": [
+                "String",
+                "Address",
+                "u64"
+            ],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "slash_on_miss",
+            "params": [],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "claim",
+            "params": [
+                "Address"
+            ],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "claim_milestone",
+            "params": [
+                "Address",
+                "u32"
+            ],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "cancel_vault",
+            "params": [
+                "String",
+                "Address"
+            ],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "withdraw",
+            "params": [
+                "String",
+                "Address"
+            ],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "admin_dispute",
+            "params": [
+                "String",
+                "Address"
+            ],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "admin_resolve",
+            "params": [
+                "String",
+                "Address",
+                "VaultStatus"
+            ],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "emergency_pause",
+            "params": [
+                "Address"
+            ],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "emergency_unpause",
+            "params": [
+                "Address"
+            ],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "get_vault",
+            "params": [
+                "String"
+            ],
+            "result": "Result<Vault, Error>"
+        },
+        {
+            "name": "reclaim_after_settlement",
+            "params": [
+                "Address"
+            ],
+            "result": "Result<(), Error>"
+        },
+        {
+            "name": "configure_window",
+            "params": [
+                "u64"
+            ],
+            "result": "()"
+        },
+        {
+            "name": "dispute_milestone",
+            "params": [
+                "String",
+                "Address",
+                "u32"
+            ],
+            "result": "Result<(), Error>"
+        }
+    ]
+}

@@ -1,6 +1,8 @@
 import { Horizon } from '@stellar/stellar-sdk'
 import type { Transaction, HorizonOperation, ETLConfig, VaultReference } from '../types/transactions.js'
 import db from '../db/index.js'
+import { getSorobanConfig, getSorobanClient, type OnChainVaultState } from './soroban.js'
+import { logVaultDriftAnomaly } from '../security/abuse-monitor.js'
 
 export class TransactionETLService {
   private server: Horizon.Server
@@ -15,10 +17,14 @@ export class TransactionETLService {
   /**
    * Run the full ETL process - backfill and incremental sync.
    * Pass an AbortSignal to allow the caller to cancel a long-running run.
+   * The optional batchId identifies the scheduler tick that triggered the
+   * run so retries of the same tick can be correlated in logs.
    */
-  async runETL(signal?: AbortSignal): Promise<void> {
+  async runETL(signal?: AbortSignal, batchId?: string): Promise<void> {
     TransactionETLService.checkAbort(signal)
-    console.log('Starting Transaction ETL process...')
+    console.log(
+      `Starting Transaction ETL process...${batchId ? ` (batch ${batchId})` : ''}`,
+    )
 
     try {
       // Run backfill if configured
@@ -439,5 +445,242 @@ export class TransactionETLService {
     } catch (error) {
       console.error(`Error processing account ${account}:`, error)
     }
+  }
+
+  /**
+   * Reconcile persisted vault state with on-chain state to detect drift.
+   * This is a batched, bounded operation that compares vault status and key fields.
+   * Drift is reported via structured logs, not auto-corrected.
+   */
+  async reconcileVaults(options?: {
+    batchSize?: number
+    vaultIds?: string[]
+    signal?: AbortSignal
+  }): Promise<{
+    totalVaults: number
+    checked: number
+    driftDetected: number
+    missingOnChain: number
+    errors: number
+    driftedVaults: any[]
+  }> {
+    const config = getSorobanConfig()
+    if (!config) {
+      console.log('Soroban not configured, skipping vault reconciliation')
+      return {
+        totalVaults: 0,
+        checked: 0,
+        driftDetected: 0,
+        missingOnChain: 0,
+        errors: 0,
+      }
+    }
+
+    const batchSize = options?.batchSize || 50
+    const signal = options?.signal
+    const soroban = getSorobanClient()
+
+    console.log('Starting vault state reconciliation...')
+
+    const result = {
+      totalVaults: 0,
+      checked: 0,
+      driftDetected: 0,
+      missingOnChain: 0,
+      errors: 0,
+      driftedVaults: [] as any[],
+    }
+
+    try {
+      // Get vaults to reconcile
+      let vaultsQuery = db('vaults')
+        .select('id', 'status', 'amount', 'verifier', 'success_destination', 'failure_destination')
+
+      if (options?.vaultIds && options.vaultIds.length > 0) {
+        vaultsQuery = vaultsQuery.whereIn('id', options.vaultIds)
+      }
+
+      const vaults = await vaultsQuery
+      result.totalVaults = vaults.length
+
+      console.log(`Found ${vaults.length} vaults to reconcile`)
+
+      // Process in batches to avoid hammering RPC
+      for (let i = 0; i < vaults.length; i += batchSize) {
+        TransactionETLService.checkAbort(signal)
+
+        const batch = vaults.slice(i, i + batchSize)
+        console.log(`Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(vaults.length / batchSize)}`)
+
+        for (const vault of batch) {
+          TransactionETLService.checkAbort(signal)
+
+          try {
+            const onChainState = await soroban.getVault(config, vault.id)
+
+            if (!onChainState) {
+              // Vault exists in DB but not on-chain
+              result.missingOnChain += 1
+              logVaultDriftAnomaly('vault_missing_onchain', {
+                vaultId: vault.id,
+                persistedStatus: vault.status,
+              })
+              continue
+            }
+
+            // Compare key fields
+            const driftFields = this.compareVaultStates(vault, onChainState)
+
+            if (driftFields.length > 0) {
+              result.driftDetected += 1
+              const driftInfo = {
+                vaultId: vault.id,
+                driftedFields: driftFields,
+                persisted: {
+                  status: vault.status,
+                  amount: vault.amount,
+                  verifier: vault.verifier,
+                },
+                onChain: {
+                  status: onChainState.status,
+                  amount: onChainState.amount,
+                  verifier: onChainState.verifier,
+                },
+              }
+              result.driftedVaults.push(driftInfo)
+              logVaultDriftAnomaly('vault_state_drift', driftInfo)
+            }
+
+            result.checked += 1
+          } catch (error) {
+            result.errors += 1
+            console.error(`Error reconciling vault ${vault.id}:`, error)
+            logVaultDriftAnomaly('vault_reconciliation_error', {
+              vaultId: vault.id,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            })
+          }
+        }
+
+        // Small delay between batches to avoid rate limiting
+        if (i + batchSize < vaults.length) {
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
+      }
+
+      console.log(`Vault reconciliation completed: ${result.checked}/${result.totalVaults} checked, ${result.driftDetected} drift detected, ${result.missingOnChain} missing on-chain, ${result.errors} errors`)
+
+      return result
+    } catch (error) {
+      if (TransactionETLService.isAbortError(error)) {
+        console.log('Vault reconciliation aborted')
+        throw error
+      }
+      console.error('Vault reconciliation failed:', error)
+      throw error
+    }
+  }
+
+  /**
+   * Auto-repairs a drifted vault based on its on-chain state.
+   */
+  async autoRepairVault(vaultId: string, adminUserId: string): Promise<{ success: boolean; message: string; repairedFields?: string[] }> {
+    const config = getSorobanConfig()
+    if (!config) {
+      return { success: false, message: 'Soroban not configured' }
+    }
+
+    const vault = await db('vaults')
+      .where('id', vaultId)
+      .select('id', 'status', 'amount', 'verifier', 'success_destination', 'failure_destination')
+      .first()
+
+    if (!vault) {
+      return { success: false, message: 'Vault not found' }
+    }
+
+    if (vault.status === 'disputed') {
+      return { success: false, message: 'Cannot auto-repair a manual admin dispute/hold state' }
+    }
+
+    const onChainState = await getSorobanClient().getVault(config, vaultId)
+    if (!onChainState) {
+      return { success: false, message: 'Vault missing on-chain' }
+    }
+
+    const driftFields = this.compareVaultStates(vault, onChainState)
+    if (driftFields.length === 0) {
+      return { success: true, message: 'No drift detected' }
+    }
+
+    const updates: any = {}
+    if (driftFields.includes('status')) updates.status = onChainState.status
+    if (driftFields.includes('amount')) updates.amount = onChainState.amount
+    if (driftFields.includes('verifier')) updates.verifier = onChainState.verifier
+
+    await db('vaults').where('id', vaultId).update(updates)
+
+    const { createAuditLog } = await import('../lib/audit-logs.js')
+    await createAuditLog({
+      actor_user_id: adminUserId,
+      action: 'admin.vault.auto_repair',
+      target_type: 'vault',
+      target_id: vaultId,
+      metadata: {
+        drifted_fields: driftFields,
+        previous_state: {
+          status: vault.status,
+          amount: vault.amount,
+          verifier: vault.verifier,
+        },
+        new_state: updates
+      }
+    })
+
+    return { success: true, message: 'Vault auto-repaired successfully', repairedFields: driftFields }
+  }
+
+  /**
+   * Compare persisted vault state with on-chain state and return drifted fields
+   */
+  private compareVaultStates(
+    persisted: {
+      id: string
+      status: string
+      amount: string
+      verifier: string
+      success_destination: string
+      failure_destination: string
+    },
+    onChain: OnChainVaultState
+  ): string[] {
+    const drifted: string[] = []
+
+    // Normalize status values for comparison
+    const normalizeStatus = (status: string) => status.toLowerCase().replace(/[^a-z]/g, '')
+    if (normalizeStatus(persisted.status) !== normalizeStatus(onChain.status)) {
+      drifted.push('status')
+    }
+
+    // Compare amounts (handle potential string/number differences)
+    if (persisted.amount !== onChain.amount) {
+      drifted.push('amount')
+    }
+
+    // Compare verifier addresses
+    if (persisted.verifier !== onChain.verifier) {
+      drifted.push('verifier')
+    }
+
+    // Compare destination addresses
+    if (persisted.success_destination !== onChain.success_destination) {
+      drifted.push('success_destination')
+    }
+
+    if (persisted.failure_destination !== onChain.failure_destination) {
+      drifted.push('failure_destination')
+    }
+
+    return drifted
   }
 }

@@ -20,6 +20,7 @@ const baseMetrics: QueueMetrics = {
   queueDepth: 0,
   delayedJobs: 0,
   activeJobs: 0,
+  deadLetterJobs: 0,
   totals: { enqueued: 0, executions: 0, completed: 0, failed: 0, retried: 0 },
   byType: {
     'notification.send': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0 },

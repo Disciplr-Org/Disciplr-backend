@@ -11,6 +11,13 @@ This document describes the implementation of strict content-type enforcement fo
 - **Charset Validation**: Only UTF-8 charset is supported for JSON payloads
 - **Bypass Prevention**: Middleware prevents bypass attempts using alternate content types
 
+### Request Body Limits
+- **Per-route caps**: Smaller JSON limits are enforced for sensitive routes before the global parser runs
+- **Auth routes**: `/api/auth/*` requests are capped at `8 KB`
+- **Jobs enqueue**: `POST /api/jobs/enqueue` is capped at `32 KB`
+- **Early rejection**: `Content-Length` headers above the configured route cap are rejected with `413 Payload Too Large`
+- **Streaming fallback**: Route-scoped `express.json({ limit })` middleware still enforces the cap when `Content-Length` is omitted and the client uses chunked transfer
+
 ### Error Handling
 - **Consistent Error Envelope**: All content-type errors return standardized error responses
 - **HTTP Status Codes**: 
@@ -24,15 +31,30 @@ This document describes the implementation of strict content-type enforcement fo
 
 ### Core Functions
 
-#### `requireJson(req, res, next)`
-Main middleware function that:
+#### `requireJson(options?)`
+Main middleware factory that:
 - Allows GET, HEAD, OPTIONS requests to pass through (no body expected)
 - Validates `Content-Type` header for requests with bodies
+- Optionally rejects oversized request bodies using `maxBytes`
 - Returns `415` status for unsupported media types
 - Validates charset parameter (UTF-8 only)
 
 #### `requireJsonForMethods(methods)`
 Factory function that creates middleware for specific HTTP methods only.
+
+### Shared Limits
+`src/middleware/requestBodyLimits.ts`
+
+- `AUTH_JSON_MAX_BYTES = 8 * 1024`
+- `JOBS_JSON_MAX_BYTES = 32 * 1024`
+
+### Parser Ordering
+Route-specific JSON parsers are registered before the global `express.json()` middleware in `src/app.ts`:
+
+- `app.use('/api/auth', express.json({ limit: AUTH_JSON_MAX_BYTES }))`
+- `app.use('/api/jobs/enqueue', express.json({ limit: JOBS_JSON_MAX_BYTES }))`
+
+This ensures the smaller caps are enforced even when clients omit `Content-Length`.
 
 ### Applied Endpoints
 
@@ -43,6 +65,7 @@ Factory function that creates middleware for specific HTTP methods only.
 - `POST /auth/logout` - User logout
 - `POST /auth/logout-all` - Logout from all devices
 - `POST /auth/users/:id/role` - Role management
+- **Body limit**: `8 KB`
 
 #### Vault Routes (`/api/vaults/*`)
 - `POST /api/vaults` - Create new vault
@@ -50,6 +73,7 @@ Factory function that creates middleware for specific HTTP methods only.
 
 #### Jobs Routes (`/api/jobs/*`)
 - `POST /api/jobs/enqueue` - Enqueue background job
+- **Body limit**: `32 KB` on `POST /api/jobs/enqueue`
 
 ### Unaffected Routes
 All GET, HEAD, and OPTIONS endpoints continue to work without content-type restrictions.
@@ -143,17 +167,17 @@ curl -X POST http://localhost:3000/api/auth/logout \
 ## Testing
 
 ### Test Coverage
-The implementation includes comprehensive test coverage in `src/tests/contentType.test.ts`:
+The implementation includes focused coverage in `src/tests/bodyLimit.test.ts` for JSON parser limits and per-route caps:
 
-- **Middleware Unit Tests**: All HTTP methods and content-type scenarios
-- **Integration Tests**: Real endpoint testing with auth, vaults, and jobs
-- **Edge Cases**: Empty bodies, charset validation, malformed headers
-- **Security Tests**: Bypass attempts and alternate content types
+- **Global parser coverage**: Confirms the shared `500 KB` parser limit still returns `413`
+- **Auth limit coverage**: Confirms `8 KB` auth bodies are accepted or rejected correctly
+- **Jobs limit coverage**: Confirms `32 KB` job-enqueue bodies are accepted or rejected correctly
+- **Error envelope coverage**: Confirms `PAYLOAD_TOO_LARGE` responses use the standardized error shape
 
 ### Running Tests
 ```bash
-# Run content-type specific tests
-npm test -- src/tests/contentType.test.ts
+# Run body-limit specific tests
+npm test -- src/tests/bodyLimit.test.ts
 
 # Run all tests
 npm test
@@ -171,6 +195,8 @@ npm test
 | POST | application/x-www-form-urlencoded | any | 415 |
 | POST | application/json | malformed | 400 |
 | POST | application/json; charset=iso-8859-1 | any | 415 |
+| POST `/api/auth/*` | application/json | body > 8 KB | 413 |
+| POST `/api/jobs/enqueue` | application/json | body > 32 KB | 413 |
 
 ## Security Considerations
 
@@ -186,6 +212,7 @@ Middleware intelligently detects request bodies:
 - **Content-Length Header**: Checks for positive content length
 - **Empty Bodies**: Allows requests without bodies (Content-Length: 0)
 - **Method-Based Logic**: GET/HEAD/OPTIONS bypass content-type checks
+- **Route Caps**: Compares declared `Content-Length` to the configured `maxBytes` cap before route handlers run
 
 ## Migration Guide
 
@@ -196,8 +223,9 @@ Middleware intelligently detects request bodies:
 
 ### For Developers
 1. **New Endpoints**: Apply `requireJson` middleware to new endpoints with request bodies
-2. **Testing**: Include content-type validation tests for new endpoints
-3. **Documentation**: Update API documentation to reflect content-type requirements
+2. **Right-size limits**: Add a route-specific `express.json({ limit })` parser and matching `requireJson({ maxBytes })` guard for endpoints that need tighter caps than the global parser
+3. **Testing**: Include body-limit and content-type validation tests for new endpoints
+4. **Documentation**: Update API documentation to reflect content-type requirements and body-size limits
 
 ## Performance Impact
 

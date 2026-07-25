@@ -240,6 +240,6 @@ describe('CheckpointStore.deleteCheckpoint', () => {
   it('does not throw when deleting a non-existent contract', async () => {
     const db = makeMockDb({ delete: jest.fn<any>().mockResolvedValue(0) })
     const store = new CheckpointStore(db)
-    await expect(store.deleteCheckpoint('UNKNOWN')).resolves.not.toThrow()
+    await expect(store.deleteCheckpoint('UNKNOWN')).resolves.toBeDefined()
   })
 })
