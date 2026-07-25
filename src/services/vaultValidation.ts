@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { utcTimestampSchema } from '../lib/validation.js'
-import { StrKey } from '@stellar/stellar-sdk'
+import { Horizon, StrKey } from '@stellar/stellar-sdk'
 export { flattenZodErrors } from '../lib/validation.js'
 
 const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/
@@ -18,8 +18,6 @@ export const VAULT_MILESTONES_MIN = 1
 
 /** Maximum number of milestones in a vault. This caps request size and enforces operational limits. */
 export const VAULT_MILESTONES_MAX = 20
-
-
 
 export function getClassicAddress(address: string): string {
   try {
@@ -56,7 +54,6 @@ export async function isMemoRequired(address: string, horizonUrl?: string): Prom
   const classic = getClassicAddress(address)
   if (!StrKey.isValidEd25519PublicKey(classic)) return false
   try {
-    const { Horizon } = await import('@stellar/stellar-sdk')
     const server = new Horizon.Server(horizonUrl ?? process.env.HORIZON_URL ?? 'https://horizon.stellar.org')
     const account = await server.loadAccount(classic)
     return account.data_attr?.['config.memo_required'] === 'MQ=='  // base64("1")
