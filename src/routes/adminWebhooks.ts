@@ -29,7 +29,8 @@ adminWebhooksRouter.use(requireAdmin)
 
 adminWebhooksRouter.get('/dead-letters', async (req: Request, res: Response) => {
   try {
-    const limit = req.query.limit ? Number(req.query.limit) : 50
+    const rawLimit = req.query.limit ? parseInt(String(req.query.limit), 10) : 50
+    const limit = Math.min(100, Number.isNaN(rawLimit) || rawLimit < 1 ? 50 : rawLimit)
     const offset = req.query.offset ? Number(req.query.offset) : 0
 
     const query = db('webhook_dead_letters').orderBy('failed_at', 'desc')
