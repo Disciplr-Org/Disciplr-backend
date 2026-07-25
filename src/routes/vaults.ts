@@ -281,7 +281,7 @@ vaultsRouter.post('/:id/cancel', authenticate, async (req, res) => {
   }
 
   try {
-    await VaultService.updateVaultStatus(req.params.id, 'cancelled' as any)
+    await VaultService.updateVaultStatus(req.params.id, 'cancelled')
   } catch (_err) { /* non-fatal */ }
 
   const arrayIndex = vaults.findIndex((v) => v.id === req.params.id)

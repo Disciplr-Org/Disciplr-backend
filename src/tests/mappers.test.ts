@@ -90,8 +90,8 @@ describe('toPublicVault', () => {
     expect(dto.amount).toBe('99999999.99')
   })
 
-  it('maps PENDING status correctly', () => {
-    const dto = toPublicVault(makeVault({ status: VaultStatus.PENDING }))
+  it('maps DRAFT status correctly', () => {
+    const dto = toPublicVault(makeVault({ status: VaultStatus.DRAFT }))
     expect(dto.status).toBe('pending')
   })
 
