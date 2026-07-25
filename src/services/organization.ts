@@ -19,7 +19,3 @@ export const getOrganizationById = async (id: string): Promise<Organization | nu
 export const getOrganizationBySlug = async (slug: string): Promise<Organization | null> => {
   return db('organizations').where({ slug }).first()
 }
-
-export const listOrganizations = async (): Promise<Organization[]> => {
-  return db('organizations').select('*')
-}
