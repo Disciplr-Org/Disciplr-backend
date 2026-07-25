@@ -1,4 +1,3 @@
-import { describe, it, expect, mock } from "bun:test";
 
 // 1. Force Bun to intercept the Knex DB Knex instance table calls
 mock.module("../db/index.js", () => {

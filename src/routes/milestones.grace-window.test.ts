@@ -9,9 +9,7 @@
  *  - no dueDate set       → 200 OK (no deadline enforced)
  *  - zero grace window    → 400 immediately after dueDate
  */
-import assert from 'node:assert/strict'
 import type { AddressInfo } from 'node:net'
-import { afterEach, beforeEach, describe, test } from 'node:test'
 import express from 'express'
 import jwt from 'jsonwebtoken'
 import { milestonesRouter } from './milestones.js'
@@ -100,7 +98,7 @@ describe('check-in grace window boundary tests', () => {
     const ms = createMilestone(vaultId, 'task', 'verifier-1', dueDate)
 
     const res = await validate(vaultId, ms.id)
-    assert.equal(res.status, 200)
+    expect(res.status).toBe(200)
   })
 
   test('within grace window: accepts check-in (200)', async () => {
@@ -111,7 +109,7 @@ describe('check-in grace window boundary tests', () => {
     const ms = createMilestone(vaultId, 'task', 'verifier-1', dueDate)
 
     const res = await validate(vaultId, ms.id)
-    assert.equal(res.status, 200)
+    expect(res.status).toBe(200)
   })
 
   test('after grace window: rejects with DeadlinePassed (400)', async () => {
@@ -122,7 +120,7 @@ describe('check-in grace window boundary tests', () => {
     const ms = createMilestone(vaultId, 'task', 'verifier-1', dueDate)
 
     const res = await validate(vaultId, ms.id)
-    assert.equal(res.status, 400)
+    expect(res.status).toBe(400)
     const body = (await res.json()) as { error: { message: string } }
     assert.match(body.error.message, /DeadlinePassed/i)
   })
@@ -134,7 +132,7 @@ describe('check-in grace window boundary tests', () => {
     const ms = createMilestone(vaultId, 'task', 'verifier-1', dueDate)
 
     const res = await validate(vaultId, ms.id)
-    assert.equal(res.status, 400)
+    expect(res.status).toBe(400)
     const body = (await res.json()) as { error: { message: string } }
     assert.match(body.error.message, /DeadlinePassed/i)
   })
@@ -148,7 +146,7 @@ describe('check-in grace window boundary tests', () => {
     const ms = createMilestone(vaultId, 'task', 'verifier-1', dueDate)
 
     const res = await validate(vaultId, ms.id)
-    assert.equal(res.status, 400)
+    expect(res.status).toBe(400)
     const body = (await res.json()) as { error: { message: string } }
     assert.match(body.error.message, /DeadlinePassed/i)
   })
@@ -162,7 +160,7 @@ describe('check-in grace window boundary tests', () => {
     const ms = createMilestone(vaultId, 'task', 'verifier-1', dueDate)
 
     const res = await validate(vaultId, ms.id)
-    assert.equal(res.status, 200)
+    expect(res.status).toBe(200)
   })
 
   test('no dueDate set: accepts check-in regardless of time (200)', async () => {
@@ -171,6 +169,6 @@ describe('check-in grace window boundary tests', () => {
     const ms = createMilestone(vaultId, 'task', 'verifier-1', null) // no dueDate
 
     const res = await validate(vaultId, ms.id)
-    assert.equal(res.status, 200)
+    expect(res.status).toBe(200)
   })
 })
