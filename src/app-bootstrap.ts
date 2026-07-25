@@ -27,7 +27,7 @@ import { authenticate } from './middleware/auth.js'
 import { requireOrgAccess } from './middleware/orgAuth.js'
 import { notificationsRouter } from './routes/notifications.js'
 import { notificationPreferencesRouter } from './routes/notificationPreferences.js'
-import { webhooksRouter } from './routes/webhooks.js'
+import { webhookRouter } from './routes/webhooks.js'
 import { graphqlRouter } from './routes/graphql.js'
 import { createNotificationService, NotificationService } from './services/notifications/factory.js'
 import { withRequestPrisma } from './middleware/withRequestPrisma.js'
@@ -86,7 +86,7 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
   app.use('/api/oauth', oauthRouter)
   app.use('/api/notifications', notificationsRouter)
   app.use('/api/users/me/notification-preferences', notificationPreferencesRouter)
-  app.use('/api/webhooks', webhooksRouter)
+  app.use('/api/webhooks', webhookRouter)
 
   // Catch-all 404 and uniform error shape – must be registered after all routes.
   app.use(notFound);
