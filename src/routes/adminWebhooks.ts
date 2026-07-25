@@ -235,8 +235,8 @@ adminWebhooksRouter.post(
  *
  * Returns the current delivery-pause state.
  */
-adminWebhooksRouter.get('/pause/status', (_req: Request, res: Response) => {
-  res.status(200).json({ paused: isPaused() })
+adminWebhooksRouter.get('/pause/status', async (_req: Request, res: Response) => {
+  res.status(200).json({ paused: await isPaused() })
 })
 
 /**
@@ -246,8 +246,8 @@ adminWebhooksRouter.get('/pause/status', (_req: Request, res: Response) => {
  * outbox and will be dispatched once the system is resumed.  Idempotent —
  * calling while already paused is a no-op.
  */
-adminWebhooksRouter.post('/pause', (req: Request, res: Response) => {
-  pauseDelivery()
+adminWebhooksRouter.post('/pause', async (req: Request, res: Response) => {
+  await pauseDelivery()
 
   createAuditLog({
     actor_user_id: req.user!.userId,
@@ -267,8 +267,8 @@ adminWebhooksRouter.post('/pause', (req: Request, res: Response) => {
  * backlog on its next tick, respecting existing backoff/breaker state.
  * Idempotent — calling while already resumed is a no-op.
  */
-adminWebhooksRouter.post('/resume', (req: Request, res: Response) => {
-  resumeDelivery()
+adminWebhooksRouter.post('/resume', async (req: Request, res: Response) => {
+  await resumeDelivery()
 
   createAuditLog({
     actor_user_id: req.user!.userId,
