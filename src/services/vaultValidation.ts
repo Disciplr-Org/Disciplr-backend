@@ -19,11 +19,7 @@ export const VAULT_MILESTONES_MIN = 1
 /** Maximum number of milestones in a vault. This caps request size and enforces operational limits. */
 export const VAULT_MILESTONES_MAX = 20
 
-// Mock exchange addresses requiring a memo.
-// GDHWBXJFCTBJ6ZQPK2E64JAOMHQOEOMWQ43Q5C3J6TEA6SNOFELWBVCY (Valid Classic 1) is the primary mock exchange for testing.
-export const MEMO_REQUIRED_EXCHANGES = new Set([
-  'GDHWBXJFCTBJ6ZQPK2E64JAOMHQOEOMWQ43Q5C3J6TEA6SNOFELWBVCY',
-])
+
 
 export function getClassicAddress(address: string): string {
   try {
@@ -52,6 +48,20 @@ export function isUnsafeAddress(address: string): boolean {
     return allZeros || allOnes
   } catch {
     return true
+  }
+}
+
+// Checks SEP-29: returns true if the account has set config.memo_required=1
+export async function isMemoRequired(address: string, horizonUrl?: string): Promise<boolean> {
+  const classic = getClassicAddress(address)
+  if (!StrKey.isValidEd25519PublicKey(classic)) return false
+  try {
+    const { Horizon } = await import('@stellar/stellar-sdk')
+    const server = new Horizon.Server(horizonUrl ?? process.env.HORIZON_URL ?? 'https://horizon.stellar.org')
+    const account = await server.loadAccount(classic)
+    return account.data_attr?.['config.memo_required'] === 'MQ=='  // base64("1")
+  } catch {
+    return false
   }
 }
 
@@ -206,28 +216,6 @@ export const createVaultSchema = z
         message: 'Destination address cannot be a zero, burn, or unsafe address',
         path: ['destinations', 'failure'],
       })
-    }
-
-    // Reject exchange destinations lacking a memo
-    const successClassic = getClassicAddress(data.destinations.success)
-    if (MEMO_REQUIRED_EXCHANGES.has(successClassic)) {
-      if (!StrKey.isValidMed25519PublicKey(data.destinations.success)) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Destination is a known exchange that requires a memo. Use a muxed address.',
-          path: ['destinations', 'success'],
-        })
-      }
-    }
-    const failureClassic = getClassicAddress(data.destinations.failure)
-    if (MEMO_REQUIRED_EXCHANGES.has(failureClassic)) {
-      if (!StrKey.isValidMed25519PublicKey(data.destinations.failure)) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Destination is a known exchange that requires a memo. Use a muxed address.',
-          path: ['destinations', 'failure'],
-        })
-      }
     }
 
     // Validate embedded muxed address memo ID range
