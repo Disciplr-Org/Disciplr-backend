@@ -246,6 +246,11 @@ export const envSchema = z
     HTTP_HEADERS_TIMEOUT_MS: positiveInt(61_000),
     HTTP_REQUEST_TIMEOUT_MS: positiveInt(120_000),
 
+    // ── Graceful shutdown ──────────────────────────────────
+    // Maximum time (ms) to wait for in-flight HTTP requests to
+    // complete before force-destroying sockets during shutdown.
+    SHUTDOWN_DRAIN_MS: positiveInt(30_000),
+
     // ── OpenTelemetry / Tracing ───────────────────────────────────
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional(),
     OTEL_SERVICE_NAME: z.string().optional(),
