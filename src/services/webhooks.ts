@@ -47,6 +47,13 @@ export interface WebhookSubscriber {
   fieldPolicy: FieldPolicy
 }
 
+export interface EgressAllowlistEntry {
+  id: string
+  organizationId: string
+  host: string
+  createdAt: string
+}
+
 export const DEFAULT_MAX_REPLAY_EVENTS = 500
 export const LATEST_SCHEMA_VERSION = 2
 export const DEFAULT_SCHEMA_VERSION = 1
