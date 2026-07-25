@@ -1,4 +1,4 @@
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHmac, timingSafeEqual } from 'node:crypto'
 import { isIP } from 'node:net'
 import { WebhookSubscriberRepository } from '../repositories/webhookSubscriberRepository.js'
 import { retryWithBackoff } from '../utils/retry.js'
@@ -438,62 +438,6 @@ export const verifySignature = (secret: string, body: string, signature: string)
     return false
   }
   return timingSafeEqual(Buffer.from(expected, 'utf8'), Buffer.from(signature, 'utf8'))
-}
-
-export const addSubscriber = (
-  url: string,
-  secret: string,
-  events: string[],
-  orgId?: string,
-  active = true,
-): WebhookSubscriber => {
-  if (!isUrlAllowed(url)) {
-    throw new Error(`Webhook URL not permitted: ${url}`)
-  }
-
-  const subscriber: WebhookSubscriber = {
-    id: randomUUID(),
-    url,
-    secret,
-    events: [...events],
-    active,
-    orgId,
-    createdAt: new Date().toISOString(),
-  }
-
-  subscribers.set(subscriber.id, subscriber)
-  return subscriber
-}
-
-export const removeSubscriber = (id: string, orgId?: string): boolean => {
-  const subscriber = subscribers.get(id)
-  if (!subscriber) {
-    return false
-  }
-
-  if (orgId && subscriber.orgId !== orgId) {
-    return false
-  }
-
-  return subscribers.delete(id)
-}
-
-export const listSubscribers = (orgId?: string): WebhookSubscriber[] =>
-  Array.from(subscribers.values()).filter((s) => s.active && (!orgId || s.orgId === orgId))
-
-export const updateSubscriberSecret = (id: string, secret: string, orgId?: string): WebhookSubscriber | null => {
-  const subscriber = subscribers.get(id)
-  if (!subscriber) {
-    return null
-  }
-
-  if (orgId && subscriber.orgId !== orgId) {
-    return null
-  }
-
-  const updated = { ...subscriber, secret }
-  subscribers.set(id, updated)
-  return updated
 }
 
 /**
