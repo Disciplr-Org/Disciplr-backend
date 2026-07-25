@@ -30,7 +30,8 @@ export interface DeleteResult {
 
 export class UserService {
   async listUsers(filters: UserFilters = {}): Promise<PaginatedUsers> {
-    const { role, status, search, limit = 20, offset = 0, includeDeleted = false } = filters
+    const { role, status, search, offset = 0, includeDeleted = false } = filters
+    const limit = Math.min(100, filters.limit ?? 20)
 
     let query = db('users')
 

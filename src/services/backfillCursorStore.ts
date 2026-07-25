@@ -115,7 +115,8 @@ export class BackfillCursorStore {
       const prev: number = Number(row.processed ?? 0)
       processed = prev + count
       const prevSamples: Array<[number, number]> = row.samples ? JSON.parse(row.samples as string) : []
-      samples = [...prevSamples, [now.getTime(), processed]].slice(-MAX_SAMPLES)
+      const sample: [number, number] = [now.getTime(), processed]
+      samples = [...prevSamples, sample].slice(-MAX_SAMPLES)
     }
 
     await this.db('backfill_cursors')

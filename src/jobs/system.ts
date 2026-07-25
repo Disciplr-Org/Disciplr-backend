@@ -8,6 +8,7 @@ import {
 } from './queue.js'
 import { type EnqueueOptions, type JobPayloadByType, type JobType } from './types.js'
 import { recoverPendingExportJobs } from '../services/exportQueue.js'
+import { listOrganizations } from '../services/organization.js'
 import {
   createNotificationService,
   type NotificationService,
@@ -188,7 +189,11 @@ export class BackgroundJobSystem {
       cursorStore: new BackfillCursorStore(db),
       embeddingProvider: createEmbeddingProvider(),
     }
-    const handlers = createDefaultJobHandlers(resolvedNotificationService, resolvedEmbeddingReindex)
+    const handlers = createDefaultJobHandlers(
+      resolvedNotificationService,
+      resolvedEmbeddingReindex,
+      (type, payload, options) => this.enqueue(type, payload, options),
+    )
 
     this.queue.registerHandler('notification.send', handlers['notification.send'])
     this.queue.registerHandler('deadline.check', handlers['deadline.check'])
@@ -197,6 +202,7 @@ export class BackgroundJobSystem {
     this.queue.registerHandler('analytics.report.generate', handlers['analytics.report.generate'])
     this.queue.registerHandler('export.generate', handlers['export.generate'])
     this.queue.registerHandler('sessions.cleanup', handlers['sessions.cleanup'])
+    this.queue.registerHandler('retention.purge', handlers['retention.purge'])
     this.queue.registerHandler('outbox.relay', handlers['outbox.relay'])
     this.queue.registerHandler('embeddings.reindex', handlers['embeddings.reindex'])
     this.queue.registerHandler('saved-search.evaluate', handlers['saved-search.evaluate'])
@@ -336,6 +342,36 @@ export class BackgroundJobSystem {
       initialDelayMs: 10_000,
       execute: () => {
         this.enqueue('sessions.cleanup', {})
+      },
+    })
+
+    const retentionPurgeIntervalMs = parsePositiveInteger(
+      process.env.RETENTION_PURGE_INTERVAL_MS,
+      86_400_000,
+    )
+    const retentionPurgeBatchSize = parsePositiveInteger(
+      process.env.RETENTION_PURGE_BATCH_SIZE,
+      500,
+    )
+
+    this.schedulerRegistry.registerJob({
+      name: 'retention.purge',
+      intervalMs: retentionPurgeIntervalMs,
+      immediate: true,
+      initialDelayMs: 20_000,
+      execute: async () => {
+        try {
+          const organizations = await listOrganizations()
+          for (const org of organizations) {
+            this.enqueue('retention.purge', {
+              organizationId: org.id,
+              batchSize: retentionPurgeBatchSize,
+            })
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          console.error(`[jobs:retention.purge] failed to enqueue jobs: ${message}`)
+        }
       },
     })
 

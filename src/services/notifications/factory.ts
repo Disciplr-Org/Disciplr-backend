@@ -1,7 +1,6 @@
 import { NotificationProvider } from './provider.js'
 import { EmailNotificationProvider } from './email.provider.js'
 import { ConsoleNotificationProvider } from './console.provider.js'
-import { getEnv } from '../../config/index.js'
 
 export class NotificationService {
   constructor(
@@ -11,8 +10,8 @@ export class NotificationService {
     this.assertProviderExists(defaultProviderName)
   }
 
-  static getProvider(name?: string): NotificationProvider {
-    const providerName = name || getEnv().NOTIFICATION_PROVIDER || 'console'
+  getProvider(name?: string): NotificationProvider {
+    const providerName = name ?? this.defaultProviderName
     const provider = this.providers[providerName]
 
     if (!provider) {

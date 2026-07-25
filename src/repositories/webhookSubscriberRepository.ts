@@ -80,7 +80,7 @@ function toSubscriber(row: SubscriberRow): WebhookSubscriber {
     events: row.events ?? [],
     active: row.active,
     schemaVersion: row.schema_version ?? 1,
-    fieldPolicy: parseFieldPolicy(row.field_policy),
+    fieldPolicy: parseFieldPolicy(row.field_policy, row.id),
     createdAt: row.created_at instanceof Date
       ? row.created_at.toISOString()
       : String(row.created_at),

@@ -10,6 +10,7 @@ import express, { Request, Response, NextFunction } from 'express'
 import jwt from 'jsonwebtoken'
 import { setOrganizations, setOrgMembers } from '../models/organizations.js'
 import { requireOrgAccess } from '../middleware/orgAuth.js'
+import { AppError } from '../middleware/errorHandler.js'
 
 // ─── Validation unit tests ────────────────────────────────────────────────────
 
@@ -193,7 +194,12 @@ function buildApp() {
     requireOrgAccess('owner', 'admin'),
     (req: Request, res: Response): void => {
       const { orgId } = req.params
-      const userId: string = (req.user as any)?.userId ?? ''
+      const rawUserId = (req.user as any)?.userId || (req.user as any)?.sub
+      if (typeof rawUserId !== 'string' || rawUserId.trim().length === 0) {
+        res.status(401).json({ error: 'Unauthorized: Authenticated user missing userId' })
+        return
+      }
+      const userId = rawUserId.trim()
       const { name, query_definition, alerts_enabled, alert_recipient, alert_frequency_ms } = req.body
 
       if (typeof name !== 'string' || name.trim().length === 0 || name.length > 255) {
@@ -293,6 +299,16 @@ function buildApp() {
     },
   )
 
+  app.use((err: unknown, req: Request, res: Response, _next: NextFunction): void => {
+    if (err instanceof AppError) {
+      res.status(err.status).json({ error: err.message })
+      return
+    }
+
+    console.error('Unexpected error in test app:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  })
+
   return app
 }
 
@@ -377,6 +393,17 @@ describe('POST /api/orgs/:orgId/vault-searches', () => {
 
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/alert_recipient/)
+  })
+
+  it('returns 401 when authenticated token contains no userId or sub', async () => {
+    const token = jwt.sign({ orgId: ORG_A }, JWT_SECRET)
+    const res = await request(app)
+      .post(`/api/orgs/${ORG_A}/vault-searches`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'No identity', query_definition: {} })
+
+    expect(res.status).toBe(401)
+    expect(res.body.error).toMatch(/Unauthorized/)
   })
 
   it('returns 400 when alert_frequency_ms is below the 1-hour floor', async () => {

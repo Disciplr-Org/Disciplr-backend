@@ -1,5 +1,5 @@
 import { orgAnalyticsRateLimiter } from '../middleware/rateLimiter.js'
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireOrgAccess, requireOrgRole } from '../middleware/orgAuth.js'
 import db from '../db/index.js'
@@ -7,8 +7,29 @@ import { getTeamRollup } from '../services/team.js'
 import { getOrgReports } from '../services/analyticsReports.js'
 import { resolveS3Config, getExportSignedUrl } from '../services/exportS3.js'
 import { parsePaginationParams, paginateArray } from '../utils/pagination.js'
+import { getCohortRetention } from '../services/cohortRetention.js'
+import db from '../db/index.js'
 
 export const orgAnalyticsRouter = Router();
+
+orgAnalyticsRouter.get(
+  '/:orgId/analytics/risk',
+  authenticate,
+  requireOrgAccess('owner', 'admin'),
+  orgAnalyticsRateLimiter,
+  async (req: Request, res: Response) => {
+    const { orgId } = req.params
+    const startDate = typeof req.query.startDate === 'string' ? req.query.startDate : undefined
+    const endDate = typeof req.query.endDate === 'string' ? req.query.endDate : undefined
+
+    try {
+      const result = getOrgRiskAnalytics(orgId, vaults, { startDate, endDate })
+      res.json(result)
+    } catch (error: any) {
+      res.status(400).json({ error: error.message })
+    }
+  }
+)
 
 orgAnalyticsRouter.get(
   "/:orgId/analytics",
@@ -96,7 +117,6 @@ orgAnalyticsRouter.get(
       const range = req.query.range
         ? parseInt(req.query.range as string, 10)
         : undefined;
-      const db = req.app.get("db");
 
       const data = await getCohortRetention(db, range);
 
@@ -147,7 +167,7 @@ orgAnalyticsRouter.get(
     const pagination = parsePaginationParams(req)
     const s3Config = resolveS3Config()
 
-    const allReports = getOrgReports(orgId)
+    const allReports = await getOrgReports(orgId)
     const paginated = paginateArray(allReports, pagination)
 
     const items = await Promise.all(

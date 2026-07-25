@@ -6,6 +6,7 @@ import {
   type JobPayloadByType,
   type JobType,
 } from './types.js'
+import { getTracer } from '../observability/tracing.js'
 
 interface InternalQueuedJob<T extends JobType = JobType> {
   id: string
@@ -445,10 +446,20 @@ export class InMemoryJobQueue {
     this.totals.executions += 1
 
     try {
-      await handler(job.payload, {
-        jobId: job.id,
-        attempt: job.attempt,
-      })
+      const tracer = getTracer()
+      await tracer.withSpan(
+        `job.${job.type}`,
+        async (span) => {
+          span.setAttribute('job.type', job.type)
+          span.setAttribute('job.id', job.id)
+          span.setAttribute('job.attempt', job.attempt)
+          span.setAttribute('job.max_attempts', job.maxAttempts)
+          await handler(job.payload, {
+            jobId: job.id,
+            attempt: job.attempt,
+          })
+        },
+      )
       this.recordCompletedJob(job, Date.now() - startedAt)
     } catch (error) {
       const message = getErrorMessage(error)

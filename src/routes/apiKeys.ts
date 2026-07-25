@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { requireUserAuth } from '../middleware/auth.js'
+import { authenticate } from '../middleware/auth.js'
 import { requireStepUp } from '../middleware/stepUp.js'
 import { apiKeyRateLimiter } from '../middleware/rateLimiter.js'
 import {
@@ -16,7 +16,7 @@ import { ApiScope } from '../types/auth.js'
 
 export const apiKeysRouter = Router()
 
-apiKeysRouter.use(requireUserAuth)
+apiKeysRouter.use(authenticate)
 
 const createApiKeySchema = z.object({
   label: z.string().trim().min(1, 'label is required.'),
@@ -25,14 +25,14 @@ const createApiKeySchema = z.object({
 })
 
 apiKeysRouter.get('/', async (req, res) => {
-  const userId = req.authUser!.userId
+  const userId = req.user.userId
   const apiKeys = (await listApiKeysForUser(userId)).map(({ keyHash: _keyHash, ...publicRecord }) => publicRecord)
 
   res.json({ apiKeys })
 })
 
 apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
-  const userId = req.authUser!.userId
+  const userId = req.user.userId
   const parseResult = createApiKeySchema.safeParse(req.body)
   if (!parseResult.success) {
     res.status(400).json(formatValidationError(parseResult.error))
@@ -70,7 +70,7 @@ apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
 })
 
 apiKeysRouter.post('/:id/rotate', apiKeyRateLimiter, async (req, res) => {
-  const userId = req.authUser!.userId
+  const userId = req.user.userId
   const rotated = await rotateApiKey({
     apiKeyId: req.params.id,
     userId,
@@ -81,13 +81,13 @@ apiKeysRouter.post('/:id/rotate', apiKeyRateLimiter, async (req, res) => {
     return
   }
 
-  createAuditLog({
+  await createAuditLog({
     actor_user_id: userId,
     action: 'api_key.rotated',
     target_type: 'api_key',
     target_id: rotated.record.id,
     metadata: { label: rotated.record.label, scopes: rotated.record.scopes },
-  })
+  }).catch((err) => console.error('Failed to write audit log:', err))
 
   const { keyHash: _keyHash, ...publicRecord } = rotated.record
   res.status(200).json({
@@ -97,7 +97,7 @@ apiKeysRouter.post('/:id/rotate', apiKeyRateLimiter, async (req, res) => {
 })
 
 apiKeysRouter.post('/:id/revoke', requireStepUp(), async (req, res) => {
-  const userId = req.authUser!.userId
+  const userId = req.user.userId
   const record = await revokeApiKey(req.params.id, userId)
 
   if (!record) {
@@ -105,13 +105,13 @@ apiKeysRouter.post('/:id/revoke', requireStepUp(), async (req, res) => {
     return
   }
 
-  createAuditLog({
+  await createAuditLog({
     actor_user_id: userId,
     action: 'api_key.revoked',
     target_type: 'api_key',
     target_id: record.id,
     metadata: { label: record.label, scopes: record.scopes },
-  })
+  }).catch((err) => console.error('Failed to write audit log:', err))
 
   const { keyHash: _keyHash, ...publicRecord } = record
   res.json({ apiKeyMeta: publicRecord })
