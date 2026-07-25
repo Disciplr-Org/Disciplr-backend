@@ -9,7 +9,7 @@ import { authRouter } from './routes/auth.js'
 import { analyticsRouter } from './routes/analytics.js'
 import { healthRateLimiter, vaultsRateLimiter } from './middleware/rateLimiter.js'
 import { createExportRouter } from './routes/exports.js'
-import { configureExportJobRepository, createKnexExportJobRepository } from './services/exportQueue.js'
+import { configureExportJobRepository, configureDlqRepository, createKnexExportJobRepository, createKnexDlqRepository } from './services/exportQueue.js'
 import { db } from './db/index.js'
 import { transactionsRouter } from './routes/transactions.js'
 import { privacyRouter, privacyAbuseMonitor } from './routes/privacy.js'
@@ -51,7 +51,8 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
         "console",
     );
   const jobSystem = new BackgroundJobSystem(notificationService);
-  configureExportJobRepository(createKnexExportJobRepository(db));
+  configureExportJobRepository(createKnexExportJobRepository(db))
+  configureDlqRepository(createKnexDlqRepository(db))
 
   app.use(securityMetricsMiddleware);
   app.use(securityRateLimitMiddleware);
