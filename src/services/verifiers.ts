@@ -448,19 +448,35 @@ export const getMilestoneApprovals = async (
   rejected: MilestoneApproval[]
   pending: MilestoneApproval[]
 }> => {
-  const rows = await db('milestone_approvals')
+  interface MilestoneApprovalRow {
+    id: string
+    milestone_id: string
+    verifier_user_id: string
+    approval_status: unknown
+    created_at: string
+    updated_at: string
+  }
+
+  const rows = await db<MilestoneApprovalRow>('milestone_approvals')
     .where({ milestone_id: milestoneId })
     .orderBy('created_at', 'asc')
 
-  const grouped = {
-    approved: [] as MilestoneApproval[],
-    rejected: [] as MilestoneApproval[],
-    pending: [] as MilestoneApproval[],
+  const VALID_STATUSES = new Set<MilestoneApprovalStatus>(['approved', 'rejected', 'pending'])
+
+  const grouped: Record<MilestoneApprovalStatus, MilestoneApproval[]> = {
+    approved: [],
+    rejected: [],
+    pending: [],
   }
 
   rows.forEach((row) => {
-    const mapped = mapMilestoneApprovalRow(row)
-    grouped[row.approval_status].push(mapped)
+    const status = row.approval_status
+    if (typeof status !== 'string' || !VALID_STATUSES.has(status as MilestoneApprovalStatus)) {
+      // Unrecognised status from DB — route to pending rather than throw
+      grouped.pending.push(mapMilestoneApprovalRow(row))
+      return
+    }
+    grouped[status as MilestoneApprovalStatus].push(mapMilestoneApprovalRow(row))
   })
 
   return grouped
