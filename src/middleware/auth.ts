@@ -4,7 +4,7 @@ import jwt from "jsonwebtoken";
 import { randomUUID } from "node:crypto";
 import { recordSession, validateSession } from "../services/session.js";
 import { UserRole } from "../types/user.js";
-import { verifyAccessToken } from "../lib/auth-utils.js";
+import { getJwtSecret, verifyAccessToken } from "../lib/auth-utils.js";
 import { config } from "../config/index.js";
 
 import { JWTPayload } from "../types/auth.js";
@@ -13,8 +13,6 @@ export type Role = "user" | "verifier" | "admin";
 
 // Use JWTPayload from types/auth.ts as source of truth, adding jti for sessions
 export type JwtPayload = JWTPayload & { jti?: string };
-
-const JWT_SECRET = process.env.JWT_SECRET ?? "change-me-in-production";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -104,7 +102,7 @@ export async function authenticate(
       payload = verifyAccessToken(token) as JwtPayload;
     } catch {
       // Fallback to legacy JWT_SECRET for backward compatibility
-      payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
+      payload = jwt.verify(token, getJwtSecret()) as JwtPayload;
     }
 
     // Reject tokens with iat too far in the future (beyond clock tolerance)
@@ -150,7 +148,7 @@ export async function signToken(
 
   await recordSession(payload.userId, jti, expiresAt);
 
-  return jwt.sign(fullPayload, JWT_SECRET, { expiresIn } as jwt.SignOptions);
+  return jwt.sign(fullPayload, getJwtSecret(), { expiresIn } as jwt.SignOptions);
 }
 
 export interface AuthenticatedRequest extends Request {
