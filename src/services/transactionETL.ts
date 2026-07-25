@@ -17,10 +17,14 @@ export class TransactionETLService {
   /**
    * Run the full ETL process - backfill and incremental sync.
    * Pass an AbortSignal to allow the caller to cancel a long-running run.
+   * The optional batchId identifies the scheduler tick that triggered the
+   * run so retries of the same tick can be correlated in logs.
    */
-  async runETL(signal?: AbortSignal): Promise<void> {
+  async runETL(signal?: AbortSignal, batchId?: string): Promise<void> {
     TransactionETLService.checkAbort(signal)
-    console.log('Starting Transaction ETL process...')
+    console.log(
+      `Starting Transaction ETL process...${batchId ? ` (batch ${batchId})` : ''}`,
+    )
 
     try {
       // Run backfill if configured

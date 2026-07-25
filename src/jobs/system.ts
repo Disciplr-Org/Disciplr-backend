@@ -189,7 +189,11 @@ export class BackgroundJobSystem {
       cursorStore: new BackfillCursorStore(db),
       embeddingProvider: createEmbeddingProvider(),
     }
-    const handlers = createDefaultJobHandlers(resolvedNotificationService, resolvedEmbeddingReindex)
+    const handlers = createDefaultJobHandlers(
+      resolvedNotificationService,
+      resolvedEmbeddingReindex,
+      (type, payload, options) => this.enqueue(type, payload, options),
+    )
 
     this.queue.registerHandler('notification.send', handlers['notification.send'])
     this.queue.registerHandler('deadline.check', handlers['deadline.check'])

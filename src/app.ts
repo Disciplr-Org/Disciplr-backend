@@ -1,8 +1,10 @@
 import { httpMetricsMiddleware } from './observability/httpMetrics.js';
+import { tracingMiddleware } from './observability/tracingMiddleware.js';
 import cors from 'cors'
 import express from 'express'
 import helmet from 'helmet'
 import { config } from './config/index.js'
+import { corsOptions } from './config/cors.js'
 import { privacyLogger } from './middleware/privacy-logger.js'
 import { csrfProtection } from './middleware/auth.js'
 import { AUTH_JSON_MAX_BYTES, JOBS_JSON_MAX_BYTES } from './middleware/requestBodyLimits.js'
@@ -17,6 +19,7 @@ import { errorHandler } from './middleware/errorHandler.js'
 
 export const app = express()
 app.use(httpMetricsMiddleware);
+app.use(tracingMiddleware);
 
 // ---------------------------------------------------------------------------
 // Helmet — API-only hardened configuration
@@ -123,36 +126,6 @@ app.use(
     xPermittedCrossDomainPolicies: { permittedPolicies: 'none' },
   }),
 )
-
-const corsOptions: cors.CorsOptions = {
-  origin: (origin, callback) => {
-    // Non-browser / server-to-server requests carry no Origin header — pass through
-    if (!origin) {
-      callback(null, true)
-      return
-    }
-
-    const allowed = config.corsOrigins
-    if (allowed === '*' || (Array.isArray(allowed) && allowed.includes(origin))) {
-      callback(null, true)
-    } else {
-      // Emit a structured log so rejected origins are observable in prod logs
-      console.log(
-        JSON.stringify({
-          level: 'warn',
-          event: 'security.cors_rejected',
-          service: 'disciplr-backend',
-          origin,
-          timestamp: new Date().toISOString(),
-        }),
-      )
-      callback(null, false)
-    }
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'idempotency-key'],
-  credentials: true,
-}
 
 app.use(cors(corsOptions))
 

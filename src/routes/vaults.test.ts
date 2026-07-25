@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test'
 import express from 'express'
 import request from 'supertest'
 import { app } from '../app.js'
-import { vaultsRouter } from './vaults.js'
+import { vaultsRouter, setVaults, type Vault } from './vaults.js'
 import { errorHandler } from '../middleware/errorHandler.js'
 import { resetIdempotencyStore } from '../services/idempotency.js'
 import { resetVaultStore, createVaultWithMilestones } from '../services/vaultStore.js'
@@ -23,6 +23,7 @@ testApp.use(errorHandler)
 const userToken = generateAccessToken({ userId: 'vault-test-user', role: UserRole.USER })
 const otherUserToken = generateAccessToken({ userId: 'other-vault-user', role: UserRole.USER })
 const listContractToken = generateAccessToken({ userId: 'vault-list-user', role: UserRole.USER })
+const adminToken = generateAccessToken({ userId: 'vault-admin-user', role: UserRole.ADMIN })
 
 let baseUrl = ''
 let server: ReturnType<typeof testApp.listen> | null = null
@@ -55,6 +56,7 @@ const validPayload = () => ({
 beforeEach(async () => {
   resetVaultStore()
   resetIdempotencyStore()
+  setVaults([])
 
   server = testApp.listen(0)
   await new Promise<void>((resolve) => {
@@ -997,6 +999,124 @@ describe('GET /api/vaults - List Contract', () => {
         assert.ok(item.amount)
         assert.ok(item.status)
       }
+    })
+  })
+})
+
+describe('Vault dispute workflow', () => {
+  const seedVault = (overrides: Partial<Vault> = {}): Vault => {
+    const vault: Vault = {
+      id: `vault-${Math.random().toString(36).slice(2, 10)}`,
+      creator: 'vault-test-user',
+      amount: '100.00',
+      status: 'active',
+      startTimestamp: new Date(Date.now() - 10000).toISOString(),
+      endTimestamp: new Date(Date.now() + 3600000).toISOString(),
+      successDestination: stellar(),
+      failureDestination: stellar(),
+      createdAt: new Date().toISOString(),
+      ...overrides,
+    }
+    setVaults([vault])
+    return vault
+  }
+
+  describe('POST /api/vaults/:id/dispute', () => {
+    test('returns 401 without an auth token', async () => {
+      const vault = seedVault()
+      const res = await request(testApp).post(`/api/vaults/${vault.id}/dispute`)
+      assert.equal(res.status, 401)
+    })
+
+    test('returns 403 for a non-admin user, even if they are the vault creator', async () => {
+      const vault = seedVault({ creator: 'vault-test-user' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/dispute`)
+        .set('Authorization', `Bearer ${userToken}`)
+
+      assert.equal(res.status, 403)
+    })
+
+    test('allows an admin to place an active vault into disputed', async () => {
+      const vault = seedVault({ status: 'active' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/dispute`)
+        .set('Authorization', `Bearer ${adminToken}`)
+
+      assert.equal(res.status, 200)
+      assert.equal(vault.status, 'disputed')
+    })
+
+    test('returns 409 when the vault cannot be disputed from its current status', async () => {
+      const vault = seedVault({ status: 'draft' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/dispute`)
+        .set('Authorization', `Bearer ${adminToken}`)
+
+      assert.equal(res.status, 409)
+      assert.equal(vault.status, 'draft')
+    })
+
+    test('returns 404 for an unknown vault id', async () => {
+      const res = await request(testApp)
+        .post('/api/vaults/does-not-exist/dispute')
+        .set('Authorization', `Bearer ${adminToken}`)
+
+      assert.equal(res.status, 404)
+    })
+  })
+
+  describe('POST /api/vaults/:id/resolve-dispute', () => {
+    test('returns 401 without an auth token', async () => {
+      const vault = seedVault({ status: 'disputed' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/resolve-dispute`)
+        .send({ target: 'active' })
+      assert.equal(res.status, 401)
+    })
+
+    test('returns 403 for a non-admin user', async () => {
+      const vault = seedVault({ status: 'disputed' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/resolve-dispute`)
+        .set('Authorization', `Bearer ${userToken}`)
+        .send({ target: 'active' })
+
+      assert.equal(res.status, 403)
+      assert.equal(vault.status, 'disputed')
+    })
+
+    test('returns 400 for a missing or invalid target', async () => {
+      const vault = seedVault({ status: 'disputed' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/resolve-dispute`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ target: 'cancelled' })
+
+      assert.equal(res.status, 400)
+      assert.equal(vault.status, 'disputed')
+    })
+
+    test('allows an admin to resolve a disputed vault back to active', async () => {
+      const vault = seedVault({ status: 'disputed' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/resolve-dispute`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ target: 'active' })
+
+      assert.equal(res.status, 200)
+      assert.equal(vault.status, 'active')
+    })
+
+    test('returns 409 when the vault is not currently disputed', async () => {
+      const vault = seedVault({ status: 'active' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/resolve-dispute`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ target: 'active' })
+
+      assert.equal(res.status, 409)
+      assert.equal(vault.status, 'active')
     })
   })
 })

@@ -156,7 +156,7 @@ orgAnalyticsRouter.get(
     const pagination = parsePaginationParams(req)
     const s3Config = resolveS3Config()
 
-    const allReports = getOrgReports(orgId)
+    const allReports = await getOrgReports(orgId)
     const paginated = paginateArray(allReports, pagination)
 
     const items = await Promise.all(

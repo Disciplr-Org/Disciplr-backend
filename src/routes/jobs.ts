@@ -235,6 +235,32 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
           })
           return
         }
+
+        try {
+          const queuedJob = enqueueTypedJob(jobSystem, type, payload, options)
+          
+          createAuditLog({
+            actor_user_id: req.user!.userId,
+            action: 'job.enqueue',
+            target_type: 'job',
+            target_id: queuedJob.id,
+            metadata: {
+              jobType: type,
+              runAt: queuedJob.runAt,
+              maxAttempts: queuedJob.maxAttempts,
+              delayMs: options.delayMs ?? 0,
+            },
+          })
+
+          res.status(202).json({
+            queued: true,
+            job: queuedJob,
+          })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed to enqueue job'
+          res.status(500).json({ error: message })
+        }
+        return
       }
 
       res.status(400).json({

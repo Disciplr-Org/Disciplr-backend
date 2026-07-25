@@ -23,7 +23,7 @@ import { adminWebhooksRouter, adminVaultReplayRouter } from './routes/adminWebho
 import { verificationsRouter } from './routes/verifications.js'
 import { apiKeysRouter, getApiKeyUsageHandler } from './routes/apiKeys.js'
 import { oauthRouter } from './routes/oauth.js'
-import { requireUserAuth } from './middleware/auth.js'
+import { authenticate } from './middleware/auth.js'
 import { requireOrgAccess } from './middleware/orgAuth.js'
 import { notificationsRouter } from './routes/notifications.js'
 import { notificationPreferencesRouter } from './routes/notificationPreferences.js'
@@ -81,7 +81,7 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
   app.use('/api/admin/webhooks', adminWebhooksRouter)
   app.use('/api/admin/vaults', adminVaultReplayRouter)
   app.use('/api/verifications', verificationsRouter)
-  app.get('/api/orgs/:orgId/api-keys/usage', requireUserAuth, requireOrgAccess('owner', 'admin'), getApiKeyUsageHandler)
+  app.get('/api/orgs/:orgId/api-keys/usage', authenticate, requireOrgAccess('owner', 'admin'), getApiKeyUsageHandler)
   app.use('/api/api-keys', apiKeysRouter)
   app.use('/api/oauth', oauthRouter)
   app.use('/api/notifications', notificationsRouter)

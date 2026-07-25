@@ -108,3 +108,27 @@ model EvidenceReference {
   @@unique([verificationId])
   @@map("evidence_references")
 }
+
+model AnalyticsReport {
+  id          String   @id @default(uuid())
+  orgId       String   @map("org_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  s3Key       String?  @map("s3_key")
+  localBuffer Bytes?   @map("local_buffer")
+  snapshotAt  DateTime @map("snapshot_at")
+  sizeBytes   Int      @map("size_bytes")
+
+  @@index([orgId])
+  @@index([orgId, createdAt])
+  @@map("analytics_reports")
+}
+
+model AnalyticsReportQuota {
+  id      String   @id @default(uuid())
+  orgId   String   @map("org_id")
+  date    DateTime @db.Date
+  count   Int      @default(0)
+
+  @@unique([orgId, date])
+  @@map("analytics_report_quotas")
+}

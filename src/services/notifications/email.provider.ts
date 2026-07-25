@@ -1,6 +1,6 @@
 import { NotificationProvider } from './provider.js'
 import { retryWithBackoff, DEFAULT_RETRY_CONFIG, isRetryable } from '../../utils/retry.js'
-import { recordBounce } from './bounceStore.js'
+import { recordBounce, hasBounced } from './bounceStore.js'
 import nodemailer from 'nodemailer'
 import type { Transporter } from 'nodemailer'
 import { getEnv } from '../../config/index.js'
@@ -103,6 +103,11 @@ export class EmailNotificationProvider implements NotificationProvider {
   }
 
   async send(recipient: string, subject: string, body: string): Promise<void> {
+    if (hasBounced(recipient)) {
+      console.warn(`[EmailProvider] Skipping send to ${recipient} — address has previously bounced`)
+      return
+    }
+
     // Wrap the actual send operation in the shared retry utility
     const operation = async () => {
       await this.performSend(recipient, subject, body)

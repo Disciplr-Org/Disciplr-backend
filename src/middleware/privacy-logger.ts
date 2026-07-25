@@ -33,9 +33,19 @@ const SENSITIVE_KEYS = new Set([
 const EMAIL_RE = /[^@\s]+@[^@\s]+\.[^@\s]+/
 const JWT_RE = /^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$/
 
+/** Normalize a key by lowering case and stripping separators. */
+function normalizeKey(key: string): string {
+  return key.toLowerCase().replace(/[_\-]/g, '')
+}
+
+/** Pre-normalized set for fast lookup. */
+const NORMALIZED_SENSITIVE_KEYS = new Set(
+  [...SENSITIVE_KEYS].map(normalizeKey),
+)
+
 /** Returns true when a field name should always be redacted. */
 export function shouldRedact(key: string): boolean {
-  return SENSITIVE_KEYS.has(key.toLowerCase())
+  return NORMALIZED_SENSITIVE_KEYS.has(normalizeKey(key))
 }
 
 export const ALLOWLIST_KEYS = new Set([

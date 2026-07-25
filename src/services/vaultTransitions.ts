@@ -1,6 +1,7 @@
 import { vaults, type Vault } from '../routes/vaults.js';
 import { allMilestonesVerified } from './milestones.js';
 import { type Knex } from 'knex';
+import { UserRole } from '../types/user.js';
 
 type TerminalStatus = 'completed' | 'failed' | 'cancelled';
 
@@ -174,9 +175,19 @@ export const activateVault = (vaultId: string): TransitionResult => {
 /**
  * Places an `active` vault into `disputed`, blocking slash and claim until resolved.
  * Only callable by an admin/guardian.
+ *
+ * Authorization is derived from `requesterRole`, which callers must populate from a
+ * verified source (e.g. `req.user.role` set by the `authenticate` middleware from a
+ * signed JWT) — never from a client-supplied value. This function does not accept a
+ * caller-supplied "admin id" to compare against, since that pattern is trivially
+ * bypassed if a caller ever sources both ids from the same untrusted input.
  */
-export const disputeVault = (vaultId: string, requesterId: string, adminId: string): TransitionResult => {
-  if (requesterId !== adminId) {
+export const disputeVault = (
+  vaultId: string,
+  requesterId: string,
+  requesterRole: UserRole,
+): TransitionResult => {
+  if (requesterRole !== UserRole.ADMIN) {
     return { success: false, error: 'Only an admin can place a vault into disputed state' };
   }
   const vault = findVault(vaultId);
@@ -194,14 +205,17 @@ type DisputeResolution = 'active' | 'completed' | 'failed';
 /**
  * Resolves a `disputed` vault back to `active`, or directly to `completed` / `failed`.
  * Only callable by an admin/guardian.
+ *
+ * See `disputeVault` above: authorization comes from a verified `requesterRole`,
+ * not a caller-supplied "admin id".
  */
 export const resolveDispute = (
   vaultId: string,
   requesterId: string,
-  adminId: string,
+  requesterRole: UserRole,
   target: DisputeResolution,
 ): TransitionResult => {
-  if (requesterId !== adminId) {
+  if (requesterRole !== UserRole.ADMIN) {
     return { success: false, error: 'Only an admin can resolve a disputed vault' };
   }
   const vault = findVault(vaultId);
