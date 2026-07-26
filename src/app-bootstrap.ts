@@ -17,7 +17,7 @@ import { milestonesRouter } from './routes/milestones.js'
 import { orgVaultsRouter } from './routes/orgVaults.js'
 import { orgAnalyticsRouter } from './routes/orgAnalytics.js'
 import { orgMembersRouter } from './routes/orgMembers.js'
-import { adminRouter } from './routes/admin.js'
+// adminRouter is imported and mounted in app.ts; not needed here.
 import { adminVerifiersRouter } from './routes/adminVerifiers.js'
 import { adminWebhooksRouter, adminVaultReplayRouter } from './routes/adminWebhooks.js'
 import { verificationsRouter } from './routes/verifications.js'
@@ -25,9 +25,9 @@ import { apiKeysRouter, getApiKeyUsageHandler } from './routes/apiKeys.js'
 import { oauthRouter } from './routes/oauth.js'
 import { authenticate } from './middleware/auth.js'
 import { requireOrgAccess } from './middleware/orgAuth.js'
-import { notificationsRouter } from './routes/notifications.js'
+// notificationsRouter is imported and mounted in app.ts; not needed here.
 import { notificationPreferencesRouter } from './routes/notificationPreferences.js'
-import { webhooksRouter } from './routes/webhooks.js'
+// webhookRouter is mounted in app.ts at module load time; no re-mount needed here.
 import { graphqlRouter } from './routes/graphql.js'
 import { createNotificationService, NotificationService } from './services/notifications/factory.js'
 import { withRequestPrisma } from './middleware/withRequestPrisma.js'
@@ -76,7 +76,7 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
   app.use('/api/orgs', orgMembersRouter)
   app.use('/api/orgs', notificationPreferencesRouter)
   app.use('/api/organizations/:orgId/graphql', graphqlRouter)
-  app.use('/api/admin', adminRouter)
+  // /api/admin is mounted in app.ts at module load time; no re-mount needed here.
   app.use('/api/admin/verifiers', adminVerifiersRouter)
   app.use('/api/admin/webhooks', adminWebhooksRouter)
   app.use('/api/admin/vaults', adminVaultReplayRouter)
@@ -84,9 +84,9 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
   app.get('/api/orgs/:orgId/api-keys/usage', authenticate, requireOrgAccess('owner', 'admin'), getApiKeyUsageHandler)
   app.use('/api/api-keys', apiKeysRouter)
   app.use('/api/oauth', oauthRouter)
-  app.use('/api/notifications', notificationsRouter)
+  // /api/notifications is mounted in app.ts at module load time; no re-mount needed here.
   app.use('/api/users/me/notification-preferences', notificationPreferencesRouter)
-  app.use('/api/webhooks', webhooksRouter)
+  // /api/webhooks is mounted in app.ts at module load time; no re-mount needed here.
 
   // Catch-all 404 and uniform error shape – must be registered after all routes.
   app.use(notFound);

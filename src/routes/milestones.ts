@@ -1,11 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
-import { enforceRBAC } from '../middleware/rbac.js'
-import { MilestoneService } from '../services/milestonesDb.js'
-import { MilestoneRepositoryEnhanced } from '../repositories/milestoneRepositoryEnhanced.js'
 import { completeVault } from '../services/vaultTransitions.js'
 import { vaults } from './vaults.js'
-import { db as knexDb } from '../db/index.js'
 import { requireUser, requireVerifier } from '../middleware/rbac.js'
 import {
   createMilestone,
@@ -20,26 +16,16 @@ import {
   recordMilestoneApproval,
   hasVerifierVoted,
   getMilestoneApprovalProgress,
-  getApprovedVerifiersCount,
   getMilestoneApprovals,
-  hasMilestoneMetThreshold,
   DuplicateVerifierVoteError,
   getVerifierProfile,
 } from '../services/verifiers.js'
-
-import { completeVault } from '../services/vaultTransitions.js'
-import { vaults } from './vaults.js'
 import { getVaultById } from '../services/vaultStore.js'
 import { AppError } from '../middleware/errorHandler.js'
 
 export const milestonesRouter = Router({ mergeParams: true })
 
-// Initialize milestone service with database connection
-const milestoneRepository = new MilestoneRepositoryEnhanced(knexDb)
-const milestoneService = new MilestoneService(milestoneRepository)
-
 // POST /api/vaults/:vaultId/milestones
-milestonesRouter.post('/', authenticate, enforceRBAC({ allow: ['USER'] }), async (req: Request, res: Response) => {
 milestonesRouter.post('/', authenticate, requireUser, (req: Request, res: Response, next: NextFunction) => {
   const { vaultId } = req.params
   const vault = vaults.find((v) => v.id === vaultId)
@@ -57,13 +43,11 @@ milestonesRouter.post('/', authenticate, requireUser, (req: Request, res: Respon
     return next(AppError.badRequest('description is required'))
   }
 
-  const milestone = await milestoneService.createMilestone(vaultId, description.trim())
   const milestone = createMilestone(vaultId, description.trim(), vault.verifier)
   res.status(201).json(milestone)
 })
 
 // GET /api/vaults/:vaultId/milestones
-milestonesRouter.get('/', authenticate, async (req: Request, res: Response) => {
 milestonesRouter.get('/', authenticate, (req: Request, res: Response, next: NextFunction) => {
   const { vaultId } = req.params
   const vault = vaults.find((v) => v.id === vaultId)
@@ -72,12 +56,11 @@ milestonesRouter.get('/', authenticate, (req: Request, res: Response, next: Next
     return next(AppError.notFound('Vault not found'))
   }
 
-  const milestones = await milestoneService.getMilestonesByVaultId(vaultId)
+  const milestones = getMilestonesByVaultId(vaultId)
   res.json({ milestones })
 })
 
 // PATCH /api/vaults/:vaultId/milestones/:id/verify
-milestonesRouter.patch('/:id/verify', authenticate, enforceRBAC({ allow: ['VERIFIER'] }), async (req: Request, res: Response) => {
 milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, (req: Request, res: Response, next: NextFunction) => {
   const { vaultId, id } = req.params
 
@@ -86,18 +69,18 @@ milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, (req: Reque
     return next(AppError.notFound('Vault not found'))
   }
 
-  const milestone = await milestoneService.getMilestoneById(id)
+  const milestone = getMilestoneById(id)
   if (!milestone || milestone.vaultId !== vaultId) {
     return next(AppError.notFound('Milestone not found'))
   }
 
-  const verified = await milestoneService.verifyMilestone(id)
+  const verified = verifyMilestone(id)
   if (!verified) {
     return next(AppError.notFound('Milestone not found'))
   }
 
   let vaultCompleted = false
-  if (await milestoneService.allMilestonesVerified(vaultId) && vault.status === 'active') {
+  if (allMilestonesVerified(vaultId) && vault.status === 'active') {
     const result = completeVault(vaultId)
     vaultCompleted = result.success
   }
