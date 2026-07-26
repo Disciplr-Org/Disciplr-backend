@@ -20,6 +20,38 @@ import { createHash } from "node:crypto";
 
 export const orgVaultsRouter = Router();
 
+// ─── tsvector column detection cache ─────────────────────────────────────────
+// Whether the vaults.search_vector column exists is effectively static for the
+// lifetime of a running process (it only changes when a migration runs, which
+// requires a restart). We cache the result as a single shared Promise so that:
+//   1. The DB is queried at most once, even under concurrent first requests.
+//   2. All callers await the same in-flight promise instead of racing.
+let _hasFtsColumnCache: Promise<boolean> | null = null;
+
+function hasFtsColumn(): Promise<boolean> {
+  if (_hasFtsColumnCache === null) {
+    _hasFtsColumnCache = db("information_schema.columns")
+      .where({
+        table_schema: "public",
+        table_name: "vaults",
+        column_name: "search_vector",
+      })
+      .first()
+      .then(Boolean)
+      .catch((err) => {
+        // On error, reset so the next request retries rather than caching a failure.
+        _hasFtsColumnCache = null;
+        return Promise.reject(err);
+      });
+  }
+  return _hasFtsColumnCache;
+}
+
+/** Exposed for tests that need to reset the cache between runs. */
+export function _resetFtsColumnCache(): void {
+  _hasFtsColumnCache = null;
+}
+
 // ─── Existing vault list ──────────────────────────────────────────────────────
 
 orgVaultsRouter.get(
@@ -254,16 +286,9 @@ export async function runSavedSearch(
 
   if (queryDef.q) {
     const q = queryDef.q;
-    const hasFtsColumn = await db("information_schema.columns")
-      .where({
-        table_schema: "public",
-        table_name: "vaults",
-        column_name: "search_vector",
-      })
-      .first()
-      .then(Boolean);
+    const ftsAvailable = await hasFtsColumn();
 
-    if (hasFtsColumn) {
+    if (ftsAvailable) {
       query = query.whereRaw(`search_vector @@ to_tsquery('simple', ?)`, [
         q
           .split(/\s+/)
@@ -549,17 +574,11 @@ orgVaultsRouter.get(
 
       // ── Full-text search ─────────────────────────────────────────────────
       if (q) {
-        // Check whether the tsvector column exists (migration may not have run yet)
-        const hasFtsColumn = await db("information_schema.columns")
-          .where({
-            table_schema: "public",
-            table_name: "vaults",
-            column_name: "search_vector",
-          })
-          .first()
-          .then(Boolean);
+        // Check whether the tsvector column exists (migration may not have run yet).
+        // Result is cached for the lifetime of the process — see hasFtsColumn().
+        const ftsAvailable = await hasFtsColumn();
 
-        if (hasFtsColumn) {
+        if (ftsAvailable) {
           // GIN index path — injection-safe: q is bound via knex parameterisation
           query = query.whereRaw(`search_vector @@ to_tsquery('simple', ?)`, [
             q
