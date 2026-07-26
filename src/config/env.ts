@@ -175,6 +175,9 @@ export const envSchema = z
     JOB_QUEUE_POLL_INTERVAL_MS: positiveInt(250),
     JOB_HISTORY_LIMIT: positiveInt(50),
     ENABLE_JOB_SCHEDULER: z.string().optional(),
+    MILESTONE_REMINDERS_INTERVAL_MS: positiveInt(15 * 60_000),
+    MILESTONE_REMINDERS_DIGEST_INTERVAL_MS: positiveInt(15 * 60_000),
+    MILESTONE_REMINDERS_DEFERRED_INTERVAL_MS: positiveInt(5 * 60_000),
     NOTIFICATION_PROVIDER: z.enum(["email", "console"]).default("console"),
 
     // ── SMTP / Email provider ────────────────────────────────────
