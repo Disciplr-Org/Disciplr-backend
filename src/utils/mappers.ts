@@ -8,6 +8,7 @@ const STATUS_MAP: Record<InternalVaultStatus, PublicVaultStatus> = {
   [InternalVaultStatus.COMPLETED]: 'completed',
   [InternalVaultStatus.FAILED]: 'failed',
   [InternalVaultStatus.CANCELLED]: 'cancelled',
+  [InternalVaultStatus.DISPUTED]: 'active',
 };
 
 /**

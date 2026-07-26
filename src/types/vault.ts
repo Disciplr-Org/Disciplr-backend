@@ -3,7 +3,8 @@ export enum VaultStatus {
   ACTIVE = 'active',
   COMPLETED = 'completed',
   FAILED = 'failed',
-  CANCELLED = 'cancelled'
+  CANCELLED = 'cancelled',
+  DISPUTED = 'disputed'
 }
 
 export interface Vault {
