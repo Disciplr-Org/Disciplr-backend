@@ -187,8 +187,17 @@ export const getVerifierProfile = async (userId: string): Promise<VerifierProfil
   return mapVerifierRow(row)
 }
 
-export const listVerifierProfiles = async (): Promise<VerifierProfile[]> => {
-  const rows = await db('verifiers').select('*').orderBy('created_at', 'desc')
+export interface ListVerifierProfilesOptions {
+  limit?: number
+  offset?: number
+}
+
+export const listVerifierProfiles = async (opts: ListVerifierProfilesOptions = {}): Promise<VerifierProfile[]> => {
+  const parsedLimit = Number(opts.limit)
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.floor(parsedLimit) : 100
+  const parsedOffset = Number(opts.offset)
+  const offset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? Math.floor(parsedOffset) : 0
+  const rows = await db('verifiers').select('*').orderBy('created_at', 'desc').limit(limit).offset(offset)
   return rows.map(mapVerifierRow)
 }
 
