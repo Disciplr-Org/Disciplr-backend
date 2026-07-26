@@ -1,10 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
-import { completeVault } from '../services/vaultTransitions.js'
-import { vaults } from './vaults.js'
 import { requireUser, requireVerifier } from '../middleware/rbac.js'
 import {
-  createMilestone,
+  createMilestoneWithThreshold,
   getMilestonesByVaultId,
   getMilestoneById,
   verifyMilestone,
@@ -41,12 +39,24 @@ milestonesRouter.post('/', authenticate, requireUser, async (req: Request, res: 
     return next(AppError.conflict('Cannot add milestones to a non-active vault'))
   }
 
-  const { description } = req.body as { description?: string }
+  const { description, approvalThreshold = 1 } = req.body as {
+    description?: string
+    approvalThreshold?: number
+  }
   if (!description?.trim()) {
     return next(AppError.badRequest('description is required'))
   }
 
-  const milestone = createMilestone(vaultId, description.trim(), vault.verifier)
+  if (!Number.isInteger(approvalThreshold) || approvalThreshold < 1) {
+    return next(AppError.badRequest('approvalThreshold must be a positive integer'))
+  }
+
+  const milestone = createMilestoneWithThreshold(
+    vaultId,
+    description.trim(),
+    approvalThreshold,
+    vault.verifier,
+  )
   res.status(201).json(milestone)
 })
 
