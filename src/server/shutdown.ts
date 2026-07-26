@@ -12,7 +12,7 @@ export interface ShutdownOptions {
   server: Server;
   jobSystem: BackgroundJobSystem;
   etlWorker: ETLWorker;
-  closeDb: () => void;
+  closeDb: () => void | Promise<void>;
 }
 
 /**
@@ -119,7 +119,7 @@ export function createShutdownHandler(options: ShutdownOptions) {
 
       // 4. Close Database
       console.log("[Shutdown] Closing database connection...");
-      closeDb();
+      await closeDb();
 
       console.log("[Shutdown] Graceful shutdown completed successfully");
       process.exit(0);
