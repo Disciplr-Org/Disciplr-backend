@@ -21,7 +21,8 @@ import {
 } from '../services/idempotency.js'
 import { buildVaultCreationPayload } from '../services/soroban.js'
 import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById, updateVaultById, getVaultRevisionById, getVaultETag } from '../services/vaultStore.js'
-import { createVaultSchema, flattenZodErrors, isValidStellarAddress } from '../services/vaultValidation.js'
+import { createVaultSchema, flattenZodErrors, isValidStellarAddress, isMemoRequired } from '../services/vaultValidation.js'
+import { StrKey } from '@stellar/stellar-sdk'
 import { AppError } from '../middleware/errorHandler.js'
 import { queryParser } from '../middleware/queryParser.js'
 import { utcNow } from '../utils/timestamps.js'
@@ -165,6 +166,18 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
     if (input.destinations?.failure && !(await isValidStellarAddress(input.destinations.failure))) {
       return next(AppError.validation('invalid Stellar public key', { field: 'destinations.failure' }))
     }
+
+    if (input.destinations?.success && !StrKey.isValidMed25519PublicKey(input.destinations.success)) {
+      if (await isMemoRequired(input.destinations.success)) {
+        return next(AppError.validation('Destination is a known exchange that requires a memo. Use a muxed address.', { field: 'destinations.success' }))
+      }
+    }
+
+    if (input.destinations?.failure && !StrKey.isValidMed25519PublicKey(input.destinations.failure)) {
+      if (await isMemoRequired(input.destinations.failure)) {
+        return next(AppError.validation('Destination is a known exchange that requires a memo. Use a muxed address.', { field: 'destinations.failure' }))
+      }
+    }
   } catch (err) {
     return next(AppError.internal('address validation failed'))
   }
@@ -299,7 +312,7 @@ vaultsRouter.post('/:id/cancel', authenticate, async (req, res) => {
   }
 
   try {
-    await VaultService.updateVaultStatus(req.params.id, 'cancelled' as any)
+    await VaultService.updateVaultStatus(req.params.id, 'cancelled')
   } catch (_err) { /* non-fatal */ }
 
   updateAnalyticsSummary()

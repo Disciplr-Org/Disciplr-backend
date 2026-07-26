@@ -2,7 +2,7 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
 import type { Request, Response, NextFunction } from 'express'
 import { redactApiKeyForLogs } from '../services/apiKeys.js'
 import { getEnv } from '../config/index.js'
-import Redis from 'ioredis'
+import { Redis } from 'ioredis'
 import { RedisStore } from './rateLimitStore.js'
 
 export interface RateLimitConfig {

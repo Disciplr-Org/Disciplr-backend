@@ -22,7 +22,7 @@ describe('Soroban environment validation', () => {
     expect(env.SOROBAN_CONTRACT_ID).toBe(mockEnv.SOROBAN_CONTRACT_ID);
   });
 
-  test('partial Soroban configuration yields a warning', () => {
+  test('partial Soroban configuration yields a warning with a populated field', () => {
     const mockEnv = {
       ...baseEnv,
       SOROBAN_CONTRACT_ID: 'C' + 'A'.repeat(55),
@@ -30,7 +30,8 @@ describe('Soroban environment validation', () => {
     const { warnings } = validateEnv(mockEnv);
     const partial = warnings.find((w) => w.message.includes('Partial Soroban'));
     expect(partial).toBeDefined();
-    expect(partial?.variable).toBe('SOROBAN_*');
+    expect(partial?.field).toBe('SOROBAN_*');
+    expect(partial?.message).toContain('Partial Soroban');
   });
 
   test('invalid contract id causes fatal validation failure', () => {
