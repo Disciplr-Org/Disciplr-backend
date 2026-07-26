@@ -1,6 +1,6 @@
-import { initEnv, getEnv, type Env, type EnvWarning } from './env.js'
+import { initEnv, getEnv, _resetEnvForTesting, type Env, type EnvWarning } from './env.js'
 
-export { initEnv, getEnv, type Env, type EnvWarning }
+export { initEnv, getEnv, _resetEnvForTesting, type Env, type EnvWarning }
 
 // Config moved/merged below to avoid duplicate declaration
 
@@ -33,13 +33,6 @@ export function parseCorsOrigins(value: string | undefined, env: string): string
   return ['http://localhost:3000']
 }
 
-/** Reset internal state — exposed for tests only. */
-export function _resetEnvForTesting(): void {
-  // We need to be able to reset this. Since _validated is in env.ts,
-  // we should export a reset function there too if needed, or
-  // just handle it here if possible. 
-  // Given the current structure, I will add a reset function to env.ts
-}
 
 export type AppConfig = {
   env: string
