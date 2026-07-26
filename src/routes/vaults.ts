@@ -28,6 +28,47 @@ import type { VaultCreateResponse } from '../types/vaults.js'
 
 export const vaultsRouter = Router()
 
+// ─── Minimal compatibility exports for test support ───────────────────────────
+// These exports maintain backward compatibility for existing test suites that
+// rely on the old in-memory vault array pattern. Per maintainer request (option 2).
+// Tests should be migrated to use vaultStore helpers directly over time.
+
+export interface Vault {
+  id: string
+  creator: string
+  amount: string
+  status: 'draft' | 'active' | 'completed' | 'failed' | 'cancelled'
+  startTimestamp: string
+  endTimestamp: string
+  successDestination: string
+  failureDestination: string
+  verifier?: string
+  createdAt: string
+  endDate?: string  // Alias for endTimestamp (used in some tests)
+  lateCheckInWindowSecs?: number
+}
+
+// In-memory vault array for test compatibility only
+let testVaults: Vault[] = []
+
+/**
+ * Sets the in-memory vault array for test purposes.
+ * This is a compatibility shim for existing tests.
+ * Production code should use vaultStore helpers instead.
+ */
+export const setVaults = (newVaults: Vault[]): void => {
+  testVaults = newVaults
+}
+
+/**
+ * Gets the in-memory vault array for test purposes.
+ * This is a compatibility shim for existing tests.
+ */
+export const getTestVaults = (): Vault[] => testVaults
+
+// Export the array for direct access in tests (legacy pattern)
+export const vaults = testVaults
+
 // GET /api/vaults
 vaultsRouter.get(
   '/',

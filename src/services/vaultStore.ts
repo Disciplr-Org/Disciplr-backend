@@ -62,7 +62,7 @@ const logVersionConflict = (id: string, revision: string, context: string) => {
   });
 };
 
-const memoryVaults: PersistedVault[] = [];
+let memoryVaults: PersistedVault[] = [];
 const memoryVaultRevisions = new Map<string, number>();
 
 const mapVaultRow = (row: {
@@ -467,6 +467,20 @@ export const getVaultById = async (
 export const resetVaultStore = (): void => {
   memoryVaults.length = 0;
   memoryVaultRevisions.clear();
+};
+
+/**
+ * Sets the in-memory vault array for test purposes.
+ * This allows tests to seed vault data without requiring a database.
+ * @param newVaults - Array of vault objects to use for testing
+ */
+export const setTestVaults = (newVaults: PersistedVault[]): void => {
+  memoryVaults.length = 0;
+  memoryVaults.push(...newVaults);
+  // Reset revisions for all test vaults
+  newVaults.forEach(vault => {
+    memoryVaultRevisions.set(vault.id, 0);
+  });
 };
 
 export const getVaultRevisionById = async (
