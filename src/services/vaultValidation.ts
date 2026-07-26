@@ -20,13 +20,13 @@ export const VAULT_MILESTONES_MIN = 1
 export const VAULT_MILESTONES_MAX = 20
 
 export function getClassicAddress(address: string): string {
-  try {
-    if (StrKey.isValidMed25519PublicKey(address)) {
+  if (address.startsWith('M')) {
+    try {
       const decoded = StrKey.decodeMed25519PublicKey(address)
       return StrKey.encodeEd25519PublicKey(decoded.slice(0, 32))
+    } catch {
+      throw new Error(`Invalid muxed address format`);
     }
-  } catch {
-    // ignore
   }
   return address
 }
