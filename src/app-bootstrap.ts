@@ -36,6 +36,7 @@ import {
   securityRateLimitMiddleware,
 } from "./security/abuse-monitor.js";
 import inFlightMiddleware from "./middleware/inFlightRequests.js";
+import { mountVersionedRoute } from './middleware/versioning.js'
 
 type BootstrapOptions = {
   notificationService?: NotificationService;
@@ -60,34 +61,40 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
   app.use(inFlightMiddleware);
   app.use(withRequestPrisma);
 
-  app.use('/api/health', healthRateLimiter, createHealthRouter(jobSystem, privacyAbuseMonitor))
-  app.use('/api/jobs', createJobsRouter(jobSystem))
-  app.use('/api/vaults', vaultsRateLimiter, vaultsRouter)
-  app.use('/api/vaults/:vaultId/milestones', milestonesRouter)
-  app.use('/api/auth', authRateLimiter, authRouter)
-  app.use('/api/exports', createExportRouter(jobSystem))
-  app.use('/api/transactions', transactionsRouter)
-  app.use('/api/analytics', analyticsRouter)
-  app.use('/api/privacy', privacyRouter)
-  app.use('/api/organizations', orgVaultsRouter)
-  app.use('/api/organizations', orgAnalyticsRouter)
-  app.use('/api/orgs', orgAnalyticsRouter)
-  app.use('/api/organizations', orgMembersRouter)
-  app.use('/api/orgs', orgAnalyticsRouter)
-  app.use('/api/orgs', orgMembersRouter)
-  app.use('/api/orgs', notificationPreferencesRouter)
-  app.use('/api/organizations/:orgId/graphql', graphqlRouter)
-  // /api/admin is mounted in app.ts at module load time; no re-mount needed here.
-  app.use('/api/admin/verifiers', adminVerifiersRouter)
-  app.use('/api/admin/webhooks', adminWebhooksRouter)
-  app.use('/api/admin/vaults', adminVaultReplayRouter)
-  app.use('/api/verifications', verificationsRouter)
+  // Mount all routes through mountVersionedRoute so that:
+  //   /api/v1/<resource>  — canonical versioned path (no deprecation headers)
+  //   /api/<resource>     — legacy alias (Deprecation + Sunset + Link headers)
+  // This satisfies issue #1257: legacy routes now emit the RFC 8594 warning
+  // headers that versioning.ts was built to provide, and clients have a
+  // /api/v1/... surface to migrate to.
+  mountVersionedRoute(app, '/api/health', '/api/v1/health', healthRateLimiter, createHealthRouter(jobSystem, privacyAbuseMonitor))
+  mountVersionedRoute(app, '/api/jobs', '/api/v1/jobs', createJobsRouter(jobSystem))
+  mountVersionedRoute(app, '/api/vaults', '/api/v1/vaults', vaultsRateLimiter, vaultsRouter)
+  mountVersionedRoute(app, '/api/vaults/:vaultId/milestones', '/api/v1/vaults/:vaultId/milestones', milestonesRouter)
+  mountVersionedRoute(app, '/api/auth', '/api/v1/auth', authRateLimiter, authRouter)
+  mountVersionedRoute(app, '/api/exports', '/api/v1/exports', createExportRouter(jobSystem))
+  mountVersionedRoute(app, '/api/transactions', '/api/v1/transactions', transactionsRouter)
+  mountVersionedRoute(app, '/api/analytics', '/api/v1/analytics', analyticsRouter)
+  mountVersionedRoute(app, '/api/privacy', '/api/v1/privacy', privacyRouter)
+  mountVersionedRoute(app, '/api/organizations', '/api/v1/organizations', orgVaultsRouter)
+  mountVersionedRoute(app, '/api/organizations', '/api/v1/organizations', orgAnalyticsRouter)
+  mountVersionedRoute(app, '/api/orgs', '/api/v1/orgs', orgAnalyticsRouter)
+  mountVersionedRoute(app, '/api/organizations', '/api/v1/organizations', orgMembersRouter)
+  mountVersionedRoute(app, '/api/orgs', '/api/v1/orgs', orgMembersRouter)
+  mountVersionedRoute(app, '/api/orgs', '/api/v1/orgs', notificationPreferencesRouter)
+  mountVersionedRoute(app, '/api/organizations/:orgId/graphql', '/api/v1/organizations/:orgId/graphql', graphqlRouter)
+  // /api/admin is mounted in app.ts at module load time; not needed here.
+  mountVersionedRoute(app, '/api/admin/verifiers', '/api/v1/admin/verifiers', adminVerifiersRouter)
+  mountVersionedRoute(app, '/api/admin/webhooks', '/api/v1/admin/webhooks', adminWebhooksRouter)
+  mountVersionedRoute(app, '/api/admin/vaults', '/api/v1/admin/vaults', adminVaultReplayRouter)
+  mountVersionedRoute(app, '/api/verifications', '/api/v1/verifications', verificationsRouter)
   app.get('/api/orgs/:orgId/api-keys/usage', authenticate, requireOrgAccess('owner', 'admin'), getApiKeyUsageHandler)
-  app.use('/api/api-keys', apiKeysRouter)
-  app.use('/api/oauth', oauthRouter)
-  // /api/notifications is mounted in app.ts at module load time; no re-mount needed here.
-  app.use('/api/users/me/notification-preferences', notificationPreferencesRouter)
-  // /api/webhooks is mounted in app.ts at module load time; no re-mount needed here.
+  app.get('/api/v1/orgs/:orgId/api-keys/usage', authenticate, requireOrgAccess('owner', 'admin'), getApiKeyUsageHandler)
+  mountVersionedRoute(app, '/api/api-keys', '/api/v1/api-keys', apiKeysRouter)
+  mountVersionedRoute(app, '/api/oauth', '/api/v1/oauth', oauthRouter)
+  // /api/notifications is mounted in app.ts at module load time; not needed here.
+  mountVersionedRoute(app, '/api/users/me/notification-preferences', '/api/v1/users/me/notification-preferences', notificationPreferencesRouter)
+  // /api/webhooks is mounted in app.ts at module load time; not needed here.
 
   // Catch-all 404 and uniform error shape – must be registered after all routes.
   app.use(notFound);

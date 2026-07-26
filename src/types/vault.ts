@@ -6,36 +6,38 @@ export enum VaultStatus {
   CANCELLED = 'cancelled'
 }
 
+/**
+ * Matches the real vaults table schema after all migrations:
+ *   initial_baseline: id, creator, amount, start_date (was start_timestamp),
+ *                     end_date (was end_timestamp), success_destination,
+ *                     failure_destination, status, created_at
+ *   fix_vault_schema:  adds verifier, updated_at
+ */
 export interface Vault {
   id: string;
-  contract_id: string | null;
-  creator_address: string;
-  amount: string; 
-  milestone_hash: string;
-  verifier_address: string;
+  creator: string;
+  amount: string;
+  start_date: Date;
+  end_date: Date;
+  verifier: string | null;
   success_destination: string;
   failure_destination: string;
   status: VaultStatus;
   organization_id?: string;
-  deadline: Date;
   created_at: Date;
   updated_at: Date;
-  // Legacy fields for compatibility with in-memory logic
-  creator?: string;
-  startTimestamp?: string;
-  endTimestamp?: string;
-  createdAt?: string;
 }
 
 export type CreateVaultDTO = {
-  contractId?: string;
-  creatorAddress: string;
+  id: string;
+  creator: string;
   amount: string;
-  milestoneHash: string;
-  verifierAddress: string;
+  startDate: Date | string;
+  endDate: Date | string;
+  verifier?: string | null;
   successDestination: string;
   failureDestination: string;
-  deadline: Date | string;
+  status?: VaultStatus;
 };
 
 export interface VaultAnalytics {

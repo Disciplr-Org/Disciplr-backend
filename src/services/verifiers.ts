@@ -192,15 +192,25 @@ export const listVerifierProfiles = async (): Promise<VerifierProfile[]> => {
   return rows.map(mapVerifierRow)
 }
 
+/**
+ * @deprecated Use `transitionVerifier` directly.
+ *
+ * This wrapper exists only for backward-compatibility. It delegates to
+ * `transitionVerifier` so that every status change goes through the full
+ * validation pipeline: `canTransition` check, `db.transaction`, and
+ * `createVerifierAuditLog`. Callers should migrate to `transitionVerifier`
+ * and pass an explicit `VerifierMutationContext`.
+ *
+ * A synthetic system context is used here because the legacy signature did
+ * not accept an actor/reason. Audit logs created via this path will carry
+ * `actor_user_id: 'system'` to make the bypass-free path visible.
+ */
 export const setVerifierStatus = async (
   userId: string,
   status: VerifierStatus,
 ): Promise<VerifierProfile | null> => {
-  const row = await db('verifiers').where({ user_id: userId }).first()
-  if (!row) return null
-
-  const [updated] = await db('verifiers').where({ user_id: userId }).update(mapStatusToUpdates(status)).returning('*')
-  return mapVerifierRow(updated)
+  const result = await transitionVerifier(userId, status, { actorUserId: 'system' })
+  return result?.after ?? null
 }
 
 export const recordVerification = async (

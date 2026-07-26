@@ -245,8 +245,16 @@ export class SorobanRpcPool {
   }
 
   private async _probeDownEndpoints(): Promise<void> {
+    // Probe both 'down' and 'degraded' endpoints.
+    //
+    // 'degraded' endpoints are deprioritised by getOrderedUrls(), so they stop
+    // receiving organic traffic once healthier alternatives exist. Without
+    // explicit probing here they have no path back to 'healthy': organic
+    // calls won't reach them (ordering steers requests elsewhere) and the
+    // background job previously only checked 'down'. Including 'degraded'
+    // ensures recovery is possible for any non-healthy endpoint.
     const probes = this.states
-      .filter((s) => s.status === 'down')
+      .filter((s) => s.status === 'down' || s.status === 'degraded')
       .map(async (state) => {
         state.lastProbeAt = Date.now()
         const healthy = await this.probeFn(state.url, this.probeTimeoutMs)
