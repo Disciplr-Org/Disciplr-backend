@@ -67,10 +67,21 @@ const getSubmitRetryConfig = (): RetryConfig => ({
 })
 
 /**
+ * Resolved once per process — env is static for the process lifetime.
+ * `undefined` means not yet resolved; `null` means submit mode unavailable.
+ */
+let cachedSorobanConfig: SorobanConfig | null | undefined
+
+/**
  * Returns the Soroban config only when ALL required env vars are present.
  * Acts as the feature-flag: if any var is missing, submit mode is unavailable.
+ * Result is cached for the process lifetime (see `resetSorobanConfig` for tests).
  */
 export const getSorobanConfig = (): SorobanConfig | null => {
+  if (cachedSorobanConfig !== undefined) {
+    return cachedSorobanConfig
+  }
+
   const contractId = process.env.SOROBAN_CONTRACT_ID
   const networkPassphrase = process.env.SOROBAN_NETWORK_PASSPHRASE
   const sourceAccount = process.env.SOROBAN_SOURCE_ACCOUNT
@@ -78,10 +89,11 @@ export const getSorobanConfig = (): SorobanConfig | null => {
   const secretKey = process.env.SOROBAN_SECRET_KEY
 
   if (!contractId || !networkPassphrase || !sourceAccount || !rpcUrls || rpcUrls.length === 0 || !secretKey) {
-    return null
+    cachedSorobanConfig = null
+    return cachedSorobanConfig
   }
 
-  return {
+  cachedSorobanConfig = {
     contractId,
     networkPassphrase,
     sourceAccount,
@@ -94,6 +106,12 @@ export const getSorobanConfig = (): SorobanConfig | null => {
     submitTimeoutMs: positiveIntFromEnv('SOROBAN_SUBMIT_TIMEOUT_MS', 60_000),
     submitRetry: getSubmitRetryConfig(),
   }
+  return cachedSorobanConfig
+}
+
+/** Clear cached Soroban config. For testing only. */
+export const resetSorobanConfig = (): void => {
+  cachedSorobanConfig = undefined
 }
 
 /**
