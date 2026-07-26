@@ -34,7 +34,7 @@ const utcDateString = (d = new Date()): string => d.toISOString().slice(0, 10)
  */
 class AsyncMutex {
   private locked = false
-  private waitQueue: (() => void)[] = []
+  private waitQueue: ((value?: unknown) => void)[] = []
 
   async runExclusive<T>(fn: () => Promise<T> | T): Promise<T> {
     // Acquire lock

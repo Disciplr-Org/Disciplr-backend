@@ -3,6 +3,8 @@ import { BackgroundJobSystem } from '../jobs/system.js'
 import { healthService } from '../services/healthService.js'
 import { getSecurityMetricsSnapshot } from '../security/abuse-monitor.js'
 import type { AbuseMonitor } from '../services/abuse-monitor.js'
+import { authenticate } from '../middleware/auth.js'
+import { requireAdmin } from '../middleware/rbac.js'
 
 export const createHealthRouter = (
   jobSystem: BackgroundJobSystem,
@@ -26,7 +28,7 @@ export const createHealthRouter = (
     return res.status(deepStatus.status === 'error' ? 503 : 200).json(deepStatus)
   })
 
-  router.get('/security', async (req, res) => {
+  router.get('/security', authenticate, requireAdmin, async (req, res) => {
     const globalMetrics = getSecurityMetricsSnapshot()
     const securityData: Record<string, unknown> = {
       ...globalMetrics,

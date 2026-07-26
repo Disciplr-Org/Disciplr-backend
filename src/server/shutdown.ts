@@ -5,6 +5,7 @@ import {
   getInFlightCount,
   setDraining,
 } from "../middleware/inFlightRequests.js";
+import { shutdownTracing } from "../observability/tracing.js";
 import { getEnv } from "../config/index.js";
 
 export interface ShutdownOptions {
@@ -98,6 +99,10 @@ export function createShutdownHandler(options: ShutdownOptions) {
       // 2. Stop Job System
       console.log("[Shutdown] Stopping background job system...");
       await jobSystem.stop();
+
+      // 2.5 Flush and shut down tracing spans
+      console.log("[Shutdown] Flushing tracing spans...");
+      await shutdownTracing();
 
       // 3. Close HTTP Server
       console.log("[Shutdown] Closing HTTP server...");

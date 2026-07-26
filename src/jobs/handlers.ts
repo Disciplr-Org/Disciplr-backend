@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { NotificationService } from '../services/notifications/factory.js'
 import { processJob as processExportJob } from '../services/exportQueue.js'
-import type { JobHandler, JobType } from './types.js'
+import type { EnqueueOptions, JobHandler, JobPayloadByType, JobType } from './types.js'
 import { TransactionETLService } from '../services/transactionETL.js'
 import { MilestoneEmbeddingSource, ReindexCursorStore } from '../services/evidenceReindex.js'
 import { EmbeddingProvider } from '../services/embeddingProvider.js'
@@ -13,6 +13,8 @@ import {
   processDeferredReminders,
 } from '../services/vaultExpiry.service.js'
 import { cleanupExpiredSessions } from '../services/session.js'
+import { purgeSoftDeletedVaults } from '../services/retention.js'
+import { createAuditLog } from '../lib/audit-logs.js'
 import { relayOutboxBatch } from '../services/outboxRelay.js'
 import { runReindexBatches } from '../services/evidenceReindex.js'
 import { renderOrgAnalyticsSnapshot } from '../services/analytics.service.js'
@@ -44,9 +46,16 @@ export interface EmbeddingReindexDependencies {
   embeddingProvider: EmbeddingProvider
 }
 
+export type JobEnqueuer = <T extends JobType>(
+  type: T,
+  payload: JobPayloadByType[T],
+  options?: EnqueueOptions,
+) => void
+
 export const createDefaultJobHandlers = (
   notificationService: NotificationService,
   embeddingReindex: EmbeddingReindexDependencies,
+  enqueueJob?: JobEnqueuer,
 ): JobHandlerRegistry => ({
   'notification.send': async (payload, context) => {
     await notificationService.send(payload.recipient, payload.subject, payload.body)
@@ -54,7 +63,8 @@ export const createDefaultJobHandlers = (
   },
   'deadline.check': async (payload, context) => {
     await sleep(30)
-    const expiredCount = await markVaultExpiries()
+    const batchSize = payload.batchSize ?? 100
+    const expiredCount = await markVaultExpiries({ limit: batchSize })
     const target = payload.vaultId ?? 'all-active-vaults'
     const deadline = payload.deadlineIso ?? 'not-provided'
     logJob(
@@ -117,12 +127,12 @@ export const createDefaultJobHandlers = (
   },
   'analytics.report.generate': async (payload, context) => {
     const s3Config = resolveS3Config()
-    const orgIds = payload.orgIds ?? getAllOrgIds()
+    const orgIds = payload.orgIds ?? (await getAllOrgIds())
     let generated = 0
     let skipped = 0
 
     for (const orgId of orgIds) {
-      if (!checkAndIncrementReportQuota(orgId)) {
+      if (!(await checkAndIncrementReportQuota(orgId))) {
         logJob('analytics.report.generate', `quota_exceeded orgId=${orgId}`)
         skipped++
         continue
@@ -137,9 +147,9 @@ export const createDefaultJobHandlers = (
 
         if (s3Config) {
           await uploadToS3(s3Config, key, buf, 'application/json')
-          saveOrgReport({ orgId, s3Key: key, snapshotAt: snapshot.snapshotAt, sizeBytes: buf.byteLength })
+          await saveOrgReport({ orgId, s3Key: key, snapshotAt: snapshot.snapshotAt, sizeBytes: buf.byteLength })
         } else {
-          saveOrgReport({ orgId, localBuffer: buf, snapshotAt: snapshot.snapshotAt, sizeBytes: buf.byteLength })
+          await saveOrgReport({ orgId, localBuffer: buf, snapshotAt: snapshot.snapshotAt, sizeBytes: buf.byteLength })
         }
         generated++
       } catch (err) {
@@ -185,6 +195,25 @@ export const createDefaultJobHandlers = (
       `deleted=${deleted} batchSize=${batchSize} attempt=${context.attempt}`,
     )
   },
+  'retention.purge': async (payload, context) => {
+    const batchSize = payload.batchSize ?? 1000
+    const result = await purgeSoftDeletedVaults(payload.organizationId, batchSize)
+    const message = `organization=${payload.organizationId} deletedVaults=${result.deletedVaults} deletedMilestones=${result.deletedMilestones} batchSize=${batchSize}`
+    logJob('retention.purge', `${message} attempt=${context.attempt}`)
+
+    await createAuditLog({
+      actor_user_id: 'system',
+      organization_id: payload.organizationId,
+      action: 'retention.purge',
+      target_type: 'organization',
+      target_id: payload.organizationId,
+      metadata: {
+        deleted_vaults: result.deletedVaults,
+        deleted_milestones: result.deletedMilestones,
+        batch_size: batchSize,
+      },
+    })
+  },
   'outbox.relay': async (payload, context) => {
     const count = await relayOutboxBatch()
     logJob(
@@ -208,6 +237,7 @@ export const createDefaultJobHandlers = (
   },
   'saved-search.evaluate': async (payload, context) => {
     const now = new Date()
+    const batchSize = payload.batchSize ?? 50
 
     let searchQuery = db('org_vault_searches').where({ alerts_enabled: true })
     if (payload.searchId) {
@@ -219,17 +249,21 @@ export const createDefaultJobHandlers = (
       )
     }
 
-    const searches = await searchQuery.select('*')
+    const limit = payload.searchId ? 1 : batchSize + 1
+    const searches = await searchQuery.orderBy('id', 'asc').limit(limit).select('*')
+    const hasMore = !payload.searchId && searches.length > batchSize
+    const batch = hasMore ? searches.slice(0, batchSize) : searches
+
     let evaluated = 0
     let notified = 0
 
-    for (const search of searches) {
+    for (const search of batch) {
       try {
         const queryDef = typeof search.query_definition === 'string'
           ? JSON.parse(search.query_definition)
           : search.query_definition
 
-        const limit = Math.min(100, Math.max(1, queryDef.limit ?? 20))
+        const queryLimit = Math.min(100, Math.max(1, queryDef.limit ?? 20))
 
         let vaultQuery = db('vaults')
           .where('organization_id', search.org_id)
@@ -245,7 +279,7 @@ export const createDefaultJobHandlers = (
 
         const sortField = queryDef.sort_by ?? 'created_at'
         const sortOrder = (queryDef.sort_order ?? 'desc') as 'asc' | 'desc'
-        vaultQuery = vaultQuery.orderBy(sortField, sortOrder).orderBy('id', 'desc').limit(limit)
+        vaultQuery = vaultQuery.orderBy(sortField, sortOrder).orderBy('id', 'desc').limit(queryLimit)
 
         const rows = await vaultQuery
         const ids: string[] = rows.map((r: { id: string }) => r.id)
@@ -269,6 +303,11 @@ export const createDefaultJobHandlers = (
         const msg = evalError instanceof Error ? evalError.message : String(evalError)
         logJob('saved-search.evaluate', `error evaluating search=${search.id}: ${msg}`)
       }
+    }
+
+    if (hasMore && enqueueJob) {
+      enqueueJob('saved-search.evaluate', { batchSize: payload.batchSize })
+      logJob('saved-search.evaluate', `enqueued continuation job batchSize=${batchSize}`)
     }
 
     logJob(

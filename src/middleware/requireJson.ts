@@ -5,6 +5,16 @@ export interface RequireJsonOptions {
   maxBytes?: number
 }
 
+  const contentLength = req.headers['content-length']
+  const transferEncoding = req.headers['transfer-encoding']
+  const hasBody = (contentLength && parseInt(contentLength, 10) > 0) || 
+                   (transferEncoding && transferEncoding.toLowerCase() !== 'identity')
+  const contentType = req.headers['content-type']
+  
+  if (!contentType) {
+    return res.status(415).json({
+      error: 'Unsupported Media Type: Content-Type must be application/json'
+    })
 const bodylessMethods = new Set(['GET', 'HEAD', 'OPTIONS'])
 
 const parseContentLength = (contentLength: string | string[] | undefined): number | null => {

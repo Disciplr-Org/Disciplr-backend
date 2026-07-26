@@ -47,6 +47,14 @@ describe('redact()', () => {
     }
   })
 
+  it('redacts client_secret in snake_case (RFC 6749 OAuth body)', () => {
+    const body = { grant_type: 'authorization_code', client_id: 'public', client_secret: 's3cret' }
+    const result = redact(body) as Record<string, unknown>
+    expect(result.client_secret).toBe(REDACTED)
+    expect(result.grant_type).toBe('authorization_code')
+    expect(result.client_id).toBe('public')
+  })
+
   it('leaves non-sensitive fields unchanged', () => {
     expect(redact({ id: 'abc', amount: 100 })).toEqual({ id: 'abc', amount: 100 })
   })
@@ -111,6 +119,17 @@ describe('shouldRedact()', () => {
     expect(shouldRedact('email')).toBe(true)
     expect(shouldRedact('token')).toBe(true)
     expect(shouldRedact('cookie')).toBe(true)
+  })
+
+  it('returns true for snake_case and kebab-case variants of sensitive keys', () => {
+    expect(shouldRedact('client_secret')).toBe(true)
+    expect(shouldRedact('CLIENT_SECRET')).toBe(true)
+    expect(shouldRedact('api_key')).toBe(true)
+    expect(shouldRedact('access_token')).toBe(true)
+    expect(shouldRedact('refresh_token')).toBe(true)
+    expect(shouldRedact('credit_card')).toBe(true)
+    expect(shouldRedact('x-api-key')).toBe(true)
+    expect(shouldRedact('x-auth-token')).toBe(true)
   })
 
   it('returns false for safe keys', () => {

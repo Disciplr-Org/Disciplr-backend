@@ -1,9 +1,11 @@
 import { Router, type Request, type Response, type NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
+import { requireAdmin } from '../middleware/rbac.js'
 import { requireScopes } from '../middleware/apiKeyAuth.js'
 import { ApiScope } from '../types/auth.js'
 import { UserRole } from '../types/user.js'
 import { VaultService } from '../services/vault.service.js'
+import { disputeVault, resolveDispute } from '../services/vaultTransitions.js'
 import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
 import { updateAnalyticsSummary } from '../services/analytics.service.js'
 import { createAuditLog } from '../lib/audit-logs.js'
@@ -302,6 +304,53 @@ vaultsRouter.post('/:id/cancel', authenticate, async (req, res) => {
 
   updateAnalyticsSummary()
   res.status(200).json({ message: 'Vault cancelled', id: req.params.id })
+})
+
+// POST /api/vaults/:id/dispute
+// Admin-only: places an `active` vault into `disputed`, blocking slash/claim until resolved.
+// `requireAdmin` derives the caller's role from the verified JWT (req.user.role), not
+// from anything supplied in the request body — see vaultTransitions.ts for details.
+vaultsRouter.post('/:id/dispute', authenticate, requireAdmin, (req: Request, res: Response) => {
+  const result = disputeVault(req.params.id, req.user!.userId, req.user!.role)
+
+  if (!result.success) {
+    const status = result.error === 'Vault not found' ? 404 : 409
+    res.status(status).json({ error: result.error })
+    return
+  }
+
+  updateAnalyticsSummary()
+  res.status(200).json({ message: 'Vault placed into disputed state', id: req.params.id })
+})
+
+const DISPUTE_RESOLUTION_TARGETS = ['active', 'completed', 'failed'] as const
+type DisputeResolutionTarget = (typeof DISPUTE_RESOLUTION_TARGETS)[number]
+
+const isDisputeResolutionTarget = (value: unknown): value is DisputeResolutionTarget =>
+  typeof value === 'string' && (DISPUTE_RESOLUTION_TARGETS as readonly string[]).includes(value)
+
+// POST /api/vaults/:id/resolve-dispute
+// Admin-only: resolves a `disputed` vault back to `active`, or directly to `completed` / `failed`.
+vaultsRouter.post('/:id/resolve-dispute', authenticate, requireAdmin, (req: Request, res: Response) => {
+  const { target } = (req.body ?? {}) as { target?: unknown }
+
+  if (!isDisputeResolutionTarget(target)) {
+    res.status(400).json({
+      error: `target is required and must be one of: ${DISPUTE_RESOLUTION_TARGETS.join(', ')}`,
+    })
+    return
+  }
+
+  const result = resolveDispute(req.params.id, req.user!.userId, req.user!.role, target)
+
+  if (!result.success) {
+    const status = result.error === 'Vault not found' ? 404 : 409
+    res.status(status).json({ error: result.error })
+    return
+  }
+
+  updateAnalyticsSummary()
+  res.status(200).json({ message: 'Vault dispute resolved', id: req.params.id, status: target })
 })
 
 // GET /api/vaults/user/:address 
