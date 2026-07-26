@@ -62,6 +62,11 @@ export function getLatestListenerLag(): number | undefined {
  */
 export const checkListenerLag = async (): Promise<void> => {
   try {
+    if (typeof HorizonServer !== 'function') {
+      console.error('[Monitor] Failed to resolve Horizon Server constructor from @stellar/stellar-sdk. Neither Horizon.Server nor Server export is available. Check SDK version compatibility.')
+      return
+    }
+
     const config = getValidatedConfig()
     const server = new HorizonServer(config.horizonUrl)
     
