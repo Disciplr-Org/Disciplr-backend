@@ -22,7 +22,15 @@ export const webhookCreateSchema = z.object({
   active: z.boolean().optional().default(true),
 })
 
-export const webhookRotateSchema = z.object({}).strict()
+// Explicitly accept either no body (`undefined`) or an empty object.
+// This documents "no body expected" while still rejecting any extra properties.
+export const webhookRotateSchema = z.union([
+  z.undefined(),
+  z
+    .object({})
+    .strict()
+    .refine((obj) => Object.keys(obj).length === 0, { message: 'Request body must be empty' }),
+])
 
 export type WebhookCreateInput = z.infer<typeof webhookCreateSchema>
 export type WebhookRotateInput = z.infer<typeof webhookRotateSchema>
