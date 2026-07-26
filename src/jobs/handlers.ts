@@ -283,7 +283,7 @@ export const createDefaultJobHandlers = (
 
         const rows = await vaultQuery
         const ids: string[] = rows.map((r: { id: string }) => r.id)
-        const newHash = createHash('sha256').update(JSON.stringify(ids)).digest('hex')
+        const newHash = createHash('sha256').update(JSON.stringify([...ids].sort())).digest('hex')
 
         if (newHash !== search.last_result_hash) {
           await notificationService.send(
