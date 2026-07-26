@@ -2,8 +2,7 @@ import { orgAnalyticsRateLimiter } from '../middleware/rateLimiter.js'
 import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireOrgAccess, requireOrgRole } from '../middleware/orgAuth.js'
-import { getOrgRiskAnalytics } from '../services/analytics.service.js'
-import { vaults, Vault } from './vaults.js'
+import db from '../db/index.js'
 import { getTeamRollup } from '../services/team.js'
 import { getOrgReports } from '../services/analyticsReports.js'
 import { resolveS3Config, getExportSignedUrl } from '../services/exportS3.js'
@@ -37,9 +36,21 @@ orgAnalyticsRouter.get(
   authenticate,
   requireOrgAccess("owner", "admin"),
   orgAnalyticsRateLimiter,
-  (req: Request, res: Response) => {
+  async (req: Request, res: Response) => {
     const { orgId } = req.params;
-    const orgVaults = vaults.filter((v) => v.orgId === orgId);
+    const dbVaults = await db('vaults')
+      .where({ organization_id: orgId })
+      .whereNull('deleted_at')
+      .select('*');
+    
+    // Map DB fields to the expected Vault shape
+    const orgVaults = dbVaults.map(v => ({
+      id: v.id,
+      creator: v.creator,
+      amount: v.amount,
+      status: v.status,
+      orgId: v.organization_id
+    }));
 
     const activeVaults = orgVaults.filter((v) => v.status === "active").length;
     const completedVaults = orgVaults.filter(
@@ -55,7 +66,7 @@ orgAnalyticsRouter.get(
     const successRate = resolved > 0 ? completedVaults / resolved : 0;
 
     // Team performance: per-creator breakdown
-    const creatorMap = new Map<string, Vault[]>();
+    const creatorMap = new Map<string, typeof orgVaults>();
     for (const v of orgVaults) {
       const list = creatorMap.get(v.creator) ?? [];
       list.push(v);

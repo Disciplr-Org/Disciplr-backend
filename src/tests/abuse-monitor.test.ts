@@ -77,14 +77,49 @@ describe('AbuseMonitor Heuristics', () => {
     expect(monitor.record({ id, type: 'request', weight: 10 })).toBe(true)
   })
 
-  it('should not track new IDs when maxEntries is reached', () => {
-    const smallMonitor = new AbuseMonitor({ maxEntries: 2 })
+  it('evicts the least-recently-active entry (LRU) when maxEntries is reached', () => {
+    jest.useFakeTimers()
+
+    const smallMonitor = new AbuseMonitor({ maxEntries: 2, penaltyScoreLimit: 9999 })
+
+    // user1 is recorded first (oldest lastSeen)
     smallMonitor.record({ id: 'user1', type: 'request' })
+
+    // Advance time so user2 has a newer lastSeen than user1
+    jest.advanceTimersByTime(1000)
     smallMonitor.record({ id: 'user2', type: 'request' })
-    
-    // Third unique ID should not be recorded (should return false/ignored)
+
+    // Map is now full.  A new actor (user3) must evict the LRU entry (user1),
+    // NOT silently return false as the old guard did.
+    jest.advanceTimersByTime(1000)
     const result = smallMonitor.record({ id: 'user3', type: 'request', weight: 200 })
+
+    // user3 was tracked — its high-weight signal should cause the expected return value
+    // (false here because 200 < 9999 penaltyScoreLimit)
     expect(result).toBe(false)
+
+    // user3 is now in the map; user1 (LRU) was evicted, user2 survives
+    // We can verify by driving user3 score over the limit — it must be tracked
+    const flagged = smallMonitor.record({ id: 'user3', type: 'auth_fail', weight: 9999 })
+    expect(flagged).toBe(true)
+
+    jest.useRealTimers()
+  })
+
+  it('tracks a new actor after LRU eviction rather than permanently ignoring it', () => {
+    jest.useFakeTimers()
+
+    const smallMonitor = new AbuseMonitor({ maxEntries: 1, penaltyScoreLimit: 9999 })
+
+    // Fill the single slot
+    smallMonitor.record({ id: 'early-actor', type: 'request' })
+
+    // A new high-weight actor arrives — it must displace early-actor and be scored
+    jest.advanceTimersByTime(500)
+    const flagged = smallMonitor.record({ id: 'new-bad-actor', type: 'auth_fail', weight: 9999 })
+    expect(flagged).toBe(true)
+
+    jest.useRealTimers()
   })
 })
 

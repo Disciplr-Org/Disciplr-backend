@@ -40,17 +40,6 @@ interface BreakerRow {
   updated_at: Date
 }
 
-interface BreakerRow {
-  subscriber_id: string
-  state: string
-  failure_count: number
-  last_failure_at: Date | null
-  tripped_at: Date | null
-  half_open_at: Date | null
-  created_at: Date
-  updated_at: Date
-}
-
 /**
  * Decrypts a stored secret column for in-memory use.
  *

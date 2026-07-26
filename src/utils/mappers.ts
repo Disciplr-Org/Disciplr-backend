@@ -3,7 +3,7 @@ import { Vault, VaultStatus as InternalVaultStatus } from '../types/vault.js';
 import { EnterpriseVault, EnterpriseMilestone, VaultStatus as PublicVaultStatus } from '../types/enterprise.js';
 
 const STATUS_MAP: Record<InternalVaultStatus, PublicVaultStatus> = {
-  [InternalVaultStatus.PENDING]: 'pending',
+  [InternalVaultStatus.DRAFT]: 'pending',
   [InternalVaultStatus.ACTIVE]: 'active',
   [InternalVaultStatus.COMPLETED]: 'completed',
   [InternalVaultStatus.FAILED]: 'failed',

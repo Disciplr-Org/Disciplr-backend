@@ -49,9 +49,23 @@ export class AbuseMonitor {
     const sanitizedId = this.sanitizeIdentifier(signal.id)
     const now = Date.now()
 
-    // Prevent Map exhaustion
-    if (!this.scores.has(sanitizedId) && this.scores.size >= (this.config.maxEntries ?? 10000)) {
-      return false
+    // Prevent Map exhaustion: when the cache is full and this is a brand-new actor,
+    // evict the least-recently-active entry instead of refusing to track the newcomer.
+    // A simple refusal lets an attacker who front-loads many throwaway IDs permanently
+    // blind the monitor to any new abuser for the lifetime of the process.
+    const maxEntries = this.config.maxEntries ?? 10000
+    if (!this.scores.has(sanitizedId) && this.scores.size >= maxEntries) {
+      let oldestId: string | null = null
+      let oldestSeen = Infinity
+      for (const [entryId, entry] of this.scores.entries()) {
+        if (entry.lastSeen < oldestSeen) {
+          oldestSeen = entry.lastSeen
+          oldestId = entryId
+        }
+      }
+      if (oldestId !== null) {
+        this.scores.delete(oldestId)
+      }
     }
 
     const record = this.scores.get(sanitizedId) || { score: 0, lastSeen: now }

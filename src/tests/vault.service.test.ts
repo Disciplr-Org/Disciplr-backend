@@ -37,7 +37,7 @@ describe('VaultService', () => {
     // Mock the DB response
     pool.query = async () => {
       return {
-        rows: [{ id: 'test-uuid-1', ...mockVaultData, status: VaultStatus.PENDING }],
+        rows: [{ id: 'test-uuid-1', ...mockVaultData, status: VaultStatus.DRAFT }],
         command: 'INSERT',
         rowCount: 1,
         oid: 0,
@@ -47,7 +47,7 @@ describe('VaultService', () => {
 
     const result = await VaultService.createVault(mockVaultData);
     assert.equal(result.id, 'test-uuid-1');
-    assert.equal(result.status, VaultStatus.PENDING);
+    assert.equal(result.status, VaultStatus.DRAFT);
   });
 
   test('getVaultById returns a vault if found', async () => {
@@ -79,11 +79,11 @@ describe('VaultService', () => {
 });
   it('createVault successfully inserts into db', async () => {
     mockQuery.mockResolvedValue({
-      rows: [{ id: 'test-uuid-1', ...mockVaultData, status: VaultStatus.PENDING }],
+      rows: [{ id: 'test-uuid-1', ...mockVaultData, status: VaultStatus.DRAFT }],
     })
     const result = await VaultService.createVault(mockVaultData)
     expect(result.id).toBe('test-uuid-1')
-    expect(result.status).toBe(VaultStatus.PENDING)
+    expect(result.status).toBe(VaultStatus.DRAFT)
   })
 
   it('getVaultById returns a vault if found', async () => {

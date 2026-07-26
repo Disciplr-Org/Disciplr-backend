@@ -1,4 +1,4 @@
-import type { CreateVaultInput, PersistedVault, VaultCreateResponse } from '../types/vaults.js'
+import type { CreateVaultInput, PersistedVault, VaultCreateResponse, StakeInput, StakeResponse, StakeWithMemoInput, StakeWithMemoResponse } from '../types/vaults.js'
 import { retryWithBackoff, sleep, type RetryConfig } from '../utils/retry.js'
 import { StrKey } from '@stellar/stellar-sdk'
 import { AppError, SorobanTimeoutError } from '../middleware/errorHandler.js'
