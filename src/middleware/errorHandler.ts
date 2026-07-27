@@ -185,6 +185,35 @@ export const errorHandler = (
     err = new AppError(413, ErrorCode.PAYLOAD_TOO_LARGE, 'Payload too large')
   }
 
+  if (err instanceof SorobanTimeoutError) {
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'app_error',
+        service: 'disciplr-backend',
+        code: err.code,
+        status: err.status,
+        method: req.method,
+        path: req.path,
+        requestId,
+        message: err.message,
+        timestamp: new Date().toISOString(),
+      }),
+    )
+
+    const body: ErrorResponse = {
+      error: {
+        code: err.code,
+        message: err.message,
+        details: sanitizeDetails({ txHash: err.txHash, elapsedMs: err.elapsedMs }),
+        ...(requestId && { requestId }),
+      },
+    }
+
+    res.status(err.status).json(body)
+    return
+  }
+
   if (err instanceof AppError) {
     console.error(
       JSON.stringify({
@@ -216,9 +245,10 @@ export const errorHandler = (
 
   // Unknown / unexpected errors – never leak internals to the client.
   // In production, always use a generic message. In dev, show the real error.
-  const message = isProduction
-    ? 'Internal server error'
-    : err instanceof Error ? err.message : 'Internal server error'
+  const responseMessage = 'Internal server error'
+  const logMessage = isProduction
+    ? responseMessage
+    : err instanceof Error ? err.message : responseMessage
 
   console.error(
     JSON.stringify({
@@ -230,7 +260,7 @@ export const errorHandler = (
       requestId,
       // Only log the message, not the full stack, to avoid leaking internals in
       // structured log aggregators that forward to external services.
-      message,
+      message: logMessage,
       timestamp: new Date().toISOString(),
     }),
   )
@@ -238,7 +268,7 @@ export const errorHandler = (
   const body: ErrorResponse = {
     error: {
       code: ErrorCode.INTERNAL_ERROR,
-      message,
+      message: responseMessage,
       ...(requestId && { requestId }),
     },
   }
