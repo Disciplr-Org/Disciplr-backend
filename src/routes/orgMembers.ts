@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import { Router, type Request, type Response, type NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireOrgAccess } from '../middleware/orgAuth.js'
+import { orgReadRateLimiter, orgWriteRateLimiter } from '../middleware/rateLimiter.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { AppError } from '../middleware/errorHandler.js'
 import {
@@ -40,15 +41,37 @@ export const orgMembersRouter = Router()
 
 // ─── GET /api/organizations/:orgId/members ────────────────────────────────────
 // Any member can list the org's membership roster.
+// Supports pagination via ?page=<n>&pageSize=<n> (defaults: page=1, pageSize=20, max pageSize=100).
 
 orgMembersRouter.get(
   '/:orgId/members',
   authenticate,
   requireOrgAccess('owner', 'admin', 'member'),
+  orgReadRateLimiter,
   async (req: Request, res: Response) => {
     try {
-      const members = await listOrgMemberships(req.params.orgId)
-      res.json({ members })
+      const page = req.query.page !== undefined ? parseInt(String(req.query.page), 10) : 1
+      const pageSize = req.query.pageSize !== undefined ? parseInt(String(req.query.pageSize), 10) : 20
+
+      if (!Number.isFinite(page) || page < 1) {
+        res.status(400).json({ error: 'page must be a positive integer' })
+        return
+      }
+      if (!Number.isFinite(pageSize) || pageSize < 1 || pageSize > 100) {
+        res.status(400).json({ error: 'pageSize must be between 1 and 100' })
+        return
+      }
+
+      const result = await listOrgMemberships(req.params.orgId, { page, pageSize })
+      res.json({
+        members: result.members,
+        pagination: {
+          page: result.page,
+          pageSize: result.pageSize,
+          total: result.total,
+          totalPages: Math.ceil(result.total / result.pageSize),
+        },
+      })
     } catch {
       res.status(500).json({ error: 'Failed to list members.' })
     }
@@ -62,6 +85,7 @@ orgMembersRouter.post(
   '/:orgId/members',
   authenticate,
   requireOrgAccess('owner', 'admin'),
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId } = req.params
     const { userId, role } = req.body as { userId?: string; role?: string }
@@ -109,6 +133,7 @@ orgMembersRouter.delete(
   '/:orgId/members/:userId',
   authenticate,
   requireOrgAccess('owner', 'admin'),
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId, userId } = req.params
 
@@ -142,6 +167,7 @@ orgMembersRouter.patch(
   '/:orgId/members/:userId/role',
   authenticate,
   requireOrgAccess('owner'),
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId, userId } = req.params
     const { role } = req.body as { role?: string }
@@ -178,6 +204,7 @@ orgMembersRouter.post(
   '/:orgId/transfer-ownership',
   authenticate,
   requireOrgAccess('owner'),
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId } = req.params
     const { newOwnerId } = req.body as { newOwnerId?: string }
@@ -204,6 +231,7 @@ orgMembersRouter.post(
   '/:orgId/invitations',
   authenticate,
   requireOrgAccess('owner', 'admin'),
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId } = req.params
     const { email } = req.body as { email?: string }
@@ -257,6 +285,7 @@ orgMembersRouter.post(
   '/:orgId/invitations/:id/resend',
   authenticate,
   requireOrgAccess('owner', 'admin'),
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId, id } = req.params
     const rawToken = crypto.randomBytes(32).toString('hex')
@@ -308,6 +337,7 @@ orgMembersRouter.delete(
   '/:orgId/invitations/:id',
   authenticate,
   requireOrgAccess('owner', 'admin'),
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId, id } = req.params
 
@@ -347,6 +377,7 @@ orgMembersRouter.delete(
 
 orgMembersRouter.post(
   '/:orgId/invitations/accept',
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId } = req.params
     const { token, userId, role } = req.body as { token?: string; userId?: string; role?: string }

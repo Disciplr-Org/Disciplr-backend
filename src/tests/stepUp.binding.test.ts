@@ -478,7 +478,7 @@ describe('Step-up middleware integration', () => {
     expect(next).toHaveBeenCalled()
   })
 
-  it('extracts session ID from query when not in header/body', async () => {
+  it('rejects a session ID supplied only in the query string', async () => {
     const token = await AuthService.issueStepUpChallenge('user-1')
     
     const mockReq = createMockRequest({
@@ -495,7 +495,11 @@ describe('Step-up middleware integration', () => {
     
     await requireStepUp()(mockReq, mockRes, next)
     
-    expect(next).toHaveBeenCalled()
+    expect(mockRes.status).toHaveBeenCalledWith(401)
+    expect(mockRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({ stepUpRequired: true })
+    )
+    expect(next).not.toHaveBeenCalled()
   })
 
   it('allows request with valid step-up session', async () => {

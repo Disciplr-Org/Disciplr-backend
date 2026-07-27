@@ -5,7 +5,7 @@
  *   expirationScheduler → jobSystem.enqueue (with idempotency)
  *   deadline.check handler → buildSlashOnMissPayload
  */
-import { describe, it, expect, jest, beforeEach, afterEach, mock } from 'bun:test'
+import { describe, it, expect, jest, beforeEach, afterEach } from '@jest/globals'
 import { resetIdempotencyStore } from '../services/idempotency.js'
 
 // ─── Shared mock state ────────────────────────────────────────────────────────
@@ -13,7 +13,7 @@ import { resetIdempotencyStore } from '../services/idempotency.js'
 const mockEnqueue = jest.fn<any>()
 
 // Mock BackgroundJobSystem so the scheduler never touches the real queue
-mock.module('../jobs/system.js', () => ({
+jest.unstable_mockModule('../jobs/system.js', () => ({
   BackgroundJobSystem: jest.fn<any>().mockImplementation(() => ({
     enqueue: mockEnqueue,
     start: jest.fn<any>(),
@@ -33,12 +33,12 @@ mockDbChain.where.mockReturnValue(mockDbChain)
 mockDbChain.limit.mockImplementation(async () => expiredVaults)
 mockDbChain.update.mockResolvedValue(1)
 
-mock.module('../db/index.js', () => ({
+jest.unstable_mockModule('../db/index.js', () => ({
   default: jest.fn<any>().mockReturnValue(mockDbChain),
 }))
 
 // Mock markVaultExpiries used in the handler
-mock.module('../services/vault.js', () => ({
+jest.unstable_mockModule('../services/vaultExpiry.service.js', () => ({
   markVaultExpiries: jest.fn<any>().mockResolvedValue(0),
 }))
 
@@ -55,7 +55,7 @@ const mockBuildSlashOnMissPayload = jest.fn<any>().mockImplementation((vaultId: 
   submission: { attempted: true, status: 'not_configured' as const },
 }))
 
-mock.module('../services/soroban.js', () => ({
+jest.unstable_mockModule('../services/soroban.js', () => ({
   buildSlashOnMissPayload: mockBuildSlashOnMissPayload,
   buildVaultCreationPayload: jest.fn<any>(),
   getSorobanConfig: jest.fn<any>().mockReturnValue(null),
@@ -67,7 +67,8 @@ mock.module('../services/soroban.js', () => ({
 const { startExpirationChecker, stopExpirationChecker } = await import(
   '../services/expirationScheduler.js'
 )
-const { defaultJobHandlers } = await import('../jobs/handlers.js')
+const { createDefaultJobHandlers } = await import('../jobs/handlers.js')
+const defaultJobHandlers = createDefaultJobHandlers({ send: async () => {} } as any)
 
 // ─── Suite ────────────────────────────────────────────────────────────────────
 

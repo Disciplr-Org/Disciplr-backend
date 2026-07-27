@@ -108,10 +108,27 @@ export const listUserMemberships = async (
 
 export const listOrgMemberships = async (
   orgId: string,
-): Promise<Membership[]> => {
-  return db('memberships')
-    .where({ organization_id: orgId, team_id: null })
-    .select('*')
+  options: { page?: number; pageSize?: number } = {},
+): Promise<{ members: Membership[]; total: number; page: number; pageSize: number }> => {
+  const page = Math.max(1, options.page ?? 1)
+  const pageSize = Math.min(100, Math.max(1, options.pageSize ?? 20))
+  const offset = (page - 1) * pageSize
+
+  const [members, countResult] = await Promise.all([
+    db('memberships')
+      .where({ organization_id: orgId, team_id: null })
+      .select('*')
+      .orderBy('created_at', 'asc')
+      .limit(pageSize)
+      .offset(offset),
+    db('memberships')
+      .where({ organization_id: orgId, team_id: null })
+      .count<{ count: string }>('id as count')
+      .first(),
+  ])
+
+  const total = Number(countResult?.count ?? 0)
+  return { members, total, page, pageSize }
 }
 
 export const getUserOrganizationRole = async (

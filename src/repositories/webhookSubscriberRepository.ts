@@ -1,7 +1,7 @@
 import { Knex } from 'knex'
 import type { WebhookSubscriber, BreakerState, BreakerStateValue } from '../services/webhooks.js'
 import { FieldPolicy, parseFieldPolicy, DEFAULT_FIELD_POLICY } from '../utils/webhookFieldMasking.js'
-import { encryptField, decryptField, isEncrypted } from '../lib/encryption.js'
+import { encryptField, decryptField, isEncrypted, DecryptionError } from '../lib/encryption.js'
 
 export interface DeliveryStats {
   attempt_count: number
@@ -56,13 +56,36 @@ function decryptSecretColumn(value: string | null): string | null {
 }
 
 function toSubscriber(row: SubscriberRow): WebhookSubscriber {
+  let secret: string
+  try {
+    secret = decryptSecretColumn(row.secret)!
+  } catch (err) {
+    if (err instanceof DecryptionError) {
+      console.error(`[WebhookSubscriberRepo] Decryption failed for subscriber ${row.id}, using sentinel value`, err)
+      secret = '[DECRYPTION_FAILED]'
+    } else {
+      throw err
+    }
+  }
+
+  let previousSecret: string | null
+  try {
+    previousSecret = decryptSecretColumn(row.previous_secret)
+  } catch (err) {
+    if (err instanceof DecryptionError) {
+      console.error(`[WebhookSubscriberRepo] previous_secret decryption failed for subscriber ${row.id}, setting null`, err)
+      previousSecret = null
+    } else {
+      throw err
+    }
+  }
+
   return {
     id: row.id,
     organizationId: row.organization_id,
     url: row.url,
-    // Decrypted only here, in memory, at read time.
-    secret: decryptSecretColumn(row.secret)!,
-    previousSecret: decryptSecretColumn(row.previous_secret),
+    secret,
+    previousSecret,
     rotatedAt: row.rotated_at instanceof Date
       ? row.rotated_at.toISOString()
       : (row.rotated_at ? String(row.rotated_at) : null),

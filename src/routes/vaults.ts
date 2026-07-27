@@ -40,7 +40,7 @@ export interface Vault {
   id: string
   creator: string
   amount: string
-  status: 'draft' | 'active' | 'completed' | 'failed' | 'cancelled'
+  status: 'draft' | 'active' | 'completed' | 'failed' | 'cancelled' | 'disputed'
   startTimestamp: string
   endTimestamp: string
   successDestination: string
