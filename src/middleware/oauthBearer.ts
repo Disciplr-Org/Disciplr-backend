@@ -1,8 +1,7 @@
 import type { Request, Response, NextFunction, RequestHandler } from 'express'
 import jwt from 'jsonwebtoken'
 import type { ApiScope } from '../types/auth.js'
-
-const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production'
+import { getJwtSecret } from '../lib/auth-utils.js'
 
 export interface OAuthTokenPayload {
   sub: string
@@ -42,7 +41,7 @@ export const authenticateOAuthBearer = (requiredScopes: ApiScope[] = []): Reques
 
     let payload: OAuthTokenPayload
     try {
-      payload = jwt.verify(token, JWT_SECRET, {
+      payload = jwt.verify(token, getJwtSecret(), {
         issuer: 'disciplr',
         audience: 'disciplr-api',
       }) as OAuthTokenPayload

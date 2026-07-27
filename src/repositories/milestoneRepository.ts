@@ -78,7 +78,7 @@ export class MilestoneRepository {
    * The queried milestone itself is excluded from the results.
    *
    * @param milestoneId  The milestone whose stored embedding is used as the query vector.
-   * @param k            Maximum number of neighbours to return (default: 5).
+   * @param k            Maximum number of neighbours to return (default: 5, capped at 100).
    * @returns            Array of { milestone_id, distance } sorted closest-first.
    *                     Returns an empty array when no embedding exists for milestoneId.
    */
@@ -86,6 +86,9 @@ export class MilestoneRepository {
     milestoneId: string,
     k = 5,
   ): Promise<NearestNeighborResult[]> {
+    // Cap k so callers cannot inflate a top-k vector lookup into an unbounded LIMIT.
+    const cappedK = Math.min(100, Math.max(1, Math.trunc(Number(k)) || 5));
+
     // Fetch the query embedding first so we can pass it as a plain literal.
     // This avoids a correlated sub-query that would prevent index use.
     const row = (await this.db("milestone_embeddings")
@@ -104,7 +107,7 @@ export class MilestoneRepository {
        WHERE  milestone_id <> :milestoneId
        ORDER  BY embedding <=> :queryVec::vector
        LIMIT  :k`,
-      { queryVec: row.embedding_text, milestoneId, k },
+      { queryVec: row.embedding_text, milestoneId, k: cappedK },
     );
 
     return rows.rows.map((r) => ({

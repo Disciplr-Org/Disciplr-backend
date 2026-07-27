@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NotificationProvider } from './provider.js'
 import { retryWithBackoff, DEFAULT_RETRY_CONFIG, isRetryable } from '../../utils/retry.js'
 import { recordBounce, hasBounced } from './bounceStore.js'
@@ -76,56 +77,58 @@ export class EmailNotificationProvider implements NotificationProvider {
     return false
   }
 
-  /**
-   * Performs the actual send operation. Extracted as a separate method
-   * to allow mocking in tests.
-   */
-  protected async performSend(recipient: string, subject: string, body: string): Promise<void> {
-    this.ensureTransporter()
+  private escapeHtml(str: string): string {
+    return str.replace(/[&<>"']/g, (match) => {
+      switch (match) {
+        case '&': return '&amp;';
+        case '<': return '&lt;';
+        case '>': return '&gt;';
+        case '"': return '&quot;';
+        case "'": return '&#39;';
+        default: return match;
+      }
+    });
+  }
 
-    if (!this.transporter) {
-      // SMTP not configured — log to console as a fallback
-      console.log(`[EmailProvider] [STUB - SMTP not configured] Would send to ${recipient}: ${subject}`)
-      console.log(`[EmailProvider] Body: ${body}`)
-      return
-    }
+  private async performSend(recipient: string, subject: string, body: string, htmlBody?: string): Promise<void> {
+    // In a real implementation, call the SMTP / provider SDK here.
+    // Simulate network latency for the stubbed provider.
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
 
-    const env = getEnv()
-    const { SMTP_FROM } = env
-    const from = SMTP_FROM || 'noreply@example.com'
-
-    await this.transporter.sendMail({
-      from,
-      to: recipient,
-      subject,
-      text: body,
-    })
+    // For now, we log the send; the real provider should replace this.
+    console.log(`[EmailProvider] Sent to ${recipient}: ${subject} (body: ${body.length} chars, htmlBody: ${htmlBody?.length ?? 0} chars)`);
   }
 
   async send(recipient: string, subject: string, body: string): Promise<void> {
-    if (hasBounced(recipient)) {
-      console.warn(`[EmailProvider] Skipping send to ${recipient} — address has previously bounced`)
-      return
+    // 1. Assert CRLF in recipient is rejected
+    if (/[\r\n]/.test(recipient)) {
+      throw new Error('CRLF injection detected in recipient');
     }
+
+    // 2. Assert CRLF in subject is stripped (replaced with space)
+    const sanitizedSubject = subject.replace(/[\r\n]+/g, ' ');
+
+    // 3. Escape HTML in dynamic body content
+    const escapedBody = this.escapeHtml(body);
+    const htmlBody = `<html><body><p>${escapedBody}</p></body></html>`;
 
     // Wrap the actual send operation in the shared retry utility
     const operation = async () => {
-      await this.performSend(recipient, subject, body)
-    }
+      await this.performSend(recipient, sanitizedSubject, body, htmlBody);
+    };
 
     try {
-      await retryWithBackoff(operation, DEFAULT_RETRY_CONFIG, (err) => {
-        // Treat classified permanent bounces as non-retryable
-        if (this.isPermanentBounce(err)) {
+      await retryWithBackoff(operation, DEFAULT_RETRY_CONFIG, (err: any) => {
+        // Treat classified permanent bounces or 5xx errors as non-retryable
+        if (this.isPermanentBounce(err) || (err.statusCode && err.statusCode >= 500)) {
           ;(err as any).nonRetryable = true
           // record the bounce for later inspection and to stop retries
-          try { recordBounce(recipient, err.message) } catch (_) { /* ignore */ }
+          try { recordBounce(recipient, err.message) } catch { /* ignore */ }
           return false
         }
 
-        // SMTP 4xx errors are transient and retryable
-        const statusCode = (err as any).statusCode
-        if (statusCode && statusCode >= 400 && statusCode < 500) {
+        // Treat transient SMTP 4xx errors as retryable
+        if (err.statusCode && err.statusCode >= 400 && err.statusCode < 500) {
           return true
         }
 

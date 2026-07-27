@@ -96,7 +96,7 @@ const buildScenario = fc
 
 describe("Vault transition invariants", () => {
   beforeEach(() => {
-    setVaults([]);
+    resetTestVaults();
     resetMilestonesTable();
   });
 
@@ -104,7 +104,7 @@ describe("Vault transition invariants", () => {
     "does not allow terminal vault status %s to transition further",
     (terminalStatus) => {
       const vault = makeVault({ status: terminalStatus });
-      setVaults([vault]);
+      setTestVaults([vault]);
 
       expect(activateVault(vault.id).success).toBe(false);
       expect(completeVault(vault.id).success).toBe(false);
@@ -116,7 +116,7 @@ describe("Vault transition invariants", () => {
 
   it("requires all milestones to be verified before completing an active vault", () => {
     const vault = makeVault({ status: "active" });
-    setVaults([vault]);
+    setTestVaults([vault]);
     createMilestone(vault.id, "step one", "verifier-1");
 
     const result = completeVault(vault.id);
@@ -129,7 +129,7 @@ describe("Vault transition invariants", () => {
       status: "active",
       endTimestamp: new Date(Date.now() + 60000).toISOString(),
     });
-    setVaults([futureVault]);
+    setTestVaults([futureVault]);
     expect(failVault(futureVault.id).success).toBe(false);
     expect(futureVault.status).toBe("active");
 
@@ -137,7 +137,7 @@ describe("Vault transition invariants", () => {
       status: "active",
       endTimestamp: new Date(Date.now() - 60000).toISOString(),
     });
-    setVaults([expiredVault]);
+    setTestVaults([expiredVault]);
     expect(failVault(expiredVault.id).success).toBe(true);
     expect(expiredVault.status).toBe("failed");
   });
@@ -147,7 +147,7 @@ describe("Vault transition invariants", () => {
       status: "active",
       endTimestamp: new Date(Date.now() - 1000).toISOString(),
     });
-    setVaults([vault]);
+    setTestVaults([vault]);
 
     const failedIds = checkExpiredVaults();
     expect(failedIds).toContain(vault.id);
@@ -157,7 +157,7 @@ describe("Vault transition invariants", () => {
   it("preserves terminal-state invariants through randomized vault action sequences", () => {
     fc.assert(
       fc.property(buildScenario, (scenario) => {
-        setVaults([]);
+        resetTestVaults();
         resetMilestonesTable();
 
         const vault = makeVault({
@@ -166,7 +166,7 @@ describe("Vault transition invariants", () => {
             Date.now() + scenario.deadlineOffsetMs,
           ).toISOString(),
         });
-        setVaults([vault]);
+        setTestVaults([vault]);
 
         const milestones = Array.from(
           { length: scenario.milestoneCount },

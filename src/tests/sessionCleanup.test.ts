@@ -1,7 +1,9 @@
 import { describe, it, expect, jest, beforeEach } from '@jest/globals'
 import { cleanupExpiredSessions } from '../services/session.js'
-import { defaultJobHandlers } from '../jobs/handlers.js'
+import { createDefaultJobHandlers } from '../jobs/handlers.js'
 import { JOB_TYPES, isJobType, isPayloadForJobType } from '../jobs/types.js'
+
+const defaultJobHandlers = createDefaultJobHandlers({ send: async () => {} } as any)
 
 describe('cleanupExpiredSessions', () => {
   it('returns 0 when no expired sessions exist', async () => {

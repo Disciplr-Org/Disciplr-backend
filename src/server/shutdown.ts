@@ -12,7 +12,7 @@ export interface ShutdownOptions {
   server: Server;
   jobSystem: BackgroundJobSystem;
   etlWorker: ETLWorker;
-  closeDb: () => void;
+  closeDb: () => void | Promise<void>;
 }
 
 /**
@@ -64,7 +64,7 @@ export function createShutdownHandler(options: ShutdownOptions) {
       // 1.5 Enter HTTP drain mode: stop accepting new requests at middleware level
       try {
         const env = getEnv();
-        const drainMs = env.SHUTDOWN_DRAIN_MS ?? 30_000;
+        const drainMs = env.SHUTDOWN_DRAIN_MS;
         console.log(
           `[Shutdown] Entering HTTP drain mode (waiting up to ${drainMs}ms for in-flight requests)`,
         );
@@ -119,7 +119,7 @@ export function createShutdownHandler(options: ShutdownOptions) {
 
       // 4. Close Database
       console.log("[Shutdown] Closing database connection...");
-      closeDb();
+      await closeDb();
 
       console.log("[Shutdown] Graceful shutdown completed successfully");
       process.exit(0);

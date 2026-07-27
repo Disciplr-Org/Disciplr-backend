@@ -506,3 +506,66 @@ describe('POST /api/admin/webhooks/:id/replay', () => {
     )
   })
 })
+
+describe('GET /api/admin/webhooks/dead-letters', () => {
+  beforeEach(() => {
+    resetStores()
+    jest.spyOn(console, 'error').mockImplementation(() => undefined)
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  it('caps an over-large ?limit= at the maximum of 100', async () => {
+    const sub = addTestSubscriber()
+    addDeadLetter(sub.id)
+
+    const res = await request(app)
+      .get('/api/admin/webhooks/dead-letters')
+      .query({ limit: 999999 })
+      .set('Authorization', 'Bearer admin')
+
+    expect(res.status).toBe(200)
+    expect(res.body.limit).toBe(100)
+  })
+
+  it('falls back to the default limit for non-numeric input', async () => {
+    const sub = addTestSubscriber()
+    addDeadLetter(sub.id)
+
+    const res = await request(app)
+      .get('/api/admin/webhooks/dead-letters')
+      .query({ limit: 'not-a-number' })
+      .set('Authorization', 'Bearer admin')
+
+    expect(res.status).toBe(200)
+    expect(res.body.limit).toBe(50)
+  })
+
+  it('falls back to the default limit for negative input', async () => {
+    const sub = addTestSubscriber()
+    addDeadLetter(sub.id)
+
+    const res = await request(app)
+      .get('/api/admin/webhooks/dead-letters')
+      .query({ limit: -5 })
+      .set('Authorization', 'Bearer admin')
+
+    expect(res.status).toBe(200)
+    expect(res.body.limit).toBe(50)
+  })
+
+  it('respects a valid limit within the allowed range', async () => {
+    const sub = addTestSubscriber()
+    addDeadLetter(sub.id)
+
+    const res = await request(app)
+      .get('/api/admin/webhooks/dead-letters')
+      .query({ limit: 10 })
+      .set('Authorization', 'Bearer admin')
+
+    expect(res.status).toBe(200)
+    expect(res.body.limit).toBe(10)
+  })
+})

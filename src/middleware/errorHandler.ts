@@ -17,6 +17,8 @@ export const ErrorCode = {
   CONFLICT: 'CONFLICT',
   // 413
   PAYLOAD_TOO_LARGE: 'PAYLOAD_TOO_LARGE',
+  // 415
+  UNSUPPORTED_MEDIA_TYPE: 'UNSUPPORTED_MEDIA_TYPE',
   // 422
   UNPROCESSABLE: 'UNPROCESSABLE',
   // 429
@@ -119,6 +121,10 @@ export class AppError extends Error {
 
   static payloadTooLarge(message = 'Payload too large') {
     return new AppError(413, ErrorCode.PAYLOAD_TOO_LARGE, message)
+  }
+
+  static unsupportedMediaType(message = 'Content-Type must be application/json') {
+    return new AppError(415, ErrorCode.UNSUPPORTED_MEDIA_TYPE, message)
   }
 
   /** Parses an unknown error from Soroban RPC into an AppError if it contains a recognized contract error code */

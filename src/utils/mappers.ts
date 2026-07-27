@@ -1,27 +1,44 @@
 import { Milestone } from '../types/horizonSync.js';
-import { Vault, VaultStatus as InternalVaultStatus } from '../types/vault.js';
+import { VaultStatus as InternalVaultStatus } from '../types/vault.js';
 import { EnterpriseVault, EnterpriseMilestone, VaultStatus as PublicVaultStatus } from '../types/enterprise.js';
 
 const STATUS_MAP: Record<InternalVaultStatus, PublicVaultStatus> = {
-  [InternalVaultStatus.PENDING]: 'pending',
+  [InternalVaultStatus.DRAFT]: 'pending',
   [InternalVaultStatus.ACTIVE]: 'active',
   [InternalVaultStatus.COMPLETED]: 'completed',
   [InternalVaultStatus.FAILED]: 'failed',
   [InternalVaultStatus.CANCELLED]: 'cancelled',
+  [InternalVaultStatus.DISPUTED]: 'active',
 };
 
 /**
- * Maps an internal Vault model to a public EnterpriseVault DTO.
- * Explicitly omits internal fields like 'created_at'.
+ * Shape of a vault row as returned by Knex from the `vaults` table.
+ * Uses the real database column names (snake_case).
  */
-export function toPublicVault(vault: Vault): EnterpriseVault {
+interface VaultDbRow {
+  id: string;
+  creator: string;
+  amount: string;
+  status: InternalVaultStatus;
+  created_at: Date;
+  end_date: Date;
+  success_destination: string;
+  failure_destination: string;
+  organization_id?: string;
+}
+
+/**
+ * Maps a database vault row (from Knex) to a public EnterpriseVault DTO.
+ * Explicitly omits internal fields like 'created_at' and 'organization_id'.
+ */
+export function toPublicVault(vault: VaultDbRow): EnterpriseVault {
   return {
     id: vault.id,
-    creator: vault.creator_address,
+    creator: vault.creator,
     amount: vault.amount,
     status: STATUS_MAP[vault.status],
     startTimestamp: vault.created_at.toISOString(),
-    endTimestamp: vault.deadline.toISOString(),
+    endTimestamp: vault.end_date.toISOString(),
     successDestination: vault.success_destination,
     failureDestination: vault.failure_destination,
   };

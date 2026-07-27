@@ -118,16 +118,32 @@ export const cleanupExpiredSessions = async (
 ): Promise<number> => {
   const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
   let total = 0
+  let lastId: string | undefined
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    const query = knex('sessions')
+      .select('id')
+      .where('expires_at', '<', cutoff)
+      .orderBy('id', 'asc')
+      .limit(batchSize)
+
+    if (lastId !== undefined) {
+      query.andWhere('id', '>', lastId)
+    }
+
+    const rows = await query
+    if (rows.length === 0) break
+
+    const idsToDelete = rows.map((r: any) => r.id)
     const deleted: number = await knex('sessions')
-      .whereRaw('expires_at < ?', [cutoff])
-      .andWhereRaw('id IN (SELECT id FROM sessions WHERE expires_at < ? LIMIT ?)', [cutoff, batchSize])
+      .whereIn('id', idsToDelete)
       .delete()
 
     total += deleted
-    if (deleted < batchSize) break
+    lastId = idsToDelete[idsToDelete.length - 1]
+
+    if (rows.length < batchSize) break
   }
 
   return total

@@ -1,18 +1,17 @@
 import express from 'express'
 import request from 'supertest'
-import { vi, describe, it, expect, beforeEach } from 'vitest'
 import { createJobsRouter } from './jobs.js'
 import type { BackgroundJobSystem } from '../jobs/system.js'
 
 import { createAuditLog } from '../lib/audit-logs.js'
 import type { RequestHandler } from 'express'
 
-vi.mock('../lib/audit-logs.js', () => ({
-  createAuditLog: vi.fn(),
+jest.mock('../lib/audit-logs.js', () => ({
+  createAuditLog: jest.fn(),
 }))
 
-vi.mock('../middleware/auth.js', () => ({
-  authenticate: vi.fn((req, res, next) => {
+jest.mock('../middleware/auth.js', () => ({
+  authenticate: jest.fn((req, res, next) => {
     const auth = req.headers.authorization
     if (!auth) return res.status(401).json({ error: 'Unauthenticated' })
     if (auth === 'Bearer admin-token') {
@@ -25,7 +24,7 @@ vi.mock('../middleware/auth.js', () => ({
     }
     return res.status(401).json({ error: 'Invalid token' })
   }),
-  authorize: vi.fn((roles) => (req: any, res: any, next: any) => {
+  authorize: jest.fn((roles) => (req: any, res: any, next: any) => {
     if (!roles.includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' })
     next()
   })
@@ -45,7 +44,7 @@ const makeApp = (mockJobSystem: Partial<BackgroundJobSystem>) => {
 
 describe('POST /api/jobs/:id/retry', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    jest.clearAllMocks()
   })
 
   it('returns 401 with no token', async () => {
@@ -64,7 +63,7 @@ describe('POST /api/jobs/:id/retry', () => {
 
   it('returns 404 if job is not found', async () => {
     const mockJobSystem = {
-      retryJob: vi.fn().mockImplementation(() => {
+      retryJob: jest.fn().mockImplementation(() => {
         throw new Error('Job not found or not in a failed state')
       }),
     }
@@ -81,7 +80,7 @@ describe('POST /api/jobs/:id/retry', () => {
 
   it('returns 400 if max_attempts is exhausted without force', async () => {
     const mockJobSystem = {
-      retryJob: vi.fn().mockImplementation(() => {
+      retryJob: jest.fn().mockImplementation(() => {
         throw new Error('max_attempts is exhausted. Use ?force=true to retry anyway.')
       }),
     }
@@ -104,7 +103,7 @@ describe('POST /api/jobs/:id/retry', () => {
       maxAttempts: 3,
     }
     const mockJobSystem = {
-      retryJob: vi.fn().mockReturnValue(mockReceipt),
+      retryJob: jest.fn().mockReturnValue(mockReceipt),
     }
     const app = makeApp(mockJobSystem)
 
@@ -138,7 +137,7 @@ describe('POST /api/jobs/:id/retry', () => {
       maxAttempts: 3,
     }
     const mockJobSystem = {
-      retryJob: vi.fn().mockReturnValue(mockReceipt),
+      retryJob: jest.fn().mockReturnValue(mockReceipt),
     }
     const app = makeApp(mockJobSystem)
 

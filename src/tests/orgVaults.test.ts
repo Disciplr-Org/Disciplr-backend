@@ -1,7 +1,8 @@
+import './initTestEnv.js'
 import request from 'supertest'
 import express, { Request, Response, NextFunction } from 'express'
 import jwt from 'jsonwebtoken'
-import { describe, it, expect } from '@jest/globals'
+import { describe, it, expect, beforeEach, afterEach } from '@jest/globals'
 import { UserRole } from '../types/user.js'
 import { requireOrgAccess } from '../middleware/orgAuth.js'
 import { queryParser } from '../middleware/queryParser.js'
@@ -10,6 +11,7 @@ import {
   setOrganizations,
   setOrgMembers,
 } from '../models/organizations.js'
+import { errorHandler } from '../middleware/errorHandler.js'
 
 // Local vault store and type (avoids DB-heavy routes/vaults.ts import)
 interface Vault {
@@ -61,50 +63,61 @@ app.get(
   }
 )
 
-// Mount org analytics route
+// Mount org analytics route — delegates to getOrgAnalytics with a queryRunner
+// seeded from the local vault fixtures (keeps auth tests hermetic, no Postgres).
 app.get(
   '/api/organizations/:orgId/analytics',
   mockAuthenticate,
   requireOrgAccess('owner', 'admin'),
-  (req, res) => {
+  async (req, res) => {
     const { orgId } = req.params
     const orgVaults = vaults.filter((v) => v.orgId === orgId)
 
-    const activeVaults = orgVaults.filter((v) => v.status === 'active').length
-    const completedVaults = orgVaults.filter((v) => v.status === 'completed').length
-    const failedVaults = orgVaults.filter((v) => v.status === 'failed').length
-    const totalCapital = orgVaults
-      .reduce((sum, v) => sum + parseFloat(v.amount || '0'), 0)
-      .toString()
-    const resolved = completedVaults + failedVaults
-    const successRate = resolved > 0 ? completedVaults / resolved : 0
-
-    const creatorMap = new Map<string, Vault[]>()
-    for (const v of orgVaults) {
-      const list = creatorMap.get(v.creator) ?? []
-      list.push(v)
-      creatorMap.set(v.creator, list)
+    const totals = {
+      total_capital: orgVaults.reduce((sum, v) => sum + parseFloat(v.amount || '0'), 0),
+      active_vaults: orgVaults.filter((v) => v.status === 'active').length,
+      completed_vaults: orgVaults.filter((v) => v.status === 'completed').length,
+      failed_vaults: orgVaults.filter((v) => v.status === 'failed').length,
     }
-    const teamPerformance = Array.from(creatorMap.entries()).map(([creator, cvaults]) => {
-      const completed = cvaults.filter((v) => v.status === 'completed').length
-      const failed = cvaults.filter((v) => v.status === 'failed').length
-      const creatorResolved = completed + failed
-      return {
-        creator,
-        vaultCount: cvaults.length,
-        totalAmount: cvaults.reduce((s, v) => s + parseFloat(v.amount || '0'), 0).toString(),
-        successRate: creatorResolved > 0 ? completed / creatorResolved : 0,
-      }
-    })
 
-    res.json({
-      orgId,
-      analytics: { totalCapital, successRate, activeVaults, completedVaults, failedVaults },
-      teamPerformance,
-      generatedAt: new Date().toISOString(),
-    })
+    const creators = Array.from(
+      orgVaults.reduce((map, v) => {
+        const entry = map.get(v.creator) ?? {
+          creator: v.creator,
+          vault_count: 0,
+          total_amount: 0,
+          completed_vaults: 0,
+          failed_vaults: 0,
+        }
+        entry.vault_count += 1
+        entry.total_amount += parseFloat(v.amount || '0')
+        if (v.status === 'completed') entry.completed_vaults += 1
+        if (v.status === 'failed') entry.failed_vaults += 1
+        map.set(v.creator, entry)
+        return map
+      }, new Map<string, {
+        creator: string
+        vault_count: number
+        total_amount: number
+        completed_vaults: number
+        failed_vaults: number
+      }>()),
+    ).map(([, row]) => row)
+
+    let call = 0
+    const queryRunner = {
+      raw: async () => {
+        call += 1
+        return { rows: call === 1 ? [totals] : creators }
+      },
+    }
+
+    const { getOrgAnalytics } = await import('../services/orgAnalytics.js')
+    res.json(await getOrgAnalytics(orgId, queryRunner))
   }
 )
+
+app.use(errorHandler)
 
 // ── Helpers ───────────────────────────────────────────────────────
 const token = (sub: string, role: UserRole.USER | UserRole.VERIFIER | UserRole.ADMIN = UserRole.USER) =>
@@ -167,7 +180,7 @@ describe('GET /api/organizations/:orgId/vaults', () => {
       .get(`/api/organizations/${ORG_ID}/vaults`)
       .set('Authorization', token('dave'))
     expect(res.status).toBe(403)
-    expect(res.body.error).toMatch(/not a member/)
+    expect(res.body.error?.message ?? res.body.error).toMatch(/not a member/)
   })
 
   it('returns 404 for non-existent org', async () => {
@@ -175,7 +188,7 @@ describe('GET /api/organizations/:orgId/vaults', () => {
       .get('/api/organizations/org-nonexistent/vaults')
       .set('Authorization', token('alice'))
     expect(res.status).toBe(404)
-    expect(res.body.error).toMatch(/not found/)
+    expect(res.body.error?.message ?? res.body.error).toMatch(/not found/)
   })
 
   it('returns org vaults for a member', async () => {
@@ -237,7 +250,7 @@ describe('GET /api/organizations/:orgId/analytics', () => {
       .get(`/api/organizations/${ORG_ID}/analytics`)
       .set('Authorization', token('carol'))
     expect(res.status).toBe(403)
-    expect(res.body.error).toMatch(/requires role/)
+    expect(res.body.error?.message ?? res.body.error).toMatch(/requires role/)
   })
 
   it('returns 404 for non-existent org', async () => {

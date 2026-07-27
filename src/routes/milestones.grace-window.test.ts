@@ -9,17 +9,15 @@
  *  - no dueDate set       → 200 OK (no deadline enforced)
  *  - zero grace window    → 400 immediately after dueDate
  */
-import assert from 'node:assert/strict'
 import type { AddressInfo } from 'node:net'
-import { afterEach, beforeEach, describe, test } from 'node:test'
 import express from 'express'
 import jwt from 'jsonwebtoken'
 import { milestonesRouter } from './milestones.js'
 import { errorHandler } from '../middleware/errorHandler.js'
 import { resetMilestonesTable, createMilestone } from '../services/milestones.js'
-import { resetVaultStore } from '../services/vaultStore.js'
+import { resetVaultStore, setTestVaults } from '../services/vaultStore.js'
+import type { PersistedVault } from '../types/vaults.js'
 import { UserRole } from '../types/user.js'
-import { setVaults } from './vaults.js'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -37,16 +35,22 @@ const fromNow = (deltaMs: number): string => new Date(Date.now() + deltaMs).toIS
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 
-/** Build a minimal vault object for the legacy in-memory array. */
+/** Build a minimal vault object compatible with the DB-backed vaultStore. */
 const makeVault = (
   id: string,
   opts: { endDate?: string; lateCheckInWindowSecs?: number } = {},
-) => ({
+): PersistedVault => ({
   id,
   status: 'active',
   creator: 'creator-1',
   verifier: 'verifier-1',
+  amount: '0',
+  startDate: fromNow(-24 * HOUR),
   endDate: opts.endDate ?? fromNow(24 * HOUR),
+  successDestination: 'GABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEF',
+  failureDestination: 'GHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMOPQRSTUVWXYZABCDEFGHIJ',
+  createdAt: new Date().toISOString(),
+  milestones: [],
   lateCheckInWindowSecs: opts.lateCheckInWindowSecs ?? 0,
 })
 
@@ -63,7 +67,6 @@ testApp.use(errorHandler)
 beforeEach(async () => {
   resetMilestonesTable()
   resetVaultStore()
-  setVaults([])
 
   server = testApp.listen(0)
   await new Promise<void>((resolve) => server!.once('listening', resolve))
@@ -96,33 +99,33 @@ describe('check-in grace window boundary tests', () => {
   test('just-before dueDate: accepts check-in (200)', async () => {
     const vaultId = 'vault-before'
     const dueDate = fromNow(5 * MINUTE) // due in 5 minutes
-    setVaults([makeVault(vaultId, { lateCheckInWindowSecs: 0 })])
+    setTestVaults([makeVault(vaultId, { lateCheckInWindowSecs: 0 })])
     const ms = createMilestone(vaultId, 'task', 'verifier-1', dueDate)
 
     const res = await validate(vaultId, ms.id)
-    assert.equal(res.status, 200)
+    expect(res.status).toBe(200)
   })
 
   test('within grace window: accepts check-in (200)', async () => {
     const vaultId = 'vault-within-grace'
     const dueDate = fromNow(-30 * MINUTE) // due 30 min ago
     const graceWindowSecs = 3600 // 1 hour grace
-    setVaults([makeVault(vaultId, { lateCheckInWindowSecs: graceWindowSecs })])
+    setTestVaults([makeVault(vaultId, { lateCheckInWindowSecs: graceWindowSecs })])
     const ms = createMilestone(vaultId, 'task', 'verifier-1', dueDate)
 
     const res = await validate(vaultId, ms.id)
-    assert.equal(res.status, 200)
+    expect(res.status).toBe(200)
   })
 
   test('after grace window: rejects with DeadlinePassed (400)', async () => {
     const vaultId = 'vault-after-grace'
     const dueDate = fromNow(-2 * HOUR) // due 2 hours ago
     const graceWindowSecs = 3600 // 1 hour grace — already expired
-    setVaults([makeVault(vaultId, { lateCheckInWindowSecs: graceWindowSecs })])
+    setTestVaults([makeVault(vaultId, { lateCheckInWindowSecs: graceWindowSecs })])
     const ms = createMilestone(vaultId, 'task', 'verifier-1', dueDate)
 
     const res = await validate(vaultId, ms.id)
-    assert.equal(res.status, 400)
+    expect(res.status).toBe(400)
     const body = (await res.json()) as { error: { message: string } }
     assert.match(body.error.message, /DeadlinePassed/i)
   })
@@ -130,11 +133,11 @@ describe('check-in grace window boundary tests', () => {
   test('zero grace window: rejects immediately after dueDate (400)', async () => {
     const vaultId = 'vault-zero-grace'
     const dueDate = fromNow(-1 * MINUTE) // due 1 minute ago, no grace
-    setVaults([makeVault(vaultId, { lateCheckInWindowSecs: 0 })])
+    setTestVaults([makeVault(vaultId, { lateCheckInWindowSecs: 0 })])
     const ms = createMilestone(vaultId, 'task', 'verifier-1', dueDate)
 
     const res = await validate(vaultId, ms.id)
-    assert.equal(res.status, 400)
+    expect(res.status).toBe(400)
     const body = (await res.json()) as { error: { message: string } }
     assert.match(body.error.message, /DeadlinePassed/i)
   })
@@ -144,11 +147,11 @@ describe('check-in grace window boundary tests', () => {
     const dueDate = fromNow(-30 * MINUTE) // due 30 min ago
     const endDate = fromNow(-10 * MINUTE) // vault ended 10 min ago (before grace expires)
     const graceWindowSecs = 3600 // 1 hour grace, but endDate caps it
-    setVaults([makeVault(vaultId, { endDate, lateCheckInWindowSecs: graceWindowSecs })])
+    setTestVaults([makeVault(vaultId, { endDate, lateCheckInWindowSecs: graceWindowSecs })])
     const ms = createMilestone(vaultId, 'task', 'verifier-1', dueDate)
 
     const res = await validate(vaultId, ms.id)
-    assert.equal(res.status, 400)
+    expect(res.status).toBe(400)
     const body = (await res.json()) as { error: { message: string } }
     assert.match(body.error.message, /DeadlinePassed/i)
   })
@@ -158,19 +161,19 @@ describe('check-in grace window boundary tests', () => {
     const dueDate = fromNow(-30 * MINUTE) // due 30 min ago
     const endDate = fromNow(2 * HOUR) // vault ends in 2 hours (grace fits)
     const graceWindowSecs = 3600 // 1 hour grace — still open
-    setVaults([makeVault(vaultId, { endDate, lateCheckInWindowSecs: graceWindowSecs })])
+    setTestVaults([makeVault(vaultId, { endDate, lateCheckInWindowSecs: graceWindowSecs })])
     const ms = createMilestone(vaultId, 'task', 'verifier-1', dueDate)
 
     const res = await validate(vaultId, ms.id)
-    assert.equal(res.status, 200)
+    expect(res.status).toBe(200)
   })
 
   test('no dueDate set: accepts check-in regardless of time (200)', async () => {
     const vaultId = 'vault-no-due'
-    setVaults([makeVault(vaultId, { lateCheckInWindowSecs: 0 })])
+    setTestVaults([makeVault(vaultId, { lateCheckInWindowSecs: 0 })])
     const ms = createMilestone(vaultId, 'task', 'verifier-1', null) // no dueDate
 
     const res = await validate(vaultId, ms.id)
-    assert.equal(res.status, 200)
+    expect(res.status).toBe(200)
   })
 })
