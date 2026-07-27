@@ -132,18 +132,18 @@ describe('addSubscriber schemaVersion', () => {
   })
 
   it('defaults to schema version 1', async () => {
-    const sub = await addSubscriber(TEST_ORG, 'https://example.com/hook', 'secret', ['vault_created'])
+    const sub = await addSubscriber(TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key', ['vault_created'])
     expect(sub.schemaVersion).toBe(1)
   })
 
   it('accepts version 2', async () => {
-    const sub = await addSubscriber(TEST_ORG, 'https://example.com/hook', 'secret', ['vault_created'], 2)
+    const sub = await addSubscriber(TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key', ['vault_created'], 2)
     expect(sub.schemaVersion).toBe(2)
   })
 
   it('rejects unsupported version', async () => {
     await expect(
-      addSubscriber(TEST_ORG, 'https://example.com/hook', 'secret', ['vault_created'], 99),
+      addSubscriber(TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key', ['vault_created'], 99),
     ).rejects.toThrow('Unsupported webhook schema version: 99')
   })
 })

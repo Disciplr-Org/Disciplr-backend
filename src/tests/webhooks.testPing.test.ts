@@ -109,7 +109,7 @@ function makeSubscriber(overrides: Partial<WebhookSubscriber> = {}): WebhookSubs
     id: randomUUID(),
     organizationId: 'org-abc',
     url: 'https://hooks.example.com/callback',
-    secret: 'test-secret-xyz',
+    secret: 'test-secret-xyz1',
     previousSecret: null,
     rotatedAt: null,
     events: [],
