@@ -111,11 +111,26 @@ const amountStringSchema = z.preprocess(
 
 // ─── Milestone schema ────────────────────────────────────────────────────────
 
-const milestoneSchema = z.object({
+/** Maximum length for milestone title. */
+export const MILESTONE_TITLE_MAX = 200
+
+/** Maximum length for milestone description. */
+export const MILESTONE_DESCRIPTION_MAX = 2000
+
+/**
+ * Canonical milestone field schema shared between vault-creation and the
+ * standalone milestone-creation endpoint.  Both code paths must produce
+ * milestones that satisfy the same invariants.
+ */
+export const milestoneSchema = z.object({
   title: z
     .string({ message: 'is required' })
-    .refine((v) => v.trim().length > 0, 'is required'),
-  description: z.string().optional(),
+    .refine((v) => v.trim().length > 0, 'is required')
+    .refine((v) => v.trim().length <= MILESTONE_TITLE_MAX, `must be at most ${MILESTONE_TITLE_MAX} characters`),
+  description: z
+    .string()
+    .max(MILESTONE_DESCRIPTION_MAX, `must be at most ${MILESTONE_DESCRIPTION_MAX} characters`)
+    .optional(),
   dueDate: utcTimestampSchema,
   amount: amountStringSchema,
 })

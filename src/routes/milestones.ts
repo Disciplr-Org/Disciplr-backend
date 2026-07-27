@@ -18,6 +18,10 @@ import {
   DuplicateVerifierVoteError,
   getVerifierProfile,
 } from '../services/verifiers.js'
+import {
+  milestoneSchema,
+  flattenZodErrors,
+} from '../services/vaultValidation.js'
 
 import { completeVault, transitionVaultStatus } from '../services/vaultTransitions.js'
 import { getVaultById } from '../services/vaultStore.js'
@@ -39,25 +43,27 @@ milestonesRouter.post('/', authenticate, requireUser, async (req: Request, res: 
     return next(AppError.conflict('Cannot add milestones to a non-active vault'))
   }
 
-  const { description, approvalThreshold = 1 } = req.body as {
-    description?: string
-    approvalThreshold?: number
-  }
-  if (!description?.trim()) {
-    return next(AppError.badRequest('description is required'))
+  // Validate milestone fields using the same schema as vault creation.
+  const parsed = milestoneSchema.safeParse(req.body)
+  if (!parsed.success) {
+    return next(AppError.badRequest('Invalid milestone payload', flattenZodErrors(parsed.error)))
   }
 
+  const { title, description, dueDate, amount } = parsed.data
+
+  const { approvalThreshold = 1 } = req.body as { approvalThreshold?: number }
   if (!Number.isInteger(approvalThreshold) || approvalThreshold < 1) {
     return next(AppError.badRequest('approvalThreshold must be a positive integer'))
   }
 
   const milestone = createMilestoneWithThreshold(
     vaultId,
-    description.trim(),
+    // Use title + optional description as the canonical description stored on the record.
+    description ? `${title}: ${description}` : title,
     approvalThreshold,
     vault.verifier,
   )
-  res.status(201).json(milestone)
+  res.status(201).json({ ...milestone, title, description, dueDate, amount })
 })
 
 // GET /api/vaults/:vaultId/milestones

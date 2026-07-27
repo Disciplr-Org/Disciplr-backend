@@ -50,6 +50,9 @@ jobs:
       - name: Typecheck OpenAPI docs
         run: npm run openapi:typecheck
 
+      - name: Check OpenAPI spec is up-to-date
+        run: npm run openapi:check
+
       - name: Apply migrations
         run: npm run migrate:latest
 
