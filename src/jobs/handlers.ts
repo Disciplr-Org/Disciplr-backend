@@ -149,15 +149,41 @@ export const createDefaultJobHandlers = (
       )
     }
 
-    jobHandlers['analytics.report.generate'] = async (payload, context) => {
-      const s3Config = resolveS3Config()
-      const orgIds = payload.orgIds ?? (await getAllOrgIds())
-      let generated = 0
-      let skipped = 0
-      for (const orgId of orgIds) {
-        if (!(await checkAndIncrementReportQuota(orgId))) {
-          skipped += 1
-          continue
+    for (const search of batch) {
+      try {
+        const queryDef = typeof search.query_definition === 'string'
+          ? JSON.parse(search.query_definition)
+          : search.query_definition
+
+        const queryLimit = Math.min(100, Math.max(1, queryDef.limit ?? 20))
+
+        let vaultQuery = db('vaults')
+          .where('organization_id', search.org_id)
+          .whereNull('deleted_at')
+          .select('id')
+
+        if (queryDef.status) vaultQuery = vaultQuery.where('status', queryDef.status)
+        if (queryDef.verifier) vaultQuery = vaultQuery.where('verifier', queryDef.verifier)
+        if (queryDef.amount_min) vaultQuery = vaultQuery.where('amount', '>=', queryDef.amount_min)
+        if (queryDef.amount_max) vaultQuery = vaultQuery.where('amount', '<=', queryDef.amount_max)
+        if (queryDef.date_from) vaultQuery = vaultQuery.where('created_at', '>=', new Date(queryDef.date_from))
+        if (queryDef.date_to) vaultQuery = vaultQuery.where('created_at', '<=', new Date(queryDef.date_to))
+
+        const sortField = queryDef.sort_by ?? 'created_at'
+        const sortOrder = (queryDef.sort_order ?? 'desc') as 'asc' | 'desc'
+        vaultQuery = vaultQuery.orderBy(sortField, sortOrder).orderBy('id', 'desc').limit(queryLimit)
+
+        const rows = await vaultQuery
+        const ids: string[] = rows.map((r: { id: string }) => r.id)
+        const newHash = createHash('sha256').update(JSON.stringify([...ids].sort())).digest('hex')
+
+        if (newHash !== search.last_result_hash) {
+          await notificationService.send(
+            search.alert_recipient,
+            `Saved search "${search.name}" has new results`,
+            `Your saved vault search "${search.name}" returned ${ids.length} result(s). The result set has changed since the last evaluation.`,
+          )
+          notified++
         }
         const report = await renderOrgAnalyticsSnapshot(orgId)
         const key = `analytics/${orgId}/${Date.now()}.json`
