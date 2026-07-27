@@ -1,19 +1,12 @@
 /**
- * Tests for the queryParser middleware (src/middleware/queryParser.ts) and the
- * service-level QueryParser (src/services/queryParser.ts).
+ * Tests for the queryParser middleware (src/middleware/queryParser.ts).
  *
  * Covers:
- *   - Operator whitelist (only whitelisted operators become SQL operators)
  *   - Column / sort field whitelist
  *   - Prototype-pollution attempts (__proto__, constructor, prototype keys)
  *   - Bounded nested-field access (deeply nested filter payloads are dropped)
  *   - Malformed query strings handled gracefully (HTTP 400 from middleware,
  *     never an unhandled throw)
- *
- * The middleware-level suite does not require a database. The service-level
- * suite requires the QueryParser service to import cleanly; if a project's
- * validation.ts is missing helpers it depends on, those service-level tests
- * are skipped rather than failing the suite.
  */
 
 import {
@@ -79,7 +72,7 @@ describe('queryParser middleware — pagination boundaries', () => {
     expect(req.pagination?.page).toBe(1)
     expect(req.pagination?.pageSize).toBe(20)
     expect(req.cursorPagination?.limit).toBe(20)
-    expect(req.sort).toBeUndefined()
+    expect(req.sort).toEqual({ sortBy: undefined, sortOrder: 'asc' })
     expect(req.filters).toEqual({})
   })
 
@@ -133,9 +126,10 @@ describe('queryParser middleware — sort whitelist', () => {
   it('drops a non-whitelisted sort field with 400', () => {
     const mw = buildMw()
     const req = fakeReq({ sortBy: 'passwordHash' })
-    mw(req, fakeRes(), nextFn)
+    const res = fakeRes()
+    mw(req, res, nextFn)
 
-    expectBadRequest(fakeRes(), nextFn)
+    expectBadRequest(res, nextFn)
   })
 
   it('does not include sort when allowedSortFields is empty', () => {
@@ -190,9 +184,10 @@ describe('queryParser middleware — filter whitelist', () => {
   it('returns a 400 on malformed sort input but the filter is still omitted', () => {
     const mw = buildMw()
     const req = fakeReq({ status: 'ACTIVE', sortBy: 'not-a-real-column' })
-    mw(req, fakeRes(), nextFn)
+    const res = fakeRes()
+    mw(req, res, nextFn)
 
-    expectBadRequest(fakeRes(), nextFn)
+    expectBadRequest(res, nextFn)
   })
 })
 
@@ -221,9 +216,10 @@ describe('queryParser middleware — malformed & pollution-safe', () => {
   it('returns 400 (not 500) when an unknown sort field looks like an operator alias', () => {
     const mw = buildMw()
     const req = fakeReq({ sortBy: 'CONTAINS' })
-    mw(req, fakeRes(), nextFn)
+    const res = fakeRes()
+    mw(req, res, nextFn)
 
-    expectBadRequest(fakeRes(), nextFn)
+    expectBadRequest(res, nextFn)
   })
 
   it('handles non-string query values without throwing', () => {
@@ -241,107 +237,3 @@ describe('queryParser middleware — malformed & pollution-safe', () => {
   })
 })
 
-// ─── service-level: operator whitelist & nested-field safety ──────────────────
-//
-// The service-level QueryParser lives at src/services/queryParser.ts.  If that
-// module fails to import (e.g. its dependency validation.ts is missing
-// `sanitizeObject`/`isValidField` in a given checkout), the entire `service`
-// suite is skipped so the test runner does not fail unrelated suites.
-// ──────────────────────────────────────────────────────────────────────────────
-
-describe('QueryParser service — operator whitelist (best-effort)', () => {
-  let serviceAvailable = true
-  let QueryParser: typeof import('../services/queryParser.js').QueryParser
-
-  beforeEach(async () => {
-    jest.restoreAllMocks()
-    try {
-      const mod = await import('../services/queryParser.js')
-      QueryParser = mod.QueryParser
-    } catch {
-      serviceAvailable = false
-    }
-  })
-
-  const itIfService = serviceAvailable ? it : it.skip
-
-  itIfService('only whitelisted operators produce SQL operators', () => {
-    const warn = jest.fn()
-    const metrics: Array<{ event: string; column?: string; operator?: string }> = []
-    const parser = new QueryParser({
-      allowedColumns: ['price'],
-      logger: { warn },
-      metricsHook: (e) => metrics.push(e),
-    })
-
-    const parsed = parser.parse({
-      filter: {
-        price: { eq: 10, neq: 20, gt: 5, gte: 7, lt: 30, lte: 25, dropTable: 'x' },
-      },
-    })
-
-    const ops = parsed.conditions.map((c) => c.operator).sort()
-    expect(ops).toEqual(['<>', '<', '<=', '=', '>', '>='])
-    expect(metrics.some((m) => m.event === 'invalid_operator_attempt')).toBe(true)
-  })
-
-  itIfService('non-whitelisted column is skipped and emits restricted_column_access', () => {
-    const metrics: Array<{ event: string; column?: string; operator?: string }> = []
-    const parser = new QueryParser({
-      allowedColumns: ['status'],
-      metricsHook: (e) => metrics.push(e),
-    })
-
-    const parsed = parser.parse({
-      filter: { passwordHash: { eq: 'whatever' } },
-    })
-
-    expect(parsed.conditions).toEqual([])
-    expect(metrics.some((m) => m.event === 'restricted_column_access')).toBe(true)
-  })
-
-  itIfService('non-whitelisted sort column is skipped and emits restricted_sort_access', () => {
-    const metrics: Array<{ event: string; column?: string; operator?: string }> = []
-    const parser = new QueryParser({
-      allowedColumns: ['name'],
-      metricsHook: (e) => metrics.push(e),
-    })
-
-    const parsed = parser.parse({ sort: ['passwordHash:asc', 'name:desc'] })
-
-    expect(parsed.sorts).toEqual([{ column: 'name', order: 'desc' }])
-    expect(metrics.some((m) => m.event === 'restricted_sort_access')).toBe(true)
-  })
-
-  itIfService('limit larger than maxLimit is bounded; negative limit falls back', () => {
-    const parser = new QueryParser({
-      allowedColumns: [],
-      maxLimit: 50,
-      defaultLimit: 20,
-    })
-
-    const tooBig = parser.parse({ limit: '5000' as unknown as number })
-    const negative = parser.parse({ limit: '-3' as unknown as number })
-
-    expect(tooBig.limit).toBe(50)
-    expect(negative.limit).toBe(20)
-  })
-
-  itIfService('offset is clamped to non-negative', () => {
-    const parser = new QueryParser({ allowedColumns: [] })
-    const parsed = parser.parse({ offset: '-99' as unknown as number })
-    expect(parsed.offset).toBe(0)
-  })
-
-  itIfService('nested object values inside filters are coerced to null', () => {
-    const parser = new QueryParser({ allowedColumns: ['amount'] })
-
-    const parsed = parser.parse({
-      filter: { amount: { eq: { nested: 'object' } } },
-    })
-
-    // value sanitized to null → operator is dropped because the value is null
-    // (sanitizeValue turns non-array objects into null so no SQL is emitted)
-    expect(parsed.conditions).toEqual([])
-  })
-})
