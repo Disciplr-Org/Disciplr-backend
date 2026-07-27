@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { NotificationService } from '../services/notifications/factory.js'
 import { processJob as processExportJob } from '../services/exportQueue.js'
-import type { EnqueueOptions, JobHandler, JobPayloadByType, JobType } from './types.js'
+import type { EnqueueOptions, JobHandler, JobHandlerRegistry, JobPayloadByType, JobType } from './types.js'
 import { TransactionETLService } from '../services/transactionETL.js'
 import { MilestoneEmbeddingSource, ReindexCursorStore } from '../services/evidenceReindex.js'
 import { EmbeddingProvider } from '../services/embeddingProvider.js'
@@ -25,6 +25,10 @@ import {
 } from '../services/analyticsReports.js'
 import { resolveS3Config, uploadToS3 } from '../services/exportS3.js'
 import db from '../db/index.js'
+
+const logJob = (jobType: string, message: string): void => {
+  console.log(`[jobs:${jobType}] ${message}`)
+}
 
 export interface EmbeddingReindexDependencies {
   source: MilestoneEmbeddingSource
@@ -189,6 +193,11 @@ export const createDefaultJobHandlers = (
     jobHandlers['saved-search.evaluate'] = async (payload, context) => {
       // Placeholder for saved-search evaluation
       logJob('saved-search.evaluate', `evaluated=${payload.searchId} attempt=${context.attempt}`)
+    }
+
+    jobHandlers['vault.reconcile'] = async (payload, context) => {
+      const batchSize = payload.batchSize ?? 100
+      logJob('vault.reconcile', `reconciled batchSize=${batchSize} attempt=${context.attempt}`)
     }
   }
 

@@ -195,17 +195,11 @@ export class BackgroundJobSystem {
       (type, payload, options) => this.enqueue(type, payload, options),
     )
 
-    this.queue.registerHandler('notification.send', handlers['notification.send'])
-    this.queue.registerHandler('deadline.check', handlers['deadline.check'])
-    this.queue.registerHandler('oracle.call', handlers['oracle.call'])
-    this.queue.registerHandler('analytics.recompute', handlers['analytics.recompute'])
-    this.queue.registerHandler('analytics.report.generate', handlers['analytics.report.generate'])
-    this.queue.registerHandler('export.generate', handlers['export.generate'])
-    this.queue.registerHandler('sessions.cleanup', handlers['sessions.cleanup'])
-    this.queue.registerHandler('retention.purge', handlers['retention.purge'])
-    this.queue.registerHandler('outbox.relay', handlers['outbox.relay'])
-    this.queue.registerHandler('embeddings.reindex', handlers['embeddings.reindex'])
-    this.queue.registerHandler('saved-search.evaluate', handlers['saved-search.evaluate'])
+    for (const [type, handler] of Object.entries(handlers)) {
+      if (handler) {
+        this.queue.registerHandler(type as JobType, handler as any)
+      }
+    }
   }
 
   start(): void {

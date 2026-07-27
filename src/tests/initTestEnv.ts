@@ -10,5 +10,6 @@ import { initEnv } from '../config/env.js'
 
 process.env.DATABASE_URL ??=
   'postgresql://postgres:postgres@localhost:5432/postgres'
+process.env.DOWNLOAD_SECRET ??= 'test-download-secret'
 
 initEnv()
