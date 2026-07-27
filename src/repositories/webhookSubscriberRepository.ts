@@ -21,7 +21,7 @@ interface SubscriberRow {
   secret: string
   previous_secret: string | null
   rotated_at: Date | null
-  events: string[]
+  events: string | string[]
   active: boolean
   schema_version: number
   field_policy: unknown
@@ -89,7 +89,19 @@ function toSubscriber(row: SubscriberRow): WebhookSubscriber {
     rotatedAt: row.rotated_at instanceof Date
       ? row.rotated_at.toISOString()
       : (row.rotated_at ? String(row.rotated_at) : null),
-    events: row.events ?? [],
+    events: (() => {
+      const parsed = typeof row.events === 'string'
+        ? (() => {
+            try {
+              const parsedJson = JSON.parse(row.events)
+              return Array.isArray(parsedJson) ? parsedJson : []
+            } catch {
+              return []
+            }
+          })()
+        : row.events ?? []
+      return parsed
+    })(),
     active: row.active,
     schemaVersion: row.schema_version ?? 1,
     fieldPolicy: parseFieldPolicy(row.field_policy, row.id),
