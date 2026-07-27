@@ -281,17 +281,22 @@ export const listVerifications = async (targetIds?: string[]): Promise<Verificat
 }
 
 export const getVerifierStats = async (userId: string) => {
-  const totalQ = db('verifications').where({ verifier_user_id: userId }).count<{ count: string }>('id as count').first()
-  const approvalsQ = db('verifications').where({ verifier_user_id: userId, result: 'approved' }).count<{ count: string }>('id as count').first()
-  const rejectionsQ = db('verifications').where({ verifier_user_id: userId, result: 'rejected' }).count<{ count: string }>('id as count').first()
-  const disputesQ = db('verifications').where({ verifier_user_id: userId, disputed: true }).count<{ count: string }>('id as count').first()
+  const raw = await db.raw<{ rows: Array<{ total: string; approvals: string; rejections: string; disputes: string }> }>(
+    `SELECT
+       COUNT(*)                                          AS total,
+       COUNT(*) FILTER (WHERE result    = 'approved')   AS approvals,
+       COUNT(*) FILTER (WHERE result    = 'rejected')   AS rejections,
+       COUNT(*) FILTER (WHERE disputed  = TRUE)         AS disputes
+     FROM verifications
+     WHERE verifier_user_id = ?`,
+    [userId],
+  )
 
-  const [totalR, approvalsR, rejectionsR, disputesR] = await Promise.all([totalQ, approvalsQ, rejectionsQ, disputesQ])
-
-  const total = Number(totalR?.count ?? 0)
-  const approvals = Number(approvalsR?.count ?? 0)
-  const rejections = Number(rejectionsR?.count ?? 0)
-  const disputes = Number(disputesR?.count ?? 0)
+  const row = raw.rows[0]
+  const total = Number(row?.total ?? 0)
+  const approvals = Number(row?.approvals ?? 0)
+  const rejections = Number(row?.rejections ?? 0)
+  const disputes = Number(row?.disputes ?? 0)
 
   const approvalRatio = total === 0 ? 0 : approvals / total
   const rejectionRatio = total === 0 ? 0 : rejections / total
