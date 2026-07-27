@@ -40,12 +40,16 @@ function assertOrgScope(context: GqlContext, resourceOrgId: string | null | unde
 // Batch-fetch verifications by targetId (org-scoped: only load IDs from within the org).
 const createLoaders = (orgVaultIds: Set<string>) => ({
   verificationsLoader: new DataLoader<string, VerificationRecord[]>(async (targetIds) => {
-    const allVerifications = await listVerifications()
+    // Scope the DB fetch to only the targetIds requested in this batch that
+    // also belong to the current org — avoids a full-table scan.
+    const scopedIds = targetIds.filter((id) => orgVaultIds.has(id))
+    const verifications = scopedIds.length > 0
+      ? await listVerifications(scopedIds)
+      : []
     const grouped = new Map<string, VerificationRecord[]>()
     targetIds.forEach(id => grouped.set(id, []))
-    for (const v of allVerifications) {
-      // Only surface verifications whose targetId is a vault/milestone in this org
-      if (grouped.has(v.targetId) && orgVaultIds.has(v.targetId)) {
+    for (const v of verifications) {
+      if (grouped.has(v.targetId)) {
         grouped.get(v.targetId)!.push(v)
       }
     }

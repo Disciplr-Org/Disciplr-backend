@@ -271,8 +271,12 @@ export const recordVerification = async (
   return mapVerificationRow(rec)
 }
 
-export const listVerifications = async (): Promise<VerificationRecord[]> => {
-  const rows = await db('verifications').select('*').orderBy('timestamp', 'desc')
+export const listVerifications = async (targetIds?: string[]): Promise<VerificationRecord[]> => {
+  const query = db('verifications').select('*').orderBy('timestamp', 'desc')
+  if (targetIds && targetIds.length > 0) {
+    query.whereIn('target_id', targetIds)
+  }
+  const rows = await query
   return rows.map(mapVerificationRow)
 }
 
