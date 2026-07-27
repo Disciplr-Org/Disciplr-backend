@@ -6,6 +6,7 @@ import { generateAccessToken } from '../lib/auth-utils.js'
 import { UserRole } from '../types/user.js'
 import { createJobsRouter } from '../routes/jobs.js'
 import { BackgroundJobSystem } from '../jobs/system.js'
+import { parseEnqueueOptions } from '../jobs/enqueueOptions.js'
 
 const noopLimiter = (_req: Request, _res: Response, next: NextFunction) => next()
 
@@ -153,4 +154,15 @@ describe('Jobs API Zod Validation - POST /api/jobs/enqueue', () => {
 
     expect(resAbove.body.success).toBe(false)
     expect(resAbove.body.error.code).toBe('VALIDATION_ERROR')
+  })
+
+  it('returns null for invalid enqueue option values', () => {
+    expect(parseEnqueueOptions({ delayMs: -1 })).toBeNull()
+    expect(parseEnqueueOptions({ delayMs: NaN })).toBeNull()
+    expect(parseEnqueueOptions({ maxAttempts: 0 })).toBeNull()
+    expect(parseEnqueueOptions({ maxAttempts: 11 })).toBeNull()
+    expect(parseEnqueueOptions({ maxAttempts: 3.5 })).toBeNull()
+    expect(parseEnqueueOptions({ delayMs: 1000, maxAttempts: 5 })).toEqual({ delayMs: 1000, maxAttempts: 5 })
+  })
+})
  

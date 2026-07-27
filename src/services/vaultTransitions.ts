@@ -1,9 +1,27 @@
-import { vaults, type Vault } from '../routes/vaults.js';
-import { allMilestonesVerified } from './milestones.js';
+import { allMilestonesVerified } from './milestones.js'
 import { type Knex } from 'knex';
 import { UserRole } from '../types/user.js';
 
 type TerminalStatus = 'completed' | 'failed' | 'cancelled';
+
+// In-memory vault array for test compatibility (used by legacy transition functions)
+let memoryVaults: any[] = [];
+export const setTestVaults = (newVaults: any[]) => { memoryVaults = newVaults };
+
+export interface Vault {
+  id: string
+  creator: string
+  amount: string
+  status: 'draft' | 'active' | 'completed' | 'failed' | 'cancelled' | 'disputed'
+  startTimestamp: string
+  endTimestamp: string
+  successDestination: string
+  failureDestination: string
+  verifier?: string
+  createdAt: string
+  endDate?: string  // Alias for endTimestamp (used in some tests)
+  lateCheckInWindowSecs?: number
+}
 
 export interface TransitionResult {
   success: boolean;
@@ -28,7 +46,11 @@ function assertNever(x: never): never {
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled']);
 
 const findVault = (vaultId: string): Vault | undefined =>
-  vaults.find((v) => v.id === vaultId);
+  memoryVaults.find((v) => v.id === vaultId);
+
+export const resetTestVaults = (): void => {
+  memoryVaults = [];
+};
 
 export const isValidTransition = (
   currentStatus: string,
@@ -106,7 +128,7 @@ export const cancelVault = (vaultId: string, requesterId: string): TransitionRes
 export const checkExpiredVaults = (): string[] => {
   const now = new Date();
   const failed: string[] = [];
-  for (const vault of vaults) {
+  for (const vault of memoryVaults) {
     if (vault.status !== 'active') continue;
     const end = new Date(vault.endTimestamp);
     if (end <= now) {

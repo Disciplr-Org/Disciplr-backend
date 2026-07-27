@@ -67,19 +67,36 @@ const positiveIntFromEnv = (key: string, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
-const getSubmitRetryConfig = (): RetryConfig => ({
-  maxAttempts: positiveIntFromEnv('RETRY_MAX_ATTEMPTS', DEFAULT_SUBMIT_RETRY_MAX_ATTEMPTS),
-  initialBackoffMs: positiveIntFromEnv('RETRY_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_BACKOFF_MS),
-  maxBackoffMs: positiveIntFromEnv('SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_MAX_BACKOFF_MS),
-  backoffMultiplier: DEFAULT_SUBMIT_RETRY_BACKOFF_MULTIPLIER,
-  jitterFactor: DEFAULT_SUBMIT_RETRY_JITTER_FACTOR,
-})
+let _cachedSubmitRetryConfig: RetryConfig | null = null
+
+const getSubmitRetryConfig = (): RetryConfig => {
+  if (_cachedSubmitRetryConfig) return _cachedSubmitRetryConfig
+  _cachedSubmitRetryConfig = {
+    maxAttempts: positiveIntFromEnv('RETRY_MAX_ATTEMPTS', DEFAULT_SUBMIT_RETRY_MAX_ATTEMPTS),
+    initialBackoffMs: positiveIntFromEnv('RETRY_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_BACKOFF_MS),
+    maxBackoffMs: positiveIntFromEnv('SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_MAX_BACKOFF_MS),
+    backoffMultiplier: DEFAULT_SUBMIT_RETRY_BACKOFF_MULTIPLIER,
+    jitterFactor: DEFAULT_SUBMIT_RETRY_JITTER_FACTOR,
+  }
+  return _cachedSubmitRetryConfig
+}
+
+/**
+ * Resolved once per process — env is static for the process lifetime.
+ * `undefined` means not yet resolved; `null` means submit mode unavailable.
+ */
+let cachedSorobanConfig: SorobanConfig | null | undefined
 
 /**
  * Returns the Soroban config only when ALL required env vars are present.
  * Acts as the feature-flag: if any var is missing, submit mode is unavailable.
+ * Result is cached for the process lifetime (see `resetSorobanConfig` for tests).
  */
 export const getSorobanConfig = (): SorobanConfig | null => {
+  if (cachedSorobanConfig !== undefined) {
+    return cachedSorobanConfig
+  }
+
   const contractId = process.env.SOROBAN_CONTRACT_ID
   const networkPassphrase = process.env.SOROBAN_NETWORK_PASSPHRASE
   const sourceAccount = process.env.SOROBAN_SOURCE_ACCOUNT
@@ -87,10 +104,11 @@ export const getSorobanConfig = (): SorobanConfig | null => {
   const secretKey = process.env.SOROBAN_SECRET_KEY
 
   if (!contractId || !networkPassphrase || !sourceAccount || !rpcUrls || rpcUrls.length === 0 || !secretKey) {
-    return null
+    cachedSorobanConfig = null
+    return cachedSorobanConfig
   }
 
-  return {
+  cachedSorobanConfig = {
     contractId,
     networkPassphrase,
     sourceAccount,
@@ -103,6 +121,12 @@ export const getSorobanConfig = (): SorobanConfig | null => {
     submitTimeoutMs: positiveIntFromEnv('SOROBAN_SUBMIT_TIMEOUT_MS', 60_000),
     submitRetry: getSubmitRetryConfig(),
   }
+  return cachedSorobanConfig
+}
+
+/** Clear cached Soroban config. For testing only. */
+export const resetSorobanConfig = (): void => {
+  cachedSorobanConfig = undefined
 }
 
 /**
@@ -254,8 +278,16 @@ export class SorobanRpcPool {
   }
 
   private async _probeDownEndpoints(): Promise<void> {
+    // Probe both 'down' and 'degraded' endpoints.
+    //
+    // 'degraded' endpoints are deprioritised by getOrderedUrls(), so they stop
+    // receiving organic traffic once healthier alternatives exist. Without
+    // explicit probing here they have no path back to 'healthy': organic
+    // calls won't reach them (ordering steers requests elsewhere) and the
+    // background job previously only checked 'down'. Including 'degraded'
+    // ensures recovery is possible for any non-healthy endpoint.
     const probes = this.states
-      .filter((s) => s.status === 'down')
+      .filter((s) => s.status === 'down' || s.status === 'degraded')
       .map(async (state) => {
         state.lastProbeAt = Date.now()
         const healthy = await this.probeFn(state.url, this.probeTimeoutMs)

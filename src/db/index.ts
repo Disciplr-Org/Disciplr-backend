@@ -26,19 +26,16 @@ const knexConfig = {
 
 export const db = knex(knexConfig)
 
-const sslEnabled = process.env.NODE_ENV === 'production' || process.env.DATABASE_SSL === 'true'
+const sslEnabled = getEnv().NODE_ENV === 'production' || process.env.DATABASE_SSL === 'true'
 const rejectUnauthorized = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false'
 
-export const pool = new pg.Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: sslEnabled
-      ? rejectUnauthorized
-        ? { rejectUnauthorized: true }
-        : { rejectUnauthorized: false }
-      : false,
 export const pool = new Pool({
-    connectionString: getEnv().DATABASE_URL,
-    ssl: getEnv().NODE_ENV === 'production' ? { rejectUnauthorized: true } : false
+  connectionString: getEnv().DATABASE_URL,
+  ssl: sslEnabled
+    ? rejectUnauthorized
+      ? { rejectUnauthorized: true }
+      : { rejectUnauthorized: false }
+    : false,
 })
 
 export default db

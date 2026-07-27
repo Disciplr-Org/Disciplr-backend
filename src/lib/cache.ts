@@ -1,4 +1,4 @@
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 import { randomUUID } from 'node:crypto';
 
 interface CacheEntry {

@@ -3,6 +3,9 @@ import type { Transaction, HorizonOperation, ETLConfig, VaultReference } from '.
 import db from '../db/index.js'
 import { getSorobanConfig, getSorobanClient, type OnChainVaultState } from './soroban.js'
 import { logVaultDriftAnomaly } from '../security/abuse-monitor.js'
+import { CheckpointStore } from './checkpointStore.js'
+
+const ETL_CHECKPOINT_KEY = '__TRANSACTION_ETL_GLOBAL__'
 
 export class TransactionETLService {
   private server: Horizon.Server
@@ -73,6 +76,7 @@ export class TransactionETLService {
     console.log('Starting incremental sync...')
 
     let cursor = this.config.cursor || await this.getLastProcessedCursor()
+    let lastLedger = 0
     let hasMore = true
     let processedCount = 0
 
@@ -94,7 +98,9 @@ export class TransactionETLService {
         }
 
         // Update cursor to the last operation's ID
-        cursor = operations[operations.length - 1].id
+        const lastOp = operations[operations.length - 1]
+        cursor = lastOp.id
+        lastLedger = lastOp.ledger
         processedCount += operations.length
 
         console.log(`Processed ${processedCount} operations...`)
@@ -110,7 +116,7 @@ export class TransactionETLService {
     
     // Save the last cursor for next run
     if (cursor) {
-      await this.saveLastProcessedCursor(cursor)
+      await this.saveLastProcessedCursor(cursor, lastLedger)
     }
   }
 
@@ -128,7 +134,7 @@ export class TransactionETLService {
       }
       
       const response = await builder.call()
-      return response.records.map(this.transformHorizonOperation)
+      return response.records.map((record) => this.transformHorizonOperation(record))
     } catch (error) {
       console.error('Error fetching Horizon operations:', error)
       throw error
@@ -375,15 +381,16 @@ export class TransactionETLService {
   }
 
   private async getLastProcessedCursor(): Promise<string | undefined> {
-    // This could be stored in a separate etl_state table or Redis
-    // For now, return undefined to start from the beginning
-    return undefined
+    const store = new CheckpointStore(db)
+    const checkpoint = await store.getCheckpoint(ETL_CHECKPOINT_KEY)
+    return checkpoint?.lastPagingToken ?? undefined
   }
 
-  private async saveLastProcessedCursor(cursor: string): Promise<void> {
-    // Save cursor for next incremental sync
-    console.log(`Saving cursor: ${cursor}`)
-    // TODO: Implement cursor persistence
+  private async saveLastProcessedCursor(cursor: string, lastLedger: number): Promise<void> {
+    console.log(`Saving cursor: ${cursor} at ledger ${lastLedger}`)
+    const store = new CheckpointStore(db)
+    // We use resetCheckpoint to forcefully update the cursor without strict monotonic lastLedger checks
+    await store.resetCheckpoint(ETL_CHECKPOINT_KEY, lastLedger, cursor)
   }
 
   // ---------------------------------------------------------------------------
@@ -434,7 +441,7 @@ export class TransactionETLService {
       
       const vaultOperations = operations.records
         .filter(op => new Date(op.created_at) >= from && new Date(op.created_at) <= to)
-        .map(this.transformHorizonOperation)
+        .map((record) => this.transformHorizonOperation(record))
       
       const transactions = await this.filterAndTransformOperations(vaultOperations)
       

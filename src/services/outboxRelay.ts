@@ -14,7 +14,7 @@ const MAX_ATTEMPTS = 5
  * immediately, leaving all outbox rows untouched for later replay.
  */
 export async function relayOutboxBatch(batchSize = 50): Promise<number> {
-  if (isPaused()) {
+  if (await isPaused()) {
     return 0
   }
   return await db.transaction(async (trx) => {
