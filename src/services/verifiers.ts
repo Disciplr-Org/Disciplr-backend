@@ -533,17 +533,6 @@ export const getApprovedVerifiersCount = async (milestoneId: string): Promise<nu
 }
 
 /**
- * Get all distinct verifier votes for a milestone.
- */
-export const getAllMilestoneVotes = async (milestoneId: string): Promise<MilestoneApproval[]> => {
-  const rows = await db('milestone_approvals')
-    .where({ milestone_id: milestoneId })
-    .orderBy('created_at', 'asc')
-
-  return rows.map(mapMilestoneApprovalRow)
-}
-
-/**
  * Check if a verifier has already voted on a milestone.
  */
 export const hasVerifierVoted = async (
@@ -558,17 +547,6 @@ export const hasVerifierVoted = async (
     .first()
 
   return !!record
-}
-
-/**
- * Check if a milestone has met its approval threshold.
- */
-export const hasMilestoneMetThreshold = async (
-  milestoneId: string,
-  approvalThreshold: number,
-): Promise<boolean> => {
-  const approvedCount = await getApprovedVerifiersCount(milestoneId)
-  return approvedCount >= approvalThreshold
 }
 
 /**
