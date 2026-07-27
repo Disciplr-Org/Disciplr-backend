@@ -124,7 +124,7 @@ export interface CircuitBreakerConfig {
  *   { eventId, eventType, timestamp, data, organizationId, schema_version: 1 }
  *
  * v2 – Compact envelope:
- *   { schema_version: 2, event_type, data }
+ *   { schema_version: 2, event_type, organization_id, data }
  */
 export const buildVersionedPayload = (
   subscriber: WebhookSubscriber,
@@ -148,6 +148,7 @@ export const buildVersionedPayload = (
       return JSON.stringify({
         schema_version: 2,
         event_type: payload.eventType,
+        organization_id: payload.organizationId,
         data: maskedData,
       })
     default:

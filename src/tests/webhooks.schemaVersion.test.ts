@@ -113,8 +113,10 @@ describe('buildVersionedPayload', () => {
     expect(json.schema_version).toBe(2)
     expect(json.event_type).toBe(payload.eventType)
     expect(json.data).toEqual(payload.data)
+    expect(json.organization_id).toBe(payload.organizationId)
     expect(json.eventId).toBeUndefined()
     expect(json.timestamp).toBeUndefined()
+    // camelCase organizationId must not leak; only snake_case organization_id is included
     expect(json.organizationId).toBeUndefined()
   })
 
@@ -212,6 +214,7 @@ describe('dispatchWebhookEvent schema versioning', () => {
     const body = JSON.parse(callArgs[1].body)
     expect(body.schema_version).toBe(2)
     expect(body.event_type).toBe(payload.eventType)
+    expect(body.organization_id).toBe(payload.organizationId)
     expect(body.data).toEqual(payload.data)
     expect(body.eventId).toBeUndefined()
   })
