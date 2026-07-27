@@ -1,23 +1,33 @@
-import { Router, Request, Response, NextFunction } from "express";
-import { orgAnalyticsRateLimiter } from "../middleware/rateLimiter.js";
-import { authenticate } from "../middleware/auth.js";
-import { requireOrgAccess, requireOrgRole } from "../middleware/orgAuth.js";
-import db from "../db/index.js";
-import { getTeamRollup } from "../services/team.js";
-import {
-  getOrgAnalytics,
-  listOrgVaultsForRiskAnalytics,
-} from "../services/orgAnalytics.js";
-import { getOrgRiskAnalytics } from "../services/analytics.service.js";
-import { getOrgReports } from "../services/analyticsReports.js";
-import { resolveS3Config, getExportSignedUrl } from "../services/exportS3.js";
-import { parsePaginationParams, paginateArray } from "../utils/pagination.js";
-import { getCohortRetention } from "../services/cohortRetention.js";
+import { orgAnalyticsRateLimiter } from '../middleware/rateLimiter.js'
+import { Router, Request, Response } from 'express'
+import { authenticate } from '../middleware/auth.js'
+import { requireOrgAccess } from '../middleware/orgAuth.js'
+import { getOrgRiskAnalytics } from '../services/analytics.service.js'
+import { vaults, Vault } from './vaults.js'
 
 export const orgAnalyticsRouter = Router();
 
 orgAnalyticsRouter.get(
-  "/:orgId/analytics/risk",
+  '/:orgId/analytics/risk',
+  authenticate,
+  requireOrgAccess('owner', 'admin'),
+  orgAnalyticsRateLimiter,
+  async (req: Request, res: Response) => {
+    const { orgId } = req.params
+    const startDate = typeof req.query.startDate === 'string' ? req.query.startDate : undefined
+    const endDate = typeof req.query.endDate === 'string' ? req.query.endDate : undefined
+
+    try {
+      const result = getOrgRiskAnalytics(orgId, vaults, { startDate, endDate })
+      res.json(result)
+    } catch (error: any) {
+      res.status(400).json({ error: error.message })
+    }
+  }
+)
+
+orgAnalyticsRouter.get(
+  '/:orgId/analytics',
   authenticate,
   requireOrgAccess("owner", "admin"),
   orgAnalyticsRateLimiter,

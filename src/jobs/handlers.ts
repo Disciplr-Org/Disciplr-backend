@@ -127,96 +127,85 @@ export const createDefaultJobHandlers = (
         `sent ${remindersSent} reminders attempt=${context.attempt}`,
       )
     }
-
-    jobHandlers['milestone.reminders.digest'] = async (payload, context) => {
-      const result = await sendMilestoneDigestReminders({
-        leadTimesMs: payload.leadTimesMs,
-        limit: payload.limit,
-      })
-      logJob(
-        'milestone.reminders.digest',
-        `sent=${result.digestsSent} deferred=${result.digestsDeferred} milestones=${result.totalMilestones} attempt=${context.attempt}`,
-      )
+  },
+  'milestone.reminders': async (payload, context) => {
+    const remindersSent = await sendMilestoneReminders({
+      leadTimesMs: payload.leadTimesMs,
+      limit: payload.limit,
+    })
+    logJob(
+      'milestone.reminders',
+      `sent ${remindersSent} reminders attempt=${context.attempt}`,
+    )
+  },
+  'oracle.call': async (payload, context) => {
+    await sleep(60)
+    const requestId = payload.requestId ?? context.jobId
+    logJob(
+      'oracle.call',
+      `oracle=${payload.oracle} symbol=${payload.symbol} requestId=${requestId} attempt=${context.attempt}`,
+    )
+  },
+  'analytics.recompute': async (payload, context) => {
+    await sleep(120)
+    const entity = payload.entityId ?? 'all'
+    const reason = payload.reason ?? 'unspecified'
+    logJob(
+      'analytics.recompute',
+      `scope=${payload.scope} entity=${entity} reason=${reason} attempt=${context.attempt}`,
+    )
+  },
+  'export.generate': async (payload, context) => {
+    await processExportJob(payload.exportJobId, undefined, context.attempt)
+    logJob(
+      'export.generate',
+      `exportJobId=${payload.exportJobId} attempt=${context.attempt}`,
+    )
+  },
+  'vault.reconcile': async (payload, context) => {
+    const etlConfig = {
+      horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org',
+      networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015',
+      batchSize: payload.batchSize || 50,
+      maxRetries: 3,
     }
-
-    jobHandlers['milestone.reminders.deferred'] = async (payload, context) => {
-      const delivered = await processDeferredReminders({
-        batchSize: payload.batchSize,
-      })
-      logJob(
-        'milestone.reminders.deferred',
-        `delivered=${delivered} attempt=${context.attempt}`,
-      )
-    }
-
-    for (const search of batch) {
-      try {
-        const queryDef = typeof search.query_definition === 'string'
-          ? JSON.parse(search.query_definition)
-          : search.query_definition
-
-        const queryLimit = Math.min(100, Math.max(1, queryDef.limit ?? 20))
-
-        let vaultQuery = db('vaults')
-          .where('organization_id', search.org_id)
-          .whereNull('deleted_at')
-          .select('id')
-
-        if (queryDef.status) vaultQuery = vaultQuery.where('status', queryDef.status)
-        if (queryDef.verifier) vaultQuery = vaultQuery.where('verifier', queryDef.verifier)
-        if (queryDef.amount_min) vaultQuery = vaultQuery.where('amount', '>=', queryDef.amount_min)
-        if (queryDef.amount_max) vaultQuery = vaultQuery.where('amount', '<=', queryDef.amount_max)
-        if (queryDef.date_from) vaultQuery = vaultQuery.where('created_at', '>=', new Date(queryDef.date_from))
-        if (queryDef.date_to) vaultQuery = vaultQuery.where('created_at', '<=', new Date(queryDef.date_to))
-
-        const sortField = queryDef.sort_by ?? 'created_at'
-        const sortOrder = (queryDef.sort_order ?? 'desc') as 'asc' | 'desc'
-        vaultQuery = vaultQuery.orderBy(sortField, sortOrder).orderBy('id', 'desc').limit(queryLimit)
-
-        const rows = await vaultQuery
-        const ids: string[] = rows.map((r: { id: string }) => r.id)
-        const newHash = createHash('sha256').update(JSON.stringify([...ids].sort())).digest('hex')
-
-        if (newHash !== search.last_result_hash) {
-          await notificationService.send(
-            search.alert_recipient,
-            `Saved search "${search.name}" has new results`,
-            `Your saved vault search "${search.name}" returned ${ids.length} result(s). The result set has changed since the last evaluation.`,
-          )
-          notified++
-        }
-        const report = await renderOrgAnalyticsSnapshot(orgId)
-        const key = `analytics/${orgId}/${Date.now()}.json`
-        await uploadToS3(s3Config, key, JSON.stringify(report))
-        await saveOrgReport(orgId, key)
-        generated += 1
-      }
-      logJob(
-        'analytics.report.generate',
-        `generated=${generated} skipped=${skipped} attempt=${context.attempt}`,
-      )
-    }
-
-    jobHandlers['retention.purge'] = async (payload, context) => {
-      const purged = await purgeSoftDeletedVaults({ batchSize: payload.batchSize })
-      logJob('retention.purge', `purged=${purged} attempt=${context.attempt}`)
-    }
-
-    jobHandlers['outbox.relay'] = async (payload, context) => {
-      const relayed = await relayOutboxBatch(payload.batchSize)
-      logJob('outbox.relay', `relayed=${relayed} attempt=${context.attempt}`)
-    }
-
-    jobHandlers['embeddings.reindex'] = async (payload, context) => {
-      const batches = await runReindexBatches(embeddingReindex, payload)
-      logJob('embeddings.reindex', `batches=${batches} attempt=${context.attempt}`)
-    }
-
-    jobHandlers['saved-search.evaluate'] = async (payload, context) => {
-      // Placeholder for saved-search evaluation
-      logJob('saved-search.evaluate', `evaluated=${payload.searchId} attempt=${context.attempt}`)
-    }
-  }
-
-  return jobHandlers as JobHandlerRegistry
-}
+    const etlService = new TransactionETLService(etlConfig)
+    const result = await etlService.reconcileVaults({
+      vaultIds: payload.vaultIds,
+      batchSize: payload.batchSize,
+    })
+    logJob(
+      'vault.reconcile',
+      `vaultIds=${payload.vaultIds?.length || 'all'} batchSize=${payload.batchSize || 50} checked=${result.checked}/${result.totalVaults} drift=${result.driftDetected} missing=${result.missingOnChain} errors=${result.errors} attempt=${context.attempt}`,
+    )
+  },
+  'sessions.cleanup': async (payload, context) => {
+    const batchSize = payload.batchSize ?? 1000
+    const deleted = await cleanupExpiredSessions(batchSize)
+    logJob(
+      'sessions.cleanup',
+      `deleted=${deleted} batchSize=${batchSize} attempt=${context.attempt}`,
+    )
+  },
+  'outbox.relay': async (payload, context) => {
+    const count = await relayOutboxBatch()
+    logJob(
+      'outbox.relay',
+      `relayed=${count} attempt=${context.attempt}`,
+    )
+  },
+  'embeddings.reindex': async (payload, context) => {
+    const result = await runReindexBatches({
+      source: embeddingReindex.source,
+      cursorStore: embeddingReindex.cursorStore,
+      embeddingProvider: embeddingReindex.embeddingProvider,
+      batchSize: payload.batchSize,
+      maxBatchesPerRun: payload.maxBatchesPerRun,
+    })
+    logJob(
+      'embeddings.reindex',
+      `batches=${result.batches} processed=${result.processed} reindexed=${result.reindexed} ` +
+        `skipped=${result.skippedUpToDate} cursor=${result.cursor ?? 'none'} done=${result.done} attempt=${context.attempt}`,
+    )
+  },
+})
