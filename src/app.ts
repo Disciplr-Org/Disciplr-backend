@@ -3,6 +3,7 @@ import express from 'express'
 import helmet from 'helmet'
 import { config } from './config/index.js'
 import { privacyLogger } from './middleware/privacy-logger.js'
+import { httpMetricsMiddleware } from './observability/httpMetrics.js'
 import { adminRouter } from './routes/admin.js'
 import { notificationsRouter } from './routes/notifications.js'
 
@@ -153,6 +154,7 @@ app.use((_req, res, next) => {
 })
 
 app.use(privacyLogger)
+app.use(httpMetricsMiddleware)
 
 // Core routes mounted here for test compatibility
 app.use('/api/admin', adminRouter)
