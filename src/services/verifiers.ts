@@ -220,11 +220,23 @@ export const recordVerification = async (
     .first()
 
   if (existing) {
-    if (existing.result === result) {
-      return mapVerificationRow(existing)
+    if (existing.result !== result) {
+      // Different decision — hard conflict.
+      throw new VerificationConflictError()
     }
 
-    throw new VerificationConflictError()
+    // Same result but caller is submitting different evidence or changing the
+    // disputed flag.  Surface the mismatch rather than silently discarding
+    // the new information.
+    const existingEvidenceHash: string | null = existing.evidence_hash ?? null
+    const incomingEvidenceHash: string | null = evidenceHash ?? null
+    const existingDisputed = !!existing.disputed
+
+    if (existingEvidenceHash !== incomingEvidenceHash || existingDisputed !== disputed) {
+      throw new VerificationConflictError()
+    }
+
+    return mapVerificationRow(existing)
   }
 
   const [rec] = await client('verifications')

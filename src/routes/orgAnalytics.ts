@@ -167,11 +167,17 @@ orgAnalyticsRouter.get(
     const pagination = parsePaginationParams(req)
     const s3Config = resolveS3Config()
 
-    const allReports = await getOrgReports(orgId)
-    const paginated = paginateArray(allReports, pagination)
+    // Delegate limit/offset to the DB query so the full history is never
+    // loaded into memory (#1308).
+    const pageSize = pagination.pageSize ?? 50
+    const offset = ((pagination.page ?? 1) - 1) * pageSize
+    const { data: pageReports, total } = await getOrgReports(orgId, {
+      limit: pageSize,
+      offset,
+    })
 
     const items = await Promise.all(
-      paginated.data.map(async (r) => {
+      pageReports.map(async (r) => {
         let downloadUrl: string | null = null
         if (r.s3Key && s3Config) {
           try {
@@ -195,6 +201,13 @@ orgAnalyticsRouter.get(
       }),
     )
 
-    res.json({ ...paginated, data: items })
+    const totalPages = Math.ceil(total / pageSize) || 1
+    res.json({
+      data: items,
+      page: pagination.page ?? 1,
+      pageSize,
+      total,
+      totalPages,
+    })
   }
 )
