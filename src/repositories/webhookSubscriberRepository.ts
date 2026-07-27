@@ -174,9 +174,9 @@ export class WebhookSubscriberRepository {
         organization_id: data.organizationId,
         url: data.url,
         secret: encryptField(data.secret),
-        events: JSON.stringify(data.events) as any,
+        events: JSON.stringify(data.events),
         schema_version: data.schemaVersion ?? 1,
-        field_policy: JSON.stringify(data.fieldPolicy ?? DEFAULT_FIELD_POLICY) as any,
+        field_policy: JSON.stringify(data.fieldPolicy ?? DEFAULT_FIELD_POLICY),
       })
       .returning('*')
     return toSubscriber(row)
@@ -243,7 +243,7 @@ export class WebhookSubscriberRepository {
     const rows = await this.db<SubscriberRow>('webhook_subscribers')
       .where({ id, organization_id: organizationId })
       .update({
-        field_policy: JSON.stringify(fieldPolicy) as any,
+        field_policy: JSON.stringify(fieldPolicy),
         updated_at: this.db.fn.now(),
       })
       .returning('*')
@@ -306,7 +306,7 @@ export class WebhookSubscriberRepository {
       halfOpenAt?: string | null
     },
   ): Promise<void> {
-    const payload: Record<string, any> = {
+    const payload: Record<string, unknown> = {
       state: data.state,
       updated_at: this.db.fn.now(),
     }
