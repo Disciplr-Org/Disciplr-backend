@@ -60,6 +60,24 @@ export const envSchema = z
         "REDIS_URL must be a valid Redis connection URL (starting with redis:// or rediss://)",
       ),
 
+    // ── Field encryption (envelope encryption for reversible secrets) ──
+    //
+    // Two ways to configure, in priority order:
+    //   1. FIELD_ENCRYPTION_KEYS – JSON array of { kid, key } objects, where
+    //      `key` is a base64-encoded 32-byte (AES-256) key. The FIRST entry is
+    //      the active key used to encrypt new data; the remaining entries are
+    //      retained so ciphertext written under an older key id still decrypts
+    //      after a rotation.
+    //   2. FIELD_ENCRYPTION_KEY – a single base64-encoded 32-byte key, treated
+    //      as the active key under the reserved key id "default". Convenient for
+    //      development / single-key deployments.
+    //
+    // Validation of the actual key material (length, base64) is performed in
+    // src/lib/encryption.ts so that decryption failures surface with precise,
+    // security-conscious error messages rather than as opaque Zod issues.
+    FIELD_ENCRYPTION_KEY: z.string().optional(),
+    FIELD_ENCRYPTION_KEYS: z.string().optional(),
+
     // ── Auth / secrets ──────────────────────────────────────
     JWT_SECRET: z
       .string()
@@ -81,10 +99,11 @@ export const envSchema = z
       .string()
       .regex(/^\d+[smhd]$/, "invalid duration format")
       .default("7d"),
+    JWT_ISSUER: z.string().min(1, "JWT_ISSUER is required").default("disciplr"),
+    JWT_AUDIENCE: z.string().min(1, "JWT_AUDIENCE is required").default("disciplr-api"),
     DOWNLOAD_SECRET: z
       .string()
-      .min(16, "must be at least 16 characters")
-      .default("change-me-in-production-long-secret"),
+      .min(16, "must be at least 16 characters"),
 
     // JWT key rotation support – JSON encoded array of {kid, secret, retiredAt?}
     JWT_KEYS: z
@@ -156,7 +175,18 @@ export const envSchema = z
     JOB_QUEUE_POLL_INTERVAL_MS: positiveInt(250),
     JOB_HISTORY_LIMIT: positiveInt(50),
     ENABLE_JOB_SCHEDULER: z.string().optional(),
+    MILESTONE_REMINDERS_INTERVAL_MS: positiveInt(15 * 60_000),
+    MILESTONE_REMINDERS_DIGEST_INTERVAL_MS: positiveInt(15 * 60_000),
+    MILESTONE_REMINDERS_DEFERRED_INTERVAL_MS: positiveInt(5 * 60_000),
     NOTIFICATION_PROVIDER: z.enum(["email", "console"]).default("console"),
+
+    // ── SMTP / Email provider ────────────────────────────────────
+    SMTP_HOST: z.string().optional(),
+    SMTP_PORT: positiveInt(587),
+    SMTP_USER: z.string().optional(),
+    SMTP_PASS: z.string().optional(),
+    SMTP_FROM: z.string().optional(),
+    SMTP_SECURE: z.string().optional(),
 
     // ── ETL ───────────────────────────────────────────────────────
     ETL_INTERVAL_MINUTES: positiveInt(5),
@@ -189,7 +219,6 @@ export const envSchema = z
 
     // ── Misc / Limits ───────────────────────────────────────
     MAX_JSON_BODY_SIZE: z.string().default("500kb"),
-    NOTIFICATION_PROVIDER: z.string().optional(),
     HORIZON_LAG_THRESHOLD: nonNegativeInt(10),
     HORIZON_SHUTDOWN_TIMEOUT_MS: positiveInt(30_000),
 
@@ -219,6 +248,38 @@ export const envSchema = z
     HTTP_KEEPALIVE_TIMEOUT_MS: positiveInt(45_000),
     HTTP_HEADERS_TIMEOUT_MS: positiveInt(61_000),
     HTTP_REQUEST_TIMEOUT_MS: positiveInt(120_000),
+
+    // ── Graceful shutdown ──────────────────────────────────
+    // Maximum time (ms) to wait for in-flight HTTP requests to
+    // complete before force-destroying sockets during shutdown.
+    SHUTDOWN_DRAIN_MS: positiveInt(30_000),
+
+    // ── OpenTelemetry / Tracing ───────────────────────────────────
+    OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional(),
+    OTEL_SERVICE_NAME: z.string().optional(),
+    OTEL_TRACES_SAMPLER: z.enum(['always_on', 'always_off', 'traceidratio']).optional(),
+    OTEL_TRACES_SAMPLER_ARG: z
+      .string()
+      .optional()
+      .transform((v) => {
+        if (v === undefined || v === '') return undefined
+        const n = Number.parseFloat(v)
+        return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined
+      }),
+
+    // ── Admin / Debug ──────────────────────────────────────────────
+    ADMIN_API_KEY: z.string().default(""),
+
+    // ── Log sampling ───────────────────────────────────────────────
+    LOG_SAMPLE_RATE: z
+      .string()
+      .default("1")
+      .transform((v) => {
+        const n = Number.parseFloat(v);
+        return Number.isFinite(n) && n >= 0 && n <= 1 ? n : 1;
+      }),
+    LOG_SLOW_THRESHOLD_MS: positiveInt(1000),
+    LOG_ALWAYS_LOG_STATUS: z.string().default("500,502,503"),
   })
   .superRefine((data, ctx) => {
     // Existing CORS warning
@@ -261,9 +322,9 @@ let _validated: Env | undefined;
  */
 export function getEnv(): Env {
   if (!_validated) {
-    throw new Error("Environment not validated yet — call initEnv() first");
+    throw new Error("Env not initialized");
   }
-  return _validated;
+  return _validated!;
 }
 
 /** Reset internal state — exposed for tests only. */
@@ -320,16 +381,12 @@ export function initEnv(
       { key: "JWT_SECRET", sentinel: "change-me-in-production-long-secret" },
       { key: "JWT_ACCESS_SECRET", sentinel: "fallback-access-secret-long" },
       { key: "JWT_REFRESH_SECRET", sentinel: "fallback-refresh-secret-long" },
-      {
-        key: "DOWNLOAD_SECRET",
-        sentinel: "change-me-in-production-long-secret",
-      },
     ];
 
     for (const { key, sentinel } of insecureDefaults) {
       if (validated[key] === sentinel) {
         const w: EnvWarning = {
-          variable: key,
+          field: key,
           message: `${key} is using its insecure default value`,
         };
         warnings.push(w);
@@ -338,7 +395,7 @@ export function initEnv(
             level: "warn",
             event: "config.insecure_default",
             service: "disciplr-backend",
-            variable: key,
+            field: key,
             message: w.message,
             timestamp: new Date().toISOString(),
           }),
@@ -362,7 +419,7 @@ export function initEnv(
   );
   if (present.length > 0 && present.length < sorobanVars.length) {
     const w: EnvWarning = {
-      variable: "SOROBAN_*",
+      field: "SOROBAN_*",
       message:
         "Partial Soroban configuration detected; submit mode will be disabled",
     };
@@ -372,7 +429,7 @@ export function initEnv(
         level: "warn",
         event: "config.partial_soroban_configuration",
         service: "disciplr-backend",
-        variable: "SOROBAN_*",
+        field: "SOROBAN_*",
         message: w.message,
         timestamp: new Date().toISOString(),
       }),
@@ -422,7 +479,28 @@ export function validateEnv(raw?: Record<string, string | undefined>): {
   return { env: result.data, warnings };
 }
 
-/** Returns parsed JWT keys from the environment. */
+/** Warnings emitted during validation (not hard failures). */
 export function getJwtKeys(env: Env): JwtKey[] {
   return (env as any).JWT_KEYS as JwtKey[];
+}
+
+/**
+ * Raw field-encryption configuration, read directly from the environment.
+ *
+ * Resolved independently of the full {@link initEnv} validation so the
+ * encryption helpers (src/lib/encryption.ts) can be used in isolation — e.g. in
+ * unit tests — without requiring a complete, valid application environment.
+ * The actual key material (base64, 32-byte length, key-id uniqueness) is
+ * validated in src/lib/encryption.ts, where decryption failures can surface
+ * precise, security-conscious errors.
+ *
+ * @param env  Defaults to `process.env` — pass a custom record in tests.
+ */
+export function getFieldEncryptionConfig(
+  env: Record<string, string | undefined> = process.env,
+): { key?: string; keys?: string } {
+  return {
+    key: env.FIELD_ENCRYPTION_KEY,
+    keys: env.FIELD_ENCRYPTION_KEYS,
+  };
 }

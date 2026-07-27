@@ -1,8 +1,16 @@
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
 import { requireAdmin } from '../middleware/rbac.js'
 import { queryParser } from '../middleware/queryParser.js'
 import { authenticate } from '../middleware/auth.js'
+import { metricsRateLimiter } from '../middleware/rateLimiter.js'
 import { requireStepUp } from '../middleware/stepUp.js'
+import {
+  requireConfirmationToken,
+  issueConfirmationToken,
+  approveConfirmationToken,
+  isDualControlRequired,
+  VALID_DESTRUCTIVE_ACTIONS,
+} from '../middleware/confirmationToken.js'
 import { UserRole, UserStatus } from '../types/user.js'
 import { userService, DeleteResult } from '../services/user.service.js'
 import { forceRevokeUserSessions } from '../services/session.js'
@@ -14,7 +22,7 @@ import {
   verifyAuditLogChain,
 } from '../lib/audit-logs.js'
 import { cancelVaultById } from '../services/vaultStore.js'
-import { getDBHealthMetrics } from '../services/dbMetrics.js'
+import { getDBHealthMetrics, getSlowQueryBuffer } from '../services/dbMetrics.js'
 import {
   getFlag,
   setFlag,
@@ -31,6 +39,16 @@ import { generateImpersonationToken } from '../lib/auth-utils.js'
 import { getPrisma } from '../lib/prismaScope.js'
 import { recordSession } from '../services/session.js'
 import { randomUUID } from 'node:crypto'
+import {
+  detectEmbeddingDrift,
+  CURRENT_EMBEDDING_MODEL_VERSION,
+  createEmbeddingProvider,
+} from '../services/embeddingProvider.js'
+import { runReindexBatches, EMBEDDING_REINDEX_JOB_NAME } from '../services/evidenceReindex.js'
+import { MilestoneRepository } from '../repositories/milestoneRepository.js'
+import { BackfillCursorStore } from '../services/backfillCursorStore.js'
+import { TransactionETLService } from '../services/transactionETL.js'
+import { resolveETLConfig } from '../services/etlWorker.js'
 
 export const adminRouter = Router()
 
@@ -47,12 +65,16 @@ const ValidOverrideReasonCodes = [
 
 type OverrideReasonCode = (typeof ValidOverrideReasonCodes)[number]
 
-// Track processed overrides for idempotency (in production, use distributed cache like Redis)
-const processedOverrides = new Map<string, { auditLogId: string; timestamp: string }>()
+import { DbIdempotencyStore } from '../services/idempotency.js'
+
+// Track processed overrides for idempotency
+const processedOverrides = new DbIdempotencyStore(db)
 
 // Test helper - clear processed overrides for test isolation
-export const clearProcessedOverrides = (): void => {
-  processedOverrides.clear()
+export const clearProcessedOverrides = async (): Promise<void> => {
+  if (process.env.NODE_ENV === 'test') {
+    await db('idempotency_keys').delete()
+  }
 }
 
 // Export valid reason codes for tests and documentation
@@ -62,7 +84,7 @@ const isValidReasonCode = (reason: unknown): reason is OverrideReasonCode =>
   typeof reason === 'string' && ValidOverrideReasonCodes.includes(reason as OverrideReasonCode)
 
 // Sanitize reason text to prevent PII/secrets leakage
-const sanitizeReasonText = (reason: string): string => {
+export const sanitizeReasonText = (reason: string): string => {
   // Remove potential secrets/PII patterns
   return reason
     .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g, '[REDACTED_EMAIL]')
@@ -117,6 +139,95 @@ const resolveTargetContractAddress = async (
 // Apply authentication to all admin routes
 adminRouter.use(authenticate)
 adminRouter.use(requireAdmin)
+
+/**
+ * POST /api/admin/confirm/prepare
+ * Issues a short-lived, action-scoped confirmation token for a destructive action.
+ * For dual-control actions a second admin must approve via /confirm/approve/:tokenId
+ * before the token can be consumed.
+ */
+adminRouter.post('/confirm/prepare', async (req: Request, res: Response) => {
+  const { action, scope } = req.body ?? {}
+
+  if (!action || typeof action !== 'string') {
+    res.status(400).json({
+      error: 'action is required',
+      validActions: [...VALID_DESTRUCTIVE_ACTIONS],
+    })
+    return
+  }
+
+  if (!VALID_DESTRUCTIVE_ACTIONS.has(action)) {
+    res.status(400).json({
+      error: `Invalid action. Must be one of: ${[...VALID_DESTRUCTIVE_ACTIONS].join(', ')}`,
+      validActions: [...VALID_DESTRUCTIVE_ACTIONS],
+    })
+    return
+  }
+
+  const entry = issueConfirmationToken(req.user!.userId, action, scope ?? undefined)
+
+  await createAuditLog({
+    actor_user_id: req.user!.userId,
+    action: 'admin.destructive_action.prepared',
+    target_type: 'confirmation_token',
+    target_id: entry.tokenId,
+    metadata: {
+      destructive_action: action,
+      scope: scope ?? null,
+      dual_control_required: entry.dualControlRequired,
+      expires_at: new Date(entry.expiresAt).toISOString(),
+    },
+  })
+
+  res.status(201).json({
+    tokenId: entry.tokenId,
+    action,
+    scope: entry.scope ?? null,
+    expiresAt: new Date(entry.expiresAt).toISOString(),
+    dualControlRequired: entry.dualControlRequired,
+    ...(entry.dualControlRequired
+      ? { approveUrl: `/api/admin/confirm/approve/${entry.tokenId}` }
+      : {}),
+  })
+})
+
+/**
+ * POST /api/admin/confirm/approve/:tokenId
+ * Second-admin approval for a dual-control confirmation token.
+ * The approver must be a different admin from the one who prepared the token.
+ */
+adminRouter.post('/confirm/approve/:tokenId', async (req: Request, res: Response) => {
+  const { tokenId } = req.params
+  const result = approveConfirmationToken(tokenId, req.user!.userId)
+
+  if (!result.ok) {
+    const status = result.reason === 'token_not_found' ? 404 : 409
+    res.status(status).json({ error: result.reason })
+    return
+  }
+
+  await createAuditLog({
+    actor_user_id: req.user!.userId,
+    action: 'admin.destructive_action.approved',
+    target_type: 'confirmation_token',
+    target_id: tokenId,
+    metadata: {
+      destructive_action: result.entry.action,
+      scope: result.entry.scope ?? null,
+      prepared_by: result.entry.userId,
+      approved_by: req.user!.userId,
+      approved_at: new Date(result.entry.approvedAt!).toISOString(),
+    },
+  })
+
+  res.status(200).json({
+    tokenId,
+    action: result.entry.action,
+    approvedBy: req.user!.userId,
+    approvedAt: new Date(result.entry.approvedAt!).toISOString(),
+  })
+})
 
 /**
  * GET /api/admin/horizon/listener
@@ -185,7 +296,7 @@ adminRouter.get('/horizon/listener', async (_req: Request, res: Response) => {
  * POST /api/admin/horizon/listener/reset-cursor
  * Safely resets the resumable cursor for a Horizon contract.
  */
-adminRouter.post('/horizon/listener/reset-cursor', async (req: Request, res: Response) => {
+adminRouter.post('/horizon/listener/reset-cursor', requireConfirmationToken('horizon.cursor.reset'), async (req: Request, res: Response) => {
   try {
     const { contractAddress, ledger, pagingToken, force = false, reason } = req.body ?? {}
 
@@ -438,8 +549,9 @@ adminRouter.post('/overrides/vaults/:id/cancel', requireStepUp(), async (req, re
 
   // 2. Check idempotency - prevent repeated overrides
   const effectiveIdempotencyKey = idempotencyKey ?? `${req.user!.userId}:${id}:cancel`
-  const existingOverride = processedOverrides.get(effectiveIdempotencyKey)
-  if (existingOverride) {
+  const existingOverrideRaw = await processedOverrides.getStoredResponse(effectiveIdempotencyKey, { userId: req.user!.userId, orgId: null })
+  if (existingOverrideRaw) {
+    const existingOverride = typeof existingOverrideRaw === 'string' ? JSON.parse(existingOverrideRaw) : existingOverrideRaw
     res.status(409).json({
       error: 'Override already processed - idempotent replay',
       idempotencyKey: effectiveIdempotencyKey,
@@ -469,10 +581,10 @@ adminRouter.post('/overrides/vaults/:id/cancel', requireStepUp(), async (req, re
           idempotency_key: effectiveIdempotencyKey,
         },
       })
-      processedOverrides.set(effectiveIdempotencyKey, {
+      await processedOverrides.storeResponse(effectiveIdempotencyKey, {
         auditLogId: auditLog.id,
         timestamp: auditLog.created_at,
-      })
+      }, { userId: req.user!.userId, orgId: null })
 
       res.status(409).json({
         error: 'Vault is already cancelled',
@@ -525,10 +637,10 @@ adminRouter.post('/overrides/vaults/:id/cancel', requireStepUp(), async (req, re
   })
 
   // 6. Record for idempotency
-  processedOverrides.set(effectiveIdempotencyKey, {
+  await processedOverrides.storeResponse(effectiveIdempotencyKey, {
     auditLogId: auditLog.id,
     timestamp: auditLog.created_at,
-  })
+  }, { userId: req.user!.userId, orgId: null })
 
   res.status(200).json({
     vault: cancelResult.vault,
@@ -537,6 +649,42 @@ adminRouter.post('/overrides/vaults/:id/cancel', requireStepUp(), async (req, re
     previousStatus: cancelResult.previousStatus,
     newStatus: cancelResult.vault.status,
   })
+})
+
+adminRouter.get('/transaction-etl/drift-report', async (req, res) => {
+  try {
+    const config = resolveETLConfig()
+    const etl = new TransactionETLService({ ...config, batchSize: Number(req.query.batchSize) || 50 })
+    const report = await etl.reconcileVaults()
+    res.status(200).json(report)
+  } catch (error) {
+    console.error('Error generating drift report:', error)
+    res.status(500).json({ error: 'Failed to generate drift report' })
+  }
+})
+
+adminRouter.post('/vaults/:id/auto-repair', requireStepUp(), async (req, res) => {
+  try {
+    const { id } = req.params
+    const config = resolveETLConfig()
+    const etl = new TransactionETLService({ ...config, batchSize: 50 })
+    
+    const result = await etl.autoRepairVault(id, req.user!.userId)
+    
+    if (!result.success) {
+      if (result.message.includes('dispute/hold')) {
+        res.status(409).json({ error: result.message })
+        return
+      }
+      res.status(400).json({ error: result.message })
+      return
+    }
+    
+    res.status(200).json(result)
+  } catch (error) {
+    console.error('Error auto-repairing vault:', error)
+    res.status(500).json({ error: 'Failed to auto-repair vault' })
+  }
 })
 
 // User Management Endpoints
@@ -612,7 +760,12 @@ adminRouter.patch('/users/:id/status', async (req, res) => {
   }
 })
 
-adminRouter.delete('/users/:id', async (req, res) => {
+adminRouter.delete(
+  '/users/:id',
+  requireConfirmationToken((req) =>
+    req.query.hard === 'true' ? 'user.hard_delete' : 'user.soft_delete',
+  ),
+  async (req, res) => {
   try {
     const hard = req.query.hard === 'true'
     const targetUser = await userService.getUserById(req.params.id, true)
@@ -746,12 +899,10 @@ adminRouter.get('/db/metrics', metricsRateLimiter, async (req: Request, res: Res
           total: metrics.pool.totalConnections,
           capacity: metrics.pool.poolSize,
         },
-        slowQueries: metrics.slowQueries.map((query) => ({
-          hash: query.queryHash,
-          pattern: query.queryPattern,
-          maxDurationMs: query.duration,
-          occurrences: query.count,
-          lastOccurred: query.lastOccurred,
+        slowQueries: metrics.slowQueries.map((entry) => ({
+          fingerprint: entry.fingerprint,
+          durationMs: entry.durationMs,
+          capturedAt: entry.capturedAt,
         })),
         warnings: metrics.warnings,
       },
@@ -760,6 +911,23 @@ adminRouter.get('/db/metrics', metricsRateLimiter, async (req: Request, res: Res
     console.error('Error retrieving DB metrics:', error)
     res.status(500).json({ error: 'Failed to retrieve database metrics' })
   }
+})
+
+/**
+ * GET /api/admin/db/slow-queries
+ * Returns the ring-buffered slow-query samples (admin only).
+ * Entries are ordered oldest → newest; fingerprints only, no raw parameters.
+ */
+adminRouter.get('/db/slow-queries', (req: Request, res: Response) => {
+  const entries = getSlowQueryBuffer()
+  res.status(200).json({
+    data: {
+      count: entries.length,
+      thresholdMs: (() => { const v = parseInt(process.env.SLOW_QUERY_THRESHOLD_MS ?? '200', 10); return Math.max(0, isNaN(v) ? 200 : v) })(),
+      bufferSize: (() => { const v = parseInt(process.env.SLOW_QUERY_BUFFER_SIZE ?? '100', 10); return Math.max(1, isNaN(v) ? 100 : v) })(),
+      entries,
+    },
+  })
 })
 
 /**
@@ -833,5 +1001,145 @@ adminRouter.post('/impersonate/:userId', requireStepUp(), async (req: Request, r
     })
   } catch (error: any) {
     next(error)
+  }
+})
+
+// ── Embedding drift ───────────────────────────────────────────────────────────
+
+/**
+ * GET /api/admin/embeddings/drift
+ *
+ * Returns a breakdown of stored embeddings grouped by model_version,
+ * indicating how many are stale vs current.
+ */
+adminRouter.get('/embeddings/drift', async (req: Request, res: Response) => {
+  try {
+    const report = await detectEmbeddingDrift(db)
+
+    await createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: 'admin.embeddings.drift.read',
+      target_type: 'embedding_drift_report',
+      target_id: report.currentModelVersion,
+      metadata: { staleCount: report.staleCount, totalEmbeddings: report.totalEmbeddings },
+    })
+
+    res.status(200).json(report)
+  } catch (error) {
+    console.error('Error fetching embedding drift report:', error)
+    res.status(500).json({ error: 'Failed to fetch embedding drift report' })
+  }
+})
+
+/**
+ * POST /api/admin/embeddings/reembed
+ *
+ * Enqueues an incremental re-embed run for stale milestone embeddings.
+ * Resumable: uses the backfill cursor store so a second call continues
+ * from where the previous run stopped.
+ *
+ * Optional body: { reset_cursor?: boolean, max_batches?: number }
+ */
+adminRouter.post('/embeddings/reembed', requireConfirmationToken('embeddings.force_resync'), async (req: Request, res: Response) => {
+  try {
+    const { reset_cursor = false, max_batches } = req.body ?? {}
+
+    const milestoneRepo = new MilestoneRepository(db)
+    const cursorStore = new BackfillCursorStore(db)
+
+    if (reset_cursor === true) {
+      await cursorStore.resetCursor(EMBEDDING_REINDEX_JOB_NAME)
+    }
+
+    const provider = createEmbeddingProvider()
+
+    const result = await runReindexBatches({
+      source: milestoneRepo,
+      cursorStore,
+      embeddingProvider: provider,
+      ...(typeof max_batches === 'number' && max_batches > 0 ? { maxBatchesPerRun: max_batches } : {}),
+    })
+
+    await createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: 'admin.embeddings.reembed.triggered',
+      target_type: 'embedding_reindex',
+      target_id: CURRENT_EMBEDDING_MODEL_VERSION,
+      metadata: {
+        batches: result.batches,
+        reindexed: result.reindexed,
+        skippedUpToDate: result.skippedUpToDate,
+        done: result.done,
+        cursor: result.cursor,
+        resetCursor: reset_cursor,
+      },
+    })
+
+    res.status(202).json(result)
+  } catch (error) {
+    console.error('Error triggering embedding re-embed:', error)
+    res.status(500).json({ error: 'Failed to trigger re-embed' })
+  }
+})
+
+/**
+ * GET /api/admin/backfills
+ * List all known backfill jobs with cursor, processed count, paused status, and ETA.
+ */
+adminRouter.get('/backfills', async (req: Request, res: Response) => {
+  try {
+    const store = new BackfillCursorStore(db)
+    const data = await store.listProgress()
+    res.status(200).json({ data })
+  } catch (error) {
+    console.error('Error listing backfill progress:', error)
+    res.status(500).json({ error: 'Failed to list backfill progress' })
+  }
+})
+
+/**
+ * POST /api/admin/backfills/:name/pause
+ * Pause a running backfill job. The cursor is preserved so resume continues from
+ * the same position without reprocessing already-done ranges.
+ */
+adminRouter.post('/backfills/:name/pause', async (req: Request, res: Response) => {
+  try {
+    const { name } = req.params
+    const store = new BackfillCursorStore(db)
+    await store.pause(name)
+    await createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: 'backfill.pause',
+      target_type: 'backfill',
+      target_id: name,
+      metadata: {},
+    })
+    res.status(200).json({ paused: true, jobName: name })
+  } catch (error) {
+    console.error('Error pausing backfill:', error)
+    res.status(500).json({ error: 'Failed to pause backfill' })
+  }
+})
+
+/**
+ * POST /api/admin/backfills/:name/resume
+ * Resume a paused backfill job from its saved cursor.
+ */
+adminRouter.post('/backfills/:name/resume', async (req: Request, res: Response) => {
+  try {
+    const { name } = req.params
+    const store = new BackfillCursorStore(db)
+    await store.resume(name)
+    await createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: 'backfill.resume',
+      target_type: 'backfill',
+      target_id: name,
+      metadata: {},
+    })
+    res.status(200).json({ paused: false, jobName: name })
+  } catch (error) {
+    console.error('Error resuming backfill:', error)
+    res.status(500).json({ error: 'Failed to resume backfill' })
   }
 })

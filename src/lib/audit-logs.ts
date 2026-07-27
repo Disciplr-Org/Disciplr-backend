@@ -1,6 +1,6 @@
 import { db } from '../db/knex.js'
 import type { Knex } from 'knex'
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { redact } from '../middleware/privacy-logger.js'
 
 export type AuditLogMetadata = Record<string, unknown>
@@ -27,9 +27,12 @@ export type AuditLogFilters = {
   offset?: number
 }
 
-const makeId = (): string => `audit-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+const makeId = (): string => randomUUID()
 
 export const AUDIT_LOG_GENESIS_HASH = '0'.repeat(64)
+
+const getOrganizationChainKey = (organizationId?: string | null): string | null =>
+  organizationId || null
 
 const toSnakeCase = (input: string): string =>
   input
@@ -81,6 +84,12 @@ const sanitizeMetadata = (metadata: Record<string, unknown> = {}): AuditLogMetad
   return normalized
 }
 
+let auditLogWriterOverride: ((entry: any) => Promise<AuditLog>) | null = null
+
+export const setAuditLogWriterForTests = (writer: any | null): void => {
+  auditLogWriterOverride = writer
+}
+
 const normalizeTimestamp = (value: unknown): string => {
   if (value instanceof Date) return value.toISOString()
   return new Date(String(value)).toISOString()
@@ -113,28 +122,19 @@ export const canonicalizeAuditLogRow = (row: AuditLog): string =>
     created_at: normalizeTimestamp(row.created_at),
   })
 
-export const hashAuditLogRow = (prevHash: string | null | undefined, row: AuditLog): string =>
-  createHash('sha256')
-    .update(stableStringify({
-      prev_hash: prevHash ?? AUDIT_LOG_GENESIS_HASH,
-      canonical_row: canonicalizeAuditLogRow(row),
-    }))
-    .digest('hex')
+export const computeAuditLogHash = (row: AuditLog, previousHash: string): string => {
+  const content = `${canonicalizeAuditLogRow(row)}:${previousHash}`
+  return createHash('sha256').update(content).digest('hex')
+}
 
-const getOrganizationChainKey = (organizationId?: string | null): string | null =>
-  typeof organizationId === 'string' && organizationId.trim() !== '' ? organizationId : null
-
-const getPreviousHash = async (
-  trx: Knex.Transaction,
-  organizationId?: string | null,
+export const lookupPreviousAuditLogHash = async (
+  organization_id?: string,
 ): Promise<string> => {
-  const chainKey = getOrganizationChainKey(organizationId)
-  let query = trx('audit_logs')
-    .select('row_hash')
-    .whereNotNull('row_hash')
+  const chainKey = organization_id || null
+
+  let query = db('audit_logs')
     .orderBy('created_at', 'desc')
     .orderBy('id', 'desc')
-    .forUpdate()
 
   query = chainKey === null ? query.whereNull('organization_id') : query.where('organization_id', chainKey)
 
@@ -145,6 +145,10 @@ const getPreviousHash = async (
 export const createAuditLog = async (
   entry: Omit<AuditLog, 'id' | 'created_at'> & { organization_id?: string },
 ): Promise<AuditLog> => {
+  if (auditLogWriterOverride) {
+    return auditLogWriterOverride(entry)
+  }
+
   if (!entry.actor_user_id || !entry.action || !entry.target_type || !entry.target_id) {
     throw new Error('Invalid audit log entry: missing required fields')
   }
@@ -167,8 +171,8 @@ export const createAuditLog = async (
   }
 
   return await db.transaction(async (trx) => {
-    const prevHash = await getPreviousHash(trx, auditLog.organization_id)
-    const rowHash = hashAuditLogRow(prevHash, auditLog)
+    const prevHash = await lookupPreviousAuditLogHash(auditLog.organization_id)
+    const rowHash = computeAuditLogHash(auditLog, prevHash)
 
     const insertPayload: Record<string, unknown> = {
       id: auditLog.id,
@@ -283,7 +287,7 @@ export const verifyAuditLogChain = async (
       })
     }
 
-    const expectedRowHash = hashAuditLogRow(row.prev_hash, row)
+    const expectedRowHash = computeAuditLogHash(row, row.prev_hash!)
     if (row.row_hash !== expectedRowHash) {
       failures.push({
         id: row.id,

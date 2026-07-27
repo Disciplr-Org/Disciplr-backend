@@ -1,16 +1,62 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NotificationProvider } from './provider.js'
 import { retryWithBackoff, DEFAULT_RETRY_CONFIG, isRetryable } from '../../utils/retry.js'
-import { recordBounce } from './bounceStore.js'
+import { recordBounce, hasBounced } from './bounceStore.js'
+import nodemailer from 'nodemailer'
+import type { Transporter } from 'nodemailer'
+import { getEnv } from '../../config/index.js'
 
 /**
  * EmailNotificationProvider implements the NotificationProvider interface.
- * It sends email notifications. Currently this is a stub that simulates latency.
+ * It sends email notifications via SMTP using nodemailer.
+ * 
+ * Configuration (all optional):
+ * - SMTP_HOST: SMTP server hostname (e.g., smtp.gmail.com)
+ * - SMTP_PORT: SMTP server port (default: 587)
+ * - SMTP_USER: SMTP authentication username
+ * - SMTP_PASS: SMTP authentication password
+ * - SMTP_FROM: Default sender address
+ * - SMTP_SECURE: 'true' to use TLS (default: false for port 587 STARTTLS)
+ * 
+ * If SMTP_HOST is not configured, sends are logged to console with a warning.
  * Transient SMTP 4xx errors are retried using exponential backoff with jitter.
  * 5xx errors are considered permanent and are not retried, preserving dead‑letter semantics.
  */
 export class EmailNotificationProvider implements NotificationProvider {
-  readonly name = 'email';
+  readonly name = 'email'
+  private transporter: Transporter | null = null
+  private initialized: boolean = false
+
+  /**
+   * Lazy-initialize the SMTP transporter on first send.
+   */
+  private ensureTransporter(): void {
+    if (this.initialized) {
+      return
+    }
+
+    this.initialized = true
+
+    const env = getEnv()
+    const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE } = env
+
+    if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
+      this.transporter = nodemailer.createTransport({
+        host: SMTP_HOST,
+        port: SMTP_PORT,
+        secure: SMTP_SECURE === 'true', // true for 465, false for other ports (use STARTTLS)
+        auth: {
+          user: SMTP_USER,
+          pass: SMTP_PASS,
+        },
+      })
+    } else {
+      console.warn(
+        '[EmailProvider] SMTP not configured (missing SMTP_HOST, SMTP_USER, or SMTP_PASS). ' +
+        'Emails will be logged to console instead of being sent.',
+      )
+    }
+  }
 
   /**
    * Classify whether an error represents a permanent bounce

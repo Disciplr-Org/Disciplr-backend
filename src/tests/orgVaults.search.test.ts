@@ -28,7 +28,7 @@ interface SearchVault {
   creator: string
   verifier: string
   amount: string
-  status: 'draft' | 'active' | 'completed' | 'failed' | 'cancelled'
+  status: 'draft' | 'active' | 'completed' | 'failed' | 'cancelled' | 'disputed'
   organization_id: string
   start_date: string
   end_date: string

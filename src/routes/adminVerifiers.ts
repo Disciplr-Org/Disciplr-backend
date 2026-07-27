@@ -21,7 +21,10 @@ export const adminVerifiersRouter = Router()
 adminVerifiersRouter.use(authenticate, requireAdmin)
 
 adminVerifiersRouter.get('/', async (_req: Request, res: Response) => {
-  const profiles = await listVerifierProfiles()
+  const limit = getStringQuery(_req.query.limit) ? Number(getStringQuery(_req.query.limit)) : 100
+  const offset = getStringQuery(_req.query.offset) ? Number(getStringQuery(_req.query.offset)) : 0
+
+  const profiles = await listVerifierProfiles({ limit, offset })
   const withStats = await Promise.all(profiles.map(async (p) => ({ profile: p, stats: await getVerifierStats(p.userId) })))
   res.json({ verifiers: withStats })
 })
@@ -257,4 +260,7 @@ const createOrGetAndTransitionStatus = async (req: Request, res: Response, userI
 
   await transitionStatus(req, res, userId, status)
 }
+
+const getStringQuery = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() !== '' ? value : undefined
 

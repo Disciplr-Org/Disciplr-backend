@@ -3,6 +3,9 @@ import type { Transaction, HorizonOperation, ETLConfig, VaultReference } from '.
 import db from '../db/index.js'
 import { getSorobanConfig, getSorobanClient, type OnChainVaultState } from './soroban.js'
 import { logVaultDriftAnomaly } from '../security/abuse-monitor.js'
+import { CheckpointStore } from './checkpointStore.js'
+
+const ETL_CHECKPOINT_KEY = '__TRANSACTION_ETL_GLOBAL__'
 
 export class TransactionETLService {
   private server: Horizon.Server
@@ -17,10 +20,14 @@ export class TransactionETLService {
   /**
    * Run the full ETL process - backfill and incremental sync.
    * Pass an AbortSignal to allow the caller to cancel a long-running run.
+   * The optional batchId identifies the scheduler tick that triggered the
+   * run so retries of the same tick can be correlated in logs.
    */
-  async runETL(signal?: AbortSignal): Promise<void> {
+  async runETL(signal?: AbortSignal, batchId?: string): Promise<void> {
     TransactionETLService.checkAbort(signal)
-    console.log('Starting Transaction ETL process...')
+    console.log(
+      `Starting Transaction ETL process...${batchId ? ` (batch ${batchId})` : ''}`,
+    )
 
     try {
       // Run backfill if configured
@@ -69,6 +76,7 @@ export class TransactionETLService {
     console.log('Starting incremental sync...')
 
     let cursor = this.config.cursor || await this.getLastProcessedCursor()
+    let lastLedger = 0
     let hasMore = true
     let processedCount = 0
 
@@ -90,7 +98,9 @@ export class TransactionETLService {
         }
 
         // Update cursor to the last operation's ID
-        cursor = operations[operations.length - 1].id
+        const lastOp = operations[operations.length - 1]
+        cursor = lastOp.id
+        lastLedger = lastOp.ledger
         processedCount += operations.length
 
         console.log(`Processed ${processedCount} operations...`)
@@ -106,7 +116,7 @@ export class TransactionETLService {
     
     // Save the last cursor for next run
     if (cursor) {
-      await this.saveLastProcessedCursor(cursor)
+      await this.saveLastProcessedCursor(cursor, lastLedger)
     }
   }
 
@@ -124,7 +134,7 @@ export class TransactionETLService {
       }
       
       const response = await builder.call()
-      return response.records.map(this.transformHorizonOperation)
+      return response.records.map((record) => this.transformHorizonOperation(record))
     } catch (error) {
       console.error('Error fetching Horizon operations:', error)
       throw error
@@ -371,15 +381,16 @@ export class TransactionETLService {
   }
 
   private async getLastProcessedCursor(): Promise<string | undefined> {
-    // This could be stored in a separate etl_state table or Redis
-    // For now, return undefined to start from the beginning
-    return undefined
+    const store = new CheckpointStore(db)
+    const checkpoint = await store.getCheckpoint(ETL_CHECKPOINT_KEY)
+    return checkpoint?.lastPagingToken ?? undefined
   }
 
-  private async saveLastProcessedCursor(cursor: string): Promise<void> {
-    // Save cursor for next incremental sync
-    console.log(`Saving cursor: ${cursor}`)
-    // TODO: Implement cursor persistence
+  private async saveLastProcessedCursor(cursor: string, lastLedger: number): Promise<void> {
+    console.log(`Saving cursor: ${cursor} at ledger ${lastLedger}`)
+    const store = new CheckpointStore(db)
+    // We use resetCheckpoint to forcefully update the cursor without strict monotonic lastLedger checks
+    await store.resetCheckpoint(ETL_CHECKPOINT_KEY, lastLedger, cursor)
   }
 
   // ---------------------------------------------------------------------------
@@ -430,7 +441,7 @@ export class TransactionETLService {
       
       const vaultOperations = operations.records
         .filter(op => new Date(op.created_at) >= from && new Date(op.created_at) <= to)
-        .map(this.transformHorizonOperation)
+        .map((record) => this.transformHorizonOperation(record))
       
       const transactions = await this.filterAndTransformOperations(vaultOperations)
       
@@ -458,6 +469,7 @@ export class TransactionETLService {
     driftDetected: number
     missingOnChain: number
     errors: number
+    driftedVaults: any[]
   }> {
     const config = getSorobanConfig()
     if (!config) {
@@ -483,6 +495,7 @@ export class TransactionETLService {
       driftDetected: 0,
       missingOnChain: 0,
       errors: 0,
+      driftedVaults: [] as any[],
     }
 
     try {
@@ -527,7 +540,7 @@ export class TransactionETLService {
 
             if (driftFields.length > 0) {
               result.driftDetected += 1
-              logVaultDriftAnomaly('vault_state_drift', {
+              const driftInfo = {
                 vaultId: vault.id,
                 driftedFields: driftFields,
                 persisted: {
@@ -540,7 +553,9 @@ export class TransactionETLService {
                   amount: onChainState.amount,
                   verifier: onChainState.verifier,
                 },
-              })
+              }
+              result.driftedVaults.push(driftInfo)
+              logVaultDriftAnomaly('vault_state_drift', driftInfo)
             }
 
             result.checked += 1
@@ -571,6 +586,65 @@ export class TransactionETLService {
       console.error('Vault reconciliation failed:', error)
       throw error
     }
+  }
+
+  /**
+   * Auto-repairs a drifted vault based on its on-chain state.
+   */
+  async autoRepairVault(vaultId: string, adminUserId: string): Promise<{ success: boolean; message: string; repairedFields?: string[] }> {
+    const config = getSorobanConfig()
+    if (!config) {
+      return { success: false, message: 'Soroban not configured' }
+    }
+
+    const vault = await db('vaults')
+      .where('id', vaultId)
+      .select('id', 'status', 'amount', 'verifier', 'success_destination', 'failure_destination')
+      .first()
+
+    if (!vault) {
+      return { success: false, message: 'Vault not found' }
+    }
+
+    if (vault.status === 'disputed') {
+      return { success: false, message: 'Cannot auto-repair a manual admin dispute/hold state' }
+    }
+
+    const onChainState = await getSorobanClient().getVault(config, vaultId)
+    if (!onChainState) {
+      return { success: false, message: 'Vault missing on-chain' }
+    }
+
+    const driftFields = this.compareVaultStates(vault, onChainState)
+    if (driftFields.length === 0) {
+      return { success: true, message: 'No drift detected' }
+    }
+
+    const updates: any = {}
+    if (driftFields.includes('status')) updates.status = onChainState.status
+    if (driftFields.includes('amount')) updates.amount = onChainState.amount
+    if (driftFields.includes('verifier')) updates.verifier = onChainState.verifier
+
+    await db('vaults').where('id', vaultId).update(updates)
+
+    const { createAuditLog } = await import('../lib/audit-logs.js')
+    await createAuditLog({
+      actor_user_id: adminUserId,
+      action: 'admin.vault.auto_repair',
+      target_type: 'vault',
+      target_id: vaultId,
+      metadata: {
+        drifted_fields: driftFields,
+        previous_state: {
+          status: vault.status,
+          amount: vault.amount,
+          verifier: vault.verifier,
+        },
+        new_state: updates
+      }
+    })
+
+    return { success: true, message: 'Vault auto-repaired successfully', repairedFields: driftFields }
   }
 
   /**

@@ -1,10 +1,8 @@
-import assert from 'node:assert/strict'
 import type { AddressInfo } from 'node:net'
-import { afterEach, beforeEach, describe, test } from 'node:test'
 import express from 'express'
 import request from 'supertest'
 import { app } from '../app.js'
-import { vaultsRouter } from './vaults.js'
+import { vaultsRouter, setVaults, type Vault } from './vaults.js'
 import { errorHandler } from '../middleware/errorHandler.js'
 import { resetIdempotencyStore } from '../services/idempotency.js'
 import { resetVaultStore, createVaultWithMilestones } from '../services/vaultStore.js'
@@ -23,6 +21,7 @@ testApp.use(errorHandler)
 const userToken = generateAccessToken({ userId: 'vault-test-user', role: UserRole.USER })
 const otherUserToken = generateAccessToken({ userId: 'other-vault-user', role: UserRole.USER })
 const listContractToken = generateAccessToken({ userId: 'vault-list-user', role: UserRole.USER })
+const adminToken = generateAccessToken({ userId: 'vault-admin-user', role: UserRole.ADMIN })
 
 let baseUrl = ''
 let server: ReturnType<typeof testApp.listen> | null = null
@@ -55,6 +54,7 @@ const validPayload = () => ({
 beforeEach(async () => {
   resetVaultStore()
   resetIdempotencyStore()
+  setVaults([])
 
   server = testApp.listen(0)
   await new Promise<void>((resolve) => {
@@ -83,7 +83,7 @@ test('returns 401 without an auth token', async () => {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(validPayload()),
   })
-  assert.equal(response.status, 401)
+  expect(response.status).toBe(401)
 })
 
 test('rejects invalid vault payload', async () => {
@@ -96,10 +96,10 @@ test('rejects invalid vault payload', async () => {
     body: JSON.stringify({ ...validPayload(), amount: '-1' }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = (await response.json()) as { error: { code: string; fields: { path: string; message: string }[] } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'amount' && f.message.includes('positive')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'amount' && f.message.includes('positive'))).toBe(true)
 })
 
 test('returns 400 for missing required verifier field', async () => {
@@ -112,10 +112,10 @@ test('returns 400 for missing required verifier field', async () => {
     body: JSON.stringify({ ...validPayload(), verifier: undefined }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'verifier'), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'verifier')).toBe(true)
 })
 
 test('returns 400 for too many milestones', async () => {
@@ -135,10 +135,10 @@ test('returns 400 for too many milestones', async () => {
     }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'milestones' && f.message.includes('at most')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'milestones' && f.message.includes('at most'))).toBe(true)
 })
 
 test('returns 400 for invalid destination address format', async () => {
@@ -154,10 +154,10 @@ test('returns 400 for invalid destination address format', async () => {
     }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'destinations.success' && f.message.includes('Stellar')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'destinations.success' && f.message.includes('Stellar'))).toBe(true)
 })
 
 test('returns 400 for endDate before startDate', async () => {
@@ -174,10 +174,10 @@ test('returns 400 for endDate before startDate', async () => {
     }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'endDate' && f.message.includes('greater than startDate')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'endDate' && f.message.includes('greater than startDate'))).toBe(true)
 })
 
 test('returns 413 for payloads exceeding the body parser limit', async () => {
@@ -190,10 +190,10 @@ test('returns 413 for payloads exceeding the body parser limit', async () => {
     body: JSON.stringify({ data: 'a'.repeat(150 * 1024) }),
   })
 
-  assert.equal(response.status, 413)
+  expect(response.status).toBe(413)
   const body = await response.json() as { error: { code: string; message: string } }
-  assert.equal(body.error.code, 'PAYLOAD_TOO_LARGE')
-  assert.equal(body.error.message, 'Payload too large')
+  expect(body.error.code).toBe('PAYLOAD_TOO_LARGE')
+  expect(body.error.message).toBe('Payload too large')
 })
 
 // ─── Boundary Condition Integration Tests ────────────────────────────────
@@ -208,10 +208,10 @@ test('returns 400 for zero amount payload', async () => {
     body: JSON.stringify({ ...validPayload(), amount: '0' }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'amount' && f.message.includes('positive number')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'amount' && f.message.includes('positive number'))).toBe(true)
 })
 
 test('returns 400 for negative amount payload', async () => {
@@ -224,10 +224,10 @@ test('returns 400 for negative amount payload', async () => {
     body: JSON.stringify({ ...validPayload(), amount: '-100' }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'amount' && f.message.includes('positive number')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'amount' && f.message.includes('positive number'))).toBe(true)
 })
 
 test('returns 400 for non-numeric amount payload', async () => {
@@ -240,10 +240,10 @@ test('returns 400 for non-numeric amount payload', async () => {
     body: JSON.stringify({ ...validPayload(), amount: 'not-a-number' }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'amount' && f.message.includes('positive number')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'amount' && f.message.includes('positive number'))).toBe(true)
 })
 
 test('returns 400 for amount exceeding maximum', async () => {
@@ -256,10 +256,10 @@ test('returns 400 for amount exceeding maximum', async () => {
     body: JSON.stringify({ ...validPayload(), amount: '1000000001' }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'amount' && f.message.includes('between')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'amount' && f.message.includes('between'))).toBe(true)
 })
 
 test('returns 400 for invalid timestamp formats', async () => {
@@ -279,10 +279,10 @@ test('returns 400 for invalid timestamp formats', async () => {
       body: JSON.stringify({ ...validPayload(), startDate: timestamp }),
     })
 
-    assert.equal(response.status, 400)
+    expect(response.status).toBe(400)
     const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-    assert.equal(body.error.code, 'VALIDATION_ERROR')
-    assert.equal(body.error.fields.some((f) => f.path === 'startDate' && f.message.includes('ISO timestamp')), true)
+    expect(body.error.code).toBe('VALIDATION_ERROR')
+    expect(body.error.fields.some((f) => f.path === 'startDate' && f.message.includes('ISO timestamp'))).toBe(true)
   }
 })
 
@@ -301,10 +301,10 @@ test('returns 400 for endDate equal to startDate', async () => {
     }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'endDate' && f.message.includes('greater than startDate')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'endDate' && f.message.includes('greater than startDate'))).toBe(true)
 })
 
 test('returns 400 for malformed Stellar addresses', async () => {
@@ -325,10 +325,10 @@ test('returns 400 for malformed Stellar addresses', async () => {
       body: JSON.stringify({ ...validPayload(), verifier: address }),
     })
 
-    assert.equal(response.status, 400)
+    expect(response.status).toBe(400)
     const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-    assert.equal(body.error.code, 'VALIDATION_ERROR')
-    assert.equal(body.error.fields.some((f) => f.path === 'verifier' && f.message.includes('Stellar public key')), true)
+    expect(body.error.code).toBe('VALIDATION_ERROR')
+    expect(body.error.fields.some((f) => f.path === 'verifier' && f.message.includes('Stellar public key'))).toBe(true)
   }
 })
 
@@ -349,10 +349,10 @@ test('returns 400 for milestones with total amount exceeding vault amount', asyn
     }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'milestones' && f.message.includes('Total milestone amount')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'milestones' && f.message.includes('Total milestone amount'))).toBe(true)
 })
 
 test('returns 400 for milestone dueDate before startDate', async () => {
@@ -371,10 +371,10 @@ test('returns 400 for milestone dueDate before startDate', async () => {
     }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'milestones[0].dueDate' && f.message.includes('before startDate')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'milestones[0].dueDate' && f.message.includes('before startDate'))).toBe(true)
 })
 
 test('returns 400 for missing required fields in payload', async () => {
@@ -393,10 +393,10 @@ test('returns 400 for missing required fields in payload', async () => {
       body: JSON.stringify(payload),
     })
 
-    assert.equal(response.status, 400)
+    expect(response.status).toBe(400)
     const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-    assert.equal(body.error.code, 'VALIDATION_ERROR')
-    assert.equal(body.error.fields.some((f) => f.path === field), true)
+    expect(body.error.code).toBe('VALIDATION_ERROR')
+    expect(body.error.fields.some((f) => f.path === field)).toBe(true)
   }
 })
 
@@ -410,7 +410,7 @@ test('returns 400 for non-JSON content type', async () => {
     body: 'not-json',
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
 })
 
 test('returns 400 for malformed JSON', async () => {
@@ -423,7 +423,7 @@ test('returns 400 for malformed JSON', async () => {
     body: '{"malformed": json}',
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
 })
 
 test('creates vault and returns client-sign payload', async () => {
@@ -436,14 +436,14 @@ test('creates vault and returns client-sign payload', async () => {
     body: JSON.stringify(validPayload()),
   })
 
-  assert.equal(response.status, 201)
+  expect(response.status).toBe(201)
   const body = (await response.json()) as {
     vault: { id: string; milestones: Array<{ id: string }> }
     onChain: { payload: { method: string } }
   }
-  assert.ok(body.vault.id)
-  assert.equal(body.vault.milestones.length, 2)
-  assert.equal(body.onChain.payload.method, 'create_vault')
+  expect(body.vault.id).toBeTruthy()
+  expect(body.vault.milestones.length).toBe(2)
+  expect(body.onChain.payload.method).toBe('create_vault')
 })
 
 // ─── Additional Integration Tests for Boundary Conditions ─────────────────
@@ -463,10 +463,10 @@ test('returns 400 for invalid onChain mode', async () => {
     }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'onChain.mode'), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'onChain.mode')).toBe(true)
 })
 
 test('returns 400 for invalid creator address', async () => {
@@ -482,10 +482,10 @@ test('returns 400 for invalid creator address', async () => {
     }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'creator' && f.message.includes('Stellar')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'creator' && f.message.includes('Stellar'))).toBe(true)
 })
 
 test('accepts valid onChain configuration', async () => {
@@ -506,7 +506,7 @@ test('accepts valid onChain configuration', async () => {
     }),
   })
 
-  assert.equal(response.status, 201)
+  expect(response.status).toBe(201)
 })
 
 test('accepts valid creator address', async () => {
@@ -522,7 +522,7 @@ test('accepts valid creator address', async () => {
     }),
   })
 
-  assert.equal(response.status, 201)
+  expect(response.status).toBe(201)
 })
 
 test('returns 400 for milestone with invalid timestamp format', async () => {
@@ -544,10 +544,10 @@ test('returns 400 for milestone with invalid timestamp format', async () => {
     }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'milestones[0].dueDate' && f.message.includes('ISO timestamp')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'milestones[0].dueDate' && f.message.includes('ISO timestamp'))).toBe(true)
 })
 
 test('returns 400 for milestone with whitespace-only title', async () => {
@@ -569,10 +569,10 @@ test('returns 400 for milestone with whitespace-only title', async () => {
     }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'milestones[0].title' && f.message.includes('required')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'milestones[0].title' && f.message.includes('required'))).toBe(true)
 })
 
 test('returns 400 for milestone amount exceeding maximum', async () => {
@@ -594,10 +594,10 @@ test('returns 400 for milestone amount exceeding maximum', async () => {
     }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'milestones[0].amount' && f.message.includes('between')), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'milestones[0].amount' && f.message.includes('between'))).toBe(true)
 })
 
 test('returns 400 for multiple validation errors across fields', async () => {
@@ -617,14 +617,14 @@ test('returns 400 for multiple validation errors across fields', async () => {
     }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
+  expect(body.error.code).toBe('VALIDATION_ERROR')
   
   // Should have errors for all the invalid fields
   const expectedPaths = ['amount', 'startDate', 'verifier', 'destinations.success', 'destinations.failure', 'milestones']
   expectedPaths.forEach((path) => {
-    assert.equal(body.error.fields.some((f) => f.path === path), true, `Missing error for path: ${path}`)
+    expect(body.error.fields.some((f) => f.path === path)).toBe(true, `Missing error for path: ${path}`)
   })
 })
 
@@ -649,7 +649,7 @@ test('returns 400 for extremely large milestone title', async () => {
   })
 
   // Should accept large titles (no explicit length limit)
-  assert.equal(response.status, 201)
+  expect(response.status).toBe(201)
 })
 
 test('returns 400 for milestone amount with decimal values', async () => {
@@ -671,10 +671,10 @@ test('returns 400 for milestone amount with decimal values', async () => {
     }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = await response.json() as { error: { code: string; fields: Array<{ path: string; message: string }> } }
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.fields.some((f) => f.path === 'milestones[0].amount'), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.fields.some((f) => f.path === 'milestones[0].amount')).toBe(true)
 })
 
 test('returns 413 for payload slightly over body parser limit', async () => {
@@ -697,9 +697,9 @@ test('returns 413 for payload slightly over body parser limit', async () => {
     body: JSON.stringify(largePayload),
   })
 
-  assert.equal(response.status, 413)
+  expect(response.status).toBe(413)
   const body = await response.json() as { error: { code: string; message: string } }
-  assert.equal(body.error.code, 'PAYLOAD_TOO_LARGE')
+  expect(body.error.code).toBe('PAYLOAD_TOO_LARGE')
 })
 
 test('replays idempotent request and blocks hash mismatch reuse', async () => {
@@ -711,25 +711,25 @@ test('replays idempotent request and blocks hash mismatch reuse', async () => {
     headers: { 'content-type': 'application/json', 'authorization': authHeader, 'idempotency-key': idempotencyKey },
     body: JSON.stringify(validPayload()),
   })
-  assert.equal(firstResponse.status, 201)
+  expect(firstResponse.status).toBe(201)
 
   const secondResponse = await fetch(`${baseUrl}/api/vaults`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'authorization': authHeader, 'idempotency-key': idempotencyKey },
     body: JSON.stringify(validPayload()),
   })
-  assert.equal(secondResponse.status, 200)
+  expect(secondResponse.status).toBe(200)
   const secondBody = (await secondResponse.json()) as { idempotency: { replayed: boolean } }
-  assert.equal(secondBody.idempotency.replayed, true)
+  expect(secondBody.idempotency.replayed).toBe(true)
 
   const conflictResponse = await fetch(`${baseUrl}/api/vaults`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'authorization': authHeader, 'idempotency-key': idempotencyKey },
     body: JSON.stringify({ ...validPayload(), amount: '999' }),
   })
-  assert.equal(conflictResponse.status, 409)
+  expect(conflictResponse.status).toBe(409)
   const conflictBody = (await conflictResponse.json()) as { error: { code: string } }
-  assert.equal(conflictBody.error.code, 'IDEMPOTENCY_CONFLICT')
+  expect(conflictBody.error.code).toBe('IDEMPOTENCY_CONFLICT')
 })
 
 test('returns 400 for empty idempotency key', async () => {
@@ -742,9 +742,9 @@ test('returns 400 for empty idempotency key', async () => {
     },
     body: JSON.stringify(validPayload()),
   })
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = (await response.json()) as { error: { code: string } }
-  assert.equal(body.error.code, 'INVALID_IDEMPOTENCY_KEY')
+  expect(body.error.code).toBe('INVALID_IDEMPOTENCY_KEY')
 })
 
 test('returns 400 for idempotency key with spaces', async () => {
@@ -757,9 +757,9 @@ test('returns 400 for idempotency key with spaces', async () => {
     },
     body: JSON.stringify(validPayload()),
   })
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = (await response.json()) as { error: { code: string } }
-  assert.equal(body.error.code, 'INVALID_IDEMPOTENCY_KEY')
+  expect(body.error.code).toBe('INVALID_IDEMPOTENCY_KEY')
 })
 
 test('returns 400 for idempotency key exceeding 255 characters', async () => {
@@ -772,9 +772,9 @@ test('returns 400 for idempotency key exceeding 255 characters', async () => {
     },
     body: JSON.stringify(validPayload()),
   })
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = (await response.json()) as { error: { code: string } }
-  assert.equal(body.error.code, 'INVALID_IDEMPOTENCY_KEY')
+  expect(body.error.code).toBe('INVALID_IDEMPOTENCY_KEY')
 })
 
 test('isolates idempotency keys between different users', async () => {
@@ -790,7 +790,7 @@ test('isolates idempotency keys between different users', async () => {
     },
     body: JSON.stringify(validPayload()),
   })
-  assert.equal(res1.status, 201)
+  expect(res1.status).toBe(201)
   const body1 = (await res1.json()) as { vault: { id: string } }
 
   // User 2 uses the same key with a different payload – must NOT get 409
@@ -803,7 +803,7 @@ test('isolates idempotency keys between different users', async () => {
     },
     body: JSON.stringify({ ...validPayload(), amount: '1500' }),
   })
-  assert.equal(res2.status, 201)
+  expect(res2.status).toBe(201)
   const body2 = (await res2.json()) as { vault: { id: string } }
 
   assert.notEqual(body2.vault.id, body1.vault.id)
@@ -849,15 +849,15 @@ describe('GET /api/vaults - List Contract', () => {
         .get('/api/vaults')
         .set('Authorization', `Bearer ${listContractToken}`)
 
-      assert.equal(res.status, 200)
-      assert.ok(res.body.data)
-      assert.ok(res.body.pagination)
-      assert.equal(typeof res.body.pagination.page, 'number')
-      assert.equal(typeof res.body.pagination.pageSize, 'number')
-      assert.equal(typeof res.body.pagination.total, 'number')
-      assert.equal(typeof res.body.pagination.totalPages, 'number')
-      assert.equal(typeof res.body.pagination.hasNext, 'boolean')
-      assert.equal(typeof res.body.pagination.hasPrev, 'boolean')
+      expect(res.status).toBe(200)
+      expect(res.body.data).toBeTruthy()
+      expect(res.body.pagination).toBeTruthy()
+      expect(typeof res.body.pagination.page).toBe('number')
+      expect(typeof res.body.pagination.pageSize).toBe('number')
+      expect(typeof res.body.pagination.total).toBe('number')
+      expect(typeof res.body.pagination.totalPages).toBe('number')
+      expect(typeof res.body.pagination.hasNext).toBe('boolean')
+      expect(typeof res.body.pagination.hasPrev).toBe('boolean')
     })
 
     test('respects page and pageSize parameters', async () => {
@@ -865,10 +865,10 @@ describe('GET /api/vaults - List Contract', () => {
         .get('/api/vaults?page=1&pageSize=2')
         .set('Authorization', `Bearer ${listContractToken}`)
 
-      assert.equal(res.status, 200)
-      assert.equal(res.body.pagination.page, 1)
-      assert.equal(res.body.pagination.pageSize, 2)
-      assert.equal(res.body.data.length, 2)
+      expect(res.status).toBe(200)
+      expect(res.body.pagination.page).toBe(1)
+      expect(res.body.pagination.pageSize).toBe(2)
+      expect(res.body.data.length).toBe(2)
     })
 
     test('enforces maximum pageSize', async () => {
@@ -876,8 +876,8 @@ describe('GET /api/vaults - List Contract', () => {
         .get('/api/vaults?pageSize=200')
         .set('Authorization', `Bearer ${listContractToken}`)
 
-      assert.equal(res.status, 200)
-      assert.ok(res.body.pagination.pageSize <= 100)
+      expect(res.status).toBe(200)
+      expect(res.body.pagination.pageSize <= 100).toBeTruthy()
     })
 
     test('defaults to page 1 when page < 1', async () => {
@@ -885,8 +885,8 @@ describe('GET /api/vaults - List Contract', () => {
         .get('/api/vaults?page=0')
         .set('Authorization', `Bearer ${listContractToken}`)
 
-      assert.equal(res.status, 200)
-      assert.equal(res.body.pagination.page, 1)
+      expect(res.status).toBe(200)
+      expect(res.body.pagination.page).toBe(1)
     })
   })
 
@@ -897,8 +897,8 @@ describe('GET /api/vaults - List Contract', () => {
         .get('/api/vaults?sortBy=invalid_field')
         .set('Authorization', `Bearer ${listContractToken}`)
 
-      assert.equal(res.status, 400)
-      assert.ok(res.body.error)
+      expect(res.status).toBe(400)
+      expect(res.body.error).toBeTruthy()
     })
 
     test('accepts valid sort fields', async () => {
@@ -908,8 +908,8 @@ describe('GET /api/vaults - List Contract', () => {
           .get(`/api/vaults?sortBy=${field}`)
           .set('Authorization', `Bearer ${listContractToken}`)
 
-        assert.equal(res.status, 200)
-        assert.ok(res.body.data)
+        expect(res.status).toBe(200)
+        expect(res.body.data).toBeTruthy()
       }
     })
 
@@ -922,8 +922,8 @@ describe('GET /api/vaults - List Contract', () => {
         .get('/api/vaults?sortBy=amount&sortOrder=desc')
         .set('Authorization', `Bearer ${listContractToken}`)
 
-      assert.equal(ascRes.status, 200)
-      assert.equal(descRes.status, 200)
+      expect(ascRes.status).toBe(200)
+      expect(descRes.status).toBe(200)
     })
   })
 
@@ -934,8 +934,8 @@ describe('GET /api/vaults - List Contract', () => {
         .get('/api/vaults?nonexistentFilter=value')
         .set('Authorization', `Bearer ${listContractToken}`)
 
-      assert.equal(res.status, 200)
-      assert.ok(res.body.data)
+      expect(res.status).toBe(200)
+      expect(res.body.data).toBeTruthy()
     })
 
     test('accepts valid filter fields', async () => {
@@ -943,8 +943,8 @@ describe('GET /api/vaults - List Contract', () => {
         .get('/api/vaults?status=active')
         .set('Authorization', `Bearer ${listContractToken}`)
 
-      assert.equal(res.status, 200)
-      assert.ok(res.body.data)
+      expect(res.status).toBe(200)
+      expect(res.body.data).toBeTruthy()
     })
 
     test('filters by creator', async () => {
@@ -952,8 +952,8 @@ describe('GET /api/vaults - List Contract', () => {
         .get('/api/vaults?creator=GTEST1234567890123456789012345678901234567890123456789012345678901')
         .set('Authorization', `Bearer ${listContractToken}`)
 
-      assert.equal(res.status, 200)
-      assert.ok(res.body.data)
+      expect(res.status).toBe(200)
+      expect(res.body.data).toBeTruthy()
     })
   })
 
@@ -961,7 +961,7 @@ describe('GET /api/vaults - List Contract', () => {
   describe('Security', () => {
     test('requires authentication', async () => {
       const res = await request(app).get('/api/vaults')
-      assert.equal(res.status, 401)
+      expect(res.status).toBe(401)
     })
 
     test('cannot sort by sensitive fields', async () => {
@@ -969,7 +969,7 @@ describe('GET /api/vaults - List Contract', () => {
         .get('/api/vaults?sortBy=password')
         .set('Authorization', `Bearer ${listContractToken}`)
 
-      assert.equal(res.status, 400)
+      expect(res.status).toBe(400)
     })
   })
 
@@ -980,8 +980,8 @@ describe('GET /api/vaults - List Contract', () => {
         .get('/api/vaults')
         .set('Authorization', `Bearer ${listContractToken}`)
 
-      assert.equal(res.status, 200)
-      assert.equal(Array.isArray(res.body.data), true)
+      expect(res.status).toBe(200)
+      expect(Array.isArray(res.body.data)).toBe(true)
     })
 
     test('includes required fields in each item', async () => {
@@ -989,14 +989,132 @@ describe('GET /api/vaults - List Contract', () => {
         .get('/api/vaults')
         .set('Authorization', `Bearer ${listContractToken}`)
 
-      assert.equal(res.status, 200)
+      expect(res.status).toBe(200)
       if (res.body.data.length > 0) {
         const item = res.body.data[0]
-        assert.ok(item.id)
-        assert.ok(Object.prototype.hasOwnProperty.call(item, 'creator'))
-        assert.ok(item.amount)
-        assert.ok(item.status)
+        expect(item.id).toBeTruthy()
+        expect(Object.prototype.hasOwnProperty.call(item, 'creator').toBeTruthy())
+        expect(item.amount).toBeTruthy()
+        expect(item.status).toBeTruthy()
       }
+    })
+  })
+})
+
+describe('Vault dispute workflow', () => {
+  const seedVault = (overrides: Partial<Vault> = {}): Vault => {
+    const vault: Vault = {
+      id: `vault-${Math.random().toString(36).slice(2, 10)}`,
+      creator: 'vault-test-user',
+      amount: '100.00',
+      status: 'active',
+      startTimestamp: new Date(Date.now() - 10000).toISOString(),
+      endTimestamp: new Date(Date.now() + 3600000).toISOString(),
+      successDestination: stellar(),
+      failureDestination: stellar(),
+      createdAt: new Date().toISOString(),
+      ...overrides,
+    }
+    setVaults([vault])
+    return vault
+  }
+
+  describe('POST /api/vaults/:id/dispute', () => {
+    test('returns 401 without an auth token', async () => {
+      const vault = seedVault()
+      const res = await request(testApp).post(`/api/vaults/${vault.id}/dispute`)
+      expect(res.status).toBe(401)
+    })
+
+    test('returns 403 for a non-admin user, even if they are the vault creator', async () => {
+      const vault = seedVault({ creator: 'vault-test-user' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/dispute`)
+        .set('Authorization', `Bearer ${userToken}`)
+
+      expect(res.status).toBe(403)
+    })
+
+    test('allows an admin to place an active vault into disputed', async () => {
+      const vault = seedVault({ status: 'active' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/dispute`)
+        .set('Authorization', `Bearer ${adminToken}`)
+
+      expect(res.status).toBe(200)
+      expect(vault.status).toBe('disputed')
+    })
+
+    test('returns 409 when the vault cannot be disputed from its current status', async () => {
+      const vault = seedVault({ status: 'draft' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/dispute`)
+        .set('Authorization', `Bearer ${adminToken}`)
+
+      expect(res.status).toBe(409)
+      expect(vault.status).toBe('draft')
+    })
+
+    test('returns 404 for an unknown vault id', async () => {
+      const res = await request(testApp)
+        .post('/api/vaults/does-not-exist/dispute')
+        .set('Authorization', `Bearer ${adminToken}`)
+
+      expect(res.status).toBe(404)
+    })
+  })
+
+  describe('POST /api/vaults/:id/resolve-dispute', () => {
+    test('returns 401 without an auth token', async () => {
+      const vault = seedVault({ status: 'disputed' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/resolve-dispute`)
+        .send({ target: 'active' })
+      expect(res.status).toBe(401)
+    })
+
+    test('returns 403 for a non-admin user', async () => {
+      const vault = seedVault({ status: 'disputed' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/resolve-dispute`)
+        .set('Authorization', `Bearer ${userToken}`)
+        .send({ target: 'active' })
+
+      expect(res.status).toBe(403)
+      expect(vault.status).toBe('disputed')
+    })
+
+    test('returns 400 for a missing or invalid target', async () => {
+      const vault = seedVault({ status: 'disputed' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/resolve-dispute`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ target: 'cancelled' })
+
+      expect(res.status).toBe(400)
+      expect(vault.status).toBe('disputed')
+    })
+
+    test('allows an admin to resolve a disputed vault back to active', async () => {
+      const vault = seedVault({ status: 'disputed' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/resolve-dispute`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ target: 'active' })
+
+      expect(res.status).toBe(200)
+      expect(vault.status).toBe('active')
+    })
+
+    test('returns 409 when the vault is not currently disputed', async () => {
+      const vault = seedVault({ status: 'active' })
+      const res = await request(testApp)
+        .post(`/api/vaults/${vault.id}/resolve-dispute`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ target: 'active' })
+
+      expect(res.status).toBe(409)
+      expect(vault.status).toBe('active')
     })
   })
 })

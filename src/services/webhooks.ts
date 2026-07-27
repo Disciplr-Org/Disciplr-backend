@@ -1,8 +1,10 @@
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHmac, timingSafeEqual } from 'node:crypto'
 import { isIP } from 'node:net'
 import { WebhookSubscriberRepository } from '../repositories/webhookSubscriberRepository.js'
 import { retryWithBackoff } from '../utils/retry.js'
 import { db } from '../db/index.js'
+import { applyFieldMasking, FieldPolicy, DEFAULT_FIELD_POLICY, parseFieldPolicy } from '../utils/webhookFieldMasking.js'
+import { getTracer } from '../observability/tracing.js'
 
 export interface WebhookDeadLetter {
   id: string
@@ -35,10 +37,24 @@ export interface WebhookSubscriber {
   rotatedAt: string | null
   events: string[]
   active: boolean
+  orgId?: string
   createdAt: string
   schemaVersion: number
+  /**
+   * Per-subscriber field masking policy. Controls which fields are included
+   * in webhook payloads and whether PII is stripped. Applied before signing.
+   */
+  fieldPolicy: FieldPolicy
 }
 
+export interface EgressAllowlistEntry {
+  id: string
+  organizationId: string
+  host: string
+  createdAt: string
+}
+
+export const DEFAULT_MAX_REPLAY_EVENTS = 500
 export const LATEST_SCHEMA_VERSION = 2
 export const DEFAULT_SCHEMA_VERSION = 1
 export const SUPPORTED_SCHEMA_VERSIONS = new Set([1, 2])
@@ -59,6 +75,20 @@ export interface WebhookDeliveryResult {
   success: boolean
   error?: string
   attempts: number
+}
+
+export interface ReplayWindowOptions {
+  replayMarker?: string
+  maxEvents?: number
+}
+
+export interface ReplayWindowResult {
+  replayed: boolean
+  count: number
+  successCount: number
+  failureCount: number
+  replayMarker?: string
+  error?: string
 }
 
 export type BreakerStateValue = 'CLOSED' | 'OPEN' | 'HALF_OPEN'
@@ -86,6 +116,10 @@ export interface CircuitBreakerConfig {
  * Builds the HTTP request body for a webhook delivery according to the
  * subscriber's preferred schema version.
  *
+ * Field masking is applied BEFORE serialization, so the signature is computed
+ * on the masked payload. This ensures subscribers can verify the signature
+ * even when fields are filtered or PII is stripped.
+ *
  * v1 – Original shape with schema_version appended:
  *   { eventId, eventType, timestamp, data, organizationId, schema_version: 1 }
  *
@@ -96,13 +130,17 @@ export const buildVersionedPayload = (
   subscriber: WebhookSubscriber,
   payload: WebhookDeliveryPayload,
 ): string => {
+  // Apply field masking policy to the data before serialization
+  const fieldPolicy = subscriber.fieldPolicy ?? DEFAULT_FIELD_POLICY
+  const maskedData = applyFieldMasking(payload.data, fieldPolicy)
+
   switch (subscriber.schemaVersion) {
     case 1:
       return JSON.stringify({
         eventId: payload.eventId,
         eventType: payload.eventType,
         timestamp: payload.timestamp,
-        data: payload.data,
+        data: maskedData,
         organizationId: payload.organizationId,
         schema_version: 1,
       })
@@ -110,7 +148,7 @@ export const buildVersionedPayload = (
       return JSON.stringify({
         schema_version: 2,
         event_type: payload.eventType,
-        data: payload.data,
+        data: maskedData,
       })
     default:
       throw new Error(
@@ -158,8 +196,8 @@ export const getCircuitBreakerConfig = (): CircuitBreakerConfig => {
 
 // ── In-memory breaker cache ───────────────────────────────────────────────────
 
-const breakerCache = new Map<string, BreakerState>()
-const inFlightProbes = new Set<string>()
+export const breakerCache = new Map<string, BreakerState>()
+export const inFlightProbes = new Set<string>()
 
 const loadBreakerState = async (subscriberId: string): Promise<BreakerState> => {
   const cached = breakerCache.get(subscriberId)
@@ -410,24 +448,89 @@ export const verifySignature = (secret: string, body: string, signature: string)
 }
 
 /**
- * Verifies a signature against a subscriber's current secret and, when within
- * the rotation grace window, also against the previous secret.
- *
- * This lets subscribers that have not yet updated their secret still pass
- * verification until the grace window closes.
- *
- * Returns `true` if at least one of the valid secrets matches.
+ * Returns the per-org egress allowlist hosts for an organization.
+ * Empty array means no allowlist is configured (baseline SSRF guard only).
  */
-export const verifySignatureWithGrace = (
-  subscriber: WebhookSubscriber,
-  body: string,
-  signature: string,
-): boolean => {
-  if (verifySignature(subscriber.secret, body, signature)) return true
-  if (isPreviousSecretInGrace(subscriber)) {
-    return verifySignature(subscriber.previousSecret!, body, signature)
+export const getEgressAllowlist = async (organizationId: string): Promise<string[]> => {
+  const rows = await db('org_webhook_egress_allowlists')
+    .where({ organization_id: organizationId })
+    .select('host')
+  return rows.map((r: { host: string }) => r.host)
+}
+
+/**
+ * Adds a host to an org's egress allowlist. Idempotent — duplicate host is ignored.
+ */
+export const addEgressAllowlistEntry = async (
+  organizationId: string,
+  host: string,
+): Promise<EgressAllowlistEntry> => {
+  const [row] = await db('org_webhook_egress_allowlists')
+    .insert({ organization_id: organizationId, host: host.toLowerCase() })
+    .onConflict(['organization_id', 'host'])
+    .merge({ host: host.toLowerCase() })
+    .returning('*')
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    host: row.host,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
   }
-  return false
+}
+
+/**
+ * Removes a host from an org's egress allowlist.
+ * Returns true if a row was deleted.
+ */
+export const removeEgressAllowlistEntry = async (
+  organizationId: string,
+  host: string,
+): Promise<boolean> => {
+  const count = await db('org_webhook_egress_allowlists')
+    .where({ organization_id: organizationId, host: host.toLowerCase() })
+    .del()
+  return count > 0
+}
+
+/**
+ * Lists all egress allowlist entries for an organization.
+ */
+export const listEgressAllowlist = async (
+  organizationId: string,
+): Promise<EgressAllowlistEntry[]> => {
+  const rows = await db('org_webhook_egress_allowlists')
+    .where({ organization_id: organizationId })
+    .orderBy('created_at', 'asc')
+  return rows.map((row: any) => ({
+    id: row.id,
+    organizationId: row.organization_id,
+    host: row.host,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+  }))
+}
+
+/**
+ * Checks whether a URL is permitted for the given organization, respecting:
+ * 1. The global SSRF guard (unconditional baseline).
+ * 2. The per-org egress allowlist, when configured (deny by policy if not on it).
+ *
+ * When the org has no allowlist entries the SSRF guard alone governs.
+ */
+export const isUrlAllowedForOrg = async (
+  organizationId: string,
+  url: string,
+): Promise<{ allowed: boolean; reason?: string }> => {
+  if (!isUrlAllowed(url)) {
+    return { allowed: false, reason: `Webhook URL not permitted: ${url}` }
+  }
+  const orgHosts = await getEgressAllowlist(organizationId)
+  if (orgHosts.length === 0) {
+    return { allowed: true }
+  }
+  if (!isUrlAllowed(url, orgHosts)) {
+    return { allowed: false, reason: `Webhook URL not on egress allowlist for org: ${url}` }
+  }
+  return { allowed: true }
 }
 
 export const addSubscriber = async (
@@ -437,8 +540,9 @@ export const addSubscriber = async (
   events: string[],
   schemaVersion: number = DEFAULT_SCHEMA_VERSION,
 ): Promise<WebhookSubscriber> => {
-  if (!isUrlAllowed(url)) {
-    throw new Error(`Webhook URL not permitted: ${url}`)
+  const check = await isUrlAllowedForOrg(organizationId, url)
+  if (!check.allowed) {
+    throw new Error(check.reason!)
   }
 
   const unknownEvent = events.find((e) => !KNOWN_EVENT_TYPES.has(e))
@@ -482,8 +586,9 @@ export const upsertSubscriber = async (
   secret: string,
   events: string[],
 ): Promise<WebhookSubscriber> => {
-  if (!isUrlAllowed(url)) {
-    throw new Error(`Webhook URL not permitted: ${url}`)
+  const check = await isUrlAllowedForOrg(organizationId, url)
+  if (!check.allowed) {
+    throw new Error(check.reason!)
   }
 
   return repo.upsert({ organizationId, url, secret, events })
@@ -534,6 +639,18 @@ export const isPreviousSecretInGrace = (subscriber: WebhookSubscriber): boolean 
 export const listSubscribers = async (organizationId: string): Promise<WebhookSubscriber[]> =>
   repo.findByOrg(organizationId)
 
+/**
+ * Updates the field masking policy for a subscriber.
+ * Returns null when the subscriber does not exist or belongs to a different org.
+ */
+export const updateSubscriberFieldPolicy = async (
+  id: string,
+  organizationId: string,
+  fieldPolicy: FieldPolicy,
+): Promise<WebhookSubscriber | null> => {
+  return repo.updateFieldPolicy(id, organizationId, fieldPolicy)
+}
+
 /** Test helper – clears all subscribers from the database. */
 export const resetSubscribers = async (): Promise<void> => {
   await db('webhook_subscribers').del()
@@ -544,40 +661,57 @@ const deliverOnce = async (
   payload: WebhookDeliveryPayload,
   timeoutMs = 10_000,
 ): Promise<number> => {
-  const body = buildVersionedPayload(subscriber, payload)
-  const signature = signPayload(subscriber.secret, body)
+  const tracer = getTracer()
+  return tracer.withSpan(
+    'webhook.http_deliver',
+    async (span) => {
+      span.setAttribute('webhook.subscriber_id', subscriber.id)
+      span.setAttribute('webhook.url', subscriber.url)
+      span.setAttribute('webhook.event_type', payload.eventType)
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+      const body = buildVersionedPayload(subscriber, payload)
+      const signature = signPayload(subscriber.secret, body)
 
-  try {
-    const response = await fetch(subscriber.url, {
-      method: 'POST',
-      redirect: 'manual',
-      headers: {
-        'content-type': 'application/json',
-        'x-disciplr-signature': signature,
-        'x-disciplr-event': payload.eventType,
-        'x-disciplr-event-id': payload.eventId,
-        'x-disciplr-delivery-timestamp': payload.timestamp,
-      },
-      body,
-      signal: controller.signal,
-    })
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
 
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location')
-      throw new Error(`Webhook redirect refused${location ? `: ${location}` : ''}`)
-    }
+      try {
+        const response = await fetch(subscriber.url, {
+          method: 'POST',
+          redirect: 'manual',
+          headers: {
+            'content-type': 'application/json',
+            'x-disciplr-signature': signature,
+            'x-disciplr-event': payload.eventType,
+            'x-disciplr-event-id': payload.eventId,
+            'x-disciplr-delivery-timestamp': payload.timestamp,
+          },
+          body,
+          signal: controller.signal,
+        })
 
-    if (response.status >= 400) {
-      throw new Error(`HTTP ${response.status}`)
-    }
+        span.setAttribute('http.status_code', response.status)
 
-    return response.status
-  } finally {
-    clearTimeout(timer)
-  }
+        if (response.status >= 300 && response.status < 400) {
+          const location = response.headers.get('location')
+          const error = new Error(`Webhook redirect refused${location ? `: ${location}` : ''}`)
+          span.setStatus({ code: 'ERROR', message: error.message })
+          throw error
+        }
+
+        if (response.status >= 400) {
+          const error = new Error(`HTTP ${response.status}`)
+          span.setStatus({ code: 'ERROR', message: error.message })
+          throw error
+        }
+
+        span.setStatus({ code: 'OK' })
+        return response.status
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+  )
 }
 
 /**
@@ -587,17 +721,47 @@ const deliverOnce = async (
  * open breakers short-circuit to the dead-letter store.
  * Failures are collected rather than thrown so one bad subscriber cannot
  * block the others.
+ *
+ * **Note:** Delivery is now bounded by WEBHOOK_MAX_CONCURRENCY using a
+ * round-robin fair scheduler via BoundedWebhookDispatcher.
  */
 export const dispatchWebhookEvent = async (
   payload: WebhookDeliveryPayload,
+  targetSubscriberId?: string,
 ): Promise<WebhookDeliveryResult[]> => {
-  const eligible = await repo.findByEvent(payload.organizationId, payload.eventType)
+  let eligible: WebhookSubscriber[]
+  if (targetSubscriberId) {
+    const sub = await repo.findById(targetSubscriberId)
+    const matchesEvent = sub && (sub.events.length === 0 || sub.events.includes(payload.eventType))
+    if (!sub || sub.organizationId !== payload.organizationId || !sub.active || !matchesEvent) {
+      eligible = []
+    } else {
+      eligible = [sub]
+    }
+  } else {
+    eligible = await repo.findByEvent(payload.organizationId, payload.eventType)
+  }
   const config = getCircuitBreakerConfig()
+
+  // Load org allowlist once for the whole dispatch batch (defense in depth)
+  const orgAllowlistHosts = await getEgressAllowlist(payload.organizationId)
 
   return Promise.all(
     eligible.map(async (subscriber): Promise<WebhookDeliveryResult> => {
       let attempts = 0
       let lastStatusCode: number | undefined
+
+      // ── Egress allowlist check (delivery-time enforcement) ─────────────────
+      if (!isUrlAllowed(subscriber.url)) {
+        const reason = `Webhook URL not permitted: ${subscriber.url}`
+        await deadLetter(subscriber.id, payload, reason, 0)
+        return { subscriberId: subscriber.id, url: subscriber.url, success: false, error: reason, attempts: 0 }
+      }
+      if (orgAllowlistHosts.length > 0 && !isUrlAllowed(subscriber.url, orgAllowlistHosts)) {
+        const reason = `Webhook URL not on egress allowlist for org: ${subscriber.url}`
+        await deadLetter(subscriber.id, payload, reason, 0)
+        return { subscriberId: subscriber.id, url: subscriber.url, success: false, error: reason, attempts: 0 }
+      }
 
       // ── Circuit breaker check ──────────────────────────────
       const breaker = await checkBreaker(subscriber.id, config)
@@ -618,6 +782,8 @@ export const dispatchWebhookEvent = async (
         inFlightProbes.add(subscriber.id)
       }
 
+      const deliveryStart = Date.now()
+
       try {
         await retryWithBackoff(
           async () => {
@@ -633,11 +799,14 @@ export const dispatchWebhookEvent = async (
           },
         )
 
+        const latencyMs = Date.now() - deliveryStart
+
         // ── Success — reset breaker ──────────────────────────
         if (isHalfOpenProbe) {
           inFlightProbes.delete(subscriber.id)
         }
-        await recordBreakerSuccess(subscriber.id, config)
+        await recordBreakerSuccess(subscriber.id)
+        await persistDeliveryAttempt(subscriber.id, payload, true, latencyMs, lastStatusCode, attempts)
 
         return {
           subscriberId: subscriber.id,
@@ -647,23 +816,19 @@ export const dispatchWebhookEvent = async (
           attempts,
         }
       } catch (err: any) {
+        const latencyMs = Date.now() - deliveryStart
+
         if (isHalfOpenProbe) {
           inFlightProbes.delete(subscriber.id)
         }
-
-        console.error(`[Webhooks] delivery failed for subscriber ${subscriber.id}:`, err?.message)
-        const error = err?.message ?? 'Unknown error'
-
-        // ── Failure — record in breaker ─────────────────────
         await recordBreakerFailure(subscriber.id, config)
-
-        await deadLetter(subscriber.id, payload, error, attempts)
+        const reason = err?.message ?? 'Delivery failed'
+        await deadLetter(subscriber.id, payload, reason, attempts)
         return {
           subscriberId: subscriber.id,
           url: subscriber.url,
-          statusCode: lastStatusCode,
           success: false,
-          error,
+          error: reason,
           attempts,
         }
       }
@@ -671,7 +836,7 @@ export const dispatchWebhookEvent = async (
   )
 }
 
-const deadLetter = async (
+export const deadLetter = async (
   subscriberId: string,
   payload: WebhookDeliveryPayload,
   lastError: string,
@@ -691,6 +856,31 @@ const deadLetter = async (
   }
 }
 
+const persistDeliveryAttempt = async (
+  subscriberId: string,
+  payload: WebhookDeliveryPayload,
+  success: boolean,
+  latencyMs: number,
+  statusCode: number | undefined,
+  attemptNumber: number,
+  error?: string,
+): Promise<void> => {
+  try {
+    await db('webhook_delivery_attempts').insert({
+      subscriber_id: subscriberId,
+      event_id: payload.eventId,
+      event_type: payload.eventType,
+      success,
+      latency_ms: latencyMs,
+      status_code: statusCode ?? null,
+      attempt_number: attemptNumber,
+      error: error ?? null,
+    })
+  } catch (err: any) {
+    console.error(`[Webhooks] failed to persist delivery attempt:`, err?.message)
+  }
+}
+
 export const replayDeadLetter = async (
   id: string,
 ): Promise<{ replayed: boolean; subscriberId?: string; error?: string }> => {
@@ -704,8 +894,9 @@ export const replayDeadLetter = async (
     return { replayed: false, error: 'Subscriber not registered' }
   }
 
-  if (!isUrlAllowed(subscriber.url)) {
-    return { replayed: false, error: 'URL no longer allowed' }
+  const check = await isUrlAllowedForOrg(subscriber.organizationId, subscriber.url)
+  if (!check.allowed) {
+    return { replayed: false, error: check.reason! }
   }
 
   try {
@@ -714,6 +905,133 @@ export const replayDeadLetter = async (
     return { replayed: true, subscriberId: subscriber.id }
   } catch (err: any) {
     return { replayed: false, error: err?.message ?? 'Delivery failed' }
+  }
+}
+
+/**
+ * Replays all dead-letter entries for a subscriber within a time window.
+ *
+ * Idempotent when a `replayMarker` is provided — re-using the same marker
+ * returns the original result without re-sending deliveries.
+ *
+ * Rate-bounded by `maxEvents` (default DEFAULT_MAX_REPLAY_EVENTS) to avoid
+ * flooding the subscriber. Reuses the existing signing and delivery path
+ * (`deliverOnce`) so payload schema versioning, HMAC signing, and circuit
+ * breaker logic are applied consistently.
+ */
+export const replayWindow = async (
+  subscriberId: string,
+  startTime: string,
+  endTime: string,
+  options: ReplayWindowOptions = {},
+): Promise<ReplayWindowResult> => {
+  const maxEvents = options.maxEvents ?? DEFAULT_MAX_REPLAY_EVENTS
+
+  // Validate subscriber exists
+  const subscriber = await repo.findById(subscriberId)
+  if (!subscriber) {
+    return { replayed: false, count: 0, successCount: 0, failureCount: 0, error: 'Subscriber not found' }
+  }
+
+  // Validate time range
+  const start = new Date(startTime)
+  const end = new Date(endTime)
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+    return { replayed: false, count: 0, successCount: 0, failureCount: 0, error: 'Invalid time range' }
+  }
+  if (start >= end) {
+    return { replayed: false, count: 0, successCount: 0, failureCount: 0, error: 'start_time must be before end_time' }
+  }
+
+  // Check replay marker for idempotency
+  if (options.replayMarker) {
+    const existing = await db('webhook_replay_markers')
+      .where({ replay_marker: options.replayMarker })
+      .first()
+    if (existing) {
+      if (existing.status === 'completed') {
+        return {
+          replayed: true,
+          count: existing.total_count,
+          successCount: existing.success_count,
+          failureCount: existing.failure_count,
+          replayMarker: existing.replay_marker,
+        }
+      }
+      return {
+        replayed: false,
+        count: 0,
+        successCount: 0,
+        failureCount: 0,
+        replayMarker: options.replayMarker,
+        error: 'Replay already in progress',
+      }
+    }
+  }
+
+  // Query dead letters for this subscriber in the time window
+  const deadLetters = await db('webhook_dead_letters')
+    .where('subscriber_id', subscriberId)
+    .where('failed_at', '>=', start.toISOString())
+    .where('failed_at', '<=', end.toISOString())
+    .orderBy('failed_at', 'asc')
+    .limit(maxEvents)
+
+  if (deadLetters.length === 0) {
+    return { replayed: true, count: 0, successCount: 0, failureCount: 0, replayMarker: options.replayMarker }
+  }
+
+  // Create replay marker record
+  let markerId: string | undefined
+  if (options.replayMarker) {
+    const [marker] = await db('webhook_replay_markers')
+      .insert({
+        subscriber_id: subscriberId,
+        start_time: start.toISOString(),
+        end_time: end.toISOString(),
+        replay_marker: options.replayMarker,
+        status: 'in_progress',
+        total_count: deadLetters.length,
+      })
+      .returning('id')
+    markerId = marker.id
+  }
+
+  // Replay each dead letter using the existing signing and delivery path
+  let successCount = 0
+  let failureCount = 0
+  const errors: Array<{ eventId: string; error: string }> = []
+
+  for (const dl of deadLetters) {
+    try {
+      await deliverOnce(subscriber, dl.payload)
+      await db('webhook_dead_letters').where({ id: dl.id }).update({ replayed_at: new Date().toISOString() })
+      successCount++
+    } catch (err: any) {
+      failureCount++
+      errors.push({ eventId: dl.event_id, error: err?.message ?? 'Delivery failed' })
+    }
+  }
+
+  // Update replay marker record
+  if (markerId) {
+    await db('webhook_replay_markers')
+      .where({ id: markerId })
+      .update({
+        status: 'completed',
+        success_count: successCount,
+        failure_count: failureCount,
+        errors: errors.length > 0 ? JSON.stringify(errors) : null,
+        completed_at: new Date(),
+      })
+  }
+
+  return {
+    replayed: true,
+    count: deadLetters.length,
+    successCount,
+    failureCount,
+    replayMarker: options.replayMarker,
   }
 }
 
@@ -732,4 +1050,61 @@ export const getBreakerStatesForMetrics = async (): Promise<{
     else if (s.state === 'HALF_OPEN') halfOpen++
   }
   return { closed, open, halfOpen }
+}
+
+export const MAX_STATS_WINDOW_MS = 72 * 60 * 60 * 1000
+
+/**
+ * Parses a window string like "24h" or "3d" into milliseconds.
+ * Accepts hours (h) up to 72 and days (d) up to 3. Returns null for invalid input.
+ */
+export const parseWindowMs = (raw: string): number | null => {
+  const m = /^(\d+)(h|d)$/.exec(raw.trim())
+  if (!m) return null
+  const n = Number(m[1])
+  if (!Number.isFinite(n) || n <= 0) return null
+  const ms = m[2] === 'd' ? n * 24 * 60 * 60 * 1000 : n * 60 * 60 * 1000
+  if (ms > MAX_STATS_WINDOW_MS) return null
+  return ms
+}
+
+export interface SubscriberDeliveryStats {
+  subscriber_id: string
+  window: string
+  window_start: string
+  window_end: string
+  attempt_count: number
+  success_count: number
+  failure_count: number
+  success_rate: number
+  p50_latency_ms: number | null
+  p95_latency_ms: number | null
+  last_failure_reason: string | null
+  breaker_state: BreakerStateValue | null
+}
+
+/**
+ * Returns aggregated delivery analytics for a webhook subscriber over a bounded
+ * time window. Returns null when the subscriber does not exist.
+ */
+export const getSubscriberDeliveryStats = async (
+  subscriberId: string,
+  windowParam: string = '24h',
+): Promise<SubscriberDeliveryStats | null> => {
+  const subscriber = await repo.findById(subscriberId)
+  if (!subscriber) return null
+
+  const windowMs = parseWindowMs(windowParam) ?? 24 * 60 * 60 * 1000
+  const windowEnd = new Date()
+  const windowStart = new Date(windowEnd.getTime() - windowMs)
+
+  const stats = await repo.getDeliveryStats(subscriberId, windowStart, windowEnd)
+
+  return {
+    subscriber_id: subscriberId,
+    window: windowParam,
+    window_start: windowStart.toISOString(),
+    window_end: windowEnd.toISOString(),
+    ...stats,
+  }
 }

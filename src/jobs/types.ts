@@ -2,10 +2,18 @@ export const JOB_TYPES = [
   'notification.send',
   'deadline.check',
   'milestone.reminders',
+  'milestone.reminders.digest',
+  'milestone.reminders.deferred',
   'oracle.call',
   'analytics.recompute',
+  'analytics.report.generate',
   'export.generate',
   'vault.reconcile',
+  'sessions.cleanup',
+  'retention.purge',
+  'outbox.relay',
+  'embeddings.reindex',
+  'saved-search.evaluate',
 ] as const
 
 export type JobType = (typeof JOB_TYPES)[number]
@@ -27,6 +35,15 @@ export interface MilestoneRemindersJobPayload {
   limit?: number
 }
 
+export interface MilestoneRemindersDigestJobPayload {
+  leadTimesMs?: number[]
+  limit?: number
+}
+
+export interface MilestoneRemindersDeferredJobPayload {
+  batchSize?: number
+}
+
 export interface OracleCallJobPayload {
   oracle: string
   symbol: string
@@ -39,6 +56,10 @@ export interface AnalyticsRecomputeJobPayload {
   reason?: string
 }
 
+export interface AnalyticsReportGenerateJobPayload {
+  orgIds?: string[] // if omitted, runs for all known orgs
+}
+
 export interface ExportGenerateJobPayload {
   exportJobId: string
 }
@@ -48,14 +69,44 @@ export interface VaultReconcileJobPayload {
   batchSize?: number
 }
 
+export interface SessionsCleanupJobPayload {
+  batchSize?: number
+}
+
+export interface RetentionPurgeJobPayload {
+  organizationId: string
+  batchSize?: number
+}
+
+export interface OutboxRelayJobPayload {
+  batchSize?: number
+}
+
+export interface EmbeddingsReindexJobPayload {
+  batchSize?: number
+  maxBatchesPerRun?: number
+}
+
+export interface SavedSearchEvaluateJobPayload {
+  searchId?: string
+  batchSize?: number
+}
 export interface JobPayloadByType {
   'notification.send': NotificationJobPayload
   'deadline.check': DeadlineCheckJobPayload
   'milestone.reminders': MilestoneRemindersJobPayload
+  'milestone.reminders.digest': MilestoneRemindersDigestJobPayload
+  'milestone.reminders.deferred': MilestoneRemindersDeferredJobPayload
   'oracle.call': OracleCallJobPayload
   'analytics.recompute': AnalyticsRecomputeJobPayload
+  'analytics.report.generate': AnalyticsReportGenerateJobPayload
   'export.generate': ExportGenerateJobPayload
   'vault.reconcile': VaultReconcileJobPayload
+  'sessions.cleanup': SessionsCleanupJobPayload
+  'retention.purge': RetentionPurgeJobPayload
+  'outbox.relay': OutboxRelayJobPayload
+  'embeddings.reindex': EmbeddingsReindexJobPayload
+  'saved-search.evaluate': SavedSearchEvaluateJobPayload
 }
 
 export interface JobContext {
@@ -73,7 +124,7 @@ export interface EnqueueOptions {
   maxAttempts?: number
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> => {
+export const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === 'object' && value !== null
 }
 
@@ -119,6 +170,13 @@ export const isPayloadForJobType = (
         (payload.leadTimesMs === undefined || Array.isArray(payload.leadTimesMs)) &&
         (payload.limit === undefined || typeof payload.limit === 'number')
       )
+    case 'milestone.reminders.digest':
+      return (
+        (payload.leadTimesMs === undefined || Array.isArray(payload.leadTimesMs)) &&
+        (payload.limit === undefined || typeof payload.limit === 'number')
+      )
+    case 'milestone.reminders.deferred':
+      return payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0)
     case 'oracle.call':
       return (
         isNonEmptyString(payload.oracle) &&
@@ -131,6 +189,8 @@ export const isPayloadForJobType = (
         isOptionalString(payload.entityId) &&
         isOptionalString(payload.reason)
       )
+    case 'analytics.report.generate':
+      return payload.orgIds === undefined || Array.isArray(payload.orgIds)
     case 'export.generate':
       return isNonEmptyString(payload.exportJobId)
     case 'vault.reconcile':
@@ -140,6 +200,11 @@ export const isPayloadForJobType = (
       )
     case 'sessions.cleanup':
       return payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0)
+    case 'retention.purge':
+      return (
+        isNonEmptyString(payload.organizationId) &&
+        (payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0))
+      )
     case 'outbox.relay':
       return true
     case 'embeddings.reindex':
@@ -147,6 +212,11 @@ export const isPayloadForJobType = (
         (payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0)) &&
         (payload.maxBatchesPerRun === undefined ||
           (typeof payload.maxBatchesPerRun === 'number' && payload.maxBatchesPerRun > 0))
+      )
+    case 'saved-search.evaluate':
+      return (
+        (payload.searchId === undefined || typeof payload.searchId === 'string') &&
+        (payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0))
       )
     default:
       return false

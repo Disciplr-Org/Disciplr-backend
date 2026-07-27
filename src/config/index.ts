@@ -1,6 +1,6 @@
-import { initEnv, getEnv, type Env, type EnvWarning } from './env.js'
+import { initEnv, getEnv, _resetEnvForTesting, type Env, type EnvWarning } from './env.js'
 
-export { initEnv, getEnv, type Env, type EnvWarning }
+export { initEnv, getEnv, _resetEnvForTesting, type Env, type EnvWarning }
 
 // Config moved/merged below to avoid duplicate declaration
 
@@ -33,13 +33,6 @@ export function parseCorsOrigins(value: string | undefined, env: string): string
   return ['http://localhost:3000']
 }
 
-/** Reset internal state — exposed for tests only. */
-export function _resetEnvForTesting(): void {
-  // We need to be able to reset this. Since _validated is in env.ts,
-  // we should export a reset function there too if needed, or
-  // just handle it here if possible. 
-  // Given the current structure, I will add a reset function to env.ts
-}
 
 export type AppConfig = {
   env: string
@@ -58,19 +51,29 @@ export const config: AppConfig = {
   get nodeEnv() { return _env },
   get logLevel() { return process.env.LOG_LEVEL ?? 'info' },
   get port() { 
-    try { return getEnv().PORT } catch { return process.env.PORT ? Number(process.env.PORT) : 3000 }
+    try { return getEnv().PORT } catch (err: any) { 
+      if (err.message === 'Env not initialized') return process.env.PORT ? Number(process.env.PORT) : 3000;
+      throw err;
+    }
   },
   get serviceName() {
-    try { return getEnv().SERVICE_NAME } catch { return process.env.SERVICE_NAME ?? 'disciplr-backend' }
+    try { return getEnv().SERVICE_NAME } catch (err: any) { 
+      if (err.message === 'Env not initialized') return process.env.SERVICE_NAME ?? 'disciplr-backend';
+      throw err;
+    }
   },
   get corsOrigins() {
     try {
       return parseCorsOrigins(getEnv().CORS_ORIGINS, this.env)
-    } catch {
-      return parseCorsOrigins(process.env.CORS_ORIGINS, this.env)
+    } catch (err: any) {
+      if (err.message === 'Env not initialized') return parseCorsOrigins(process.env.CORS_ORIGINS, this.env);
+      throw err;
     }
   },
   get maxJsonBodySize() {
-    try { return getEnv().MAX_JSON_BODY_SIZE } catch { return process.env.MAX_JSON_BODY_SIZE ?? '500kb' }
+    try { return getEnv().MAX_JSON_BODY_SIZE } catch (err: any) { 
+      if (err.message === 'Env not initialized') return process.env.MAX_JSON_BODY_SIZE ?? '500kb';
+      throw err;
+    }
   }
 }

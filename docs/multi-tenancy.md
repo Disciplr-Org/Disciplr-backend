@@ -22,6 +22,49 @@ org-scoped endpoint must uphold.
    `req.params`. Client-supplied `orgId` values in query strings or request bodies are
    never trusted for data access decisions.
 
+### Org-scoped retention and hard purge
+
+Retention purge jobs are also scoped to the organization whose ID appears in the job
+payload. A per-org retention pass only hard-deletes soft-deleted vaults and related
+milestones for that organization.
+
+Retention configuration supports the following environment variables:
+
+- `RETENTION_PURGE_AGE_MS` — minimum age before a soft-deleted vault is eligible for hard purge.
+  If unset, the per-org retention window is consulted (see below).
+- `RETENTION_PURGE_INTERVAL_MS` — frequency at which the retention scheduler enqueues per-org jobs.
+- `RETENTION_PURGE_BATCH_SIZE` — maximum number of vaults deleted per org on each retention run.
+
+Every retention purge also writes an audit log entry scoped to the target organization with a
+summary of deleted vault and milestone counts.
+
+### Per-org retention window
+
+Each organization can override the global retention window by setting
+`retention_purge_age_ms` in its `metadata` JSONB column:
+
+```sql
+UPDATE organizations
+SET metadata = jsonb_set(
+  COALESCE(metadata, '{}'::jsonb),
+  '{retention_purge_age_ms}',
+  '604800000'   -- 7 days in milliseconds
+)
+WHERE id = '<org-uuid>';
+```
+
+Resolution order (first match wins):
+
+1. Explicit `retentionAgeMs` argument passed to `purgeSoftDeletedVaults` (testing).
+2. `RETENTION_PURGE_AGE_MS` environment variable (global override).
+3. `organizations.metadata.retention_purge_age_ms` (per-org override).
+4. Built-in default of 30 days (`2_592_000_000` ms).
+
+If the per-org value is missing, unset, or not a valid non-negative number, the system
+falls through to the next level. This allows a cluster-wide default via `RETENTION_PURGE_AGE_MS`
+while letting individual organizations opt into a shorter (or longer) window through their
+metadata.
+
 5. **No cross-org leakage** — pagination, sorting, and filtering are applied *after* the
    org-scope filter. A filter that matches zero records in the target org returns an empty
    result set, not records from another org.

@@ -1,33 +1,34 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals'
 import request from 'supertest'
 import { app } from '../app.js'
-import { setVaults } from './vaults.js'
+import { setTestVaults, resetVaultStore } from '../services/vaultStore.js'
+import type { PersistedVault } from '../types/vaults.js'
 import * as vaultStore from '../services/vaultStore.js'
 import { computeWeakETag, etagMatches, isValidETag, compareETags } from '../utils/etag.js'
 
 describe('ETag and Conditional GET Support - GET /api/vaults/:id', () => {
-  const mockVault = {
+  const mockVault: PersistedVault = {
     id: 'vault-123',
     creator: 'G1234567890123456789012345678901234567890123456789012345',
     amount: '1000.00',
-    status: 'active' as const,
+    status: 'active',
     startDate: '2026-02-26T12:00:00Z',
     endDate: '2026-03-26T12:00:00Z',
     successDestination: 'G9999999999999999999999999999999999999999999999999999999',
     failureDestination: 'G8888888888888888888888888888888888888888888888888888888',
     verifier: 'G7777777777777777777777777777777777777777777777777777777',
     createdAt: '2026-02-26T12:00:00Z',
-    lateCheckInWindowSecs: 0,
     milestones: [],
+    lateCheckInWindowSecs: 0,
   }
 
   beforeEach(() => {
-    setVaults([mockVault])
+    setTestVaults([mockVault])
     jest.clearAllMocks()
   })
 
   afterEach(() => {
-    setVaults([])
+    resetVaultStore()
   })
 
   describe('ETag Utility Functions', () => {

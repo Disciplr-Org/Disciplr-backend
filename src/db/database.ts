@@ -235,3 +235,5 @@ export function getTimeRangeFilter(period: string): { startDate: string; endDate
 
   return { startDate, endDate }
 }
+
+export const db = getPool()

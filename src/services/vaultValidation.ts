@@ -1,6 +1,9 @@
 import { z } from 'zod'
 import { utcTimestampSchema } from '../lib/validation.js'
+import { Horizon, StrKey } from '@stellar/stellar-sdk'
 export { flattenZodErrors } from '../lib/validation.js'
+
+const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/
 
 // ─── Soroban-aligned constants ───────────────────────────────────────────────
 
@@ -16,14 +19,76 @@ export const VAULT_MILESTONES_MIN = 1
 /** Maximum number of milestones in a vault. This caps request size and enforces operational limits. */
 export const VAULT_MILESTONES_MAX = 20
 
-/** Stellar strkey G-address: 'G' + 55 base-32 chars (A-Z, 2-7). */
-const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/
+export function getClassicAddress(address: string): string {
+  if (address.startsWith('M')) {
+    try {
+      const decoded = StrKey.decodeMed25519PublicKey(address)
+      return StrKey.encodeEd25519PublicKey(decoded.slice(0, 32))
+    } catch {
+      throw new Error(`Invalid muxed address format`);
+    }
+  }
+  return address
+}
+
+export function isUnsafeAddress(address: string): boolean {
+  try {
+    let pubkey: Buffer
+    if (StrKey.isValidEd25519PublicKey(address)) {
+      pubkey = StrKey.decodeEd25519PublicKey(address)
+    } else if (StrKey.isValidMed25519PublicKey(address)) {
+      pubkey = StrKey.decodeMed25519PublicKey(address).slice(0, 32)
+    } else {
+      return false
+    }
+    const allZeros = pubkey.every((b) => b === 0x00)
+    const allOnes = pubkey.every((b) => b === 0xff)
+    return allZeros || allOnes
+  } catch {
+    return true
+  }
+}
+
+// Checks SEP-29: returns true if the account has set config.memo_required=1
+export async function isMemoRequired(address: string, horizonUrl?: string): Promise<boolean> {
+  const classic = getClassicAddress(address)
+  if (!StrKey.isValidEd25519PublicKey(classic)) return false
+  try {
+    const server = new Horizon.Server(horizonUrl ?? process.env.HORIZON_URL ?? 'https://horizon.stellar.org')
+    const account = await server.loadAccount(classic)
+    return account.data_attr?.['config.memo_required'] === 'MQ=='  // base64("1")
+  } catch {
+    return false
+  }
+}
 
 // ─── Reusable field schemas ──────────────────────────────────────────────────
 
 const stellarAddressSchema = z
   .string({ message: 'required' })
-  .regex(STELLAR_ADDRESS_RE, 'must be a valid Stellar public key')
+  .superRefine((val, ctx) => {
+    if (val.startsWith('C')) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Contract addresses are not allowed where an account is required',
+      })
+      return
+    }
+    try {
+      const isValid = StrKey.isValidEd25519PublicKey(val) || StrKey.isValidMed25519PublicKey(val)
+      if (!isValid) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'must be a valid Stellar public key',
+        })
+      }
+    } catch {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'must be a valid Stellar public key',
+      })
+    }
+  })
 
 /**
  * Amount field: stored as a string, but the value must parse to a finite
@@ -46,11 +111,26 @@ const amountStringSchema = z.preprocess(
 
 // ─── Milestone schema ────────────────────────────────────────────────────────
 
-const milestoneSchema = z.object({
+/** Maximum length for milestone title. */
+export const MILESTONE_TITLE_MAX = 200
+
+/** Maximum length for milestone description. */
+export const MILESTONE_DESCRIPTION_MAX = 2000
+
+/**
+ * Canonical milestone field schema shared between vault-creation and the
+ * standalone milestone-creation endpoint.  Both code paths must produce
+ * milestones that satisfy the same invariants.
+ */
+export const milestoneSchema = z.object({
   title: z
     .string({ message: 'is required' })
-    .refine((v) => v.trim().length > 0, 'is required'),
-  description: z.string().optional(),
+    .refine((v) => v.trim().length > 0, 'is required')
+    .refine((v) => v.trim().length <= MILESTONE_TITLE_MAX, `must be at most ${MILESTONE_TITLE_MAX} characters`),
+  description: z
+    .string()
+    .max(MILESTONE_DESCRIPTION_MAX, `must be at most ${MILESTONE_DESCRIPTION_MAX} characters`)
+    .optional(),
   dueDate: utcTimestampSchema,
   amount: amountStringSchema,
 })
@@ -72,6 +152,8 @@ export const createVaultSchema = z
       .min(VAULT_MILESTONES_MIN, 'must contain at least one item')
       .max(VAULT_MILESTONES_MAX, `must contain at most ${VAULT_MILESTONES_MAX} items`),
     creator: stellarAddressSchema.optional(),
+    orgId: z.string().uuid().optional(),
+    organizationId: z.string().uuid().optional(),
     /**
      * Grace window in seconds after a milestone dueDate during which check-in
      * is still accepted. Must be a non-negative integer. Bounded at runtime by
@@ -128,6 +210,62 @@ export const createVaultSchema = z
           code: 'custom',
           message: 'Total milestone amount cannot exceed vault amount',
           path: ['milestones'],
+        })
+      }
+    }
+
+    // Reject unsafe success/failure destination addresses
+    if (isUnsafeAddress(data.destinations.success)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Destination address cannot be a zero, burn, or unsafe address',
+        path: ['destinations', 'success'],
+      })
+    }
+    if (isUnsafeAddress(data.destinations.failure)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Destination address cannot be a zero, burn, or unsafe address',
+        path: ['destinations', 'failure'],
+      })
+    }
+
+    // Validate embedded muxed address memo ID range
+    if (StrKey.isValidMed25519PublicKey(data.destinations.success)) {
+      try {
+        const decoded = StrKey.decodeMed25519PublicKey(data.destinations.success)
+        const memoId = decoded.readBigUInt64BE(32)
+        if (memoId < 0n) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Invalid memo ID in success destination',
+            path: ['destinations', 'success'],
+          })
+        }
+      } catch {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Invalid or malformed muxed address for success destination',
+          path: ['destinations', 'success'],
+        })
+      }
+    }
+    if (StrKey.isValidMed25519PublicKey(data.destinations.failure)) {
+      try {
+        const decoded = StrKey.decodeMed25519PublicKey(data.destinations.failure)
+        const memoId = decoded.readBigUInt64BE(32)
+        if (memoId < 0n) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Invalid memo ID in failure destination',
+            path: ['destinations', 'failure'],
+          })
+        }
+      } catch {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Invalid or malformed muxed address for failure destination',
+          path: ['destinations', 'failure'],
         })
       }
     }

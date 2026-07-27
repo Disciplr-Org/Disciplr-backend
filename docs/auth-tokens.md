@@ -98,6 +98,15 @@ Revokes **all** sessions and refresh tokens for the user:
 - Revocation sets the `revokedAt` timestamp on the record.
 - Both single-token revocation (`logout`) and bulk revocation (`logout-all`) are supported.
 
+### Refresh Token Reuse Detection
+
+- When a rotated (already-revoked) refresh token is presented, the system treats this as a replay/reuse event. In response it:
+  1. Revokes the entire refresh-token family for the user (sets `revokedAt` on all refresh-token records for the user).
+  2. Revokes all active sessions for the user.
+  3. Emits a security audit event with non-secret metadata (e.g. truncated token fingerprint) for operator review.
+
+This behavior is always enforced (it never fails open) and audit logs are written without including plaintext tokens.
+
 ## Threat Model
 
 | Threat | Mitigation |
@@ -115,6 +124,8 @@ Revokes **all** sessions and refresh tokens for the user:
 |---------------------|---------|-------------|
 | `JWT_ACCESS_SECRET` | `fallback-access-secret` | Secret for signing access tokens |
 | `JWT_REFRESH_SECRET` | `fallback-refresh-secret` | Secret for signing refresh tokens |
+| `JWT_ISSUER` | `disciplr` | Expected issuer claim (`iss`) for access tokens |
+| `JWT_AUDIENCE` | `disciplr-api` | Expected audience claim (`aud`) for access tokens |
 | `JWT_ACCESS_EXPIRES_IN` | `15m` | Access token lifetime |
 | `JWT_REFRESH_EXPIRES_IN` | `7d` | Refresh token lifetime |
 | `SESSIONS_CLEANUP_INTERVAL_MS` | `86400000` (24 h) | How often the cleanup job runs |

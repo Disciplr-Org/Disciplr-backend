@@ -1,4 +1,4 @@
-import { 
+import {
   queryVaultStatsByPeriod,
   queryVaultStatusBreakdownAllTime,
   queryVaultStatusBreakdownByPeriod,
@@ -141,7 +141,7 @@ export function getOrgRiskAnalytics(
 export async function getOverallAnalytics(): Promise<VaultAnalytics> {
   return getOrSet('analytics:overall', 300, async () => {
     const summary = await readAnalyticsSummary()
-    
+
     return {
       totalVaults: summary.total_vaults,
       activeVaults: summary.active_vaults,
@@ -152,19 +152,22 @@ export async function getOverallAnalytics(): Promise<VaultAnalytics> {
       successRate: summary.success_rate,
       lastUpdated: summary.last_updated,
     }
-  })
+  }, orgId)
 }
 
-export async function getAnalyticsByPeriod(period: string): Promise<VaultAnalyticsWithPeriod> {
-  const { startDate, endDate } = getTimeRangeFilter(period)
-  
-  const stats = await queryVaultStatsByPeriod(startDate, endDate)
-  
-  const totalCompleted = stats.completed_vaults || 0
-  const totalFailed = stats.failed_vaults || 0
-  const successRate = (totalCompleted + totalFailed) > 0
-    ? (totalCompleted / (totalCompleted + totalFailed)) * 100
-    : 0
+export async function getAnalyticsByPeriod(
+  period: string,
+): Promise<VaultAnalyticsWithPeriod> {
+  const { startDate, endDate } = getTimeRangeFilter(period);
+
+  const stats = await queryVaultStatsByPeriod(startDate, endDate);
+
+  const totalCompleted = stats.completed_vaults || 0;
+  const totalFailed = stats.failed_vaults || 0;
+  const successRate =
+    totalCompleted + totalFailed > 0
+      ? (totalCompleted / (totalCompleted + totalFailed)) * 100
+      : 0;
 
   return {
     totalVaults: stats.total_vaults || 0,
@@ -178,70 +181,88 @@ export async function getAnalyticsByPeriod(period: string): Promise<VaultAnalyti
     period,
     startDate,
     endDate,
-  }
+  };
 }
 
 export async function getVaultStatusBreakdown(): Promise<{
-  byStatus: Record<string, number>
-  byStatusAndPeriod: Record<string, Record<string, number>>
+  byStatus: Record<string, number>;
+  byStatusAndPeriod: Record<string, Record<string, number>>;
 }> {
-  const allTimeRows = await queryVaultStatusBreakdownAllTime()
-  
-  const byStatus: Record<string, number> = {}
-  allTimeRows.forEach((row) => {
-    byStatus[row.status] = row.count
-  })
+  const allTimeRows = await queryVaultStatusBreakdownAllTime();
 
-  const { startDate, endDate } = getTimeRangeFilter('30d')
-  const last30DaysRows = await queryVaultStatusBreakdownByPeriod(startDate, endDate)
+  const byStatus: Record<string, number> = {};
+  allTimeRows.forEach((row) => {
+    byStatus[row.status] = row.count;
+  });
+
+  const { startDate, endDate } = getTimeRangeFilter("30d");
+  const last30DaysRows = await queryVaultStatusBreakdownByPeriod(
+    startDate,
+    endDate,
+  );
 
   const byStatusAndPeriod: Record<string, Record<string, number>> = {
-    '30d': {},
-  }
+    "30d": {},
+  };
   last30DaysRows.forEach((row) => {
-    byStatusAndPeriod['30d'][row.status] = row.count
-  })
+    byStatusAndPeriod["30d"][row.status] = row.count;
+  });
 
-  return { byStatus, byStatusAndPeriod }
+  return { byStatus, byStatusAndPeriod };
 }
 
-export async function getCapitalAnalytics(period: string = 'all'): Promise<{
-  totalLockedCapital: string
-  activeCapital: string
-  averageVaultSize: string
-  period: string
+export async function getCapitalAnalytics(period: string = "all"): Promise<{
+  totalLockedCapital: string;
+  activeCapital: string;
+  averageVaultSize: string;
+  period: string;
 }> {
-  let totalLockedCapital = 0
-  let activeCapital = 0
-  let totalVaults = 0
+  let totalLockedCapital = 0;
+  let activeCapital = 0;
+  let totalVaults = 0;
 
-  if (period === 'all') {
+  if (period === "all") {
     const stats = await queryVaultStatsByPeriod(
       new Date(0).toISOString(),
-      new Date().toISOString()
-    )
-    totalLockedCapital = stats.total_locked_capital || 0
-    activeCapital = stats.active_capital || 0
-    totalVaults = stats.total_vaults || 0
+      new Date().toISOString(),
+    );
+    totalLockedCapital = stats.total_locked_capital || 0;
+    activeCapital = stats.active_capital || 0;
+    totalVaults = stats.total_vaults || 0;
   } else {
-    const { startDate, endDate } = getTimeRangeFilter(period)
-    const stats = await queryVaultStatsByPeriod(startDate, endDate)
-    totalLockedCapital = stats.total_locked_capital || 0
-    activeCapital = stats.active_capital || 0
-    totalVaults = stats.total_vaults || 0
+    const { startDate, endDate } = getTimeRangeFilter(period);
+    const stats = await queryVaultStatsByPeriod(startDate, endDate);
+    totalLockedCapital = stats.total_locked_capital || 0;
+    activeCapital = stats.active_capital || 0;
+    totalVaults = stats.total_vaults || 0;
   }
 
-  const avgSize = totalVaults > 0 ? totalLockedCapital / totalVaults : 0
+  const avgSize = totalVaults > 0 ? totalLockedCapital / totalVaults : 0;
 
   return {
     totalLockedCapital: totalLockedCapital.toString(),
     activeCapital: activeCapital.toString(),
     averageVaultSize: avgSize.toFixed(2),
     period,
-  }
+  };
 }
 
-export async function updateAnalyticsSummary(): Promise<void> {
+export async function updateAnalyticsSummary(orgId?: string): Promise<void> {
   await dbUpdateSummary()
-  await invalidate('analytics:overall')
+  await invalidate('analytics:overall', orgId)
+}
+
+/**
+ * Render a point-in-time analytics snapshot for a single org.
+ * Pulls vault IDs from the in-memory vaults store so it works without a DB.
+ */
+export function renderOrgAnalyticsSnapshot(orgId: string): OrgVaultAnalytics & { orgId: string; snapshotAt: string } {
+  // Import lazily to avoid circular deps and to stay hermetic in tests
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { vaults } = require('../routes/vaults.js') as { vaults: Array<{ id: string; orgId?: string }> }
+  const orgVaultIds = vaults
+    .filter((v) => v.orgId === orgId)
+    .map((v) => v.id)
+  const analytics = getOrgAnalyticsBatched(orgVaultIds)
+  return { ...analytics, orgId, snapshotAt: utcNow() }
 }

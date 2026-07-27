@@ -187,20 +187,39 @@ export const getVerifierProfile = async (userId: string): Promise<VerifierProfil
   return mapVerifierRow(row)
 }
 
-export const listVerifierProfiles = async (): Promise<VerifierProfile[]> => {
-  const rows = await db('verifiers').select('*').orderBy('created_at', 'desc')
+export interface ListVerifierProfilesOptions {
+  limit?: number
+  offset?: number
+}
+
+export const listVerifierProfiles = async (opts: ListVerifierProfilesOptions = {}): Promise<VerifierProfile[]> => {
+  const parsedLimit = Number(opts.limit)
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.floor(parsedLimit) : 100
+  const parsedOffset = Number(opts.offset)
+  const offset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? Math.floor(parsedOffset) : 0
+  const rows = await db('verifiers').select('*').orderBy('created_at', 'desc').limit(limit).offset(offset)
   return rows.map(mapVerifierRow)
 }
 
+/**
+ * @deprecated Use `transitionVerifier` directly.
+ *
+ * This wrapper exists only for backward-compatibility. It delegates to
+ * `transitionVerifier` so that every status change goes through the full
+ * validation pipeline: `canTransition` check, `db.transaction`, and
+ * `createVerifierAuditLog`. Callers should migrate to `transitionVerifier`
+ * and pass an explicit `VerifierMutationContext`.
+ *
+ * A synthetic system context is used here because the legacy signature did
+ * not accept an actor/reason. Audit logs created via this path will carry
+ * `actor_user_id: 'system'` to make the bypass-free path visible.
+ */
 export const setVerifierStatus = async (
   userId: string,
   status: VerifierStatus,
 ): Promise<VerifierProfile | null> => {
-  const row = await db('verifiers').where({ user_id: userId }).first()
-  if (!row) return null
-
-  const [updated] = await db('verifiers').where({ user_id: userId }).update(mapStatusToUpdates(status)).returning('*')
-  return mapVerifierRow(updated)
+  const result = await transitionVerifier(userId, status, { actorUserId: 'system' })
+  return result?.after ?? null
 }
 
 export const recordVerification = async (
@@ -220,11 +239,23 @@ export const recordVerification = async (
     .first()
 
   if (existing) {
-    if (existing.result === result) {
-      return mapVerificationRow(existing)
+    if (existing.result !== result) {
+      // Different decision — hard conflict.
+      throw new VerificationConflictError()
     }
 
-    throw new VerificationConflictError()
+    // Same result but caller is submitting different evidence or changing the
+    // disputed flag.  Surface the mismatch rather than silently discarding
+    // the new information.
+    const existingEvidenceHash: string | null = existing.evidence_hash ?? null
+    const incomingEvidenceHash: string | null = evidenceHash ?? null
+    const existingDisputed = !!existing.disputed
+
+    if (existingEvidenceHash !== incomingEvidenceHash || existingDisputed !== disputed) {
+      throw new VerificationConflictError()
+    }
+
+    return mapVerificationRow(existing)
   }
 
   const [rec] = await client('verifications')
@@ -240,8 +271,12 @@ export const recordVerification = async (
   return mapVerificationRow(rec)
 }
 
-export const listVerifications = async (): Promise<VerificationRecord[]> => {
-  const rows = await db('verifications').select('*').orderBy('timestamp', 'desc')
+export const listVerifications = async (targetIds?: string[]): Promise<VerificationRecord[]> => {
+  const query = db('verifications').select('*').orderBy('timestamp', 'desc')
+  if (targetIds && targetIds.length > 0) {
+    query.whereIn('target_id', targetIds)
+  }
+  const rows = await query
   return rows.map(mapVerificationRow)
 }
 
@@ -448,19 +483,35 @@ export const getMilestoneApprovals = async (
   rejected: MilestoneApproval[]
   pending: MilestoneApproval[]
 }> => {
-  const rows = await db('milestone_approvals')
+  interface MilestoneApprovalRow {
+    id: string
+    milestone_id: string
+    verifier_user_id: string
+    approval_status: unknown
+    created_at: string
+    updated_at: string
+  }
+
+  const rows = await db<MilestoneApprovalRow>('milestone_approvals')
     .where({ milestone_id: milestoneId })
     .orderBy('created_at', 'asc')
 
-  const grouped = {
-    approved: [] as MilestoneApproval[],
-    rejected: [] as MilestoneApproval[],
-    pending: [] as MilestoneApproval[],
+  const VALID_STATUSES = new Set<MilestoneApprovalStatus>(['approved', 'rejected', 'pending'])
+
+  const grouped: Record<MilestoneApprovalStatus, MilestoneApproval[]> = {
+    approved: [],
+    rejected: [],
+    pending: [],
   }
 
   rows.forEach((row) => {
-    const mapped = mapMilestoneApprovalRow(row)
-    grouped[row.approval_status].push(mapped)
+    const status = row.approval_status
+    if (typeof status !== 'string' || !VALID_STATUSES.has(status as MilestoneApprovalStatus)) {
+      // Unrecognised status from DB — route to pending rather than throw
+      grouped.pending.push(mapMilestoneApprovalRow(row))
+      return
+    }
+    grouped[status as MilestoneApprovalStatus].push(mapMilestoneApprovalRow(row))
   })
 
   return grouped

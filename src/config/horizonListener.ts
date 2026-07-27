@@ -13,6 +13,16 @@ export interface HorizonListenerConfig {
   lagThreshold?: number
 }
 
+export class HorizonListenerConfigError extends Error {
+  constructor(
+    message: string,
+    public readonly errors: string[] = [],
+  ) {
+    super(message)
+    this.name = 'HorizonListenerConfigError'
+  }
+}
+
 /**
  * Load configuration from validated environment.
  * The validation is already performed by initEnv().
@@ -39,7 +49,7 @@ export function loadHorizonListenerConfig(): HorizonListenerConfig {
 
 /**
  * Validate required configuration fields and numeric bounds.
- * Logs structured JSON errors and exits with code 1 if validation fails.
+ * Logs structured JSON errors and throws a typed error if validation fails.
  */
 export function validateHorizonListenerConfig(config: HorizonListenerConfig): void {
   const errors: string[] = []
@@ -65,7 +75,7 @@ export function validateHorizonListenerConfig(config: HorizonListenerConfig): vo
         timestamp: new Date().toISOString(),
       }),
     )
-    process.exit(1)
+    throw new HorizonListenerConfigError('Horizon listener configuration validation failed', errors)
   }
 }
 

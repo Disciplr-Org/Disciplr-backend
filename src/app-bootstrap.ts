@@ -7,9 +7,9 @@ import { createJobsRouter } from './routes/jobs.js'
 import { BackgroundJobSystem } from './jobs/system.js'
 import { authRouter } from './routes/auth.js'
 import { analyticsRouter } from './routes/analytics.js'
-import { healthRateLimiter, vaultsRateLimiter } from './middleware/rateLimiter.js'
+import { authRateLimiter, healthRateLimiter, vaultsRateLimiter } from './middleware/rateLimiter.js'
 import { createExportRouter } from './routes/exports.js'
-import { configureExportJobRepository, createKnexExportJobRepository } from './services/exportQueue.js'
+import { configureExportJobRepository, configureDlqRepository, createKnexExportJobRepository, createKnexDlqRepository } from './services/exportQueue.js'
 import { db } from './db/index.js'
 import { transactionsRouter } from './routes/transactions.js'
 import { privacyRouter, privacyAbuseMonitor } from './routes/privacy.js'
@@ -17,13 +17,17 @@ import { milestonesRouter } from './routes/milestones.js'
 import { orgVaultsRouter } from './routes/orgVaults.js'
 import { orgAnalyticsRouter } from './routes/orgAnalytics.js'
 import { orgMembersRouter } from './routes/orgMembers.js'
-import { adminRouter } from './routes/admin.js'
+// adminRouter is imported and mounted in app.ts; not needed here.
 import { adminVerifiersRouter } from './routes/adminVerifiers.js'
-import { adminWebhooksRouter } from './routes/adminWebhooks.js'
+import { adminWebhooksRouter, adminVaultReplayRouter } from './routes/adminWebhooks.js'
 import { verificationsRouter } from './routes/verifications.js'
-import { apiKeysRouter } from './routes/apiKeys.js'
-import { notificationsRouter } from './routes/notifications.js'
-import { webhooksRouter } from './routes/webhooks.js'
+import { apiKeysRouter, getApiKeyUsageHandler } from './routes/apiKeys.js'
+import { oauthRouter } from './routes/oauth.js'
+import { authenticate } from './middleware/auth.js'
+import { requireOrgAccess } from './middleware/orgAuth.js'
+// notificationsRouter is imported and mounted in app.ts; not needed here.
+import { notificationPreferencesRouter } from './routes/notificationPreferences.js'
+// webhookRouter is mounted in app.ts at module load time; no re-mount needed here.
 import { graphqlRouter } from './routes/graphql.js'
 import { createNotificationService, NotificationService } from './services/notifications/factory.js'
 import { withRequestPrisma } from './middleware/withRequestPrisma.js'
@@ -32,6 +36,7 @@ import {
   securityRateLimitMiddleware,
 } from "./security/abuse-monitor.js";
 import inFlightMiddleware from "./middleware/inFlightRequests.js";
+import { mountVersionedRoute } from './middleware/versioning.js'
 
 type BootstrapOptions = {
   notificationService?: NotificationService;
@@ -47,7 +52,8 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
         "console",
     );
   const jobSystem = new BackgroundJobSystem(notificationService);
-  configureExportJobRepository(createKnexExportJobRepository(db));
+  configureExportJobRepository(createKnexExportJobRepository(db))
+  configureDlqRepository(createKnexDlqRepository(db))
 
   app.use(securityMetricsMiddleware);
   app.use(securityRateLimitMiddleware);

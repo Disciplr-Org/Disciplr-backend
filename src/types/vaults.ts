@@ -1,3 +1,5 @@
+import { VaultStatus } from './vault.js'
+
 export interface MilestoneInput {
   title: string
   description?: string
@@ -18,6 +20,7 @@ export interface CreateVaultInput {
   creator?: string
   /** Grace window in seconds after a milestone dueDate during which check-in is still accepted. Bounded by vault endDate. */
   lateCheckInWindowSecs?: number
+  orgId?: string
   onChain?: {
     mode?: 'build' | 'submit'
     contractId?: string
@@ -50,11 +53,12 @@ export interface PersistedVault {
   successDestination: string
   failureDestination: string
   creator: string | null
-  status: 'draft' | 'active' | 'completed' | 'failed' | 'cancelled'
+  status: VaultStatus
   createdAt: string
   milestones: PersistedMilestone[]
   /** Grace window in seconds after a milestone dueDate during which check-in is still accepted. Bounded by vault endDate. */
   lateCheckInWindowSecs: number
+  orgId?: string
 }
 
 export interface StakeInput {

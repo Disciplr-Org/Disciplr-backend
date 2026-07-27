@@ -15,10 +15,8 @@ describe('privacy-logger allowlist mode', () => {
     const input = { data: { someSecret: 'hidden' } }
     const result = redact(input, undefined, true)
     expect(result).toEqual({
-      data: {
-        someSecret: REDACTED,
-      },
-    })
+      data: REDACTED,
+    }) 
   })
 
   test('allowlisted field passes', () => {

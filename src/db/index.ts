@@ -1,9 +1,13 @@
 import knex from 'knex'
-import pg from 'pg'
+import { Pool } from 'pg'
+import { getEnv } from '../config/env'
 
 const knexConfig = {
   client: 'pg',
-  connection: process.env.DATABASE_URL,
+  connection: {
+    connectionString: getEnv().DATABASE_URL,
+    ssl: getEnv().NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
+  },
   migrations: {
     directory: './db/migrations',
     extension: 'cjs',
@@ -22,9 +26,16 @@ const knexConfig = {
 
 export const db = knex(knexConfig)
 
-export const pool = new pg.Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+const sslEnabled = getEnv().NODE_ENV === 'production' || process.env.DATABASE_SSL === 'true'
+const rejectUnauthorized = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false'
+
+export const pool = new Pool({
+  connectionString: getEnv().DATABASE_URL,
+  ssl: sslEnabled
+    ? rejectUnauthorized
+      ? { rejectUnauthorized: true }
+      : { rejectUnauthorized: false }
+    : false,
 })
 
 export default db

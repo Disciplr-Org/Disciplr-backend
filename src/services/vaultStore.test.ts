@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import type { CreateVaultInput } from "../types/vaults.js";
 import {
   createVaultWithMilestones,
@@ -45,8 +44,8 @@ it("updates successfully when revision matches", async () => {
     status: "active",
   });
 
-  assert.equal(updated.id, vault.id);
-  assert.equal(updated.status, "active");
+  expect(updated.id).toBe(vault.id);
+  expect(updated.status).toBe("active");
 });
 
 it("returns conflict when concurrent updates use same revision token", async () => {
@@ -65,9 +64,9 @@ it("returns conflict when concurrent updates use same revision token", async () 
   const fulfilled = resultOne.status === "fulfilled" ? resultOne : resultTwo;
   const rejected = resultOne.status === "rejected" ? resultOne : resultTwo;
 
-  assert.equal(fulfilled.status, "fulfilled");
-  assert.equal(rejected.status, "rejected");
-  assert.equal((rejected.reason as { status?: number }).status, 409);
+  expect(fulfilled.status).toBe("fulfilled");
+  expect(rejected.status).toBe("rejected");
+  expect((rejected.reason as { status?: number }).status).toBe(409);
 });
 
 it("rejects invalid revision values", async () => {
@@ -137,9 +136,9 @@ it("three concurrent updates: exactly one succeeds", async () => {
   const fulfilled = results.filter((r) => r.status === "fulfilled");
   const rejected = results.filter((r) => r.status === "rejected");
 
-  assert.equal(fulfilled.length, 1, "exactly one update should succeed");
-  assert.equal(rejected.length, 2, "two updates should be rejected with 409");
+  expect(fulfilled.length).toBe(1, "exactly one update should succeed");
+  expect(rejected.length).toBe(2, "two updates should be rejected with 409");
   for (const r of rejected) {
-    assert.equal((r as PromiseRejectedResult).reason?.status, 409);
+    expect((r as PromiseRejectedResult).reason?.status).toBe(409);
   }
 });

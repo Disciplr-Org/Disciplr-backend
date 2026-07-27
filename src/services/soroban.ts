@@ -1,6 +1,20 @@
-import type { CreateVaultInput, PersistedVault, VaultCreateResponse } from '../types/vaults.js'
+import type { CreateVaultInput, PersistedVault, VaultCreateResponse, StakeInput, StakeResponse, StakeWithMemoInput, StakeWithMemoResponse } from '../types/vaults.js'
 import { retryWithBackoff, sleep, type RetryConfig } from '../utils/retry.js'
+import { StrKey } from '@stellar/stellar-sdk'
 import { AppError, SorobanTimeoutError } from '../middleware/errorHandler.js'
+import { getTracer } from '../observability/tracing.js'
+
+export function normalizeToClassicAddress(address: string): string {
+  try {
+    if (StrKey.isValidMed25519PublicKey(address)) {
+      const decoded = StrKey.decodeMed25519PublicKey(address)
+      return StrKey.encodeEd25519PublicKey(decoded.slice(0, 32))
+    }
+  } catch {
+    // ignore
+  }
+  return address
+}
 
 const DEFAULT_CONTRACT_ID = 'CONTRACT_ID_NOT_CONFIGURED'
 const DEFAULT_SOURCE_ACCOUNT = 'SOURCE_ACCOUNT_NOT_CONFIGURED'
@@ -44,19 +58,36 @@ const positiveIntFromEnv = (key: string, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
-const getSubmitRetryConfig = (): RetryConfig => ({
-  maxAttempts: positiveIntFromEnv('RETRY_MAX_ATTEMPTS', DEFAULT_SUBMIT_RETRY_MAX_ATTEMPTS),
-  initialBackoffMs: positiveIntFromEnv('RETRY_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_BACKOFF_MS),
-  maxBackoffMs: positiveIntFromEnv('SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_MAX_BACKOFF_MS),
-  backoffMultiplier: DEFAULT_SUBMIT_RETRY_BACKOFF_MULTIPLIER,
-  jitterFactor: DEFAULT_SUBMIT_RETRY_JITTER_FACTOR,
-})
+let _cachedSubmitRetryConfig: RetryConfig | null = null
+
+const getSubmitRetryConfig = (): RetryConfig => {
+  if (_cachedSubmitRetryConfig) return _cachedSubmitRetryConfig
+  _cachedSubmitRetryConfig = {
+    maxAttempts: positiveIntFromEnv('RETRY_MAX_ATTEMPTS', DEFAULT_SUBMIT_RETRY_MAX_ATTEMPTS),
+    initialBackoffMs: positiveIntFromEnv('RETRY_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_BACKOFF_MS),
+    maxBackoffMs: positiveIntFromEnv('SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_MAX_BACKOFF_MS),
+    backoffMultiplier: DEFAULT_SUBMIT_RETRY_BACKOFF_MULTIPLIER,
+    jitterFactor: DEFAULT_SUBMIT_RETRY_JITTER_FACTOR,
+  }
+  return _cachedSubmitRetryConfig
+}
+
+/**
+ * Resolved once per process — env is static for the process lifetime.
+ * `undefined` means not yet resolved; `null` means submit mode unavailable.
+ */
+let cachedSorobanConfig: SorobanConfig | null | undefined
 
 /**
  * Returns the Soroban config only when ALL required env vars are present.
  * Acts as the feature-flag: if any var is missing, submit mode is unavailable.
+ * Result is cached for the process lifetime (see `resetSorobanConfig` for tests).
  */
 export const getSorobanConfig = (): SorobanConfig | null => {
+  if (cachedSorobanConfig !== undefined) {
+    return cachedSorobanConfig
+  }
+
   const contractId = process.env.SOROBAN_CONTRACT_ID
   const networkPassphrase = process.env.SOROBAN_NETWORK_PASSPHRASE
   const sourceAccount = process.env.SOROBAN_SOURCE_ACCOUNT
@@ -64,10 +95,11 @@ export const getSorobanConfig = (): SorobanConfig | null => {
   const secretKey = process.env.SOROBAN_SECRET_KEY
 
   if (!contractId || !networkPassphrase || !sourceAccount || !rpcUrls || rpcUrls.length === 0 || !secretKey) {
-    return null
+    cachedSorobanConfig = null
+    return cachedSorobanConfig
   }
 
-  return {
+  cachedSorobanConfig = {
     contractId,
     networkPassphrase,
     sourceAccount,
@@ -80,6 +112,12 @@ export const getSorobanConfig = (): SorobanConfig | null => {
     submitTimeoutMs: positiveIntFromEnv('SOROBAN_SUBMIT_TIMEOUT_MS', 60_000),
     submitRetry: getSubmitRetryConfig(),
   }
+  return cachedSorobanConfig
+}
+
+/** Clear cached Soroban config. For testing only. */
+export const resetSorobanConfig = (): void => {
+  cachedSorobanConfig = undefined
 }
 
 /**
@@ -231,8 +269,16 @@ export class SorobanRpcPool {
   }
 
   private async _probeDownEndpoints(): Promise<void> {
+    // Probe both 'down' and 'degraded' endpoints.
+    //
+    // 'degraded' endpoints are deprioritised by getOrderedUrls(), so they stop
+    // receiving organic traffic once healthier alternatives exist. Without
+    // explicit probing here they have no path back to 'healthy': organic
+    // calls won't reach them (ordering steers requests elsewhere) and the
+    // background job previously only checked 'down'. Including 'degraded'
+    // ensures recovery is possible for any non-healthy endpoint.
     const probes = this.states
-      .filter((s) => s.status === 'down')
+      .filter((s) => s.status === 'down' || s.status === 'degraded')
       .map(async (state) => {
         state.lastProbeAt = Date.now()
         const healthy = await this.probeFn(state.url, this.probeTimeoutMs)
@@ -303,120 +349,140 @@ async function submitTransaction(
   loadSdk: StellarSdkLoader = () => import('@stellar/stellar-sdk'),
   pool?: SorobanRpcPool,
 ): Promise<{ txHash: string }> {
-  const {
-    Keypair,
-    Contract,
-    rpc: SorobanRpc,
-    TransactionBuilder,
-    BASE_FEE,
-  } = await loadSdk()
+  const tracer = getTracer()
+  return tracer.withSpan(
+    `soroban.${methodName}`,
+    async (span) => {
+      span.setAttribute('soroban.method', methodName)
+      span.setAttribute('soroban.contract_id', config.contractId)
 
-  const keypair = Keypair.fromSecret(config.secretKey)
-  const contract = new Contract(config.contractId)
-  const callOp = contract.call(methodName, ...scVals)
+      const {
+        Keypair,
+        Contract,
+        rpc: SorobanRpc,
+        TransactionBuilder,
+        BASE_FEE,
+      } = await loadSdk()
 
-  const activePool = pool ?? getOrCreatePool(config)
-  const orderedUrls = activePool.getOrderedUrls()
+      const keypair = Keypair.fromSecret(config.secretKey)
+      const contract = new Contract(config.contractId)
+      const callOp = contract.call(methodName, ...scVals)
 
-  let lastError: Error = new Error('All RPC endpoints failed')
+      const activePool = pool ?? getOrCreatePool(config)
+      const orderedUrls = activePool.getOrderedUrls()
 
-  for (const url of orderedUrls) {
-    if (!activePool.isAvailable(url)) continue
+      span.setAttribute('soroban.rpc_endpoints', orderedUrls.length)
 
-    // Tracks whether sendTransaction returned a result. Once set, we must not
-    // switch endpoints — the transaction may already be in the mempool.
-    let responseHash: string | null = null
+      let lastError: Error = new Error('All RPC endpoints failed')
 
-    try {
-      const server = new SorobanRpc.Server(url)
+      for (const url of orderedUrls) {
+        if (!activePool.isAvailable(url)) continue
 
-      const account = await retryRpc('getAccount', config, () =>
-        server.getAccount(config.sourceAccount),
-      )
+        // Tracks whether sendTransaction returned a result. Once set, we must not
+        // switch endpoints — the transaction may already be in the mempool.
+        let responseHash: string | null = null
 
-      const tx = new TransactionBuilder(account, {
-        fee: BASE_FEE,
-        networkPassphrase: config.networkPassphrase,
-      })
-        .addOperation(callOp)
-        .setTimeout(30)
-        .build()
+        try {
+          const server = new SorobanRpc.Server(url)
 
-      const prepared = await retryRpc('prepareTransaction', config, () =>
-        server.prepareTransaction(tx),
-      )
-      prepared.sign(keypair)
+          const account = await retryRpc('getAccount', config, () =>
+            server.getAccount(config.sourceAccount),
+          )
 
-      // sendTransaction is retried on the SAME endpoint for transient network
-      // errors; switching endpoints only happens if it never returns at all.
-      const response = await retryRpc('sendTransaction', config, () =>
-        server.sendTransaction(prepared),
-      )
-      responseHash = response.hash
+          const tx = new TransactionBuilder(account, {
+            fee: BASE_FEE,
+            networkPassphrase: config.networkPassphrase,
+          })
+            .addOperation(callOp)
+            .setTimeout(30)
+            .build()
 
-      if (response.status === 'ERROR') {
-        activePool.recordFailure(url)
-        throw new Error(`Soroban sendTransaction failed: ${response.status}`)
-      }
+          const prepared = await retryRpc('prepareTransaction', config, () =>
+            server.prepareTransaction(tx),
+          )
+          prepared.sign(keypair)
 
-      const deadline = Date.now() + config.submitTimeoutMs
-      const pollConfig: RetryConfig = {
-        maxAttempts: config.submitPollMaxAttempts,
-        initialBackoffMs: config.submitPollIntervalMs,
-        maxBackoffMs: config.submitPollIntervalMs,
-        backoffMultiplier: 1,
-        jitterFactor: 0,
-      }
+          // sendTransaction is retried on the SAME endpoint for transient network
+          // errors; switching endpoints only happens if it never returns at all.
+          const response = await retryRpc('sendTransaction', config, () =>
+            server.sendTransaction(prepared),
+          )
+          responseHash = response.hash
 
-      const getResponse = await retryWithBackoff(
-        async () => {
-          if (Date.now() >= deadline) {
-            throw new SorobanTimeoutError(response.hash, config.submitTimeoutMs)
+          if (response.status === 'ERROR') {
+            activePool.recordFailure(url)
+            throw new Error(`Soroban sendTransaction failed: ${response.status}`)
           }
-          const result = await server.getTransaction(response.hash)
-          if (result.status === 'NOT_FOUND') {
-            throw Object.assign(new Error('transaction_pending'), { retryable: true })
+
+          const deadline = Date.now() + config.submitTimeoutMs
+          const pollConfig: RetryConfig = {
+            maxAttempts: config.submitPollMaxAttempts,
+            initialBackoffMs: config.submitPollIntervalMs,
+            maxBackoffMs: config.submitPollIntervalMs,
+            backoffMultiplier: 1,
+            jitterFactor: 0,
           }
-          return result
-        },
-        pollConfig,
-        (err) => !!(err as any).retryable,
-      )
 
-      if (getResponse.status !== 'SUCCESS') {
-        throw new Error(`Soroban transaction did not succeed: ${getResponse.status}`)
+          const getResponse = await retryWithBackoff(
+            async () => {
+              if (Date.now() >= deadline) {
+                throw new SorobanTimeoutError(response.hash, config.submitTimeoutMs)
+              }
+              const result = await server.getTransaction(response.hash)
+              if (result.status === 'NOT_FOUND') {
+                throw Object.assign(new Error('transaction_pending'), { retryable: true })
+              }
+              return result
+            },
+            pollConfig,
+            (err) => !!(err as any).retryable,
+          )
+
+          if (getResponse.status !== 'SUCCESS') {
+            throw new Error(`Soroban transaction did not succeed: ${getResponse.status}`)
+          }
+
+          activePool.recordSuccess(url)
+          span.setAttribute('soroban.tx_hash', response.hash)
+          span.setStatus({ code: 'OK' })
+          return { txHash: response.hash }
+
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err))
+          lastError = error
+
+          // sendTransaction already returned a response — the tx is committed to
+          // this endpoint. Do not switch (prevents double-submit).
+          if (responseHash !== null) {
+            span.recordException(error)
+            span.setStatus({ code: 'ERROR', message: error.message })
+            throw error
+          }
+
+          // Network error before sendTransaction committed → demote and try next endpoint.
+          if (isRetryableSorobanRpcError(error)) {
+            activePool.recordFailure(url)
+            span.addEvent('rpc_failover', { 'rpc.endpoint': maskUrl(url), 'error.message': error.message })
+            log('warn', 'soroban.rpc_pool.failover', {
+              endpoint: maskUrl(url),
+              error: error.message,
+              method: methodName,
+            })
+            continue
+          }
+
+          // Non-network error (contract error, invalid args, etc.) → propagate.
+          span.recordException(error)
+          span.setStatus({ code: 'ERROR', message: error.message })
+          throw error
+        }
       }
 
-      activePool.recordSuccess(url)
-      return { txHash: response.hash }
-
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err))
-      lastError = error
-
-      // sendTransaction already returned a response — the tx is committed to
-      // this endpoint. Do not switch (prevents double-submit).
-      if (responseHash !== null) {
-        throw error
-      }
-
-      // Network error before sendTransaction committed → demote and try next endpoint.
-      if (isRetryableSorobanRpcError(error)) {
-        activePool.recordFailure(url)
-        log('warn', 'soroban.rpc_pool.failover', {
-          endpoint: maskUrl(url),
-          error: error.message,
-          method: methodName,
-        })
-        continue
-      }
-
-      // Non-network error (contract error, invalid args, etc.) → propagate.
-      throw error
-    }
-  }
-
-  throw lastError
+      span.recordException(lastError)
+      span.setStatus({ code: 'ERROR', message: lastError.message })
+      throw lastError
+    },
+  )
 }
 
 // ─── Soroban SDK abstraction (mockable for tests) ───────────────────────────
@@ -430,19 +496,6 @@ export interface SorobanClient {
     config: SorobanConfig,
     args: Record<string, unknown>,
   ): Promise<{ txHash: string }>
-  getVault(
-    config: SorobanConfig,
-    vaultId: string,
-  ): Promise<OnChainVaultState | null>
-}
-
-export interface OnChainVaultState {
-  vault_id: string
-  amount: string
-  verifier: string
-  success_destination: string
-  failure_destination: string
-  status: 'active' | 'completed' | 'failed' | 'cancelled'
   submitStake(
     config: SorobanConfig,
     args: Record<string, unknown>,
@@ -463,6 +516,19 @@ export interface OnChainVaultState {
     config: SorobanConfig,
     args: Record<string, unknown>,
   ): Promise<{ txHash: string }>
+  getVault(
+    config: SorobanConfig,
+    vaultId: string,
+  ): Promise<OnChainVaultState | null>
+}
+
+export interface OnChainVaultState {
+  vault_id: string
+  amount: string
+  verifier: string
+  success_destination: string
+  failure_destination: string
+  status: 'active' | 'completed' | 'failed' | 'cancelled'
 }
 
 type StellarSdkLoader = () => Promise<any>
@@ -808,9 +874,9 @@ const buildPayload = (
     args: {
       vaultId: vault.id,
       amount: vault.amount,
-      verifier: vault.verifier,
-      successDestination: vault.successDestination,
-      failureDestination: vault.failureDestination,
+      verifier: normalizeToClassicAddress(vault.verifier),
+      successDestination: normalizeToClassicAddress(vault.successDestination),
+      failureDestination: normalizeToClassicAddress(vault.failureDestination),
       token: input.onChain?.token,
       milestones: vault.milestones.map((milestone) => ({
         id: milestone.id,
