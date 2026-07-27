@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, jest } from '@jest/globals'
 import {
   reindexEvidenceBatch,
   runReindexBatches,
+  buildEmbeddingText,
   EMBEDDING_REINDEX_JOB_NAME,
   type MilestoneEmbeddingSource,
   type ReindexCursorStore,
@@ -73,6 +74,22 @@ const makeMilestones = (count: number): FakeMilestoneRow[] =>
   }))
 
 const provider = new DeterministicEmbeddingProvider('v1')
+
+// ── buildEmbeddingText ───────────────────────────────────────────────────────
+
+describe('buildEmbeddingText', () => {
+  it('joins title and description on separate lines', () => {
+    expect(buildEmbeddingText({ title: 'Title', description: 'Description' })).toBe('Title\nDescription')
+  })
+
+  it('omits the description line when it is null', () => {
+    expect(buildEmbeddingText({ title: 'Title', description: null })).toBe('Title')
+  })
+
+  it('preserves an explicitly empty description rather than dropping it like a null one', () => {
+    expect(buildEmbeddingText({ title: 'Title', description: '' })).toBe('Title\n')
+  })
+})
 
 // ── reindexEvidenceBatch ─────────────────────────────────────────────────────
 
