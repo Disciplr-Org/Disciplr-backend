@@ -184,9 +184,8 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, async (req:
     }
 
     // Reject late votes on already-settled milestones
-    const milestone_record = getMilestoneById(id)
-    const approvalThreshold = (milestone_record as any)?.approvalThreshold || 1
-    const totalVerifiers = (milestone_record as any)?.totalVerifiers as number | undefined
+    const approvalThreshold = (milestone as any)?.approvalThreshold || 1
+    const totalVerifiers = (milestone as any)?.totalVerifiers as number | undefined
 
     const priorProgress = await getMilestoneApprovalProgress(id, approvalThreshold, totalVerifiers)
     if (priorProgress.isComplete || priorProgress.isRejected) {
