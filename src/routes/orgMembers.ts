@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import { Router, type Request, type Response, type NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireOrgAccess } from '../middleware/orgAuth.js'
+import { orgReadRateLimiter, orgWriteRateLimiter } from '../middleware/rateLimiter.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { AppError } from '../middleware/errorHandler.js'
 import {
@@ -45,6 +46,7 @@ orgMembersRouter.get(
   '/:orgId/members',
   authenticate,
   requireOrgAccess('owner', 'admin', 'member'),
+  orgReadRateLimiter,
   async (req: Request, res: Response) => {
     try {
       const members = await listOrgMemberships(req.params.orgId)
@@ -62,6 +64,7 @@ orgMembersRouter.post(
   '/:orgId/members',
   authenticate,
   requireOrgAccess('owner', 'admin'),
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId } = req.params
     const { userId, role } = req.body as { userId?: string; role?: string }
@@ -109,6 +112,7 @@ orgMembersRouter.delete(
   '/:orgId/members/:userId',
   authenticate,
   requireOrgAccess('owner', 'admin'),
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId, userId } = req.params
 
@@ -142,6 +146,7 @@ orgMembersRouter.patch(
   '/:orgId/members/:userId/role',
   authenticate,
   requireOrgAccess('owner'),
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId, userId } = req.params
     const { role } = req.body as { role?: string }
@@ -178,6 +183,7 @@ orgMembersRouter.post(
   '/:orgId/transfer-ownership',
   authenticate,
   requireOrgAccess('owner'),
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId } = req.params
     const { newOwnerId } = req.body as { newOwnerId?: string }
@@ -204,6 +210,7 @@ orgMembersRouter.post(
   '/:orgId/invitations',
   authenticate,
   requireOrgAccess('owner', 'admin'),
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId } = req.params
     const { email } = req.body as { email?: string }
@@ -257,6 +264,7 @@ orgMembersRouter.post(
   '/:orgId/invitations/:id/resend',
   authenticate,
   requireOrgAccess('owner', 'admin'),
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId, id } = req.params
     const rawToken = crypto.randomBytes(32).toString('hex')
@@ -308,6 +316,7 @@ orgMembersRouter.delete(
   '/:orgId/invitations/:id',
   authenticate,
   requireOrgAccess('owner', 'admin'),
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId, id } = req.params
 
@@ -347,6 +356,7 @@ orgMembersRouter.delete(
 
 orgMembersRouter.post(
   '/:orgId/invitations/accept',
+  orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId } = req.params
     const { token, userId, role } = req.body as { token?: string; userId?: string; role?: string }
