@@ -222,6 +222,28 @@ export const envSchema = z
     HORIZON_LAG_THRESHOLD: nonNegativeInt(10),
     HORIZON_SHUTDOWN_TIMEOUT_MS: positiveInt(30_000),
 
+    // ── Trust proxy ─────────────────────────────────────────
+    // Controls Express's "trust proxy" setting.
+    //
+    // Accepted values (passed verbatim to app.set('trust proxy', ...)):
+    //   - "false"  (default) – trust proxy disabled; req.ip is the direct
+    //     TCP peer.  Use this when the server is exposed directly to the
+    //     internet with no reverse proxy in front of it.
+    //   - "true"   – trust any forwarded header (leftmost IP wins).  Only
+    //     safe inside a fully-controlled network where only your proxy can
+    //     reach the app.
+    //   - "loopback" | "linklocal" | "uniquelocal" – trust only proxies
+    //     whose IP falls in the named subnet.
+    //   - A number (e.g. "1") – trust the given hop count of leftmost IPs.
+    //   - A comma-separated list of CIDR ranges / IP addresses, e.g.
+    //     "10.0.0.0/8,172.16.0.0/12".
+    //
+    // Security note: setting this too broadly allows clients to spoof their
+    // IP address via x-forwarded-for, which would corrupt IP-based auditing
+    // and rate-limiting.  Prefer the most restrictive value that matches your
+    // deployment topology (e.g. "loopback" or a specific CIDR).
+    TRUST_PROXY: z.string().default("false"),
+
     // ── Webhooks ────────────────────────────────────────────
     WEBHOOK_INBOUND_SECRET: z.string().optional(),
     WEBHOOK_INBOUND_SKEW_MS: positiveInt(300_000),
