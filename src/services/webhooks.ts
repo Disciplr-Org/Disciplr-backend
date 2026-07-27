@@ -429,18 +429,39 @@ export const isUrlAllowed = (
 }
 
 /**
+ * Minimum length for a webhook signing secret. Secrets shorter than this are
+ * rejected to prevent accidental use of empty or weak keys.
+ */
+const MIN_SECRET_LENGTH = 16
+
+/**
  * Returns the HMAC-SHA256 signature header value for a given payload body.
  * Format: `sha256=<hex-digest>`
+ *
+ * Throws if `secret` is not a non-empty string of at least {@link MIN_SECRET_LENGTH}
+ * characters, preventing signatures from being computed with a trivially
+ * guessable key.
  */
 export const signPayload = (secret: string, body: string): string => {
+  if (!secret || typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `Webhook signing secret must be a non-empty string of at least ${MIN_SECRET_LENGTH} characters`,
+    )
+  }
   const digest = createHmac('sha256', secret).update(body, 'utf8').digest('hex')
   return `sha256=${digest}`
 }
 
 /**
  * Verifies a webhook signature in constant time.
+ *
+ * Returns `false` if `secret` is not a valid non-empty string (instead of
+ * silently computing an HMAC with an empty key).
  */
 export const verifySignature = (secret: string, body: string, signature: string): boolean => {
+  if (!secret || typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) {
+    return false
+  }
   const expected = signPayload(secret, body)
   if (expected.length !== signature.length) {
     return false
@@ -541,6 +562,12 @@ export const addSubscriber = async (
   events: string[],
   schemaVersion: number = DEFAULT_SCHEMA_VERSION,
 ): Promise<WebhookSubscriber> => {
+  if (!secret || typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `Webhook signing secret must be a non-empty string of at least ${MIN_SECRET_LENGTH} characters`,
+    )
+  }
+
   const check = await isUrlAllowedForOrg(organizationId, url)
   if (!check.allowed) {
     throw new Error(check.reason!)
@@ -587,6 +614,12 @@ export const upsertSubscriber = async (
   secret: string,
   events: string[],
 ): Promise<WebhookSubscriber> => {
+  if (!secret || typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `Webhook signing secret must be a non-empty string of at least ${MIN_SECRET_LENGTH} characters`,
+    )
+  }
+
   const check = await isUrlAllowedForOrg(organizationId, url)
   if (!check.allowed) {
     throw new Error(check.reason!)
@@ -610,6 +643,11 @@ export const rotateSubscriberSecret = async (
   organizationId: string,
   newSecret: string,
 ): Promise<WebhookSubscriber | null> => {
+  if (!newSecret || typeof newSecret !== 'string' || newSecret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `Webhook signing secret must be a non-empty string of at least ${MIN_SECRET_LENGTH} characters`,
+    )
+  }
   return repo.rotateSecret(id, organizationId, newSecret)
 }
 

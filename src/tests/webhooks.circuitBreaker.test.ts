@@ -69,7 +69,7 @@ const makeSubscriber = (overrides: Record<string, any> = {}) => ({
   id: randomUUID(),
   organizationId: 'test-org',
   url: 'https://example.com/hook',
-  secret: 'test-secret',
+  secret: 'test-secret-123',
   events: [],
   active: true,
   schemaVersion: 1,
