@@ -36,6 +36,7 @@ import {
   securityRateLimitMiddleware,
 } from "./security/abuse-monitor.js";
 import inFlightMiddleware from "./middleware/inFlightRequests.js";
+import { mountVersionedRoute } from './middleware/versioning.js'
 
 type BootstrapOptions = {
   notificationService?: NotificationService;
@@ -64,7 +65,7 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
   app.use('/api/jobs', createJobsRouter(jobSystem))
   app.use('/api/vaults', vaultsRateLimiter, vaultsRouter)
   app.use('/api/vaults/:vaultId/milestones', milestonesRouter)
-  app.use('/api/auth', authRateLimiter, authRouter)
+  app.use('/api/auth', authRouter)
   app.use('/api/exports', createExportRouter(jobSystem))
   app.use('/api/transactions', transactionsRouter)
   app.use('/api/analytics', analyticsRouter)
@@ -73,21 +74,15 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
   app.use('/api/organizations', orgAnalyticsRouter)
   app.use('/api/orgs', orgAnalyticsRouter)
   app.use('/api/organizations', orgMembersRouter)
-  app.use('/api/orgs', orgAnalyticsRouter)
   app.use('/api/orgs', orgMembersRouter)
-  app.use('/api/orgs', notificationPreferencesRouter)
   app.use('/api/organizations/:orgId/graphql', graphqlRouter)
-  // /api/admin is mounted in app.ts at module load time; no re-mount needed here.
+  app.use('/api/admin', adminRouter)
   app.use('/api/admin/verifiers', adminVerifiersRouter)
   app.use('/api/admin/webhooks', adminWebhooksRouter)
-  app.use('/api/admin/vaults', adminVaultReplayRouter)
   app.use('/api/verifications', verificationsRouter)
-  app.get('/api/orgs/:orgId/api-keys/usage', authenticate, requireOrgAccess('owner', 'admin'), getApiKeyUsageHandler)
   app.use('/api/api-keys', apiKeysRouter)
-  app.use('/api/oauth', oauthRouter)
-  // /api/notifications is mounted in app.ts at module load time; no re-mount needed here.
-  app.use('/api/users/me/notification-preferences', notificationPreferencesRouter)
-  // /api/webhooks is mounted in app.ts at module load time; no re-mount needed here.
+  app.use('/api/notifications', notificationsRouter)
+  app.use('/api/webhooks', webhooksRouter)
 
   // Catch-all 404 and uniform error shape – must be registered after all routes.
   app.use(notFound);

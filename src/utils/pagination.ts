@@ -13,7 +13,7 @@ const MAX_PAGE_SIZE = 100
 
 function parsePositiveInteger(value: unknown, fieldName: string): number {
   if (value === undefined || value === null || value === '') {
-    return DEFAULT_PAGE_SIZE
+    return fieldName === 'page' ? DEFAULT_PAGE : DEFAULT_PAGE_SIZE
   }
 
   if (Array.isArray(value)) {

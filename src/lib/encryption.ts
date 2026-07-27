@@ -272,3 +272,51 @@ export const encryptNullable = (plaintext: string | null | undefined): string | 
  */
 export const decryptNullable = (stored: string | null | undefined): string | null =>
   stored === null || stored === undefined ? null : decryptField(stored)
+
+export interface KeyUsageAuditReport {
+  countsByKid: Record<string, number>
+  unencryptedCount: number
+  unknownKidCount: number
+  totalCount: number
+}
+
+/**
+ * Extracts the key ID (`kid`) from a ciphertext string produced by `encryptField`.
+ * Returns `null` if the value is not encrypted under a valid v1 scheme.
+ */
+export function getKeyId(stored: string): string | null {
+  if (!isEncrypted(stored)) return null
+  return stored.split(':')[1] ?? null
+}
+
+/**
+ * Audits a collection of stored field values to count how many rows are encrypted under
+ * each key ID (`kid`), how many are unencrypted, and how many use unknown/unconfigured key IDs.
+ */
+export function auditKeyUsage(records: (string | null | undefined)[]): KeyUsageAuditReport {
+  const configuredKids = new Set(resolveKeys().map((k) => k.kid))
+  const countsByKid: Record<string, number> = {}
+  let unencryptedCount = 0
+  let unknownKidCount = 0
+  let totalCount = 0
+
+  for (const record of records) {
+    if (record === null || record === undefined) continue
+    totalCount++
+    if (!isEncrypted(record)) {
+      unencryptedCount++
+      continue
+    }
+    const kid = getKeyId(record)
+    if (kid === null) {
+      unencryptedCount++
+    } else {
+      countsByKid[kid] = (countsByKid[kid] ?? 0) + 1
+      if (!configuredKids.has(kid)) {
+        unknownKidCount++
+      }
+    }
+  }
+
+  return { countsByKid, unencryptedCount, unknownKidCount, totalCount }
+}

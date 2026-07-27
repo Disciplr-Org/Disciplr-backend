@@ -40,25 +40,19 @@ const buildRequireJsonMiddleware = (options: RequireJsonOptions = {}): RequestHa
     const contentType = req.headers['content-type']
 
     if (!contentType) {
-      return res.status(415).json({
-        error: 'Unsupported Media Type: Content-Type must be application/json',
-      })
+      return next(AppError.unsupportedMediaType('Content-Type must be application/json'))
     }
 
     const normalizedContentType = contentType.toLowerCase().trim()
 
     if (!normalizedContentType.includes('application/json')) {
-      return res.status(415).json({
-        error: 'Unsupported Media Type: Content-Type must be application/json',
-      })
+      return next(AppError.unsupportedMediaType('Content-Type must be application/json'))
     }
 
     if (normalizedContentType.includes('charset')) {
       const charsetMatch = normalizedContentType.match(/charset=([^;]+)/i)
       if (charsetMatch && charsetMatch[1].trim().toLowerCase() !== 'utf-8') {
-        return res.status(415).json({
-          error: 'Unsupported Media Type: Only UTF-8 charset is supported for JSON',
-        })
+        return next(AppError.unsupportedMediaType('Only UTF-8 charset is supported for JSON'))
       }
     }
 

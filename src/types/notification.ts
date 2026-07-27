@@ -49,7 +49,7 @@ export interface NotificationListResult {
 
 // User notification preferences for quiet-hours windowing
 export interface UserNotificationPreferences {
-  id: string
+  id: string | null
   user_id: string
   timezone: string
   quiet_hours_enabled: boolean

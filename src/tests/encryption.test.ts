@@ -21,6 +21,8 @@ import {
   encryptNullable,
   decryptNullable,
   isEncrypted,
+  getKeyId,
+  auditKeyUsage,
   resolveKeys,
   DecryptionError,
   EncryptionKeyError,
@@ -316,5 +318,51 @@ describe('encryptNullable / decryptNullable', () => {
     expect(encrypted).not.toBeNull()
     expect(isEncrypted(encrypted!)).toBe(true)
     expect(decryptNullable(encrypted)).toBe('present')
+  })
+})
+
+// ─── Key Rotation Auditing ───────────────────────────────────────────────────────
+
+describe('getKeyId and auditKeyUsage', () => {
+  beforeEach(() => useSingleKey())
+
+  it('getKeyId extracts kid from encrypted string and returns null for unencrypted string', () => {
+    const encrypted = encryptField('test-secret')
+    expect(getKeyId(encrypted)).toBe('default')
+    expect(getKeyId('unencrypted-plaintext')).toBeNull()
+  })
+
+  it('auditKeyUsage counts records by kid, unencrypted rows, and unknown kids', () => {
+    const k1 = genKey()
+    const k2 = genKey()
+    delete process.env.FIELD_ENCRYPTION_KEY
+    process.env.FIELD_ENCRYPTION_KEYS = JSON.stringify([
+      { kid: 'k1', key: k1 },
+      { kid: 'k2', key: k2 },
+    ])
+
+    const encK1 = encryptField('data1')
+    const encK1_2 = encryptField('data2')
+
+    // Write under k2
+    process.env.FIELD_ENCRYPTION_KEYS = JSON.stringify([
+      { kid: 'k2', key: k2 },
+      { kid: 'k1', key: k1 },
+    ])
+    const encK2 = encryptField('data3')
+
+    const fakeUnknownKidEnc = 'v1:retired_kid:iv:tag:cipher'
+
+    const records = [encK1, encK1_2, encK2, 'plaintext_secret', fakeUnknownKidEnc, null, undefined]
+
+    const report = auditKeyUsage(records)
+    expect(report.totalCount).toBe(5)
+    expect(report.unencryptedCount).toBe(1)
+    expect(report.unknownKidCount).toBe(1)
+    expect(report.countsByKid).toEqual({
+      k1: 2,
+      k2: 1,
+      retired_kid: 1,
+    })
   })
 })
