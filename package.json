@@ -23,7 +23,8 @@
     "openapi:generate": "tsx src/docs/generate-spec.ts",
     "openapi:typecheck": "tsc --noEmit -p tsconfig.docs.json",
     "openapi:lint": "redocly lint docs/openapi.yaml",
-    "openapi:validate": "redocly stats docs/openapi.yaml"
+    "openapi:validate": "redocly stats docs/openapi.yaml",
+    "openapi:check": "tsx src/docs/generate-spec.ts --check"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1094.0",

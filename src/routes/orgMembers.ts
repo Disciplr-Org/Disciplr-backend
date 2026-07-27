@@ -41,6 +41,7 @@ export const orgMembersRouter = Router()
 
 // ─── GET /api/organizations/:orgId/members ────────────────────────────────────
 // Any member can list the org's membership roster.
+// Supports pagination via ?page=<n>&pageSize=<n> (defaults: page=1, pageSize=20, max pageSize=100).
 
 orgMembersRouter.get(
   '/:orgId/members',
@@ -49,8 +50,28 @@ orgMembersRouter.get(
   orgReadRateLimiter,
   async (req: Request, res: Response) => {
     try {
-      const members = await listOrgMemberships(req.params.orgId)
-      res.json({ members })
+      const page = req.query.page !== undefined ? parseInt(String(req.query.page), 10) : 1
+      const pageSize = req.query.pageSize !== undefined ? parseInt(String(req.query.pageSize), 10) : 20
+
+      if (!Number.isFinite(page) || page < 1) {
+        res.status(400).json({ error: 'page must be a positive integer' })
+        return
+      }
+      if (!Number.isFinite(pageSize) || pageSize < 1 || pageSize > 100) {
+        res.status(400).json({ error: 'pageSize must be between 1 and 100' })
+        return
+      }
+
+      const result = await listOrgMemberships(req.params.orgId, { page, pageSize })
+      res.json({
+        members: result.members,
+        pagination: {
+          page: result.page,
+          pageSize: result.pageSize,
+          total: result.total,
+          totalPages: Math.ceil(result.total / result.pageSize),
+        },
+      })
     } catch {
       res.status(500).json({ error: 'Failed to list members.' })
     }
