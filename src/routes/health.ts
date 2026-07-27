@@ -5,6 +5,7 @@ import { getSecurityMetricsSnapshot } from '../security/abuse-monitor.js'
 import type { AbuseMonitor } from '../services/abuse-monitor.js'
 import { authenticate } from '../middleware/auth.js'
 import { requireAdmin } from '../middleware/rbac.js'
+import { getPendingCount, getDueCount } from '../services/deferredReminders.service.js'
 
 export const createHealthRouter = (
   jobSystem: BackgroundJobSystem,
@@ -39,6 +40,13 @@ export const createHealthRouter = (
       securityData.privacy = {
         categoryCounts: privacyAbuseMonitor.getCategoryCounts(),
       }
+    }
+
+    try {
+      const [pendingCount, dueCount] = await Promise.all([getPendingCount(), getDueCount()])
+      securityData.deferredReminders = { pendingCount, dueCount }
+    } catch {
+      securityData.deferredReminders = { pendingCount: null, dueCount: null, error: 'Failed to query' }
     }
 
     return res.status(200).json(securityData)
