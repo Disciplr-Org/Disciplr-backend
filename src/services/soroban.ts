@@ -1,4 +1,13 @@
-import type { CreateVaultInput, PersistedVault, VaultCreateResponse, StakeInput, StakeResponse, StakeWithMemoInput, StakeWithMemoResponse } from '../types/vaults.js'
+import type {
+  CreateVaultInput,
+  PersistedVault,
+  StakeInput,
+  StakeResponse,
+  StakeWithMemoInput,
+  StakeWithMemoResponse,
+  VaultCreateResponse,
+} from '../types/vaults.js'
+import { MemoTooLongError } from '../types/vaults.js'
 import { retryWithBackoff, sleep, type RetryConfig } from '../utils/retry.js'
 import { StrKey } from '@stellar/stellar-sdk'
 import { AppError, SorobanTimeoutError } from '../middleware/errorHandler.js'
@@ -500,6 +509,10 @@ export interface SorobanClient {
     config: SorobanConfig,
     args: Record<string, unknown>,
   ): Promise<{ txHash: string }>
+  submitStakeWithMemo(
+    config: SorobanConfig,
+    args: Record<string, unknown>,
+  ): Promise<{ txHash: string }>
   submitCheckIn(
     config: SorobanConfig,
     args: Record<string, unknown>,
@@ -629,6 +642,24 @@ export const createDefaultSorobanClient = (
     )
   },
 
+  async submitStakeWithMemo(config, args) {
+    const { nativeToScVal, xdr } = await loadSdk()
+    const memoHex = typeof args.memo === 'string' ? args.memo : ''
+    const memoBytes = Buffer.from(memoHex, 'hex')
+    const memoScVal = xdr.ScVal.scvBytes(memoBytes)
+    return submitTransaction(
+      config,
+      'stake_with_memo',
+      [
+        nativeToScVal(args.vaultId, { type: 'string' }),
+        nativeToScVal(args.amount, { type: 'string' }),
+        memoScVal,
+      ],
+      loadSdk,
+      pool,
+    )
+  },
+
   async submitCheckIn(config, args) {
     const { nativeToScVal, xdr } = await loadSdk()
     // evidence_hash is a 32-byte Buffer encoded as hex string from the backend.
@@ -734,6 +765,91 @@ export const resetSorobanClient = (): void => {
 }
 
 export const getSorobanClient = (): SorobanClient => _client
+
+/**
+ * Builds the on-chain staking payload descriptor for a vault.
+ * Mirrors `buildPayload` (vault creation) but operates on the
+ * `StakeInput` shape — no persisted vault is required because the
+ * stake path derives everything it needs from the input itself.
+ *
+ * Repeated calls with the same `StakeInput` produce identical payloads
+ * (idempotent client-side). On-chain idempotency is a contract concern.
+ */
+const buildStakePayload = (input: StakeInput): StakeResponse['payload'] => {
+  return {
+    contractId: input.onChain?.contractId ?? process.env.SOROBAN_CONTRACT_ID ?? DEFAULT_CONTRACT_ID,
+    networkPassphrase:
+      input.onChain?.networkPassphrase ??
+      process.env.SOROBAN_NETWORK_PASSPHRASE ??
+      'Test SDF Network ; September 2015',
+    sourceAccount: input.onChain?.sourceAccount ?? process.env.SOROBAN_SOURCE_ACCOUNT ?? DEFAULT_SOURCE_ACCOUNT,
+    method: 'stake',
+    args: {
+      vaultId: input.vaultId,
+      amount: input.amount,
+      user: input.user,
+    },
+  }
+}
+
+/**
+ * Builds the on-chain staking-with-memo payload descriptor for a vault.
+ * The memo is a hex-encoded Bytes payload (e.g. an idempotency key
+ * derived from `vaultId + amount`). It is bound to the on-chain funding
+ * event for off-chain correlation.
+ *
+ * `memo` on the input is optional. When absent or empty, the payload
+ * simply omits the memo argument — no throw. When present, the memo
+ * must be a valid even-length hex string whose decoded byte length
+ * falls in `[1, MEMO_MAX_BYTES]`; otherwise the function throws so
+ * callers see the failure synchronously rather than after a chain
+ * submission.
+ */
+const buildStakeWithMemoPayload = (
+  input: StakeWithMemoInput,
+): StakeWithMemoResponse['payload'] => {
+  const baseArgs: Record<string, unknown> = {
+    vaultId: input.vaultId,
+    amount: input.amount,
+    user: input.user,
+  }
+
+  if (input.memo !== undefined && input.memo !== null && input.memo !== '') {
+    const memoHex = input.memo
+    if (memoHex.length % 2 !== 0) {
+      throw new Error('Memo must be an even-length hex string')
+    }
+    const memoBytes = Buffer.from(memoHex, 'hex')
+    // Buffer.from silently drops non-hex characters; verify the re-encoded
+    // length matches so malformed input (e.g. 'zz') is reliably rejected.
+    if (memoBytes.length * 2 !== memoHex.length) {
+      throw new Error('Memo contains non-hex characters')
+    }
+    if (memoBytes.length === 0) {
+      throw new Error('Memo cannot decode to zero bytes')
+    }
+    if (memoBytes.length > MEMO_MAX_BYTES) {
+      throw new MemoTooLongError(memoBytes.length, MEMO_MAX_BYTES)
+    }
+    baseArgs.memo = memoBytes.toString('hex')
+  }
+
+  return {
+    contractId: input.onChain?.contractId ?? process.env.SOROBAN_CONTRACT_ID ?? DEFAULT_CONTRACT_ID,
+    networkPassphrase:
+      input.onChain?.networkPassphrase ??
+      process.env.SOROBAN_NETWORK_PASSPHRASE ??
+      'Test SDF Network ; September 2015',
+    sourceAccount: input.onChain?.sourceAccount ?? process.env.SOROBAN_SOURCE_ACCOUNT ?? DEFAULT_SOURCE_ACCOUNT,
+    method: 'stake_with_memo',
+    args: baseArgs,
+  }
+}
+
+// Re-export the validators so callers can detect memo-size violations
+// without importing from ../types/vaults if they only need this module.
+export { buildStakePayload, buildStakeWithMemoPayload }
+
 /**
  * Builds the on-chain payload for staking into a vault.
  * Mirrors the same idempotent pattern as `buildVaultCreationPayload`:
