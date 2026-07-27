@@ -85,7 +85,7 @@ vaultsRouter.get(
     try {
       let result = await listVaults()
 
-      if (req.filters && applyFilters) result = applyFilters(result as any, req.filters)
+      if (req.filters && applyFilters) result = applyFilters(result as any, req.filters, ['status'])
       if (req.sort && applySort) result = applySort(result as any, req.sort)
       if (req.pagination && paginateArray) result = paginateArray(result as any, req.pagination) as any
 
