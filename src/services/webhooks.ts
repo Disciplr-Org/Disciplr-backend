@@ -1,9 +1,10 @@
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHmac, timingSafeEqual } from 'node:crypto'
 import { isIP } from 'node:net'
 import { WebhookSubscriberRepository } from '../repositories/webhookSubscriberRepository.js'
 import { retryWithBackoff } from '../utils/retry.js'
 import { db } from '../db/index.js'
 import { applyFieldMasking, FieldPolicy, DEFAULT_FIELD_POLICY, parseFieldPolicy } from '../utils/webhookFieldMasking.js'
+import { getTracer } from '../observability/tracing.js'
 
 export interface WebhookDeadLetter {
   id: string
@@ -44,6 +45,13 @@ export interface WebhookSubscriber {
    * in webhook payloads and whether PII is stripped. Applied before signing.
    */
   fieldPolicy: FieldPolicy
+}
+
+export interface EgressAllowlistEntry {
+  id: string
+  organizationId: string
+  host: string
+  createdAt: string
 }
 
 export const DEFAULT_MAX_REPLAY_EVENTS = 500
@@ -439,62 +447,6 @@ export const verifySignature = (secret: string, body: string, signature: string)
   return timingSafeEqual(Buffer.from(expected, 'utf8'), Buffer.from(signature, 'utf8'))
 }
 
-export const addSubscriber = (
-  url: string,
-  secret: string,
-  events: string[],
-  orgId?: string,
-  active = true,
-): WebhookSubscriber => {
-  if (!isUrlAllowed(url)) {
-    throw new Error(`Webhook URL not permitted: ${url}`)
-  }
-
-  const subscriber: WebhookSubscriber = {
-    id: randomUUID(),
-    url,
-    secret,
-    events: [...events],
-    active,
-    orgId,
-    createdAt: new Date().toISOString(),
-  }
-
-  subscribers.set(subscriber.id, subscriber)
-  return subscriber
-}
-
-export const removeSubscriber = (id: string, orgId?: string): boolean => {
-  const subscriber = subscribers.get(id)
-  if (!subscriber) {
-    return false
-  }
-
-  if (orgId && subscriber.orgId !== orgId) {
-    return false
-  }
-
-  return subscribers.delete(id)
-}
-
-export const listSubscribers = (orgId?: string): WebhookSubscriber[] =>
-  Array.from(subscribers.values()).filter((s) => s.active && (!orgId || s.orgId === orgId))
-
-export const updateSubscriberSecret = (id: string, secret: string, orgId?: string): WebhookSubscriber | null => {
-  const subscriber = subscribers.get(id)
-  if (!subscriber) {
-    return null
-  }
-
-  if (orgId && subscriber.orgId !== orgId) {
-    return null
-  }
-
-  const updated = { ...subscriber, secret }
-  subscribers.set(id, updated)
-  return updated
-}
-
 /**
  * Returns the per-org egress allowlist hosts for an organization.
  * Empty array means no allowlist is configured (baseline SSRF guard only).
@@ -709,40 +661,57 @@ const deliverOnce = async (
   payload: WebhookDeliveryPayload,
   timeoutMs = 10_000,
 ): Promise<number> => {
-  const body = buildVersionedPayload(subscriber, payload)
-  const signature = signPayload(subscriber.secret, body)
+  const tracer = getTracer()
+  return tracer.withSpan(
+    'webhook.http_deliver',
+    async (span) => {
+      span.setAttribute('webhook.subscriber_id', subscriber.id)
+      span.setAttribute('webhook.url', subscriber.url)
+      span.setAttribute('webhook.event_type', payload.eventType)
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+      const body = buildVersionedPayload(subscriber, payload)
+      const signature = signPayload(subscriber.secret, body)
 
-  try {
-    const response = await fetch(subscriber.url, {
-      method: 'POST',
-      redirect: 'manual',
-      headers: {
-        'content-type': 'application/json',
-        'x-disciplr-signature': signature,
-        'x-disciplr-event': payload.eventType,
-        'x-disciplr-event-id': payload.eventId,
-        'x-disciplr-delivery-timestamp': payload.timestamp,
-      },
-      body,
-      signal: controller.signal,
-    })
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
 
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location')
-      throw new Error(`Webhook redirect refused${location ? `: ${location}` : ''}`)
-    }
+      try {
+        const response = await fetch(subscriber.url, {
+          method: 'POST',
+          redirect: 'manual',
+          headers: {
+            'content-type': 'application/json',
+            'x-disciplr-signature': signature,
+            'x-disciplr-event': payload.eventType,
+            'x-disciplr-event-id': payload.eventId,
+            'x-disciplr-delivery-timestamp': payload.timestamp,
+          },
+          body,
+          signal: controller.signal,
+        })
 
-    if (response.status >= 400) {
-      throw new Error(`HTTP ${response.status}`)
-    }
+        span.setAttribute('http.status_code', response.status)
 
-    return response.status
-  } finally {
-    clearTimeout(timer)
-  }
+        if (response.status >= 300 && response.status < 400) {
+          const location = response.headers.get('location')
+          const error = new Error(`Webhook redirect refused${location ? `: ${location}` : ''}`)
+          span.setStatus({ code: 'ERROR', message: error.message })
+          throw error
+        }
+
+        if (response.status >= 400) {
+          const error = new Error(`HTTP ${response.status}`)
+          span.setStatus({ code: 'ERROR', message: error.message })
+          throw error
+        }
+
+        span.setStatus({ code: 'OK' })
+        return response.status
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+  )
 }
 
 /**

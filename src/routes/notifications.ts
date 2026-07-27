@@ -55,13 +55,17 @@ notificationsRouter.patch('/:id/read', async (req: Request, res: Response, next:
     return next(AppError.unauthorized('Unauthenticated'))
   }
 
-  const notification = await markAsRead(req.params.id, req.user.userId)
+  try {
+    const notification = await markAsRead(req.params.id, req.user.userId)
 
-  if (!notification) {
-    return next(AppError.notFound('Notification not found'))
+    if (!notification) {
+      return next(AppError.notFound('Notification not found'))
+    }
+
+    res.json(notification)
+  } catch (error) {
+    return next(error)
   }
-
-  res.json(notification)
 })
 
 notificationsRouter.post('/read-all', async (req: Request, res: Response, next: NextFunction) => {
@@ -69,6 +73,10 @@ notificationsRouter.post('/read-all', async (req: Request, res: Response, next: 
     return next(AppError.unauthorized('Unauthenticated'))
   }
 
-  const updated = await markAllAsRead(req.user.userId)
-  res.json({ updated })
+  try {
+    const updated = await markAllAsRead(req.user.userId)
+    res.json({ updated })
+  } catch (error) {
+    return next(error)
+  }
 })

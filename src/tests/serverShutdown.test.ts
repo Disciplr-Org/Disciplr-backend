@@ -1,10 +1,18 @@
+import { _resetEnvForTesting, initEnv } from '../config/env.js'
 import supertest from 'supertest'
 import { app } from '../app.js'
 import { createShutdownHandler } from '../server/shutdown.js'
 
+beforeAll(() => {
+  _resetEnvForTesting()
+  initEnv({
+    DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/postgres',
+    SHUTDOWN_DRAIN_MS: '1000',
+  })
+})
+
 describe('shutdown drain', () => {
   test('waits for in-flight request to complete before closing', async () => {
-    process.env.SHUTDOWN_DRAIN_MS = '1000'
 
     // Simple long-running handler
     app.get('/__test_long', (_req, res) => {

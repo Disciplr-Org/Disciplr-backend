@@ -4,7 +4,13 @@ import db from '../db/index.js'
 // represent a whole-channel opt-out without one row per known category.
 const ALL_CATEGORIES = ''
 
-export const ALLOWED_CATEGORIES = ['vault_failure', 'milestone_reminder'] as const
+export const ALLOWED_CATEGORIES = [
+  'vault_failure',
+  'milestone_reminder',
+  'milestone_reminder_deferred',
+  'milestone_reminder_processed',
+  'milestone_digest',
+] as const
 export type NotificationCategory = (typeof ALLOWED_CATEGORIES)[number]
 
 export const ALLOWED_CHANNELS = ['email'] as const

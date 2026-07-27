@@ -29,7 +29,7 @@ interface FakeVaultRow {
   success_destination: string;
   failure_destination: string;
   creator: string | null;
-  status: "draft" | "active" | "completed" | "failed" | "cancelled";
+  status: "draft" | "active" | "completed" | "failed" | "cancelled" | "disputed";
   created_at: string;
   xmin: number;
 }

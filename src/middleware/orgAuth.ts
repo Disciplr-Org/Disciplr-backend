@@ -71,6 +71,7 @@ export const requireOrgRole = (roles: (OrgRole | string)[]) => {
       const membership = await db("org_members")
         .where({ org_id: orgId, user_id: userId })
         .first();
+      // Missing membership is a normal no-row result (does not throw) → 403.
       if (!membership || !roles.includes(membership.role)) {
         res
           .status(403)
@@ -80,12 +81,9 @@ export const requireOrgRole = (roles: (OrgRole | string)[]) => {
         return;
       }
       next();
-    } catch {
-      res
-        .status(403)
-        .json({
-          error: `Forbidden: requires organization role ${roles.join(" or ")}`,
-        });
+    } catch (err) {
+      // Unexpected DB/infra failures must not look like authorization denials.
+      next(err);
     }
   };
 };
@@ -111,6 +109,7 @@ export const requireTeamRole = (roles: (OrgRole | string)[]) => {
       const membership = await db("team_members")
         .where({ team_id: teamId, user_id: userId })
         .first();
+      // Missing membership is a normal no-row result (does not throw) → 403.
       if (!membership || !roles.includes(membership.role)) {
         res
           .status(403)
@@ -120,10 +119,9 @@ export const requireTeamRole = (roles: (OrgRole | string)[]) => {
         return;
       }
       next();
-    } catch {
-      res
-        .status(403)
-        .json({ error: `Forbidden: requires team role ${roles.join(" or ")}` });
+    } catch (err) {
+      // Unexpected DB/infra failures must not look like authorization denials.
+      next(err);
     }
   };
 };

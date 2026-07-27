@@ -13,7 +13,7 @@ const MAX_PAGE_SIZE = 100
 
 function parsePositiveInteger(value: unknown, fieldName: string): number {
   if (value === undefined || value === null || value === '') {
-    return DEFAULT_PAGE_SIZE
+    return fieldName === 'page' ? DEFAULT_PAGE : DEFAULT_PAGE_SIZE
   }
 
   if (Array.isArray(value)) {
@@ -52,7 +52,9 @@ export function decodeCursor(cursor: string): { timestamp: Date; id: string } {
     const decoded = Buffer.from(cursor, 'base64url').toString('utf8')
     const [timestampStr, id] = decoded.split('|')
     if (!timestampStr || !id) throw new Error('Invalid cursor format')
-    return { timestamp: new Date(timestampStr), id }
+    const timestamp = new Date(timestampStr)
+    if (Number.isNaN(timestamp.getTime())) throw new Error('Invalid cursor format')
+    return { timestamp, id }
   } catch (error) {
     throw new Error('Invalid cursor')
   }

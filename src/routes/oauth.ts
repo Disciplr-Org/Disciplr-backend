@@ -2,12 +2,12 @@ import { Router, type Request, type Response } from 'express'
 import jwt from 'jsonwebtoken'
 import { validateApiKey } from '../services/apiKeys.js'
 import { createAuditLog } from '../lib/audit-logs.js'
+import { getJwtSecret } from '../lib/auth-utils.js'
 import { authRateLimiter } from '../middleware/rateLimiter.js'
 import type { ApiScope } from '../types/auth.js'
 
 export const oauthRouter = Router()
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production'
 const TOKEN_TTL_SECONDS = Number(process.env.OAUTH_TOKEN_TTL_SECONDS ?? 3600)
 
 /** Non-blocking audit log helper — failures are logged but never propagate. */
@@ -53,6 +53,20 @@ oauthRouter.post('/token', authRateLimiter, async (req: Request, res: Response):
     return
   }
 
+  const canonicalClientId = result.context.apiKeyId
+
+  if (String(client_id) !== canonicalClientId) {
+    auditLog({
+      actor_user_id: canonicalClientId,
+      action: 'oauth.token_denied',
+      target_type: 'oauth_client',
+      target_id: canonicalClientId,
+      metadata: { reason: 'client_id_mismatch', grant_type: 'client_credentials', presented_client_id: String(client_id) },
+    })
+    oauthError(res, 401, 'invalid_client', 'Invalid client credentials')
+    return
+  }
+
   const clientScopes: ApiScope[] = result.context.scopes
   let grantedScopes: ApiScope[]
 
@@ -65,10 +79,10 @@ oauthRouter.post('/token', authRateLimiter, async (req: Request, res: Response):
     const unknown = requested.filter((s) => !clientScopes.includes(s))
     if (unknown.length > 0) {
       auditLog({
-        actor_user_id: String(client_id),
+        actor_user_id: canonicalClientId,
         action: 'oauth.token_denied',
         target_type: 'oauth_client',
-        target_id: String(client_id),
+        target_id: canonicalClientId,
         metadata: { reason: 'scope_exceeded', requested_scopes: requested, client_scopes: clientScopes },
       })
       oauthError(res, 400, 'invalid_scope', `Requested scope(s) exceed client grants: ${unknown.join(' ')}`)
@@ -82,8 +96,8 @@ oauthRouter.post('/token', authRateLimiter, async (req: Request, res: Response):
 
   const now = Math.floor(Date.now() / 1000)
   const payload = {
-    sub: result.context.apiKeyId,
-    client_id: String(client_id),
+    sub: canonicalClientId,
+    client_id: canonicalClientId,
     scope: grantedScopes.join(' '),
     ...(result.context.orgId && { org_id: result.context.orgId }),
     ...(result.context.userId && { user_id: result.context.userId }),
@@ -93,13 +107,13 @@ oauthRouter.post('/token', authRateLimiter, async (req: Request, res: Response):
     exp: now + TOKEN_TTL_SECONDS,
   }
 
-  const accessToken = jwt.sign(payload, JWT_SECRET)
+  const accessToken = jwt.sign(payload, getJwtSecret())
 
   auditLog({
-    actor_user_id: result.context.userId ?? result.context.apiKeyId,
+    actor_user_id: result.context.userId ?? canonicalClientId,
     action: 'oauth.token_issued',
     target_type: 'oauth_client',
-    target_id: result.context.apiKeyId,
+    target_id: canonicalClientId,
     metadata: {
       grant_type: 'client_credentials',
       scopes: grantedScopes,

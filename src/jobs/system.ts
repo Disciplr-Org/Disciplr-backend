@@ -189,7 +189,11 @@ export class BackgroundJobSystem {
       cursorStore: new BackfillCursorStore(db),
       embeddingProvider: createEmbeddingProvider(),
     }
-    const handlers = createDefaultJobHandlers(resolvedNotificationService, resolvedEmbeddingReindex)
+    const handlers = createDefaultJobHandlers(
+      resolvedNotificationService,
+      resolvedEmbeddingReindex,
+      (type, payload, options) => this.enqueue(type, payload, options),
+    )
 
     this.queue.registerHandler('notification.send', handlers['notification.send'])
     this.queue.registerHandler('deadline.check', handlers['deadline.check'])
@@ -308,6 +312,18 @@ export class BackgroundJobSystem {
       process.env.ANALYTICS_REPORT_INTERVAL_MS,
       24 * 60 * 60_000, // 24 hours
     )
+    const milestoneRemindersIntervalMs = parsePositiveInteger(
+      process.env.MILESTONE_REMINDERS_INTERVAL_MS,
+      15 * 60_000, // 15 minutes
+    )
+    const milestoneRemindersDigestIntervalMs = parsePositiveInteger(
+      process.env.MILESTONE_REMINDERS_DIGEST_INTERVAL_MS,
+      15 * 60_000, // 15 minutes
+    )
+    const milestoneRemindersDeferredIntervalMs = parsePositiveInteger(
+      process.env.MILESTONE_REMINDERS_DEFERRED_INTERVAL_MS,
+      5 * 60_000, // 5 minutes
+    )
 
     this.schedulerRegistry.registerJob({
       name: 'deadline.check',
@@ -397,6 +413,36 @@ export class BackgroundJobSystem {
       immediate: false,
       execute: () => {
         this.enqueue('saved-search.evaluate', {})
+      },
+    })
+
+    this.schedulerRegistry.registerJob({
+      name: 'milestone.reminders',
+      intervalMs: milestoneRemindersIntervalMs,
+      immediate: true,
+      initialDelayMs: 5_000,
+      execute: () => {
+        this.enqueue('milestone.reminders', {})
+      },
+    })
+
+    this.schedulerRegistry.registerJob({
+      name: 'milestone.reminders.digest',
+      intervalMs: milestoneRemindersDigestIntervalMs,
+      immediate: true,
+      initialDelayMs: 10_000,
+      execute: () => {
+        this.enqueue('milestone.reminders.digest', {})
+      },
+    })
+
+    this.schedulerRegistry.registerJob({
+      name: 'milestone.reminders.deferred',
+      intervalMs: milestoneRemindersDeferredIntervalMs,
+      immediate: true,
+      initialDelayMs: 15_000,
+      execute: () => {
+        this.enqueue('milestone.reminders.deferred', {})
       },
     })
 

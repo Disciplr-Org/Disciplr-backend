@@ -103,8 +103,7 @@ export const envSchema = z
     JWT_AUDIENCE: z.string().min(1, "JWT_AUDIENCE is required").default("disciplr-api"),
     DOWNLOAD_SECRET: z
       .string()
-      .min(16, "must be at least 16 characters")
-      .default("change-me-in-production-long-secret"),
+      .min(16, "must be at least 16 characters"),
 
     // JWT key rotation support – JSON encoded array of {kid, secret, retiredAt?}
     JWT_KEYS: z
@@ -176,6 +175,9 @@ export const envSchema = z
     JOB_QUEUE_POLL_INTERVAL_MS: positiveInt(250),
     JOB_HISTORY_LIMIT: positiveInt(50),
     ENABLE_JOB_SCHEDULER: z.string().optional(),
+    MILESTONE_REMINDERS_INTERVAL_MS: positiveInt(15 * 60_000),
+    MILESTONE_REMINDERS_DIGEST_INTERVAL_MS: positiveInt(15 * 60_000),
+    MILESTONE_REMINDERS_DEFERRED_INTERVAL_MS: positiveInt(5 * 60_000),
     NOTIFICATION_PROVIDER: z.enum(["email", "console"]).default("console"),
 
     // ── SMTP / Email provider ────────────────────────────────────
@@ -246,6 +248,24 @@ export const envSchema = z
     HTTP_KEEPALIVE_TIMEOUT_MS: positiveInt(45_000),
     HTTP_HEADERS_TIMEOUT_MS: positiveInt(61_000),
     HTTP_REQUEST_TIMEOUT_MS: positiveInt(120_000),
+
+    // ── Graceful shutdown ──────────────────────────────────
+    // Maximum time (ms) to wait for in-flight HTTP requests to
+    // complete before force-destroying sockets during shutdown.
+    SHUTDOWN_DRAIN_MS: positiveInt(30_000),
+
+    // ── OpenTelemetry / Tracing ───────────────────────────────────
+    OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional(),
+    OTEL_SERVICE_NAME: z.string().optional(),
+    OTEL_TRACES_SAMPLER: z.enum(['always_on', 'always_off', 'traceidratio']).optional(),
+    OTEL_TRACES_SAMPLER_ARG: z
+      .string()
+      .optional()
+      .transform((v) => {
+        if (v === undefined || v === '') return undefined
+        const n = Number.parseFloat(v)
+        return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined
+      }),
 
     // ── Admin / Debug ──────────────────────────────────────────────
     ADMIN_API_KEY: z.string().default(""),
@@ -361,16 +381,12 @@ export function initEnv(
       { key: "JWT_SECRET", sentinel: "change-me-in-production-long-secret" },
       { key: "JWT_ACCESS_SECRET", sentinel: "fallback-access-secret-long" },
       { key: "JWT_REFRESH_SECRET", sentinel: "fallback-refresh-secret-long" },
-      {
-        key: "DOWNLOAD_SECRET",
-        sentinel: "change-me-in-production-long-secret",
-      },
     ];
 
     for (const { key, sentinel } of insecureDefaults) {
       if (validated[key] === sentinel) {
         const w: EnvWarning = {
-          variable: key,
+          field: key,
           message: `${key} is using its insecure default value`,
         };
         warnings.push(w);
@@ -379,7 +395,7 @@ export function initEnv(
             level: "warn",
             event: "config.insecure_default",
             service: "disciplr-backend",
-            variable: key,
+            field: key,
             message: w.message,
             timestamp: new Date().toISOString(),
           }),
@@ -403,7 +419,7 @@ export function initEnv(
   );
   if (present.length > 0 && present.length < sorobanVars.length) {
     const w: EnvWarning = {
-      variable: "SOROBAN_*",
+      field: "SOROBAN_*",
       message:
         "Partial Soroban configuration detected; submit mode will be disabled",
     };
@@ -413,7 +429,7 @@ export function initEnv(
         level: "warn",
         event: "config.partial_soroban_configuration",
         service: "disciplr-backend",
-        variable: "SOROBAN_*",
+        field: "SOROBAN_*",
         message: w.message,
         timestamp: new Date().toISOString(),
       }),
