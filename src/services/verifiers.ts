@@ -415,27 +415,39 @@ export const recordMilestoneApproval = async (
   verifierUserId: string,
   approvalStatus: MilestoneApprovalStatus,
 ): Promise<MilestoneApproval> => {
-  // Check if verifier has already voted
-  const existing = await db('milestone_approvals')
-    .where({
-      milestone_id: milestoneId,
-      verifier_user_id: verifierUserId,
-    })
-    .first()
+  return db.transaction(async (trx) => {
+    const existing = await trx('milestone_approvals')
+      .where({
+        milestone_id: milestoneId,
+        verifier_user_id: verifierUserId,
+      })
+      .first()
 
-  if (existing) {
-    throw new DuplicateVerifierVoteError(milestoneId, verifierUserId)
-  }
+    if (existing) {
+      throw new DuplicateVerifierVoteError(milestoneId, verifierUserId)
+    }
 
-  const [record] = await db('milestone_approvals')
-    .insert({
-      milestone_id: milestoneId,
-      verifier_user_id: verifierUserId,
-      approval_status: approvalStatus,
-    })
-    .returning('*')
+    try {
+      const [record] = await trx('milestone_approvals')
+        .insert({
+          milestone_id: milestoneId,
+          verifier_user_id: verifierUserId,
+          approval_status: approvalStatus,
+        })
+        .returning('*')
 
-  return mapMilestoneApprovalRow(record)
+      return mapMilestoneApprovalRow(record)
+    } catch (err) {
+      const maybeErr = err as { code?: string; message?: string }
+      if (
+        maybeErr.code === '23505'
+        || maybeErr.message?.toLowerCase().includes('unique') === true
+      ) {
+        throw new DuplicateVerifierVoteError(milestoneId, verifierUserId)
+      }
+      throw err
+    }
+  })
 }
 
 /**
