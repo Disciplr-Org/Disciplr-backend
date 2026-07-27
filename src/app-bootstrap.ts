@@ -27,7 +27,7 @@ import { authenticate } from './middleware/auth.js'
 import { requireOrgAccess } from './middleware/orgAuth.js'
 // notificationsRouter is imported and mounted in app.ts; not needed here.
 import { notificationPreferencesRouter } from './routes/notificationPreferences.js'
-// webhookRouter is mounted in app.ts at module load time; no re-mount needed here.
+import { webhookRouter } from './routes/webhooks.js'
 import { graphqlRouter } from './routes/graphql.js'
 import { createNotificationService, NotificationService } from './services/notifications/factory.js'
 import { withRequestPrisma } from './middleware/withRequestPrisma.js'
@@ -82,7 +82,8 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
   app.use('/api/verifications', verificationsRouter)
   app.use('/api/api-keys', apiKeysRouter)
   app.use('/api/notifications', notificationsRouter)
-  app.use('/api/webhooks', webhooksRouter)
+  app.use('/api/users/me/notification-preferences', notificationPreferencesRouter)
+  app.use('/api/webhooks', webhookRouter)
 
   // Catch-all 404 and uniform error shape – must be registered after all routes.
   app.use(notFound);
