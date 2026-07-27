@@ -20,14 +20,15 @@ jest.unstable_mockModule('../db/index.js', () => ({
 const { VaultService } = await import('../services/vault.service.js')
 
 const mockVaultData = {
-  contractId: 'CTEST',
-  creatorAddress: 'GBX...',
+  id: 'test-uuid-1',
+  creator: 'GBX...',
   amount: '100000000',
-  milestoneHash: 'abc123hash',
-  verifierAddress: 'GAX...',
+  startDate: new Date().toISOString(),
+  endDate: new Date().toISOString(),
+  verifier: 'GAX...',
   successDestination: 'GBX...',
   failureDestination: 'GAX...',
-  deadline: new Date().toISOString(),
+  status: VaultStatus.DRAFT,
 }
 
 describe('VaultService', () => {

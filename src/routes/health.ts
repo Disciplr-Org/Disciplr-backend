@@ -6,6 +6,12 @@ import type { AbuseMonitor } from '../services/abuse-monitor.js'
 import { authenticate } from '../middleware/auth.js'
 import { requireAdmin } from '../middleware/rbac.js'
 
+const deepHealthHttpStatus = (status: string): number => {
+  if (status === 'error') return 503
+  if (status === 'degraded') return 207
+  return 200
+}
+
 export const createHealthRouter = (
   jobSystem: BackgroundJobSystem,
   privacyAbuseMonitor?: AbuseMonitor,
@@ -17,7 +23,7 @@ export const createHealthRouter = (
 
     if (isDeep) {
       const deepStatus = await healthService.buildDeepHealthStatus(jobSystem)
-      return res.status(deepStatus.status === 'error' ? 503 : 200).json(deepStatus)
+      return res.status(deepHealthHttpStatus(deepStatus.status)).json(deepStatus)
     }
 
     return res.status(200).json(healthService.buildHealthStatus('disciplr-api', jobSystem))
@@ -25,7 +31,7 @@ export const createHealthRouter = (
 
   router.get('/deep', async (req, res) => {
     const deepStatus = await healthService.buildDeepHealthStatus(jobSystem)
-    return res.status(deepStatus.status === 'error' ? 503 : 200).json(deepStatus)
+    return res.status(deepHealthHttpStatus(deepStatus.status)).json(deepStatus)
   })
 
   router.get('/security', authenticate, requireAdmin, async (req, res) => {

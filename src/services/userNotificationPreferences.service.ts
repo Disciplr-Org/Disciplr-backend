@@ -16,7 +16,7 @@ const TABLE = 'user_notification_preferences'
 export function getDefaultPreferences(userId: string): UserNotificationPreferences {
   const now = new Date().toISOString()
   return {
-    id: '',
+    id: null,
     user_id: userId,
     timezone: 'UTC',
     quiet_hours_enabled: false,

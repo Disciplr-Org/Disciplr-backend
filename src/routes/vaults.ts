@@ -31,22 +31,46 @@ import type { VaultCreateResponse } from '../types/vaults.js'
 
 export const vaultsRouter = Router()
 
-// In-memory fallback (for development / legacy support)
-export let vaults: any[] = []
-export const setVaults = (newVaults: any[]) => { vaults = newVaults }
+// ─── Minimal compatibility exports for test support ───────────────────────────
+// These exports maintain backward compatibility for existing test suites that
+// rely on the old in-memory vault array pattern. Per maintainer request (option 2).
+// Tests should be migrated to use vaultStore helpers directly over time.
 
 export interface Vault {
   id: string
   creator: string
   amount: string
-  status: 'draft' | 'active' | 'disputed' | 'completed' | 'failed' | 'cancelled'
+  status: 'draft' | 'active' | 'completed' | 'failed' | 'cancelled' | 'disputed'
   startTimestamp: string
   endTimestamp: string
   successDestination: string
   failureDestination: string
   verifier?: string
   createdAt: string
+  endDate?: string  // Alias for endTimestamp (used in some tests)
+  lateCheckInWindowSecs?: number
 }
+
+// In-memory vault array for test compatibility only
+let testVaults: Vault[] = []
+
+/**
+ * Sets the in-memory vault array for test purposes.
+ * This is a compatibility shim for existing tests.
+ * Production code should use vaultStore helpers instead.
+ */
+export const setVaults = (newVaults: Vault[]): void => {
+  testVaults = newVaults
+}
+
+/**
+ * Gets the in-memory vault array for test purposes.
+ * This is a compatibility shim for existing tests.
+ */
+export const getTestVaults = (): Vault[] => testVaults
+
+// Export the array for direct access in tests (legacy pattern)
+export const vaults = testVaults
 
 // GET /api/vaults
 vaultsRouter.get(
@@ -197,16 +221,12 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
 // Returns 304 Not Modified if client holds current version
 vaultsRouter.get('/:id', authenticate, requireScopes(ApiScope.ReadVaults), async (req: Request, res: Response) => {
   try {
-    // Try DB-backed store first (falls back to in-memory automatically)
-    let vault = await getVaultById(req.params.id)
+    // Use DB-backed store
+    const vault = await getVaultById(req.params.id)
     
     if (!vault) {
-      // Legacy in-memory fallback
-      vault = vaults.find((v) => v.id === req.params.id)
-      if (!vault) {
-        res.status(404).json({ error: 'Vault not found' })
-        return
-      }
+      res.status(404).json({ error: 'Vault not found' })
+      return
     }
 
     // Compute ETag from vault revision (optimistic-concurrency version)
@@ -284,9 +304,7 @@ vaultsRouter.post('/:id/cancel', authenticate, async (req, res) => {
   const actorUserId = req.user!.userId
   const actorRole = req.user!.role
 
-  let existingVault = await VaultService.getVaultById(req.params.id)
-  if (!existingVault) existingVault = vaults.find((v) => v.id === req.params.id)
-
+  const existingVault = await VaultService.getVaultById(req.params.id)
   if (!existingVault) return res.status(404).json({ error: 'Vault not found' })
 
   if (actorUserId !== existingVault.creator && actorRole !== UserRole.ADMIN) {
@@ -296,9 +314,6 @@ vaultsRouter.post('/:id/cancel', authenticate, async (req, res) => {
   try {
     await VaultService.updateVaultStatus(req.params.id, 'cancelled')
   } catch (_err) { /* non-fatal */ }
-
-  const arrayIndex = vaults.findIndex((v) => v.id === req.params.id)
-  if (arrayIndex !== -1) vaults[arrayIndex].status = 'cancelled'
 
   updateAnalyticsSummary()
   res.status(200).json({ message: 'Vault cancelled', id: req.params.id })
