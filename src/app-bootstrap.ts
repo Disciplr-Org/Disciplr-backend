@@ -10,6 +10,7 @@ import { analyticsRouter } from './routes/analytics.js'
 import { authRateLimiter, healthRateLimiter, vaultsRateLimiter } from './middleware/rateLimiter.js'
 import { createExportRouter } from './routes/exports.js'
 import { configureExportJobRepository, configureDlqRepository, createKnexExportJobRepository, createKnexDlqRepository } from './services/exportQueue.js'
+import { configureOrgQuotaRepository, createKnexOrgQuotaRepository } from './services/exportQuota.js'
 import { db } from './db/index.js'
 import { transactionsRouter } from './routes/transactions.js'
 import { privacyRouter, privacyAbuseMonitor } from './routes/privacy.js'
@@ -54,6 +55,7 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
   const jobSystem = new BackgroundJobSystem(notificationService);
   configureExportJobRepository(createKnexExportJobRepository(db))
   configureDlqRepository(createKnexDlqRepository(db))
+  configureOrgQuotaRepository(createKnexOrgQuotaRepository(db))
 
   app.use(securityMetricsMiddleware);
   app.use(securityRateLimitMiddleware);
