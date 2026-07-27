@@ -52,7 +52,7 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
         process.env.NOTIFICATION_PROVIDER ??
         "console",
     );
-  const jobSystem = new BackgroundJobSystem(notificationService);
+  const jobSystem = new BackgroundJobSystem(notificationService, undefined, privacyAbuseMonitor);
   configureExportJobRepository(createKnexExportJobRepository(db))
   configureDlqRepository(createKnexDlqRepository(db))
   configureOrgQuotaRepository(createKnexOrgQuotaRepository(db))
