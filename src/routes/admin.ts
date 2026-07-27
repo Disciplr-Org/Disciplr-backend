@@ -781,7 +781,7 @@ adminRouter.delete(
     let result: DeleteResult | null
 
     if (hard) {
-      result = await userService.hardDeleteUser(req.params.id)
+      result = await userService.hardDeleteUser(req.params.id, req.user!.userId)
     } else {
       result = await userService.softDeleteUser(req.params.id)
     }
@@ -797,22 +797,26 @@ adminRouter.delete(
       })
     }
 
-    const auditLog = await createAuditLog({
-      actor_user_id: req.user!.userId,
-      action: hard ? 'user.hard_delete' : 'user.soft_delete',
-      target_type: 'user',
-      target_id: req.params.id,
-      metadata: {
-        deletion_type: result.deletionType,
-        deleted_at: result.deletedAt,
-        target_email: targetUser.email
-      },
-    })
+    let auditLog
+
+    if (!hard) {
+      auditLog = await createAuditLog({
+        actor_user_id: req.user!.userId,
+        action: 'user.soft_delete',
+        target_type: 'user',
+        target_id: req.params.id,
+        metadata: {
+          deletion_type: result.deletionType,
+          deleted_at: result.deletedAt,
+          target_email: targetUser.email
+        },
+      })
+    }
 
     res.status(200).json({
       message: hard ? 'User permanently deleted' : 'User soft-deleted',
       result,
-      auditLogId: auditLog.id
+      ...(auditLog ? { auditLogId: auditLog.id } : {})
     })
   } catch (error) {
     res.status(500).json({ error: 'Internal server error' })
