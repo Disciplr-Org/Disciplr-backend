@@ -65,7 +65,7 @@ adminWebhooksRouter.post('/dead-letters/:id/replay', async (req: Request, res: R
       return
     }
 
-    createAuditLog({
+    await createAuditLog({
       actor_user_id: req.user!.userId,
       action: 'webhook.deadletter.replay',
       target_type: 'webhook_dead_letter',
@@ -73,7 +73,7 @@ adminWebhooksRouter.post('/dead-letters/:id/replay', async (req: Request, res: R
       metadata: {
         subscriberId: result.subscriberId,
       },
-    })
+    }).catch((err) => console.error('Failed to write audit log:', err))
 
     res.status(202).json({ replayed: true })
   } catch (error) {
