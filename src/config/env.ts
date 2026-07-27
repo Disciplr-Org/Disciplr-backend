@@ -222,6 +222,18 @@ export const envSchema = z
     HORIZON_LAG_THRESHOLD: nonNegativeInt(10),
     HORIZON_SHUTDOWN_TIMEOUT_MS: positiveInt(30_000),
 
+    // ── Vault transitions ────────────────────────────────────
+    /**
+     * Clock-skew tolerance (ms) applied when validating the 'failed'
+     * transition in getTransitionError. A vault whose endTimestamp is in
+     * the future by at most this many milliseconds is still accepted as
+     * expired to account for drift between scheduler/client clocks and the
+     * server wall clock.
+     *
+     * Default: 10 000 ms (10 s). Override via VAULT_TRANSITION_SKEW_MS.
+     */
+    VAULT_TRANSITION_SKEW_MS: positiveInt(10_000),
+
     // ── Webhooks ────────────────────────────────────────────
     WEBHOOK_INBOUND_SECRET: z.string().optional(),
     WEBHOOK_INBOUND_SKEW_MS: positiveInt(300_000),
