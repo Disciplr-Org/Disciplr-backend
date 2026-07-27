@@ -17,6 +17,26 @@ import webhookRouter from './routes/webhooks.js'
 import { errorHandler } from './middleware/errorHandler.js'
 
 export const app = express()
+
+// ── Trust proxy ────────────────────────────────────────────────────────────
+// Must be set before any middleware that reads req.ip so that Express
+// resolves the real client IP from the correct X-Forwarded-For position.
+// The value is controlled by the TRUST_PROXY env var (default: "false").
+// See docs/configuration.md for the full list of accepted values and the
+// security implications of each.
+{
+  const raw = config.trustProxy
+  // Convert the string to the type Express expects:
+  //   "true"/"false" → boolean, a numeric string → number, else keep as string.
+  let trustProxyValue: string | number | boolean = raw
+  if (raw === 'true') trustProxyValue = true
+  else if (raw === 'false') trustProxyValue = false
+  else {
+    const asNumber = Number(raw)
+    if (!isNaN(asNumber) && String(asNumber) === raw) trustProxyValue = asNumber
+  }
+  app.set('trust proxy', trustProxyValue)
+}
 app.use(httpMetricsMiddleware);
 app.use(tracingMiddleware);
 
