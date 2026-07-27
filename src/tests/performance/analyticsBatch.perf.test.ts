@@ -11,14 +11,35 @@
 import Database from 'better-sqlite3'
 import { AnalyticsBatchLoader } from '../../services/analyticsBatchLoader.js'
 import { getOrgAnalyticsBatched } from '../../services/analytics.service.js'
+import type { DbLike } from '../../services/analyticsBatchLoader.js'
+
+// ---------------------------------------------------------------------------
+// Adapter: wraps synchronous better-sqlite3 into the async DbLike interface
+// so the same production code path can be exercised in unit tests.
+// ---------------------------------------------------------------------------
+
+class SqliteDbAdapter implements DbLike {
+  private db: Database.Database
+
+  constructor(db: Database.Database) {
+    this.db = db
+  }
+
+  async query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }> {
+    const stmt = this.db.prepare(sql)
+    const rows = stmt.all(...(params ?? []))
+    return { rows }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // In-memory SQLite DB shared across tests in this file.
 // ---------------------------------------------------------------------------
 
-const testDb = new Database(':memory:')
+const rawDb = new Database(':memory:')
+const testDb: DbLike = new SqliteDbAdapter(rawDb)
 
-testDb.exec(`
+rawDb.exec(`
   CREATE TABLE IF NOT EXISTS vaults (
     id TEXT PRIMARY KEY,
     status TEXT NOT NULL,
@@ -39,20 +60,20 @@ testDb.exec(`
 let milestoneSeq = 0
 
 function seedVault(id: string, status: string, amount: string, orgId: string): void {
-  testDb.prepare('INSERT OR IGNORE INTO vaults (id, status, amount, org_id) VALUES (?, ?, ?, ?)').run(
+  rawDb.prepare('INSERT OR IGNORE INTO vaults (id, status, amount, org_id) VALUES (?, ?, ?, ?)').run(
     id, status, amount, orgId,
   )
 }
 
 function seedMilestone(vaultId: string, status: string): void {
-  testDb
+  rawDb
     .prepare('INSERT INTO milestones (id, vault_id, status) VALUES (?, ?, ?)')
     .run(`m-${++milestoneSeq}`, vaultId, status)
 }
 
 function clearTables(): void {
-  testDb.prepare('DELETE FROM milestones').run()
-  testDb.prepare('DELETE FROM vaults').run()
+  rawDb.prepare('DELETE FROM milestones').run()
+  rawDb.prepare('DELETE FROM vaults').run()
   milestoneSeq = 0
 }
 
@@ -72,33 +93,33 @@ describe('AnalyticsBatchLoader', () => {
   // ── deduplication ─────────────────────────────────────────────────────────
 
   describe('key deduplication', () => {
-    it('issues exactly one vault query when the same key is requested multiple times', () => {
+    it('issues exactly one vault query when the same key is requested multiple times', async () => {
       seedVault('v1', 'active', '100', 'org-a')
 
       const loader = makeLoader()
 
       // First load with repeated keys
-      const first = loader.loadVaults(['v1', 'v1', 'v1'])
+      const first = await loader.loadVaults(['v1', 'v1', 'v1'])
       expect(first.size).toBe(1)
       expect(loader.queries).toBe(1)
 
       // Second call with same key — hits intra-request cache, no new query
-      const second = loader.loadVaults(['v1'])
+      const second = await loader.loadVaults(['v1'])
       expect(second.size).toBe(1)
       expect(loader.queries).toBe(1)
     })
 
-    it('issues exactly one milestone query for duplicate vault IDs', () => {
+    it('issues exactly one milestone query for duplicate vault IDs', async () => {
       seedVault('v1', 'active', '100', 'org-a')
       seedMilestone('v1', 'completed')
 
       const loader = makeLoader()
 
-      loader.loadMilestones(['v1', 'v1', 'v1'])
+      await loader.loadMilestones(['v1', 'v1', 'v1'])
       expect(loader.queries).toBe(1)
 
       // Cached — no extra query
-      loader.loadMilestones(['v1'])
+      await loader.loadMilestones(['v1'])
       expect(loader.queries).toBe(1)
     })
   })
@@ -106,7 +127,7 @@ describe('AnalyticsBatchLoader', () => {
   // ── query-count reduction ─────────────────────────────────────────────────
 
   describe('query-count reduction', () => {
-    it('fetches N vault aggregates with exactly 1 query', () => {
+    it('fetches N vault aggregates with exactly 1 query', async () => {
       const ids: string[] = []
       for (let i = 0; i < 20; i++) {
         const id = `v-batch-${i}`
@@ -115,13 +136,13 @@ describe('AnalyticsBatchLoader', () => {
       }
 
       const loader = makeLoader()
-      const result = loader.loadVaults(ids)
+      const result = await loader.loadVaults(ids)
 
       expect(result.size).toBe(20)
       expect(loader.queries).toBe(1) // single IN-clause query, not 20
     })
 
-    it('fetches N milestone aggregates with exactly 1 query', () => {
+    it('fetches N milestone aggregates with exactly 1 query', async () => {
       const ids: string[] = []
       for (let i = 0; i < 20; i++) {
         const id = `v-ms-${i}`
@@ -132,21 +153,21 @@ describe('AnalyticsBatchLoader', () => {
       }
 
       const loader = makeLoader()
-      const result = loader.loadMilestones(ids)
+      const result = await loader.loadMilestones(ids)
 
       expect(result.size).toBe(20)
       expect(loader.queries).toBe(1)
     })
 
-    it('loading vaults then milestones for same IDs costs exactly 2 total queries', () => {
+    it('loading vaults then milestones for same IDs costs exactly 2 total queries', async () => {
       const ids = ['v-x', 'v-y']
       seedVault('v-x', 'active', '200', 'org-c')
       seedVault('v-y', 'completed', '300', 'org-c')
       seedMilestone('v-x', 'completed')
 
       const loader = makeLoader()
-      loader.loadVaults(ids)
-      loader.loadMilestones(ids)
+      await loader.loadVaults(ids)
+      await loader.loadMilestones(ids)
 
       expect(loader.queries).toBe(2)
     })
@@ -155,15 +176,15 @@ describe('AnalyticsBatchLoader', () => {
   // ── result parity ─────────────────────────────────────────────────────────
 
   describe('result parity', () => {
-    it('vault aggregate matches individually-computed values', () => {
+    it('vault aggregate matches individually-computed values', async () => {
       seedVault('v-p1', 'active', '500', 'org-d')
       seedMilestone('v-p1', 'completed')
       seedMilestone('v-p1', 'completed')
       seedMilestone('v-p1', 'pending')
 
       const loader = makeLoader()
-      const vaults = loader.loadVaults(['v-p1'])
-      const milestones = loader.loadMilestones(['v-p1'])
+      const vaults = await loader.loadVaults(['v-p1'])
+      const milestones = await loader.loadMilestones(['v-p1'])
 
       const v = vaults.get('v-p1')!
       expect(v.status).toBe('active')
@@ -177,11 +198,11 @@ describe('AnalyticsBatchLoader', () => {
       expect(m.pendingMilestones).toBe(1)
     })
 
-    it('vaults with no milestones return zero milestone counts', () => {
+    it('vaults with no milestones return zero milestone counts', async () => {
       seedVault('v-nomile', 'active', '100', 'org-d')
 
       const loader = makeLoader()
-      const milestones = loader.loadMilestones(['v-nomile'])
+      const milestones = await loader.loadMilestones(['v-nomile'])
 
       const m = milestones.get('v-nomile')!
       expect(m.milestoneCount).toBe(0)
@@ -189,9 +210,9 @@ describe('AnalyticsBatchLoader', () => {
       expect(m.pendingMilestones).toBe(0)
     })
 
-    it('returns empty map for unknown vault IDs', () => {
+    it('returns empty map for unknown vault IDs', async () => {
       const loader = makeLoader()
-      const vaults = loader.loadVaults(['does-not-exist'])
+      const vaults = await loader.loadVaults(['does-not-exist'])
       expect(vaults.size).toBe(0)
     })
   })
@@ -199,7 +220,7 @@ describe('AnalyticsBatchLoader', () => {
   // ── getOrgAnalyticsBatched ─────────────────────────────────────────────────
 
   describe('getOrgAnalyticsBatched', () => {
-    it('aggregates multiple vaults correctly', () => {
+    it('aggregates multiple vaults correctly', async () => {
       seedVault('org1-v1', 'active', '1000', 'org-1')
       seedVault('org1-v2', 'completed', '2000', 'org-1')
       seedVault('org1-v3', 'failed', '500', 'org-1')
@@ -207,7 +228,7 @@ describe('AnalyticsBatchLoader', () => {
       seedMilestone('org1-v1', 'pending')
       seedMilestone('org1-v2', 'completed')
 
-      const result = getOrgAnalyticsBatched(
+      const result = await getOrgAnalyticsBatched(
         ['org1-v1', 'org1-v2', 'org1-v3'],
         testDb,
       )
@@ -222,8 +243,8 @@ describe('AnalyticsBatchLoader', () => {
       expect(result.completedMilestones).toBe(2)
     })
 
-    it('returns zero-value result for empty vault list', () => {
-      const result = getOrgAnalyticsBatched([], testDb)
+    it('returns zero-value result for empty vault list', async () => {
+      const result = await getOrgAnalyticsBatched([], testDb)
       expect(result.totalVaults).toBe(0)
       expect(result.successRate).toBe(0)
       expect(result.totalLockedCapital).toBe('0')
@@ -233,15 +254,15 @@ describe('AnalyticsBatchLoader', () => {
   // ── tenant isolation ───────────────────────────────────────────────────────
 
   describe('tenant isolation', () => {
-    it('separate loader instances share no cached state', () => {
+    it('separate loader instances share no cached state', async () => {
       seedVault('t1-v1', 'active', '100', 'tenant-1')
       seedVault('t2-v1', 'completed', '200', 'tenant-2')
 
       const loaderA = makeLoader()
       const loaderB = makeLoader()
 
-      const resultA = loaderA.loadVaults(['t1-v1'])
-      const resultB = loaderB.loadVaults(['t2-v1'])
+      const resultA = await loaderA.loadVaults(['t1-v1'])
+      const resultB = await loaderB.loadVaults(['t2-v1'])
 
       // Each loader only sees its own requested vaults
       expect(resultA.has('t2-v1')).toBe(false)
@@ -252,25 +273,25 @@ describe('AnalyticsBatchLoader', () => {
       expect(loaderB.queries).toBe(1)
     })
 
-    it('loading tenant-A IDs does not expose tenant-B data', () => {
+    it('loading tenant-A IDs does not expose tenant-B data', async () => {
       seedVault('ta-v1', 'active', '999', 'tenant-a')
       seedVault('tb-v1', 'active', '1', 'tenant-b')
 
       const loader = makeLoader()
-      const result = loader.loadVaults(['ta-v1'])
+      const result = await loader.loadVaults(['ta-v1'])
 
       expect(result.has('tb-v1')).toBe(false)
       expect(result.get('ta-v1')?.amount).toBe('999')
     })
 
-    it('a loader primed with tenant-A IDs cannot retrieve tenant-B data on a second call', () => {
+    it('a loader primed with tenant-A IDs cannot retrieve tenant-B data on a second call', async () => {
       seedVault('p-v1', 'active', '50', 'org-p')
       seedVault('q-v1', 'active', '75', 'org-q')
 
       const loader = makeLoader()
-      loader.loadVaults(['p-v1'])
+      await loader.loadVaults(['p-v1'])
 
-      const second = loader.loadVaults(['q-v1'])
+      const second = await loader.loadVaults(['q-v1'])
       expect(second.size).toBe(1)
       expect(second.has('p-v1')).toBe(false)
     })
