@@ -107,7 +107,7 @@ orgVaultsRouter.get(
       }));
 
       if (req.filters) {
-        result = applyFilters(result, req.filters);
+        result = applyFilters(result, req.filters, ['status']);
       }
 
       if (req.sort) {

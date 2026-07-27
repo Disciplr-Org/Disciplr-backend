@@ -49,7 +49,7 @@ app.get(
   (req, res) => {
     const { orgId } = req.params
     let result = testVaults.filter((v) => v.orgId === orgId)
-    if (req.filters) result = applyFilters(result, req.filters)
+    if (req.filters) result = applyFilters(result, req.filters, ['status'])
     if (req.sort) result = applySort(result, req.sort)
     res.json(paginateArray(result, req.pagination!))
   }

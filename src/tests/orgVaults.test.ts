@@ -56,7 +56,7 @@ app.get(
   (req, res) => {
     const { orgId } = req.params
     let result = vaults.filter((v) => v.orgId === orgId)
-    if (req.filters) result = applyFilters(result, req.filters)
+    if (req.filters) result = applyFilters(result, req.filters, ['status'])
     if (req.sort) result = applySort(result, req.sort)
     const paginatedResult = paginateArray(result, req.pagination!)
     res.json(paginatedResult)
