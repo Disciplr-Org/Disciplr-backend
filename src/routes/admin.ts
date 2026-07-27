@@ -427,8 +427,10 @@ adminRouter.get(
   }),
   async (req, res) => {
     try {
-      const limit = getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined
-      const offset = getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined
+      const rawLimit = getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined
+      const rawOffset = getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined
+      const limit = rawLimit !== undefined && Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(100, Math.floor(rawLimit)) : undefined
+      const offset = rawOffset !== undefined && Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : undefined
 
       const logs = await listAuditLogs({
         organization_id: (req.filters as any)?.organization_id,
@@ -690,12 +692,14 @@ adminRouter.post('/vaults/:id/auto-repair', requireStepUp(), async (req, res) =>
 // User Management Endpoints
 adminRouter.get('/users', async (req, res) => {
   try {
+    const rawLimit = getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined
+    const rawOffset = getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined
     const filters = {
       role: getStringQuery(req.query.role) as UserRole | undefined,
       status: getStringQuery(req.query.status) as UserStatus | undefined,
       search: getStringQuery(req.query.search),
-      limit: getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined,
-      offset: getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined,
+      limit: rawLimit !== undefined && Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(100, Math.floor(rawLimit)) : undefined,
+      offset: rawOffset !== undefined && Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : undefined,
       includeDeleted: req.query.includeDeleted === 'true',
     }
 
