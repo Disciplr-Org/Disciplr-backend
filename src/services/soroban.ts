@@ -58,13 +58,19 @@ const positiveIntFromEnv = (key: string, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
-const getSubmitRetryConfig = (): RetryConfig => ({
-  maxAttempts: positiveIntFromEnv('RETRY_MAX_ATTEMPTS', DEFAULT_SUBMIT_RETRY_MAX_ATTEMPTS),
-  initialBackoffMs: positiveIntFromEnv('RETRY_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_BACKOFF_MS),
-  maxBackoffMs: positiveIntFromEnv('SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_MAX_BACKOFF_MS),
-  backoffMultiplier: DEFAULT_SUBMIT_RETRY_BACKOFF_MULTIPLIER,
-  jitterFactor: DEFAULT_SUBMIT_RETRY_JITTER_FACTOR,
-})
+let _cachedSubmitRetryConfig: RetryConfig | null = null
+
+const getSubmitRetryConfig = (): RetryConfig => {
+  if (_cachedSubmitRetryConfig) return _cachedSubmitRetryConfig
+  _cachedSubmitRetryConfig = {
+    maxAttempts: positiveIntFromEnv('RETRY_MAX_ATTEMPTS', DEFAULT_SUBMIT_RETRY_MAX_ATTEMPTS),
+    initialBackoffMs: positiveIntFromEnv('RETRY_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_BACKOFF_MS),
+    maxBackoffMs: positiveIntFromEnv('SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_MAX_BACKOFF_MS),
+    backoffMultiplier: DEFAULT_SUBMIT_RETRY_BACKOFF_MULTIPLIER,
+    jitterFactor: DEFAULT_SUBMIT_RETRY_JITTER_FACTOR,
+  }
+  return _cachedSubmitRetryConfig
+}
 
 /**
  * Returns the Soroban config only when ALL required env vars are present.
