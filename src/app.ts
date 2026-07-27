@@ -11,8 +11,7 @@ import { AUTH_JSON_MAX_BYTES, JOBS_JSON_MAX_BYTES } from './middleware/requestBo
 import { adminRouter } from './routes/admin.js'
 import { notificationsRouter } from './routes/notifications.js'
 import { metricsRouter } from './routes/metrics.js'
-import { authenticate } from './middleware/auth.js'
-import { requireAdmin } from './middleware/rbac.js'
+import { metricsAuth } from './middleware/metricsAuth.js'
 import { metricsRateLimiter } from './middleware/rateLimiter.js'
 import webhookRouter from './routes/webhooks.js'
 import { errorHandler } from './middleware/errorHandler.js'
@@ -146,8 +145,8 @@ app.use(privacyLogger)
 app.use('/api/admin', adminRouter)
 app.use('/api/notifications', notificationsRouter)
 
-// Metrics endpoint — admin-guarded and rate-limited
-app.use('/api/metrics', authenticate, requireAdmin, metricsRateLimiter, metricsRouter)
+// Metrics endpoint — scraper-authenticated and rate-limited
+app.use('/api/metrics', metricsAuth, metricsRateLimiter, metricsRouter)
 
 // Webhook subscriber management — org-scoped
 app.use('/api/webhooks', webhookRouter)

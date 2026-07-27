@@ -120,15 +120,16 @@ jest.unstable_mockModule('../services/membership.js', async () => ({
     })
     return { role: input.role ?? 'member' }
   }),
-  listOrgMemberships: jest.fn(async (orgId: string) =>
-    getOrgMembers(orgId).map((m) => ({
+  listOrgMemberships: jest.fn(async (orgId: string) => {
+    const members = getOrgMembers(orgId).map((m) => ({
       id: `${m.orgId}:${m.userId}`,
       user_id: m.userId,
       organization_id: m.orgId,
       team_id: null,
       role: m.role,
-    })),
-  ),
+    }))
+    return { members, total: members.length, page: 1, pageSize: 20 }
+  }),
   removeMembership: jest.fn(),
   changeRole: jest.fn(),
   transferOwnership: jest.fn(),

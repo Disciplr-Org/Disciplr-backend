@@ -27,8 +27,12 @@ const knexConfig = {
 export const db = knex(knexConfig)
 
 export const pool = new Pool({
-    connectionString: getEnv().DATABASE_URL,
-    ssl: getEnv().NODE_ENV === 'production' ? { rejectUnauthorized: true } : false
+  connectionString: getEnv().DATABASE_URL,
+  ssl: sslEnabled
+    ? rejectUnauthorized
+      ? { rejectUnauthorized: true }
+      : { rejectUnauthorized: false }
+    : false,
 })
 
 export default db

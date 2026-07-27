@@ -6,8 +6,7 @@ export const requireStepUp = (maxAgeSeconds = 300, actionResolver?: (req: Reques
     const userId = (req as any).user?.userId ?? (req as any).authUser?.userId
     const sessionId =
       (req.headers['x-step-up-session-id'] as string | undefined) ??
-      (req.body as any)?.stepUpSessionId ??
-      (req.query as any)?.stepUpSessionId
+      (req.body as any)?.stepUpSessionId
 
     if (!userId || !sessionId) {
       return res.status(401).json({

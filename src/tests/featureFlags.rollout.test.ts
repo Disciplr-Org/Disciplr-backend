@@ -133,3 +133,57 @@ describe('feature flag rollout targeting', () => {
     expect(await getFlag('ORGANIZATION_QUOTAS', 'org-allow', { plan: 'free' })).toBe(true)
   })
 })
+
+// ─── Golden-value regression test (#1127) ──────────────────────────────────
+//
+// getFeatureFlagBucket hashes `${name}:${orgId}` with SHA-256 and reads the
+// first 4 bytes as a uint32BE, then normalises into a 0..99 bucket. Because
+// the algorithm is hard-coded with no versioning, any well-intentioned
+// refactor (different hash, different byte offset, normalisation change)
+// would silently reassign every org into a different percentage-rollout
+// bucket. These tests pin the exact outputs so a future change has to
+// explicitly update the table.
+describe('getFeatureFlagBucket golden-value regression (#1127)', () => {
+  const GOLDEN: ReadonlyArray<readonly [string, string, number]> = [
+    ['ADVANCED_ANALYTICS', 'org-123', 73],
+    ['ENTERPRISE_ANALYTICS', 'org-456', 92],
+    ['ORGANIZATION_QUOTAS', 'org-789', 14],
+    ['MULTI_VERIFIER_ENABLED', 'org-abc', 4],
+    ['ADVANCED_ANALYTICS', 'org-xyz', 45],
+    ['ADVANCED_ANALYTICS', 'org-golden-1', 39],
+    ['ADVANCED_ANALYTICS', 'org-golden-2', 71],
+    ['ADVANCED_ANALYTICS', 'org-golden-3', 1],
+  ]
+
+  it.each(GOLDEN)(
+    'pinned bucket for (%s, %s) is %i',
+    (name, orgId, expected) => {
+      expect(getFeatureFlagBucket(name, orgId)).toBe(expected)
+    },
+  )
+
+  it('hash distribution over 50000 orgs lands within expected tolerance for <20, <50, <80', () => {
+    const counts = new Array<number>(100).fill(0)
+    for (let i = 0; i < 50000; i++) {
+      counts[getFeatureFlagBucket('ADVANCED_ANALYTICS', `org-${i}`)]++
+    }
+
+    // Each of 100 buckets expected at ~500 hits; allow 25% variation.
+    for (const count of counts) {
+      expect(count).toBeGreaterThan(375)
+      expect(count).toBeLessThan(625)
+    }
+
+    const lt20 = counts.slice(0, 20).reduce((a, b) => a + b, 0)
+    const lt50 = counts.slice(0, 50).reduce((a, b) => a + b, 0)
+    const lt80 = counts.slice(0, 80).reduce((a, b) => a + b, 0)
+
+    // ±10% tolerance around the ideal 10000 / 25000 / 40000 counts.
+    expect(lt20).toBeGreaterThan(9000)
+    expect(lt20).toBeLessThan(11000)
+    expect(lt50).toBeGreaterThan(23500)
+    expect(lt50).toBeLessThan(26500)
+    expect(lt80).toBeGreaterThan(38500)
+    expect(lt80).toBeLessThan(41500)
+  })
+})

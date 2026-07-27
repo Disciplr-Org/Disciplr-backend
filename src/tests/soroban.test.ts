@@ -10,6 +10,7 @@ import {
   MEMO_MAX_BYTES,
   setSorobanClient,
   resetSorobanClient,
+  resetSorobanConfig,
   createDefaultSorobanClient,
   type SorobanClient,
   type SorobanConfig,
@@ -106,6 +107,7 @@ const setEnv = (vars: Record<string, string>): void => {
     rememberEnv(key)
     process.env[key] = value
   }
+  resetSorobanConfig()
 }
 
 const clearSorobanEnv = (): void => {
@@ -113,6 +115,7 @@ const clearSorobanEnv = (): void => {
     rememberEnv(key)
     delete process.env[key]
   }
+  resetSorobanConfig()
 }
 
 const restoreEnv = (): void => {
@@ -124,6 +127,7 @@ const restoreEnv = (): void => {
     }
     delete savedEnv[key]
   }
+  resetSorobanConfig()
 }
 
 // ─── Mock client factory ─────────────────────────────────────────────────────
@@ -207,6 +211,38 @@ describe('soroban service', () => {
       expect(config!.submitRetry.maxAttempts).toBe(2)
       expect(config!.submitRetry.initialBackoffMs).toBe(1)
       expect(config!.submitRetry.maxBackoffMs).toBe(2)
+    })
+
+    it('caches the resolved config across calls until reset', () => {
+      setEnv(FULL_ENV)
+      const first = getSorobanConfig()
+      expect(first).not.toBeNull()
+
+      // Mutate env without resetting the cache — should still return the first result.
+      process.env.SOROBAN_CONTRACT_ID = 'CHANGED_CONTRACT_ID'
+      const second = getSorobanConfig()
+      expect(second).toBe(first)
+      expect(second!.contractId).toBe(FULL_ENV.SOROBAN_CONTRACT_ID)
+
+      resetSorobanConfig()
+      const third = getSorobanConfig()
+      expect(third).not.toBe(first)
+      expect(third!.contractId).toBe('CHANGED_CONTRACT_ID')
+    })
+
+    it('caches null when config is incomplete', () => {
+      expect(getSorobanConfig()).toBeNull()
+      setEnv({
+        SOROBAN_CONTRACT_ID: 'CABCDEF',
+        SOROBAN_RPC_URL: 'https://rpc.example.com',
+      })
+      // setEnv resets the cache; still incomplete → null, then cached.
+      expect(getSorobanConfig()).toBeNull()
+      process.env.SOROBAN_NETWORK_PASSPHRASE = 'Test'
+      process.env.SOROBAN_SOURCE_ACCOUNT = stellar()
+      process.env.SOROBAN_SECRET_KEY = FULL_ENV.SOROBAN_SECRET_KEY
+      // Without reset, still null despite now-complete env.
+      expect(getSorobanConfig()).toBeNull()
     })
   })
 

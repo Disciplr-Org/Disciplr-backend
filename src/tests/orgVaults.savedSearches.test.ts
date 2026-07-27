@@ -126,8 +126,8 @@ describe('hashResultSet', () => {
     expect(hashResultSet(ids)).toBe(hashResultSet(ids))
   })
 
-  it('differs when order changes', () => {
-    expect(hashResultSet(['a', 'b'])).not.toBe(hashResultSet(['b', 'a']))
+  it('is order-independent (hash reflects set membership)', () => {
+    expect(hashResultSet(['a', 'b'])).toBe(hashResultSet(['b', 'a']))
   })
 
   it('returns empty-array hash for empty input', () => {

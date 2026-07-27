@@ -33,6 +33,12 @@ const MAX_SAMPLES = 10
 /**
  * Estimate milliseconds to completion given throughput samples and a total item count.
  * Returns null when total is unknown or there is insufficient data.
+ *
+ * Rate is computed as the average of per-interval rates across all consecutive
+ * sample pairs, rather than a naive two-point (first vs last) calculation.
+ * A two-point estimate is highly sensitive to noise at the endpoints, whereas
+ * averaging across all retained intervals produces a materially more stable ETA
+ * for the same retained data.
  */
 function estimateEtaMs(
   samples: Array<[number, number]>,
@@ -40,14 +46,30 @@ function estimateEtaMs(
   total: number | null,
 ): number | null {
   if (total === null || total <= processed || samples.length < 2) return null
-  const oldest = samples[0]
-  const newest = samples[samples.length - 1]
-  const elapsed = newest[0] - oldest[0]
-  const delta = newest[1] - oldest[1]
-  if (delta <= 0 || elapsed <= 0) return null
-  const ratePerMs = delta / elapsed
-  return Math.ceil((total - processed) / ratePerMs)
+
+  // Accumulate per-interval rates (items per ms) across all consecutive pairs.
+  let totalRate = 0
+  let validIntervals = 0
+  for (let i = 1; i < samples.length; i++) {
+    const elapsed = samples[i][0] - samples[i - 1][0]
+    const delta = samples[i][1] - samples[i - 1][1]
+    if (elapsed > 0 && delta > 0) {
+      totalRate += delta / elapsed
+      validIntervals++
+    }
+  }
+
+  if (validIntervals === 0) return null
+
+  const avgRatePerMs = totalRate / validIntervals
+  return Math.ceil((total - processed) / avgRatePerMs)
 }
+
+/**
+ * Exported for unit-testing only. Not part of the public API.
+ * @internal
+ */
+export { estimateEtaMs as _estimateEtaMs }
 
 /**
  * BackfillCursorStore

@@ -34,21 +34,43 @@ export async function _resetReportsStore(): Promise<void> {
   await prisma.analyticsReport.deleteMany()
 }
 
-/** Return a shallow copy of all reports for an org, newest-first. */
-export async function getOrgReports(orgId: string): Promise<AnalyticsReport[]> {
-  const reports = await prisma.analyticsReport.findMany({
-    where: { orgId },
-    orderBy: { createdAt: 'desc' },
-  })
-  return reports.map((r) => ({
-    id: r.id,
-    orgId: r.orgId,
-    createdAt: r.createdAt.toISOString(),
-    s3Key: r.s3Key ?? undefined,
-    localBuffer: r.localBuffer ?? undefined,
-    snapshotAt: r.snapshotAt.toISOString(),
-    sizeBytes: r.sizeBytes,
-  }))
+export interface GetOrgReportsOptions {
+  /** Maximum number of reports to return (default: 50). */
+  limit?: number
+  /** Zero-based offset for pagination (default: 0). */
+  offset?: number
+}
+
+/** Return a page of reports for an org, newest-first. */
+export async function getOrgReports(
+  orgId: string,
+  options: GetOrgReportsOptions = {},
+): Promise<{ data: AnalyticsReport[]; total: number }> {
+  const limit = Math.max(1, options.limit ?? 50)
+  const offset = Math.max(0, options.offset ?? 0)
+
+  const [reports, total] = await Promise.all([
+    prisma.analyticsReport.findMany({
+      where: { orgId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.analyticsReport.count({ where: { orgId } }),
+  ])
+
+  return {
+    data: reports.map((r) => ({
+      id: r.id,
+      orgId: r.orgId,
+      createdAt: r.createdAt.toISOString(),
+      s3Key: r.s3Key ?? undefined,
+      localBuffer: r.localBuffer ?? undefined,
+      snapshotAt: r.snapshotAt.toISOString(),
+      sizeBytes: r.sizeBytes,
+    })),
+    total,
+  }
 }
 
 /**

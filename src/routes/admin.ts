@@ -48,6 +48,7 @@ import { runReindexBatches, EMBEDDING_REINDEX_JOB_NAME } from '../services/evide
 import { MilestoneRepository } from '../repositories/milestoneRepository.js'
 import { BackfillCursorStore } from '../services/backfillCursorStore.js'
 import { TransactionETLService } from '../services/transactionETL.js'
+import { resolveETLConfig } from '../services/etlWorker.js'
 
 export const adminRouter = Router()
 
@@ -83,7 +84,7 @@ const isValidReasonCode = (reason: unknown): reason is OverrideReasonCode =>
   typeof reason === 'string' && ValidOverrideReasonCodes.includes(reason as OverrideReasonCode)
 
 // Sanitize reason text to prevent PII/secrets leakage
-const sanitizeReasonText = (reason: string): string => {
+export const sanitizeReasonText = (reason: string): string => {
   // Remove potential secrets/PII patterns
   return reason
     .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g, '[REDACTED_EMAIL]')
@@ -652,7 +653,8 @@ adminRouter.post('/overrides/vaults/:id/cancel', requireStepUp(), async (req, re
 
 adminRouter.get('/transaction-etl/drift-report', async (req, res) => {
   try {
-    const etl = new TransactionETLService({ horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org', batchSize: Number(req.query.batchSize) || 50 })
+    const config = resolveETLConfig()
+    const etl = new TransactionETLService({ ...config, batchSize: Number(req.query.batchSize) || 50 })
     const report = await etl.reconcileVaults()
     res.status(200).json(report)
   } catch (error) {
@@ -664,7 +666,8 @@ adminRouter.get('/transaction-etl/drift-report', async (req, res) => {
 adminRouter.post('/vaults/:id/auto-repair', requireStepUp(), async (req, res) => {
   try {
     const { id } = req.params
-    const etl = new TransactionETLService({ horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org', batchSize: 50 })
+    const config = resolveETLConfig()
+    const etl = new TransactionETLService({ ...config, batchSize: 50 })
     
     const result = await etl.autoRepairVault(id, req.user!.userId)
     
