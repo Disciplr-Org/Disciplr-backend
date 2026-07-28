@@ -62,7 +62,7 @@ const ROLLUP_SQL = `WITH deduped_team_vaults AS (
          v.amount,
          v.status,
          m.team_id,
-         ROW_NUMBER() OVER (PARTITION BY v.id ORDER BY m.team_id) AS rn
+         ROW_NUMBER() OVER (PARTITION BY v.id ORDER BY m.created_at DESC) AS rn
   FROM vaults v
   JOIN memberships m ON m.user_id = v.creator
     AND m.organization_id = ?

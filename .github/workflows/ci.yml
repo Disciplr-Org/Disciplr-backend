@@ -47,6 +47,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Typecheck OpenAPI docs
+        run: npm run openapi:typecheck
+
       - name: Apply migrations
         run: npm run migrate:latest
 

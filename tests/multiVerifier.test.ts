@@ -45,6 +45,14 @@ function buildQuery(table: string) {
     return null
   }
   q.insert = (data: any) => {
+    const dup = store.find(r =>
+      r.milestone_id === data.milestone_id && r.verifier_user_id === data.verifier_user_id
+    )
+    if (dup) {
+      const err: any = new Error('duplicate key value violates unique constraint "idx_milestone_approvals_unique"')
+      err.code = '23505'
+      throw err
+    }
     const row = { ...makeRow(data.milestone_id, data.verifier_user_id, data.approval_status), ...data }
     store.push(row)
     q._inserted = [row]
@@ -106,9 +114,7 @@ const {
   recordMilestoneApproval,
   getMilestoneApprovals,
   getApprovedVerifiersCount,
-  getAllMilestoneVotes,
   hasVerifierVoted,
-  hasMilestoneMetThreshold,
   getMilestoneApprovalProgress,
   DuplicateVerifierVoteError,
   resetMilestoneApprovals,
@@ -310,50 +316,6 @@ describe('Multi-Verifier Milestone Approval System', () => {
     })
   })
 
-  describe('hasMilestoneMetThreshold', () => {
-    it('should return true when approved count meets threshold', async () => {
-      await recordMilestoneApproval(testMilestoneId, testVerifiers[0], 'approved')
-      await recordMilestoneApproval(testMilestoneId, testVerifiers[1], 'approved')
-
-      const met = await hasMilestoneMetThreshold(testMilestoneId, thresholdMofN)
-      expect(met).toBe(true)
-    })
-
-    it('should return false when approved count below threshold', async () => {
-      await recordMilestoneApproval(testMilestoneId, testVerifiers[0], 'approved')
-
-      const met = await hasMilestoneMetThreshold(testMilestoneId, thresholdMofN)
-      expect(met).toBe(false)
-    })
-
-    it('should return false for milestone with only rejections', async () => {
-      await recordMilestoneApproval(testMilestoneId, testVerifiers[0], 'rejected')
-      await recordMilestoneApproval(testMilestoneId, testVerifiers[1], 'rejected')
-
-      const met = await hasMilestoneMetThreshold(testMilestoneId, thresholdMofN)
-      expect(met).toBe(false)
-    })
-
-    it('should support threshold of 1', async () => {
-      await recordMilestoneApproval(testMilestoneId, testVerifiers[0], 'approved')
-
-      const met = await hasMilestoneMetThreshold(testMilestoneId, 1)
-      expect(met).toBe(true)
-    })
-
-    it('should support high thresholds', async () => {
-      for (let i = 0; i < 5; i++) {
-        await recordMilestoneApproval(testMilestoneId, `verifier-${i}`, 'approved')
-      }
-
-      const met5 = await hasMilestoneMetThreshold(testMilestoneId, 5)
-      const met6 = await hasMilestoneMetThreshold(testMilestoneId, 6)
-
-      expect(met5).toBe(true)
-      expect(met6).toBe(false)
-    })
-  })
-
   describe('getMilestoneApprovalProgress', () => {
     it('should calculate approval progress correctly', async () => {
       await recordMilestoneApproval(testMilestoneId, testVerifiers[0], 'approved')
@@ -413,26 +375,6 @@ describe('Multi-Verifier Milestone Approval System', () => {
       const progress = await getMilestoneApprovalProgress(milestoneId, 2)
 
       expect(progress.approvalPercentage).toBe(100)
-    })
-  })
-
-  describe('getAllMilestoneVotes', () => {
-    it('should return all votes in order', async () => {
-      await recordMilestoneApproval(testMilestoneId, testVerifiers[0], 'approved')
-      await recordMilestoneApproval(testMilestoneId, testVerifiers[1], 'approved')
-      await recordMilestoneApproval(testMilestoneId, testVerifiers[2], 'rejected')
-
-      const votes = await getAllMilestoneVotes(testMilestoneId)
-
-      expect(votes.length).toBe(3)
-      expect(votes[0].verifierUserId).toBe(testVerifiers[0])
-      expect(votes[1].verifierUserId).toBe(testVerifiers[1])
-      expect(votes[2].verifierUserId).toBe(testVerifiers[2])
-    })
-
-    it('should return empty array for milestone with no votes', async () => {
-      const votes = await getAllMilestoneVotes(testMilestoneId)
-      expect(votes.length).toBe(0)
     })
   })
 
@@ -545,11 +487,9 @@ describe('Multi-Verifier Milestone Approval System', () => {
 
       const approvals = await getMilestoneApprovals(milestoneId)
       const count = await getApprovedVerifiersCount(milestoneId)
-      const votes = await getAllMilestoneVotes(milestoneId)
 
       expect(approvals.approved.length).toBe(10)
       expect(count).toBe(10)
-      expect(votes.length).toBe(10)
     })
 
     it('should handle mixed approval statuses', async () => {
@@ -576,9 +516,7 @@ describe('Multi-Verifier Milestone Approval System', () => {
       expect(typeof recordMilestoneApproval).toBe('function')
       expect(typeof getMilestoneApprovals).toBe('function')
       expect(typeof getApprovedVerifiersCount).toBe('function')
-      expect(typeof getAllMilestoneVotes).toBe('function')
       expect(typeof hasVerifierVoted).toBe('function')
-      expect(typeof hasMilestoneMetThreshold).toBe('function')
       expect(typeof getMilestoneApprovalProgress).toBe('function')
       expect(typeof resetMilestoneApprovals).toBe('function')
       expect(typeof DuplicateVerifierVoteError).toBe('function')

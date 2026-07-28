@@ -11,7 +11,11 @@ export const authenticateApiKey = (requiredScopes: ApiScope[] = []): RequestHand
       return
     }
 
-    const clientIp = (req.ip || req.header('x-forwarded-for') || 'unknown') as string
+    // Use only req.ip, which Express resolves from the trusted proxy chain
+    // (controlled by the TRUST_PROXY setting in app.ts).  Never fall back to
+    // reading x-forwarded-for directly — a direct client can forge that header
+    // and corrupt IP-based auditing / abuse-detection keyed on clientIp.
+    const clientIp = req.ip ?? 'unknown'
     const validation = await validateApiKey(apiKey, requiredScopes, clientIp)
     if (!validation.valid) {
       if (validation.reason === 'forbidden') {

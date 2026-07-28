@@ -81,7 +81,7 @@ jest.unstable_mockModule('../repositories/webhookSubscriberRepository.js', () =>
 
 // ── Dynamic imports (after mocks are registered) ──────────────────────────────
 
-const { webhooksRouter } = await import('../routes/webhooks.js')
+const { webhookRouter } = await import('../routes/webhooks.js')
 const { signPayload, buildVersionedPayload } = await import('../services/webhooks.js')
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -109,7 +109,7 @@ function makeSubscriber(overrides: Partial<WebhookSubscriber> = {}): WebhookSubs
     id: randomUUID(),
     organizationId: 'org-abc',
     url: 'https://hooks.example.com/callback',
-    secret: 'test-secret-xyz',
+    secret: 'test-secret-xyz1',
     previousSecret: null,
     rotatedAt: null,
     events: [],
@@ -120,11 +120,11 @@ function makeSubscriber(overrides: Partial<WebhookSubscriber> = {}): WebhookSubs
   }
 }
 
-/** Build a minimal Express app mounting webhooksRouter under /api/webhooks. */
+/** Build a minimal Express app mounting webhookRouter under /api/webhooks. */
 function buildApp() {
   const app = express()
   app.use(express.json())
-  app.use('/api/webhooks', webhooksRouter)
+  app.use('/api/webhooks', webhookRouter)
   return app
 }
 
@@ -421,14 +421,14 @@ describe('POST /api/webhooks/:id/test — rate limiting', () => {
       keyGenerator: () => `user-1:${sub.id}`,
     })
 
-    const { webhooksRouter: freshRouter } = await import('../routes/webhooks.js')
+    const { webhookRouter: freshRouter } = await import('../routes/webhooks.js')
     // Insert the real limiter in front of the route
     const app = express()
     app.use(express.json())
     // Wrap: inject limiter before the router handles /:id/test
     app.post(`/api/webhooks/${sub.id}/test`, limiter, async (req, res, next) => {
       // Pass to the router — but router also runs authenticate so we need
-      // to forward the full request to the webhooksRouter
+      // to forward the full request to the webhookRouter
       next()
     })
     app.use('/api/webhooks', freshRouter)

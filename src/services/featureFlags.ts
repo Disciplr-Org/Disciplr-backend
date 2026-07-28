@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { db } from '../db/knex.js'
-import { getOrSet, invalidate, invalidatePrefix, getCacheStats as getSharedCacheStats } from '../lib/cache.js'
+import { getOrSet, invalidatePrefix, getCacheStats as getSharedCacheStats } from '../lib/cache.js'
 
 /**
  * Feature flag names that can be toggled at runtime
@@ -13,56 +13,12 @@ export enum FeatureFlag {
 }
 
 /**
- * LRU cache for feature flags to avoid excessive database queries
- * Cache entries expire after 5 minutes to balance freshness vs performance
+ * Resolved flag values are cached in the shared (Redis-backed, or in-process
+ * fallback when REDIS_URL isn't set) cache from ../lib/cache.js, so a
+ * setFlag() on one instance is visible to every instance, not just the one
+ * that wrote it.
  */
-class FeatureFlagCache {
-  private cache: Map<string, { value: boolean; timestamp: number }> = new Map()
-  private readonly maxSize: number = 1000
-  private readonly ttlMs: number = 5 * 60 * 1000 // 5 minutes
-
-  set(key: string, value: boolean): void {
-    // Evict oldest entry if cache is full
-    if (this.cache.size >= this.maxSize) {
-      const firstKey = this.cache.keys().next().value
-      if (firstKey) {
-        this.cache.delete(firstKey)
-      }
-    }
-
-    this.cache.set(key, { value, timestamp: Date.now() })
-  }
-
-  get(key: string): boolean | null {
-    const entry = this.cache.get(key)
-
-    if (!entry) {
-      return null
-    }
-
-    // Check if entry has expired
-    if (Date.now() - entry.timestamp > this.ttlMs) {
-      this.cache.delete(key)
-      return null
-    }
-
-    return entry.value
-  }
-
-  invalidate(key: string): void {
-    this.cache.delete(key)
-  }
-
-  invalidateAll(): void {
-    this.cache.clear()
-  }
-
-  size(): number {
-    return this.cache.size
-  }
-}
-
-const cache = new FeatureFlagCache()
+const FLAG_CACHE_TTL_SECONDS = 5 * 60 // 5 minutes
 
 export type FeatureFlagContext = Record<string, string | number | boolean | null | undefined>
 
@@ -92,7 +48,7 @@ function getCacheKey(name: string, orgId: string | null, context?: FeatureFlagCo
         .map((key) => `${key}=${String(context[key])}`)
         .join('&')
     : ''
-  return `${name}:${orgId || 'global'}:${contextKey}`
+  return `feature_flag:${name}:${orgId || 'global'}:${contextKey}`
 }
 
 function coerceBoolean(value: unknown): boolean {
@@ -190,8 +146,8 @@ function evaluateTargetedFlag(
  * 3. Global rollout_percentage uses a stable hash of (flagKey, orgId).
  * 4. Global enabled is the fallback default.
  *
- * Results are cached per-process with 5-minute TTL to balance
- * freshness vs performance.
+ * Results are cached in the shared cache (Redis when configured) with a
+ * 5-minute TTL, so writes from setFlag() are visible across instances.
  *
  * @param name - Feature flag name (from FeatureFlag enum)
  * @param orgId - Organization ID, or null for global lookup
@@ -208,42 +164,34 @@ export async function getFlag(
   orgId: string | null,
   context: FeatureFlagContext = {},
 ): Promise<boolean> {
-  // Try organization-specific flag first (if orgId provided)
   if (orgId) {
     const cacheKey = getCacheKey(name, orgId, context)
-    const cached = cache.get(cacheKey)
-    if (cached !== null) {
-      return cached
-    }
-
-    try {
-      const row = await db('feature_flags').where({ name, org_id: orgId }).first() as FeatureFlagRow | undefined
-      if (row) {
-        const value = coerceBoolean(row.enabled)
-        cache.set(cacheKey, value)
-        return value
+    const orgVal = await getOrSet<boolean | null>(cacheKey, FLAG_CACHE_TTL_SECONDS, async () => {
+      try {
+        const row = await db('feature_flags').where({ name, org_id: orgId }).first() as FeatureFlagRow | undefined
+        return row ? coerceBoolean(row.enabled) : null
+      } catch (error) {
+        console.error(`Error fetching org-specific flag ${name} for org ${orgId}:`, error)
+        return null
       }
-    } catch (error) {
-      console.error(`Error fetching org-specific flag ${name} for ${orgId}:`, error)
-    }
+    })
+    if (orgVal !== null) return orgVal
   }
 
-  // Fall back to global default (org_id = null)
+  const effectiveOrgId = orgId ?? 'global'
   const globalCacheKey = getCacheKey(name, orgId, orgId ? context : undefined)
-  const globalCached = cache.get(globalCacheKey)
-  if (globalCached !== null) {
-    return globalCached
-  }
-
-  try {
-    const row = await db('feature_flags').where({ name, org_id: null }).first() as FeatureFlagRow | undefined
-    const value = evaluateTargetedFlag(row, name, orgId, context)
-    cache.set(globalCacheKey, value)
-    return value
-  } catch (error) {
-    console.error(`Error fetching flag ${name}:`, error)
-    return false
-  }
+  return getOrSet<boolean>(globalCacheKey, FLAG_CACHE_TTL_SECONDS, async () => {
+    if (orgId) {
+      try {
+        const row = await db('feature_flags').where({ name, org_id: orgId }).first() as FeatureFlagRow | undefined
+        if (row) return coerceBoolean(row.enabled)
+      } catch (error) {
+        console.error(`Error fetching org-specific flag ${name} for ${orgId}:`, error)
+      }
+    }
+    const globalRow = await db('feature_flags').where({ name, org_id: null }).first() as FeatureFlagRow | undefined
+    return evaluateTargetedFlag(globalRow, name, orgId, context)
+  })
 }
 
 /**
@@ -268,10 +216,10 @@ export async function setFlag(
       })
     }
 
-    // Invalidate cache immediately on write
-    await invalidate(getCacheKey(name, orgId))
-    // Invalidate cached global rollout and org-specific decisions for this process.
-    cache.invalidateAll()
+    // Invalidate every cached variant of this flag (org-specific and
+    // context-based) in the shared cache, so every instance picks up the
+    // new value on its next read rather than serving a stale local copy.
+    await invalidatePrefix(`feature_flag:${name}:`)
 
     return enabled
   } catch (error) {

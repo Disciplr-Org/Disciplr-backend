@@ -219,7 +219,7 @@ export function logVaultDriftAnomaly(
   event: VaultDriftEventType,
   data: Record<string, unknown>,
 ): void {
-  logSecurityEvent(`vault.${event}`, data)
+  logSecurityEvent(`vault.${event}`, '', null, data)
 }
 
 function getIpState(ip: string, now: number): IpState {

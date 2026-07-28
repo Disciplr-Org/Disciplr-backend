@@ -1,3 +1,4 @@
+import { getEnv } from '../config/env.js'
 import { getPrisma } from '../lib/prismaScope.js'
 import { hashPassword, comparePassword, generateAccessToken, generateRefreshToken, verifyRefreshToken, hashToken } from '../lib/auth-utils.js'
 import { createAuditLog } from '../lib/audit-logs.js'
@@ -82,6 +83,7 @@ export class AuthService {
             tokenFingerprint: tokenHash.slice(0, 12),
         }, userId)
     }
+
     static async register(input: RegisterInput) {
         try {
             await this.ensurePasswordIsAllowed(input.password, { email: input.email })
@@ -141,7 +143,7 @@ export class AuthService {
         const accessExpiresAt = new Date(Date.now() + 15 * 60 * 1000) // 15 minutes
         const tokenHash = hashToken(refreshTokenValue)
 
-        const loggedInUser = await prisma.$transaction(async (tx) => {
+        const loggedInUser = await prisma.$transaction(async (tx: any) => {
             const updatedUser = await tx.user.update({
                 where: { id: user.id },
                 data: { lastLoginAt },
@@ -337,4 +339,3 @@ export class AuthService {
         return { credentialId, counter: newCounter }
     }
 }
-

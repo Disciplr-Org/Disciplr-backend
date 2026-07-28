@@ -113,8 +113,10 @@ describe('buildVersionedPayload', () => {
     expect(json.schema_version).toBe(2)
     expect(json.event_type).toBe(payload.eventType)
     expect(json.data).toEqual(payload.data)
+    expect(json.organization_id).toBe(payload.organizationId)
     expect(json.eventId).toBeUndefined()
     expect(json.timestamp).toBeUndefined()
+    // camelCase organizationId must not leak; only snake_case organization_id is included
     expect(json.organizationId).toBeUndefined()
   })
 
@@ -132,18 +134,18 @@ describe('addSubscriber schemaVersion', () => {
   })
 
   it('defaults to schema version 1', async () => {
-    const sub = await addSubscriber(TEST_ORG, 'https://example.com/hook', 'secret', ['vault_created'])
+    const sub = await addSubscriber(TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key', ['vault_created'])
     expect(sub.schemaVersion).toBe(1)
   })
 
   it('accepts version 2', async () => {
-    const sub = await addSubscriber(TEST_ORG, 'https://example.com/hook', 'secret', ['vault_created'], 2)
+    const sub = await addSubscriber(TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key', ['vault_created'], 2)
     expect(sub.schemaVersion).toBe(2)
   })
 
   it('rejects unsupported version', async () => {
     await expect(
-      addSubscriber(TEST_ORG, 'https://example.com/hook', 'secret', ['vault_created'], 99),
+      addSubscriber(TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key', ['vault_created'], 99),
     ).rejects.toThrow('Unsupported webhook schema version: 99')
   })
 })
@@ -212,6 +214,7 @@ describe('dispatchWebhookEvent schema versioning', () => {
     const body = JSON.parse(callArgs[1].body)
     expect(body.schema_version).toBe(2)
     expect(body.event_type).toBe(payload.eventType)
+    expect(body.organization_id).toBe(payload.organizationId)
     expect(body.data).toEqual(payload.data)
     expect(body.eventId).toBeUndefined()
   })

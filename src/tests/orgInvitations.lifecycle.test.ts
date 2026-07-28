@@ -13,6 +13,7 @@ type InvitationRow = {
   org_id: string
   email: string
   token_hash: string
+  role: string
   expires_at: Date
   accepted_at: Date | null
   revoked_at: Date | null
@@ -155,6 +156,7 @@ function seedInvitation(overrides: Partial<InvitationRow> = {}) {
     org_id: 'org-abc',
     email: 'invitee@example.com',
     token_hash: overrides.token_hash ?? hashToken(rawToken!),
+    role: 'member',
     expires_at: new Date(Date.now() + 86_400_000),
     accepted_at: null,
     revoked_at: null,

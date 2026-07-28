@@ -4,96 +4,146 @@ import {
   queryVaultStatusBreakdownByPeriod,
   readAnalyticsSummary,
   updateAnalyticsSummary as dbUpdateSummary,
-  getTimeRangeFilter,
-} from "../db/database.js";
-import type {
-  VaultAnalytics,
-  VaultAnalyticsWithPeriod,
-} from "../types/vault.js";
-import { utcNow } from "../utils/timestamps.js";
-import {
-  createAnalyticsBatchLoader,
-  type DbLike,
-} from "./analyticsBatchLoader.js";
-import { getOrSet, invalidate } from "../lib/cache.js";
+  getTimeRangeFilter
+} from '../db/database.js'
+import type { VaultAnalytics, VaultAnalyticsWithPeriod } from '../types/vault.js'
+import { parseAndNormalizeToUTC, utcNow } from '../utils/timestamps.js'
+import { getOrSet, invalidate } from '../lib/cache.js'
+import { getOrgAnalyticsBatched } from './analyticsBatchLoader.js'
+import type { OrgVaultAnalytics } from './analyticsBatchLoader.js'
 
-export interface OrgVaultAnalytics {
-  totalVaults: number;
-  activeVaults: number;
-  completedVaults: number;
-  failedVaults: number;
-  totalLockedCapital: string;
-  successRate: number;
-  totalMilestones: number;
-  completedMilestones: number;
+export interface OrgRiskAnalyticsVault {
+  id?: string
+  orgId?: string
+  amount?: string | number | null
+  status?: string | null
+  createdAt?: string | null
+  startTimestamp?: string | null
+  endTimestamp?: string | null
+  stakedAmount?: string | number | null
+  netStakedAmount?: string | number | null
+  resolution?: string | null
+  finalStatus?: string | null
+  outcome?: string | null
+  result?: string | null
+  terminationReason?: string | null
+  statusReason?: string | null
+  [key: string]: unknown
 }
 
-/**
- * Compute analytics for a set of vault IDs belonging to a single org/tenant using
- * a request-scoped batch loader. All vault and milestone reads are coalesced into
- * at most two queries (one per entity type) regardless of how many vault IDs are
- * supplied, eliminating the N+1 pattern.
- */
-export function getOrgAnalyticsBatched(
-  vaultIds: string[],
-  dbOverride?: DbLike,
-): OrgVaultAnalytics {
-  if (vaultIds.length === 0) {
-    return {
-      totalVaults: 0,
-      activeVaults: 0,
-      completedVaults: 0,
-      failedVaults: 0,
-      totalLockedCapital: "0",
-      successRate: 0,
-      totalMilestones: 0,
-      completedMilestones: 0,
-    };
+export interface OrgRiskAnalyticsResponse {
+  orgId: string
+  generatedAt: string
+  range: {
+    startDate: string
+    endDate: string
+  }
+  analytics: {
+    totalVaults: number
+    activeVaults: number
+    resolvedVaults: number
+    slashedVaults: number
+    slashRate: number
+    capitalAtRisk: string
+  }
+}
+
+function normalizeOrgRiskRange(startDate?: string, endDate?: string): { startDate: string; endDate: string } {
+  const normalizedStart = startDate ? parseAndNormalizeToUTC(startDate) : new Date(0).toISOString()
+  const normalizedEnd = endDate ? parseAndNormalizeToUTC(endDate) : utcNow()
+
+  if (new Date(normalizedStart).getTime() > new Date(normalizedEnd).getTime()) {
+    throw new Error('startDate must be before or equal to endDate')
   }
 
-  const loader = createAnalyticsBatchLoader(dbOverride);
-  const vaultMap = loader.loadVaults(vaultIds);
-  const milestoneMap = loader.loadMilestones(vaultIds);
+  return { startDate: normalizedStart, endDate: normalizedEnd }
+}
 
-  let activeVaults = 0;
-  let completedVaults = 0;
-  let failedVaults = 0;
-  let totalCapital = 0;
+function readNumericAmount(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+  return 0
+}
 
-  for (const agg of vaultMap.values()) {
-    if (agg.status === "active") activeVaults++;
-    else if (agg.status === "completed") completedVaults++;
-    else if (agg.status === "failed") failedVaults++;
-    totalCapital += parseFloat(agg.amount ?? "0");
+function getVaultAmount(vault: OrgRiskAnalyticsVault): number {
+  const candidates = [
+    vault.stakedAmount,
+    vault.netStakedAmount,
+    vault.amount,
+  ]
+
+  for (const candidate of candidates) {
+    const value = readNumericAmount(candidate)
+    if (value > 0) return value
   }
 
-  let totalMilestones = 0;
-  let completedMilestones = 0;
-  for (const agg of milestoneMap.values()) {
-    totalMilestones += agg.milestoneCount;
-    completedMilestones += agg.completedMilestones;
+  return 0
+}
+
+function isInRange(vault: OrgRiskAnalyticsVault, startDate: string, endDate: string): boolean {
+  const anchor = vault.createdAt ?? vault.startTimestamp ?? vault.endTimestamp
+  if (!anchor) return true
+
+  const normalizedAnchor = parseAndNormalizeToUTC(anchor)
+  return normalizedAnchor >= startDate && normalizedAnchor <= endDate
+}
+
+function isSlashOutcome(vault: OrgRiskAnalyticsVault): boolean {
+  const candidates = [
+    vault.resolution,
+    vault.finalStatus,
+    vault.outcome,
+    vault.result,
+    vault.terminationReason,
+    vault.statusReason,
+  ]
+
+  for (const candidate of candidates) {
+    const normalized = String(candidate ?? '').trim().toLowerCase()
+    if (normalized === 'slash_on_miss' || normalized === 'slashed' || normalized === 'slash') {
+      return true
+    }
   }
 
-  const resolved = completedVaults + failedVaults;
-  const successRate = resolved > 0 ? completedVaults / resolved : 0;
+  return vault.status === 'failed'
+}
+
+export function getOrgRiskAnalytics(
+  orgId: string,
+  vaults: OrgRiskAnalyticsVault[],
+  options: { startDate?: string; endDate?: string } = {},
+): OrgRiskAnalyticsResponse {
+  const { startDate, endDate } = normalizeOrgRiskRange(options.startDate, options.endDate)
+  const scopedVaults = vaults.filter((vault) => vault.orgId === orgId && isInRange(vault, startDate, endDate))
+
+  const activeVaults = scopedVaults.filter((vault) => vault.status === 'active')
+  const resolvedVaults = scopedVaults.filter((vault) => vault.status === 'completed' || vault.status === 'failed')
+  const slashedVaults = resolvedVaults.filter((vault) => isSlashOutcome(vault))
+  const capitalAtRisk = activeVaults.reduce((sum, vault) => sum + getVaultAmount(vault), 0)
+  const slashRate = resolvedVaults.length > 0 ? slashedVaults.length / resolvedVaults.length : 0
 
   return {
-    totalVaults: vaultMap.size,
-    activeVaults,
-    completedVaults,
-    failedVaults,
-    totalLockedCapital: totalCapital.toString(),
-    successRate,
-    totalMilestones,
-    completedMilestones,
+    orgId,
+    generatedAt: utcNow(),
+    range: { startDate, endDate },
+    analytics: {
+      totalVaults: scopedVaults.length,
+      activeVaults: activeVaults.length,
+      resolvedVaults: resolvedVaults.length,
+      slashedVaults: slashedVaults.length,
+      slashRate,
+      capitalAtRisk: capitalAtRisk.toString(),
+    },
   }
 }
-import { getOrSet, getOrLoad, invalidate } from '../lib/cache.js'
 
-export async function getOverallAnalytics(orgId?: string): Promise<VaultAnalytics> {
-  return getOrLoad('analytics:overall', 300, async () => {
+export async function getOverallAnalytics(): Promise<VaultAnalytics> {
+  return getOrSet('analytics:overall', 300, async () => {
     const summary = await readAnalyticsSummary()
-    
+
     return {
       totalVaults: summary.total_vaults,
       activeVaults: summary.active_vaults,
@@ -104,31 +154,7 @@ export async function getOverallAnalytics(orgId?: string): Promise<VaultAnalytic
       successRate: summary.success_rate,
       lastUpdated: summary.last_updated,
     }
-  }, orgId)
-}
-
-export async function getOverallAnalytics(
-  orgId?: string,
-): Promise<VaultAnalytics> {
-  return getOrSet(
-    "analytics:overall",
-    300,
-    async () => {
-      const summary = await readAnalyticsSummary();
-
-      return {
-        totalVaults: summary.total_vaults,
-        activeVaults: summary.active_vaults,
-        completedVaults: summary.completed_vaults,
-        failedVaults: summary.failed_vaults,
-        totalLockedCapital: summary.total_locked_capital,
-        activeCapital: summary.active_capital,
-        successRate: summary.success_rate,
-        lastUpdated: summary.last_updated,
-      };
-    },
-    orgId,
-  );
+  })
 }
 
 export async function getAnalyticsByPeriod(
@@ -232,13 +258,13 @@ export async function updateAnalyticsSummary(orgId?: string): Promise<void> {
  * Render a point-in-time analytics snapshot for a single org.
  * Pulls vault IDs from the in-memory vaults store so it works without a DB.
  */
-export function renderOrgAnalyticsSnapshot(orgId: string): OrgVaultAnalytics & { orgId: string; snapshotAt: string } {
+export async function renderOrgAnalyticsSnapshot(orgId: string): Promise<OrgVaultAnalytics & { orgId: string; snapshotAt: string }> {
   // Import lazily to avoid circular deps and to stay hermetic in tests
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { vaults } = require('../routes/vaults.js') as { vaults: Array<{ id: string; orgId?: string }> }
   const orgVaultIds = vaults
     .filter((v) => v.orgId === orgId)
     .map((v) => v.id)
-  const analytics = getOrgAnalyticsBatched(orgVaultIds)
+  const analytics = await getOrgAnalyticsBatched(orgVaultIds)
   return { ...analytics, orgId, snapshotAt: utcNow() }
 }

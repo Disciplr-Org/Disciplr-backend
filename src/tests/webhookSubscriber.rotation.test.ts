@@ -133,14 +133,14 @@ describeDb('WebhookSubscriberRepository – upsert & secret rotation', () => {
       await repo.upsert({
         organizationId: ORG_A,
         url: HOOK_URL,
-        secret: 'old-secret',
+        secret: 'old-secret-valid-key',
         events: [],
       })
 
       await repo.upsert({
         organizationId: ORG_A,
         url: HOOK_URL,
-        secret: 'new-secret',
+        secret: 'new-secret-valid-key',
         events: ['vault_created', 'vault_completed'],
       })
 
@@ -179,7 +179,7 @@ describeDb('WebhookSubscriberRepository – upsert & secret rotation', () => {
       expect(active[0].active).toBe(true)
     })
 
-    it('does not overwrite a different org's subscriber at the same URL', async () => {
+    it("does not overwrite a different org's subscriber at the same URL", async () => {
       await repo.upsert({
         organizationId: ORG_A,
         url: HOOK_URL,
@@ -263,7 +263,7 @@ describeDb('WebhookSubscriberRepository – upsert & secret rotation', () => {
         events: [],
       })
 
-      const rotated = await repo.rotateSecret(sub.id, ORG_A, 'new-secret')
+      const rotated = await repo.rotateSecret(sub.id, ORG_A, 'new-secret-valid-key')
 
       expect(rotated).not.toBeNull()
       expect(rotated!.secret).toBe('new-secret')
@@ -275,7 +275,7 @@ describeDb('WebhookSubscriberRepository – upsert & secret rotation', () => {
       const result = await repo.rotateSecret(
         '00000000-0000-0000-0000-000000000000',
         ORG_A,
-        'new-secret',
+        'new-secret-valid-key',
       )
       expect(result).toBeNull()
     })
@@ -336,13 +336,13 @@ describeDb('WebhookSubscriberRepository – upsert & secret rotation', () => {
       const sub = await repo.upsert({
         organizationId: ORG_A,
         url: HOOK_URL,
-        secret: 'old-secret',
+        secret: 'old-secret-valid-key',
         events: [],
       })
-      const rotated = await repo.rotateSecret(sub.id, ORG_A, 'new-secret')
+      const rotated = await repo.rotateSecret(sub.id, ORG_A, 'new-secret-valid-key')
 
       const body = '{"hello":"world"}'
-      const sig = signPayload('new-secret', body)
+      const sig = signPayload('new-secret-valid-key', body)
 
       expect(verifySignatureWithGrace(rotated!, body, sig)).toBe(true)
     })
@@ -351,14 +351,14 @@ describeDb('WebhookSubscriberRepository – upsert & secret rotation', () => {
       const sub = await repo.upsert({
         organizationId: ORG_A,
         url: HOOK_URL,
-        secret: 'old-secret',
+        secret: 'old-secret-valid-key',
         events: [],
       })
-      const rotated = await repo.rotateSecret(sub.id, ORG_A, 'new-secret')
+      const rotated = await repo.rotateSecret(sub.id, ORG_A, 'new-secret-valid-key')
 
       const body = '{"hello":"world"}'
       // Sign with the OLD secret (simulates an in-flight delivery)
-      const oldSig = signPayload('old-secret', body)
+      const oldSig = signPayload('old-secret-valid-key', body)
 
       expect(verifySignatureWithGrace(rotated!, body, oldSig)).toBe(true)
     })
@@ -368,17 +368,17 @@ describeDb('WebhookSubscriberRepository – upsert & secret rotation', () => {
       const sub = await repo.upsert({
         organizationId: ORG_A,
         url: HOOK_URL,
-        secret: 'old-secret',
+        secret: 'old-secret-valid-key',
         events: [],
       })
-      const rotated = await repo.rotateSecret(sub.id, ORG_A, 'new-secret')
+      const rotated = await repo.rotateSecret(sub.id, ORG_A, 'new-secret-valid-key')
 
       // Back-date rotated_at to 48 h ago (beyond 24 h grace window)
       const expiredRotatedAt = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString()
       const expiredSub = { ...rotated!, rotatedAt: expiredRotatedAt }
 
       const body = '{"hello":"world"}'
-      const oldSig = signPayload('old-secret', body)
+      const oldSig = signPayload('old-secret-valid-key', body)
 
       // Grace window has closed – old secret should be rejected
       expect(isPreviousSecretInGrace(expiredSub)).toBe(false)
@@ -389,16 +389,16 @@ describeDb('WebhookSubscriberRepository – upsert & secret rotation', () => {
       const sub = await repo.upsert({
         organizationId: ORG_A,
         url: HOOK_URL,
-        secret: 'old-secret',
+        secret: 'old-secret-valid-key',
         events: [],
       })
-      const rotated = await repo.rotateSecret(sub.id, ORG_A, 'new-secret')
+      const rotated = await repo.rotateSecret(sub.id, ORG_A, 'new-secret-valid-key')
 
       const expiredRotatedAt = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString()
       const expiredSub = { ...rotated!, rotatedAt: expiredRotatedAt }
 
       const body = '{"hello":"world"}'
-      const newSig = signPayload('new-secret', body)
+      const newSig = signPayload('new-secret-valid-key', body)
 
       expect(verifySignatureWithGrace(expiredSub, body, newSig)).toBe(true)
     })
@@ -417,10 +417,10 @@ describeDb('WebhookSubscriberRepository – upsert & secret rotation', () => {
       const sub = await repo.upsert({
         organizationId: ORG_A,
         url: HOOK_URL,
-        secret: 'old-secret',
+        secret: 'old-secret-valid-key',
         events: [],
       })
-      const rotated = await repo.rotateSecret(sub.id, ORG_A, 'new-secret')
+      const rotated = await repo.rotateSecret(sub.id, ORG_A, 'new-secret-valid-key')
 
       // Set a very short grace window (1 ms) then back-date by 1 second
       const originalEnv = process.env.WEBHOOK_SECRET_GRACE_WINDOW_MS

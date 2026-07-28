@@ -74,6 +74,7 @@ export class CheckpointStore {
         last_paging_token: lastPagingToken,
         updated_at: now,
       })
+      .where('horizon_checkpoints.last_ledger', '<', lastLedger)
   }
 
   /**
