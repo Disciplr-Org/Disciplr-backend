@@ -22,14 +22,14 @@ export class MilestoneService {
       vault_id: vaultId,
       title: description, // Using description as title for now
       description,
-      type: 'custom',
+      type: 'verifier' as const,
       criteria: {},
       weight: 1,
       status: 'pending' as const,
       created_at: new Date().toISOString(),
     };
 
-    const created = await this.repository.create(milestone);
+    const created = await this.repository.create(milestone as any);
     
     return {
       id: created.id,

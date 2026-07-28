@@ -6,6 +6,7 @@ import type {
   PersistedMilestone,
   PersistedVault,
 } from "../types/vaults.js";
+import { VaultStatus } from "../types/vault.js";
 import { getOrSet, getOrLoad, invalidate, invalidatePrefix } from "../lib/cache.js";
 import { encodeCursor, decodeCursor } from "../utils/pagination.js";
 
@@ -136,7 +137,7 @@ export const createVaultWithMilestones = async (
       successDestination: input.destinations.success,
       failureDestination: input.destinations.failure,
       creator: input.creator ?? null,
-      status: "draft",
+      status: VaultStatus.DRAFT,
       createdAt: now,
       milestones,
       lateCheckInWindowSecs: input.lateCheckInWindowSecs ?? 0,
@@ -719,15 +720,15 @@ export const cancelVaultById = async (
     if (idx === -1) return { error: "not_found" };
     const vault = memoryVaults[idx];
 
-    if (vault.status === "cancelled") {
-      return { error: "already_cancelled", currentStatus: "cancelled" };
+    if (vault.status === VaultStatus.CANCELLED) {
+      return { error: "already_cancelled", currentStatus: VaultStatus.CANCELLED };
     }
-    if (vault.status !== "draft" && vault.status !== "active") {
+    if (vault.status !== VaultStatus.DRAFT && vault.status !== VaultStatus.ACTIVE) {
       return { error: "not_cancellable", currentStatus: vault.status };
     }
 
     const previousStatus = vault.status;
-    vault.status = "cancelled";
+    vault.status = VaultStatus.CANCELLED;
     const currentRevision = memoryVaultRevisions.get(id) ?? 0;
     memoryVaultRevisions.set(id, currentRevision + 1);
 

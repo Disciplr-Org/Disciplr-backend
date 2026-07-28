@@ -61,6 +61,7 @@
     "@types/debug": "^4.1.13",
     "@types/express": "^4.17.21",
     "@types/graphql-depth-limit": "^1.1.4",
+    "@types/ioredis": "^4.28.10",
     "@types/jest": "^30.0.0",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.9.0",
@@ -84,10 +85,10 @@
     "vitest": "^4.1.10",
     "yaml": "^2.9.0"
   },
-  "resolutions": {
+  "overrides": {
+    "brace-expansion": "2.1.0",
     "qs": "^6.15.2",
     "postcss": "^8.5.18",
-    "brace-expansion": "^1.1.13",
     "flatted": "^3.4.0",
     "path-to-regexp": "^0.1.13",
     "js-yaml": "^3.15.0"

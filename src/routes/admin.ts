@@ -65,10 +65,19 @@ const ValidOverrideReasonCodes = [
 
 type OverrideReasonCode = (typeof ValidOverrideReasonCodes)[number]
 
-import { DbIdempotencyStore } from '../services/idempotency.js'
+import { resetIdempotencyStore } from '../services/idempotency.js'
 
 // Track processed overrides for idempotency
-const processedOverrides = new DbIdempotencyStore(db)
+const idempotencyStore = new Map<string, unknown>()
+
+const processedOverrides = {
+  async getStoredResponse(key: string, _context: any): Promise<unknown> {
+    return idempotencyStore.get(key) ?? null
+  },
+  async storeResponse(key: string, data: unknown, _context: any): Promise<void> {
+    idempotencyStore.set(key, data)
+  },
+}
 
 // Test helper - clear processed overrides for test isolation
 export const clearProcessedOverrides = async (): Promise<void> => {
@@ -97,7 +106,7 @@ export const sanitizeReasonText = (reason: string): string => {
 
 const toIsoString = (value: Date | string | null | undefined): string | null => {
   if (!value) return null
-  return new Date(value).toISOString()
+  return new Date(value as string | Date).toISOString()
 }
 
 const parseContractAddresses = (): string[] =>
@@ -107,7 +116,7 @@ const parseContractAddresses = (): string[] =>
     .filter((address) => address.length > 0)
 
 const isValidLedger = (value: unknown): value is number =>
-  Number.isInteger(value) && Number.isSafeInteger(value) && value >= 0
+  typeof value === 'number' && Number.isInteger(value) && Number.isSafeInteger(value) && value >= 0
 
 const isValidPagingToken = (value: unknown): value is string | null | undefined =>
   value === undefined || value === null || (typeof value === 'string' && value.trim().length > 0 && value.length <= 256)
