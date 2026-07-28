@@ -288,7 +288,7 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, async (req:
 })
 
 // GET /api/vaults/:vaultId/milestones/:id/approval-status
-// Get detailed approval status for a milestone
+// Get detailed approval status for a milestone (requires authentication)
 milestonesRouter.get('/:id/approval-status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { vaultId, id } = req.params
