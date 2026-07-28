@@ -1,13 +1,27 @@
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals'
 import express from 'express'
 import jwt from 'jsonwebtoken'
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { oauthRouter } from '../../src/routes/oauth.js'
-import { authenticateOAuthBearer } from '../../src/middleware/oauthBearer.js'
-import { createApiKey, resetApiKeysTable, revokeApiKey } from '../../src/services/apiKeys.js'
 import { ApiScope } from '../../src/types/auth.js'
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production'
+// -----------------------------------------------------------
+// Mock getEnv so OAuth modules read JWT_SECRET from the mock
+// rather than requiring initEnv().  Without DATABASE_URL the
+// pg.Pool stays null, keeping the ApiKey repository on its
+// in-memory fallback — exactly as this suite has always run.
+// -----------------------------------------------------------
+jest.unstable_mockModule('../config/index.js', () => ({
+  getEnv: () => ({ JWT_SECRET: 'test-jwt-secret-0123456789' }),
+  initEnv: () => {},
+  _resetEnvForTesting: () => {},
+}))
+
+const { oauthRouter } = await import('../../src/routes/oauth.js')
+const { authenticateOAuthBearer } = await import('../../src/middleware/oauthBearer.js')
+const { createApiKey, resetApiKeysTable, revokeApiKey } = await import('../../src/services/apiKeys.js')
+
+const JWT_SECRET = 'test-jwt-secret-0123456789'
 
 let baseUrl: string
 let server: Server
