@@ -195,12 +195,10 @@ export const listVerifierProfiles = async (): Promise<VerifierProfile[]> => {
 export const setVerifierStatus = async (
   userId: string,
   status: VerifierStatus,
+  context?: VerifierMutationContext,
 ): Promise<VerifierProfile | null> => {
-  const row = await db('verifiers').where({ user_id: userId }).first()
-  if (!row) return null
-
-  const [updated] = await db('verifiers').where({ user_id: userId }).update(mapStatusToUpdates(status)).returning('*')
-  return mapVerifierRow(updated)
+  const result = await transitionVerifier(userId, status, context ?? { actorUserId: userId })
+  return result?.after ?? null
 }
 
 export const recordVerification = async (
