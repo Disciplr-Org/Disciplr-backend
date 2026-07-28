@@ -74,7 +74,7 @@ export interface EmbeddingDriftDb {
  * differs from currentModelVersion.
  */
 export async function detectEmbeddingDrift(
-  db: { (table: string): any },
+  db: EmbeddingDriftDb,
   currentModelVersion: string = CURRENT_EMBEDDING_MODEL_VERSION,
 ): Promise<EmbeddingDriftReport> {
   const rows: Array<{ model_version: string; count: string | number }> = await db('milestone_embeddings')
