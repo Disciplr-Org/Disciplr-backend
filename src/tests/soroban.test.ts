@@ -600,7 +600,7 @@ describe('soroban service', () => {
       const client = createDefaultSorobanClient(async () => makeFakeSdk(server))
 
       await expect(client.submitVaultCreation(makeSubmitConfig(), makeVault() as any)).rejects.toThrow(
-        'Soroban transaction did not succeed: NOT_FOUND',
+        'transaction_pending',
       )
 
       expect(server.getTransaction).toHaveBeenCalledTimes(3)
@@ -761,27 +761,27 @@ describe('soroban service', () => {
 
     it('passes token to client in submit mode when specified', async () => {
       setEnv(FULL_ENV)
-      const { client, spy } = createMockClient()
+      const { client, spies } = createMockClient()
       setSorobanClient(client)
 
       const input = makeInput({ onChain: { mode: 'submit', token: WASM_TOKEN } })
       const vault = makeVault()
       await buildVaultCreationPayload(input, vault)
 
-      const [, passedArgs] = spy.mock.calls[0] as [SorobanConfig, Record<string, unknown>]
+      const [, passedArgs] = spies.submitVaultCreation.mock.calls[0] as [SorobanConfig, Record<string, unknown>]
       expect(passedArgs.token).toBe(WASM_TOKEN)
     })
 
     it('passes token as undefined to client when not specified in submit mode', async () => {
       setEnv(FULL_ENV)
-      const { client, spy } = createMockClient()
+      const { client, spies } = createMockClient()
       setSorobanClient(client)
 
       const input = makeInput({ onChain: { mode: 'submit' } })
       const vault = makeVault()
       await buildVaultCreationPayload(input, vault)
 
-      const [, passedArgs] = spy.mock.calls[0] as [SorobanConfig, Record<string, unknown>]
+      const [, passedArgs] = spies.submitVaultCreation.mock.calls[0] as [SorobanConfig, Record<string, unknown>]
       expect(passedArgs.token).toBeUndefined()
     })
 

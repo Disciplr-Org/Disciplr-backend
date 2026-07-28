@@ -1,8 +1,17 @@
-import { createRequire } from 'module'
+import { createRequire } from 'node:module'
 import knex, { Knex } from 'knex'
 import { captureSlowQuery } from '../services/dbMetrics.js'
 
-const nodeRequire = createRequire(import.meta.url)
+// Portable CJS/ESM require. In Jest's CJS runner import.meta is a parse-time
+// SyntaxError, so we hide it behind eval() which the CJS parser treats as a
+// regular function call string. typeof require guards the branch at runtime:
+//   - CJS (Jest):     typeof require !== 'undefined' → uses global require
+//   - ESM (tsx/prod):  typeof require === 'undefined' → eval branch runs
+const nodeRequire: NodeRequire =
+  typeof require !== 'undefined'
+    ? require
+    : // eslint-disable-next-line no-eval
+      createRequire(eval('import.meta.url'))
 const config = nodeRequire('../../knexfile.cjs')
 
 export const db: Knex = knex(config)

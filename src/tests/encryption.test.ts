@@ -24,6 +24,7 @@ import {
   getKeyId,
   auditKeyUsage,
   resolveKeys,
+  invalidateKeys,
   DecryptionError,
   EncryptionKeyError,
 } from '../lib/encryption.js'
@@ -46,6 +47,8 @@ afterEach(() => {
   else process.env.FIELD_ENCRYPTION_KEY = savedKey
   if (savedKeys === undefined) delete process.env.FIELD_ENCRYPTION_KEYS
   else process.env.FIELD_ENCRYPTION_KEYS = savedKeys
+  // Invalidate the key cache so the next test resolves fresh from env.
+  invalidateKeys()
 })
 
 const useSingleKey = (key = genKey()): string => {
@@ -194,6 +197,7 @@ describe('wrong key rejection', () => {
     // Swap in a different key but keep the id ("default") so lookup succeeds
     // and only the GCM auth check fails.
     useSingleKey(genKey())
+    invalidateKeys() // force re-resolution so the new key material is used
     expect(() => decryptField(encrypted)).toThrow(DecryptionError)
     expect(() => decryptField(encrypted)).toThrow(/authentication failed/)
   })
@@ -209,6 +213,7 @@ describe('key rotation via FIELD_ENCRYPTION_KEYS', () => {
     // 1. Write under the original key (id "k1").
     delete process.env.FIELD_ENCRYPTION_KEY
     process.env.FIELD_ENCRYPTION_KEYS = JSON.stringify([{ kid: 'k1', key: oldKey }])
+    invalidateKeys()
     const ciphertext = encryptField('rotate-me')
     expect(ciphertext.split(':')[1]).toBe('k1')
 
@@ -217,6 +222,7 @@ describe('key rotation via FIELD_ENCRYPTION_KEYS', () => {
       { kid: 'k2', key: newKey },
       { kid: 'k1', key: oldKey },
     ])
+    invalidateKeys()
 
     // Old data still decrypts (tagged k1)…
     expect(decryptField(ciphertext)).toBe('rotate-me')
@@ -234,6 +240,7 @@ describe('key rotation via FIELD_ENCRYPTION_KEYS', () => {
       { kid: 'primary', key: k1 },
       { kid: 'secondary', key: k2 },
     ])
+    invalidateKeys()
     expect(resolveKeys()[0].kid).toBe('primary')
     expect(encryptField('x').split(':')[1]).toBe('primary')
   })
@@ -242,10 +249,12 @@ describe('key rotation via FIELD_ENCRYPTION_KEYS', () => {
     const oldKey = genKey()
     delete process.env.FIELD_ENCRYPTION_KEY
     process.env.FIELD_ENCRYPTION_KEYS = JSON.stringify([{ kid: 'k1', key: oldKey }])
+    invalidateKeys()
     const ciphertext = encryptField('orphan')
 
     // Replace k1 with an unrelated key id — k1 is no longer resolvable.
     process.env.FIELD_ENCRYPTION_KEYS = JSON.stringify([{ kid: 'k2', key: genKey() }])
+    invalidateKeys()
     expect(() => decryptField(ciphertext)).toThrow(/No field encryption key configured for key id "k1"/)
   })
 })
@@ -256,6 +265,7 @@ describe('key configuration validation', () => {
   it('throws when no key is configured (fail closed)', () => {
     delete process.env.FIELD_ENCRYPTION_KEY
     delete process.env.FIELD_ENCRYPTION_KEYS
+    invalidateKeys()
     expect(() => resolveKeys()).toThrow(EncryptionKeyError)
     expect(() => encryptField('x')).toThrow(/No field encryption key configured/)
   })
@@ -356,6 +366,7 @@ describe('key configuration validation', () => {
   it('prefers FIELD_ENCRYPTION_KEYS over FIELD_ENCRYPTION_KEY when both are set', () => {
     process.env.FIELD_ENCRYPTION_KEY = genKey()
     process.env.FIELD_ENCRYPTION_KEYS = JSON.stringify([{ kid: 'json-key', key: genKey() }])
+    invalidateKeys()
     expect(resolveKeys()).toHaveLength(1)
     expect(resolveKeys()[0].kid).toBe('json-key')
   })

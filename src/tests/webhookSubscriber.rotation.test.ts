@@ -179,7 +179,7 @@ describeDb('WebhookSubscriberRepository – upsert & secret rotation', () => {
       expect(active[0].active).toBe(true)
     })
 
-    it('does not overwrite a different org's subscriber at the same URL', async () => {
+    it("does not overwrite a different org's subscriber at the same URL", async () => {
       await repo.upsert({
         organizationId: ORG_A,
         url: HOOK_URL,
