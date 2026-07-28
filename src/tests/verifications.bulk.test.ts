@@ -31,6 +31,7 @@ jest.unstable_mockModule('../middleware/auth.js', () => ({
 
 jest.unstable_mockModule('../middleware/rbac.js', () => ({
   requireVerifier: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+  requireAdmin: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
 }))
 
 jest.unstable_mockModule('../services/verifiers.js', () => ({
@@ -93,6 +94,16 @@ const MOCK_EVIDENCE = {
 const app = express()
 app.use(express.json())
 app.use('/api/verifications', verificationsRouter)
+// Error handler matching production AppError response shape
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const status = err?.status ?? err?.statusCode ?? 500
+  res.status(status).json({
+    error: {
+      code: err?.code ?? 'INTERNAL_ERROR',
+      message: err?.message ?? 'Internal server error',
+    },
+  })
+})
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -372,6 +383,18 @@ describe('verifications bulk endpoint', () => {
         id: 'ev-1',
         verificationId: 'ver-1',
       })
+    })
+
+    test('evidenceReference in response uses referenceUrl field (not evidenceReferenceUrl)', async () => {
+      const items = [createValidItem({ targetId: 'milestone-1' })]
+      const res = await request(app).post('/api/verifications/bulk').send(items)
+      expect(res.status).toBe(200)
+      const evidenceRef = res.body.results[0].evidenceReference
+      expect(evidenceRef).toBeDefined()
+      // The service type EvidenceReference uses referenceUrl — verify the field is present and correct
+      expect(evidenceRef.referenceUrl).toBe(REF_URL)
+      // Ensure the old misnamed field is not present
+      expect(evidenceRef.evidenceReferenceUrl).toBeUndefined()
     })
   })
 

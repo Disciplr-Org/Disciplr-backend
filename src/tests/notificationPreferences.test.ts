@@ -173,6 +173,22 @@ describe('isNotificationEnabled (dispatch-path check)', () => {
     await expect(isNotificationEnabled(undefined, 'vault_failure')).resolves.toBe(true)
   })
 
+  it('returns false for an unrecognised channel without consulting the DB', async () => {
+    // No preferences stored — without the guard this would fall through to the
+    // all-enabled default and return true (the bug).
+    await expect(isNotificationEnabled(ORG_A, 'vault_failure', 'sms')).resolves.toBe(false)
+    await expect(isNotificationEnabled(ORG_A, 'vault_failure', 'push')).resolves.toBe(false)
+    await expect(isNotificationEnabled(ORG_A, 'vault_failure', '')).resolves.toBe(false)
+  })
+
+  it('still returns true for the valid email channel with no stored preferences', async () => {
+    await expect(isNotificationEnabled(ORG_A, 'vault_failure', 'email')).resolves.toBe(true)
+  })
+
+  it('returns false for an unrecognised channel even when organizationId is absent', async () => {
+    await expect(isNotificationEnabled(undefined, 'vault_failure', 'sms')).resolves.toBe(false)
+  })
+
   it('isolates preferences between organizations', async () => {
     await request(app)
       .put(`/api/orgs/${ORG_A}/notification-preferences`)

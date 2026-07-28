@@ -16,7 +16,7 @@ const TABLE = 'user_notification_preferences'
 export function getDefaultPreferences(userId: string): UserNotificationPreferences {
   const now = new Date().toISOString()
   return {
-    id: '',
+    id: null,
     user_id: userId,
     timezone: 'UTC',
     quiet_hours_enabled: false,
@@ -98,43 +98,35 @@ export async function upsertUserPreferences(
     throw new Error(`Invalid quiet_hours_end format: ${input.quiet_hours_end}. Expected HH:MM.`)
   }
 
-  const now = new Date().toISOString()
-  const existing = await db(TABLE).where('user_id', userId).first()
+  const defaults = getDefaultPreferences(userId)
 
-  if (existing) {
-    // Update existing preferences
-    const updateData: Record<string, unknown> = { updated_at: now }
-
-    if (input.timezone !== undefined) updateData.timezone = input.timezone
-    if (input.quiet_hours_enabled !== undefined) updateData.quiet_hours_enabled = input.quiet_hours_enabled
-    if (input.quiet_hours_start !== undefined) updateData.quiet_hours_start = input.quiet_hours_start
-    if (input.quiet_hours_end !== undefined) updateData.quiet_hours_end = input.quiet_hours_end
-
-    await db(TABLE)
-      .where('user_id', userId)
-      .update(updateData)
-
-    const updated = await db(TABLE).where('user_id', userId).first()
-    return mapRowToPreferences(updated)
-  } else {
-    // Insert new preferences
-    const defaults = getDefaultPreferences(userId)
-    const insertData = {
-      user_id: userId,
-      timezone: input.timezone ?? defaults.timezone,
-      quiet_hours_enabled: input.quiet_hours_enabled ?? defaults.quiet_hours_enabled,
-      quiet_hours_start: input.quiet_hours_start ?? defaults.quiet_hours_start,
-      quiet_hours_end: input.quiet_hours_end ?? defaults.quiet_hours_end,
-      created_at: now,
-      updated_at: now,
-    }
-
-    const [inserted] = await db(TABLE)
-      .insert(insertData)
-      .returning('*')
-
-    return mapRowToPreferences(inserted)
+  // Build the insert data with defaults for missing fields
+  const insertData = {
+    user_id: userId,
+    timezone: input.timezone ?? defaults.timezone,
+    quiet_hours_enabled: input.quiet_hours_enabled ?? defaults.quiet_hours_enabled,
+    quiet_hours_start: input.quiet_hours_start ?? defaults.quiet_hours_start,
+    quiet_hours_end: input.quiet_hours_end ?? defaults.quiet_hours_end,
+    created_at: db.fn.now(),
+    updated_at: db.fn.now(),
   }
+
+  // Build the merge data (only includes fields that might be updated)
+  const mergeData: Record<string, unknown> = {
+    updated_at: db.fn.now(),
+  }
+  if (input.timezone !== undefined) mergeData.timezone = input.timezone
+  if (input.quiet_hours_enabled !== undefined) mergeData.quiet_hours_enabled = input.quiet_hours_enabled
+  if (input.quiet_hours_start !== undefined) mergeData.quiet_hours_start = input.quiet_hours_start
+  if (input.quiet_hours_end !== undefined) mergeData.quiet_hours_end = input.quiet_hours_end
+
+  const [result] = await db(TABLE)
+    .insert(insertData)
+    .onConflict('user_id')
+    .merge(mergeData)
+    .returning('*')
+
+  return mapRowToPreferences(result)
 }
 
 /**

@@ -11,17 +11,20 @@ describe('Stellar address checksum validation', () => {
     expect(ok).toBe(true)
   })
 
-  it('rejects malformed addresses and bad checksums', async () => {
-    expect(await isValidStellarAddress('not-a-key')).toBe(false)
-    // Wrong length / characters
-    expect(await isValidStellarAddress('G' + 'A'.repeat(10))).toBe(false)
+  it.each([
+    ['non-Stellar input', 'not-a-key'],
+    ['a short G-address', 'G' + 'A'.repeat(10)],
+    ['a full-length address with an invalid base32 character', 'G' + 'A'.repeat(54) + '0'],
+  ])('rejects %s', async (_description, address) => {
+    expect(await isValidStellarAddress(address)).toBe(false)
+  })
 
-    // Change one character of a valid key to corrupt checksum
+  it('rejects a correctly shaped address with a bad checksum', async () => {
     const { Keypair } = await import('@stellar/stellar-sdk')
     const kp = Keypair.random()
     const pub = kp.publicKey()
-    // flip last character
     const corrupted = pub.slice(0, -1) + (pub.slice(-1) === 'A' ? 'B' : 'A')
+
     expect(await isValidStellarAddress(corrupted)).toBe(false)
   })
 })

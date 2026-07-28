@@ -1,7 +1,7 @@
 import { Knex } from 'knex'
 import type { WebhookSubscriber, BreakerState, BreakerStateValue } from '../services/webhooks.js'
 import { FieldPolicy, parseFieldPolicy, DEFAULT_FIELD_POLICY } from '../utils/webhookFieldMasking.js'
-import { encryptField, decryptField, isEncrypted } from '../lib/encryption.js'
+import { encryptField, decryptField, isEncrypted, DecryptionError } from '../lib/encryption.js'
 
 export interface DeliveryStats {
   attempt_count: number
@@ -21,21 +21,10 @@ interface SubscriberRow {
   secret: string
   previous_secret: string | null
   rotated_at: Date | null
-  events: string[]
+  events: string | string[]
   active: boolean
   schema_version: number
   field_policy: unknown
-  created_at: Date
-  updated_at: Date
-}
-
-interface BreakerRow {
-  subscriber_id: string
-  state: string
-  failure_count: number
-  last_failure_at: Date | null
-  tripped_at: Date | null
-  half_open_at: Date | null
   created_at: Date
   updated_at: Date
 }
@@ -67,20 +56,55 @@ function decryptSecretColumn(value: string | null): string | null {
 }
 
 function toSubscriber(row: SubscriberRow): WebhookSubscriber {
+  let secret: string
+  try {
+    secret = decryptSecretColumn(row.secret)!
+  } catch (err) {
+    if (err instanceof DecryptionError) {
+      console.error(`[WebhookSubscriberRepo] Decryption failed for subscriber ${row.id}, using sentinel value`, err)
+      secret = '[DECRYPTION_FAILED]'
+    } else {
+      throw err
+    }
+  }
+
+  let previousSecret: string | null
+  try {
+    previousSecret = decryptSecretColumn(row.previous_secret)
+  } catch (err) {
+    if (err instanceof DecryptionError) {
+      console.error(`[WebhookSubscriberRepo] previous_secret decryption failed for subscriber ${row.id}, setting null`, err)
+      previousSecret = null
+    } else {
+      throw err
+    }
+  }
+
   return {
     id: row.id,
     organizationId: row.organization_id,
     url: row.url,
-    // Decrypted only here, in memory, at read time.
-    secret: decryptSecretColumn(row.secret)!,
-    previousSecret: decryptSecretColumn(row.previous_secret),
+    secret,
+    previousSecret,
     rotatedAt: row.rotated_at instanceof Date
       ? row.rotated_at.toISOString()
       : (row.rotated_at ? String(row.rotated_at) : null),
-    events: row.events ?? [],
+    events: (() => {
+      const parsed = typeof row.events === 'string'
+        ? (() => {
+            try {
+              const parsedJson = JSON.parse(row.events)
+              return Array.isArray(parsedJson) ? parsedJson : []
+            } catch {
+              return []
+            }
+          })()
+        : row.events ?? []
+      return parsed
+    })(),
     active: row.active,
     schemaVersion: row.schema_version ?? 1,
-    fieldPolicy: parseFieldPolicy(row.field_policy),
+    fieldPolicy: parseFieldPolicy(row.field_policy, row.id),
     createdAt: row.created_at instanceof Date
       ? row.created_at.toISOString()
       : String(row.created_at),
@@ -150,9 +174,9 @@ export class WebhookSubscriberRepository {
         organization_id: data.organizationId,
         url: data.url,
         secret: encryptField(data.secret),
-        events: JSON.stringify(data.events) as any,
+        events: JSON.stringify(data.events),
         schema_version: data.schemaVersion ?? 1,
-        field_policy: JSON.stringify(data.fieldPolicy ?? DEFAULT_FIELD_POLICY) as any,
+        field_policy: JSON.stringify(data.fieldPolicy ?? DEFAULT_FIELD_POLICY),
       })
       .returning('*')
     return toSubscriber(row)
@@ -219,7 +243,7 @@ export class WebhookSubscriberRepository {
     const rows = await this.db<SubscriberRow>('webhook_subscribers')
       .where({ id, organization_id: organizationId })
       .update({
-        field_policy: JSON.stringify(fieldPolicy) as any,
+        field_policy: JSON.stringify(fieldPolicy),
         updated_at: this.db.fn.now(),
       })
       .returning('*')
@@ -282,7 +306,7 @@ export class WebhookSubscriberRepository {
       halfOpenAt?: string | null
     },
   ): Promise<void> {
-    const payload: Record<string, any> = {
+    const payload: Record<string, unknown> = {
       state: data.state,
       updated_at: this.db.fn.now(),
     }

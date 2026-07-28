@@ -1,9 +1,16 @@
+import { jest } from '@jest/globals'
+
+jest.unstable_mockModule('../middleware/orgAuth.js', () => ({
+  requireOrgAccess: jest.fn((...roles) => (req, res, next) => {
+    next()
+  }),
+}))
+
 import { beforeEach, describe, expect, it } from '@jest/globals'
 import express from 'express'
 import jwt from 'jsonwebtoken'
 import request from 'supertest'
 import { errorHandler } from '../middleware/errorHandler.js'
-import { setOrganizations, setOrgMembers } from '../models/organizations.js'
 import { resetSubscribers } from '../services/webhooks.js'
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production'
@@ -16,14 +23,6 @@ let app: express.Express
 
 beforeEach(async () => {
   resetSubscribers()
-  setOrganizations([
-    { id: 'org-a', name: 'Org A', createdAt: '2025-01-01T00:00:00.000Z' },
-    { id: 'org-b', name: 'Org B', createdAt: '2025-01-01T00:00:00.000Z' },
-  ])
-  setOrgMembers([
-    { orgId: 'org-a', userId: 'user-1', role: 'admin' },
-    { orgId: 'org-b', userId: 'user-2', role: 'member' },
-  ])
 
   const webhookRouter = (await import('../routes/webhooks.js')).default
   app = express()

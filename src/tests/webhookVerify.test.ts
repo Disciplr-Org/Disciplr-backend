@@ -163,4 +163,96 @@ describe('webhookVerify', () => {
     expect(secondResponse.status).toBe(401)
     expect(secondResponse.body).toEqual({ error: 'Replayed webhook request' })
   })
+
+  // -------------------------------------------------------------------------
+  // Concurrent replay – TOCTOU fix
+  // -------------------------------------------------------------------------
+
+  it('rejects a concurrent duplicate request (TOCTOU race)', async () => {
+    // Fire two identical valid requests simultaneously without awaiting either.
+    // Before the fix both could slip past the nonce check because neither had
+    // finished reading the body when the other performed its cache lookup.
+    // After the fix the nonce is reserved synchronously before the first await
+    // so at most one of the two requests can succeed.
+    const timestamp = Date.now()
+    const nonce = 'nonce-concurrent-128'
+    const body = JSON.stringify({ test: 'concurrent' })
+    const signature = generateSignature('test-secret', timestamp, nonce, body)
+
+    const send = () =>
+      request(app)
+        .post('/webhook')
+        .set('x-webhook-signature', signature)
+        .set('x-webhook-timestamp', timestamp.toString())
+        .set('x-webhook-nonce', nonce)
+        .set('Content-Type', 'application/json')
+        .send(body)
+
+    const [r1, r2] = await Promise.all([send(), send()])
+
+    const statuses = [r1.status, r2.status].sort()
+    // Exactly one must succeed and one must be rejected as a replay
+    expect(statuses).toEqual([200, 401])
+
+    const rejectedBody = r1.status === 401 ? r1.body : r2.body
+    expect(rejectedBody).toEqual({ error: 'Replayed webhook request' })
+  })
+
+  // -------------------------------------------------------------------------
+  // Invalid JSON body – explicit 400 instead of silent {}
+  // -------------------------------------------------------------------------
+
+  it('rejects a request with a non-JSON body with 400', async () => {
+    const timestamp = Date.now()
+    const nonce = 'nonce-badjson-129'
+    const body = 'this is not json'
+    const signature = generateSignature('test-secret', timestamp, nonce, body)
+
+    const response = await request(app)
+      .post('/webhook')
+      .set('x-webhook-signature', signature)
+      .set('x-webhook-timestamp', timestamp.toString())
+      .set('x-webhook-nonce', nonce)
+      .set('Content-Type', 'text/plain')
+      .send(body)
+
+    expect(response.status).toBe(400)
+    expect(response.body).toEqual({ error: 'Invalid JSON body' })
+  })
+
+  it('does not consume the nonce when JSON parsing fails', async () => {
+    // After a 400 on bad JSON the same nonce must not be "used up" –
+    // a follow-up request with a valid JSON body and the same nonce should
+    // still be rejected as a replay (because the nonce+timestamp combo is
+    // reserved/confirmed), but a request with a *different* nonce works fine.
+    const timestamp = Date.now()
+    const nonce = 'nonce-badjson-reuse-130'
+    const badBody = 'not json at all'
+    const badSig = generateSignature('test-secret', timestamp, nonce, badBody)
+
+    const badResponse = await request(app)
+      .post('/webhook')
+      .set('x-webhook-signature', badSig)
+      .set('x-webhook-timestamp', timestamp.toString())
+      .set('x-webhook-nonce', nonce)
+      .set('Content-Type', 'text/plain')
+      .send(badBody)
+
+    expect(badResponse.status).toBe(400)
+
+    // A fresh request with a different nonce and valid JSON must go through
+    const freshNonce = 'nonce-badjson-fresh-131'
+    const goodBody = JSON.stringify({ test: 'fresh' })
+    const goodSig = generateSignature('test-secret', timestamp, freshNonce, goodBody)
+
+    const goodResponse = await request(app)
+      .post('/webhook')
+      .set('x-webhook-signature', goodSig)
+      .set('x-webhook-timestamp', timestamp.toString())
+      .set('x-webhook-nonce', freshNonce)
+      .set('Content-Type', 'application/json')
+      .send(goodBody)
+
+    expect(goodResponse.status).toBe(200)
+  })
 })

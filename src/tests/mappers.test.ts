@@ -1,25 +1,36 @@
 import { describe, expect, it } from '@jest/globals'
 import { toPublicVault, toPublicMilestone } from '../utils/mappers.js'
 import { VaultStatus } from '../types/vault.js'
-import type { Vault } from '../types/vault.js'
 import type { Milestone } from '../types/horizonSync.js'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
 
-function makeVault(overrides: Partial<Vault> = {}): Vault {
+/**
+ * Shape of a vault row as returned by Knex from the `vaults` table.
+ * Matches the VaultDbRow interface in mappers.ts.
+ */
+interface VaultDbRow {
+  id: string;
+  creator: string;
+  amount: string;
+  status: VaultStatus;
+  created_at: Date;
+  end_date: Date;
+  success_destination: string;
+  failure_destination: string;
+  organization_id?: string;
+}
+
+function makeVault(overrides: Partial<VaultDbRow> = {}): VaultDbRow {
   return {
     id: 'vault-001',
-    contract_id: 'CONTRACT-ABC',
-    creator_address: 'GCREATOR123',
+    creator: 'GCREATOR123',
     amount: '1000',
-    milestone_hash: 'hash-abc',
-    verifier_address: 'GVERIFIER456',
+    status: VaultStatus.ACTIVE,
+    created_at: new Date('2026-01-01T00:00:00.000Z'),
+    end_date: new Date('2026-12-31T23:59:59.000Z'),
     success_destination: 'GSUCCESS789',
     failure_destination: 'GFAILURE000',
-    status: VaultStatus.ACTIVE,
-    deadline: new Date('2026-12-31T23:59:59.000Z'),
-    created_at: new Date('2026-01-01T00:00:00.000Z'),
-    updated_at: new Date('2026-01-01T00:00:00.000Z'),
     ...overrides,
   }
 }
@@ -50,7 +61,7 @@ describe('toPublicVault', () => {
     expect(dto.id).toBe('vault-001')
     expect(dto.creator).toBe('GCREATOR123')
     expect(dto.amount).toBe('1000')
-    expect(dto.status).toBe('ACTIVE')
+    expect(dto.status).toBe('active')
     expect(dto.successDestination).toBe('GSUCCESS789')
     expect(dto.failureDestination).toBe('GFAILURE000')
   })
@@ -61,8 +72,8 @@ describe('toPublicVault', () => {
     expect(dto.startTimestamp).toBe('2026-01-01T00:00:00.000Z')
   })
 
-  it('converts deadline to ISO 8601 UTC string for endTimestamp', () => {
-    const vault = makeVault({ deadline: new Date('2026-12-31T23:59:59.000Z') })
+  it('converts end_date to ISO 8601 UTC string for endTimestamp', () => {
+    const vault = makeVault({ end_date: new Date('2026-12-31T23:59:59.000Z') })
     const dto = toPublicVault(vault)
     expect(dto.endTimestamp).toBe('2026-12-31T23:59:59.000Z')
   })
@@ -76,13 +87,8 @@ describe('toPublicVault', () => {
   it('does not leak internal fields into the DTO', () => {
     const dto = toPublicVault(makeVault()) as Record<string, unknown>
     expect(dto).not.toHaveProperty('created_at')
-    expect(dto).not.toHaveProperty('updated_at')
-    expect(dto).not.toHaveProperty('contract_id')
-    expect(dto).not.toHaveProperty('milestone_hash')
-    expect(dto).not.toHaveProperty('verifier_address')
+    expect(dto).not.toHaveProperty('end_date')
     expect(dto).not.toHaveProperty('organization_id')
-    expect(dto).not.toHaveProperty('creator_address')
-    expect(dto).not.toHaveProperty('deadline')
   })
 
   it('preserves exact amount string without coercion', () => {
@@ -90,24 +96,24 @@ describe('toPublicVault', () => {
     expect(dto.amount).toBe('99999999.99')
   })
 
-  it('maps PENDING status correctly', () => {
-    const dto = toPublicVault(makeVault({ status: VaultStatus.PENDING }))
-    expect(dto.status).toBe('PENDING')
+  it('maps DRAFT status correctly', () => {
+    const dto = toPublicVault(makeVault({ status: VaultStatus.DRAFT }))
+    expect(dto.status).toBe('pending')
   })
 
   it('maps COMPLETED status correctly', () => {
     const dto = toPublicVault(makeVault({ status: VaultStatus.COMPLETED }))
-    expect(dto.status).toBe('COMPLETED')
+    expect(dto.status).toBe('completed')
   })
 
   it('maps FAILED status correctly', () => {
     const dto = toPublicVault(makeVault({ status: VaultStatus.FAILED }))
-    expect(dto.status).toBe('FAILED')
+    expect(dto.status).toBe('failed')
   })
 
   it('maps CANCELLED status correctly', () => {
     const dto = toPublicVault(makeVault({ status: VaultStatus.CANCELLED }))
-    expect(dto.status).toBe('CANCELLED')
+    expect(dto.status).toBe('cancelled')
   })
 
   it('handles optional organization_id being absent', () => {
@@ -120,7 +126,7 @@ describe('toPublicVault', () => {
     const vault = makeVault()
     const dto = toPublicVault(vault)
     expect(dto.id).toBe(vault.id)
-    expect(dto.creator).toBe(vault.creator_address)
+    expect(dto.creator).toBe(vault.creator)
     expect(dto.amount).toBe(vault.amount)
     expect(dto.successDestination).toBe(vault.success_destination)
     expect(dto.failureDestination).toBe(vault.failure_destination)

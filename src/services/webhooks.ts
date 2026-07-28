@@ -4,6 +4,7 @@ import { WebhookSubscriberRepository } from '../repositories/webhookSubscriberRe
 import { retryWithBackoff } from '../utils/retry.js'
 import { db } from '../db/index.js'
 import { applyFieldMasking, FieldPolicy, DEFAULT_FIELD_POLICY, parseFieldPolicy } from '../utils/webhookFieldMasking.js'
+import { getTracer } from '../observability/tracing.js'
 
 export interface WebhookDeadLetter {
   id: string
@@ -44,6 +45,13 @@ export interface WebhookSubscriber {
    * in webhook payloads and whether PII is stripped. Applied before signing.
    */
   fieldPolicy: FieldPolicy
+}
+
+export interface EgressAllowlistEntry {
+  id: string
+  organizationId: string
+  host: string
+  createdAt: string
 }
 
 export const DEFAULT_MAX_REPLAY_EVENTS = 500
@@ -116,7 +124,7 @@ export interface CircuitBreakerConfig {
  *   { eventId, eventType, timestamp, data, organizationId, schema_version: 1 }
  *
  * v2 – Compact envelope:
- *   { schema_version: 2, event_type, data }
+ *   { schema_version: 2, event_type, organization_id, data }
  */
 export const buildVersionedPayload = (
   subscriber: WebhookSubscriber,
@@ -140,6 +148,7 @@ export const buildVersionedPayload = (
       return JSON.stringify({
         schema_version: 2,
         event_type: payload.eventType,
+        organization_id: payload.organizationId,
         data: maskedData,
       })
     default:
@@ -420,18 +429,39 @@ export const isUrlAllowed = (
 }
 
 /**
+ * Minimum length for a webhook signing secret. Secrets shorter than this are
+ * rejected to prevent accidental use of empty or weak keys.
+ */
+const MIN_SECRET_LENGTH = 16
+
+/**
  * Returns the HMAC-SHA256 signature header value for a given payload body.
  * Format: `sha256=<hex-digest>`
+ *
+ * Throws if `secret` is not a non-empty string of at least {@link MIN_SECRET_LENGTH}
+ * characters, preventing signatures from being computed with a trivially
+ * guessable key.
  */
 export const signPayload = (secret: string, body: string): string => {
+  if (!secret || typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `Webhook signing secret must be a non-empty string of at least ${MIN_SECRET_LENGTH} characters`,
+    )
+  }
   const digest = createHmac('sha256', secret).update(body, 'utf8').digest('hex')
   return `sha256=${digest}`
 }
 
 /**
  * Verifies a webhook signature in constant time.
+ *
+ * Returns `false` if `secret` is not a valid non-empty string (instead of
+ * silently computing an HMAC with an empty key).
  */
 export const verifySignature = (secret: string, body: string, signature: string): boolean => {
+  if (!secret || typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) {
+    return false
+  }
   const expected = signPayload(secret, body)
   if (expected.length !== signature.length) {
     return false
@@ -532,6 +562,12 @@ export const addSubscriber = async (
   events: string[],
   schemaVersion: number = DEFAULT_SCHEMA_VERSION,
 ): Promise<WebhookSubscriber> => {
+  if (!secret || typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `Webhook signing secret must be a non-empty string of at least ${MIN_SECRET_LENGTH} characters`,
+    )
+  }
+
   const check = await isUrlAllowedForOrg(organizationId, url)
   if (!check.allowed) {
     throw new Error(check.reason!)
@@ -578,6 +614,12 @@ export const upsertSubscriber = async (
   secret: string,
   events: string[],
 ): Promise<WebhookSubscriber> => {
+  if (!secret || typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `Webhook signing secret must be a non-empty string of at least ${MIN_SECRET_LENGTH} characters`,
+    )
+  }
+
   const check = await isUrlAllowedForOrg(organizationId, url)
   if (!check.allowed) {
     throw new Error(check.reason!)
@@ -601,6 +643,11 @@ export const rotateSubscriberSecret = async (
   organizationId: string,
   newSecret: string,
 ): Promise<WebhookSubscriber | null> => {
+  if (!newSecret || typeof newSecret !== 'string' || newSecret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `Webhook signing secret must be a non-empty string of at least ${MIN_SECRET_LENGTH} characters`,
+    )
+  }
   return repo.rotateSecret(id, organizationId, newSecret)
 }
 
@@ -653,40 +700,57 @@ const deliverOnce = async (
   payload: WebhookDeliveryPayload,
   timeoutMs = 10_000,
 ): Promise<number> => {
-  const body = buildVersionedPayload(subscriber, payload)
-  const signature = signPayload(subscriber.secret, body)
+  const tracer = getTracer()
+  return tracer.withSpan(
+    'webhook.http_deliver',
+    async (span) => {
+      span.setAttribute('webhook.subscriber_id', subscriber.id)
+      span.setAttribute('webhook.url', subscriber.url)
+      span.setAttribute('webhook.event_type', payload.eventType)
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+      const body = buildVersionedPayload(subscriber, payload)
+      const signature = signPayload(subscriber.secret, body)
 
-  try {
-    const response = await fetch(subscriber.url, {
-      method: 'POST',
-      redirect: 'manual',
-      headers: {
-        'content-type': 'application/json',
-        'x-disciplr-signature': signature,
-        'x-disciplr-event': payload.eventType,
-        'x-disciplr-event-id': payload.eventId,
-        'x-disciplr-delivery-timestamp': payload.timestamp,
-      },
-      body,
-      signal: controller.signal,
-    })
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
 
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location')
-      throw new Error(`Webhook redirect refused${location ? `: ${location}` : ''}`)
-    }
+      try {
+        const response = await fetch(subscriber.url, {
+          method: 'POST',
+          redirect: 'manual',
+          headers: {
+            'content-type': 'application/json',
+            'x-disciplr-signature': signature,
+            'x-disciplr-event': payload.eventType,
+            'x-disciplr-event-id': payload.eventId,
+            'x-disciplr-delivery-timestamp': payload.timestamp,
+          },
+          body,
+          signal: controller.signal,
+        })
 
-    if (response.status >= 400) {
-      throw new Error(`HTTP ${response.status}`)
-    }
+        span.setAttribute('http.status_code', response.status)
 
-    return response.status
-  } finally {
-    clearTimeout(timer)
-  }
+        if (response.status >= 300 && response.status < 400) {
+          const location = response.headers.get('location')
+          const error = new Error(`Webhook redirect refused${location ? `: ${location}` : ''}`)
+          span.setStatus({ code: 'ERROR', message: error.message })
+          throw error
+        }
+
+        if (response.status >= 400) {
+          const error = new Error(`HTTP ${response.status}`)
+          span.setStatus({ code: 'ERROR', message: error.message })
+          throw error
+        }
+
+        span.setStatus({ code: 'OK' })
+        return response.status
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+  )
 }
 
 /**

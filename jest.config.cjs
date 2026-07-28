@@ -20,7 +20,7 @@ module.exports = {
     ],
   },
   setupFiles: ["<rootDir>/jest.setup.cjs"],
-  testMatch: ["**/tests/**/*.test.ts", "**/src/tests/**/*.test.ts", "**/src/repositories/**/*.test.ts"],
+  testMatch: ["**/tests/**/*.test.ts", "**/src/**/*.test.ts"],
   moduleDirectories: ["node_modules", "<rootDir>/node_modules"],
   clearMocks: true,
 };

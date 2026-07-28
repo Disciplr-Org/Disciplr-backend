@@ -25,6 +25,26 @@ import Database from 'better-sqlite3'
 import { getOrSet, closeCache } from '../../lib/cache.js'
 import { AnalyticsBatchLoader } from '../../services/analyticsBatchLoader.js'
 import { getOrgAnalyticsBatched } from '../../services/analytics.service.js'
+import type { DbLike } from '../../services/analyticsBatchLoader.js'
+
+// ---------------------------------------------------------------------------
+// Adapter: wraps synchronous better-sqlite3 into the async DbLike interface
+// so the same production code path can be exercised in unit tests.
+// ---------------------------------------------------------------------------
+
+class SqliteDbAdapter implements DbLike {
+  private db: Database.Database
+
+  constructor(db: Database.Database) {
+    this.db = db
+  }
+
+  async query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }> {
+    const stmt = this.db.prepare(sql)
+    const rows = stmt.all(...(params ?? []))
+    return { rows }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Budget constants
@@ -58,9 +78,10 @@ async function timed<T>(fn: () => Promise<T>): Promise<[T, number]> {
 // In-memory SQLite DB for the vault read path tests
 // ---------------------------------------------------------------------------
 
-const testDb = new Database(':memory:')
+const rawDb = new Database(':memory:')
+const testDb: DbLike = new SqliteDbAdapter(rawDb)
 
-testDb.exec(`
+rawDb.exec(`
   CREATE TABLE IF NOT EXISTS vaults (
     id      TEXT PRIMARY KEY,
     status  TEXT NOT NULL,
@@ -77,13 +98,13 @@ testDb.exec(`
 let milestoneSeq = 0
 
 function seedVault(id: string, status: string, amount: string): void {
-  testDb
+  rawDb
     .prepare('INSERT OR IGNORE INTO vaults (id, status, amount, org_id) VALUES (?, ?, ?, ?)')
     .run(id, status, amount, 'org-bench')
 }
 
 function seedMilestone(vaultId: string, status: string): void {
-  testDb
+  rawDb
     .prepare('INSERT INTO milestones (id, vault_id, status) VALUES (?, ?, ?)')
     .run(`m-bench-${++milestoneSeq}`, vaultId, status)
 }
@@ -292,10 +313,10 @@ describe('Cache read benchmark — hit ratio and latency', () => {
   // ── vault read path ──────────────────────────────────────────────────────
 
   describe('vault read path — getOrgAnalyticsBatched + cache', () => {
-    it('cold-cache vault read issues exactly 2 DB queries (vault batch + milestone batch)', () => {
+    it('cold-cache vault read issues exactly 2 DB queries (vault batch + milestone batch)', async () => {
       const loader = new AnalyticsBatchLoader(testDb)
-      loader.loadVaults(BENCH_VAULT_IDS)
-      loader.loadMilestones(BENCH_VAULT_IDS)
+      await loader.loadVaults(BENCH_VAULT_IDS)
+      await loader.loadMilestones(BENCH_VAULT_IDS)
 
       // Two IN-clause queries — one per entity type, never N per vault
       expect(loader.queries).toBe(2)

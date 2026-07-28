@@ -7,6 +7,7 @@ import type {
   PersistedVault,
 } from "../types/vaults.js";
 import { getOrSet, getOrLoad, invalidate, invalidatePrefix } from "../lib/cache.js";
+import { encodeCursor, decodeCursor } from "../utils/pagination.js";
 
 type UpdateableVaultField =
   | "amount"
@@ -62,7 +63,7 @@ const logVersionConflict = (id: string, revision: string, context: string) => {
   });
 };
 
-const memoryVaults: PersistedVault[] = [];
+let memoryVaults: PersistedVault[] = [];
 const memoryVaultRevisions = new Map<string, number>();
 
 const mapVaultRow = (row: {
@@ -120,6 +121,12 @@ export const createVaultWithMilestones = async (
   const orgId = input.orgId;
 
   if (!client) {
+    if (process.env.NODE_ENV !== "development") {
+      console.warn(
+        "CRITICAL WARNING: Postgres client is unavailable. Falling back to in-memory vault store. Data will NOT be persisted across restarts! This is unexpected outside of development."
+      );
+    }
+
     const vault: PersistedVault = {
       id: vaultId,
       amount: input.amount,
@@ -313,6 +320,176 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
   }));
 };
 
+export interface VaultPage {
+  vaults: PersistedVault[];
+  /** Opaque cursor to pass as `cursor` on the next call to get the next page. */
+  nextCursor: string | null;
+  hasNextPage: boolean;
+}
+
+/**
+ * Fetches a page of vaults scoped to a single org.
+ *
+ * Uses keyset (cursor) pagination on (created_at DESC, id DESC) so it is
+ * O(log n) on the index regardless of total vault count.
+ *
+ * @param orgId   - The organisation whose vaults to return.
+ * @param limit   - Maximum number of vaults per page (default 20, max 100).
+ * @param cursor  - Opaque cursor returned by the previous page; omit for the first page.
+ */
+export const listVaultsByOrg = async (
+  orgId: string,
+  limit = 20,
+  cursor?: string,
+): Promise<VaultPage> => {
+  const safeLimit = Math.min(Math.max(1, limit), 100);
+
+  const pool = getPgPool();
+  if (!pool) {
+    // In-memory fallback: filter, sort, then page.
+    const orgVaults = memoryVaults
+      .filter((v) => v.orgId === orgId)
+      .sort((a, b) => {
+        const timeDiff =
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        if (timeDiff !== 0) return timeDiff;
+        return b.id < a.id ? -1 : b.id > a.id ? 1 : 0;
+      });
+
+    let startIdx = 0;
+    if (cursor) {
+      const { timestamp, id } = decodeCursor(cursor);
+      startIdx = orgVaults.findIndex(
+        (v) =>
+          new Date(v.createdAt).getTime() < timestamp.getTime() ||
+          (new Date(v.createdAt).getTime() === timestamp.getTime() &&
+            v.id < id),
+      );
+      if (startIdx === -1) startIdx = orgVaults.length;
+    }
+
+    const page = orgVaults.slice(startIdx, startIdx + safeLimit + 1);
+    const hasNextPage = page.length > safeLimit;
+    const items = page.slice(0, safeLimit).map((v) => ({
+      ...v,
+      milestones: v.milestones.map((m) => ({ ...m })),
+    }));
+
+    const last = items[items.length - 1];
+    const nextCursor =
+      hasNextPage && last
+        ? encodeCursor(new Date(last.createdAt), last.id)
+        : null;
+
+    return { vaults: items, nextCursor, hasNextPage };
+  }
+
+  // Keyset pagination: fetch one extra row to detect hasNextPage.
+  let vaultRows: {
+    id: string;
+    amount: string;
+    start_date: string;
+    end_date: string;
+    verifier: string;
+    success_destination: string;
+    failure_destination: string;
+    creator: string | null;
+    status: PersistedVault["status"];
+    created_at: string;
+    late_check_in_window_secs: number | null;
+    organization_id: string | null;
+  }[];
+
+  if (cursor) {
+    const { timestamp, id } = decodeCursor(cursor);
+    const result = await pool.query<typeof vaultRows[number]>(
+      `SELECT id, amount::text, start_date, end_date, verifier, success_destination,
+              failure_destination, creator, status, created_at,
+              late_check_in_window_secs, organization_id
+       FROM   vaults
+       WHERE  organization_id = $1
+         AND  (created_at, id) < ($2, $3)
+       ORDER  BY created_at DESC, id DESC
+       LIMIT  $4`,
+      [orgId, timestamp.toISOString(), id, safeLimit + 1],
+    );
+    vaultRows = result.rows;
+  } else {
+    const result = await pool.query<typeof vaultRows[number]>(
+      `SELECT id, amount::text, start_date, end_date, verifier, success_destination,
+              failure_destination, creator, status, created_at,
+              late_check_in_window_secs, organization_id
+       FROM   vaults
+       WHERE  organization_id = $1
+       ORDER  BY created_at DESC, id DESC
+       LIMIT  $2`,
+      [orgId, safeLimit + 1],
+    );
+    vaultRows = result.rows;
+  }
+
+  const hasNextPage = vaultRows.length > safeLimit;
+  const pageRows = vaultRows.slice(0, safeLimit);
+
+  // Fetch milestones only for the vaults on this page.
+  const vaultIds = pageRows.map((r) => r.id);
+  const milestonesByVault = new Map<string, PersistedMilestone[]>();
+
+  if (vaultIds.length > 0) {
+    const milestoneResult = await pool.query<{
+      id: string;
+      vault_id: string;
+      title: string;
+      description: string | null;
+      due_date: string;
+      amount: string;
+      sort_order: number;
+      verifier_user_id: string | null;
+      created_at: string;
+    }>(
+      `SELECT id, vault_id, title, description, due_date, amount::text,
+              sort_order, verifier_user_id, created_at
+       FROM   milestones
+       WHERE  vault_id = ANY($1)
+       ORDER  BY sort_order ASC`,
+      [vaultIds],
+    );
+
+    for (const m of milestoneResult.rows) {
+      const mapped: PersistedMilestone = {
+        id: m.id,
+        vaultId: m.vault_id,
+        title: m.title,
+        description: m.description,
+        dueDate: m.due_date,
+        amount: m.amount,
+        sortOrder: m.sort_order,
+        verifierUserId: m.verifier_user_id,
+        createdAt: m.created_at,
+      };
+      const existing = milestonesByVault.get(m.vault_id);
+      if (existing) {
+        existing.push(mapped);
+      } else {
+        milestonesByVault.set(m.vault_id, [mapped]);
+      }
+    }
+  }
+
+  const vaults: PersistedVault[] = pageRows.map((row) => ({
+    ...mapVaultRow(row),
+    milestones: milestonesByVault.get(row.id) ?? [],
+  }));
+
+  const last = vaults[vaults.length - 1];
+  const nextCursor =
+    hasNextPage && last
+      ? encodeCursor(new Date(last.createdAt), last.id)
+      : null;
+
+  return { vaults, nextCursor, hasNextPage };
+};
+
 export const updateVaultById = async (
   id: string,
   revision: string,
@@ -467,6 +644,20 @@ export const getVaultById = async (
 export const resetVaultStore = (): void => {
   memoryVaults.length = 0;
   memoryVaultRevisions.clear();
+};
+
+/**
+ * Sets the in-memory vault array for test purposes.
+ * This allows tests to seed vault data without requiring a database.
+ * @param newVaults - Array of vault objects to use for testing
+ */
+export const setTestVaults = (newVaults: PersistedVault[]): void => {
+  memoryVaults.length = 0;
+  memoryVaults.push(...newVaults);
+  // Reset revisions for all test vaults
+  newVaults.forEach(vault => {
+    memoryVaultRevisions.set(vault.id, 0);
+  });
 };
 
 export const getVaultRevisionById = async (

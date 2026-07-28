@@ -130,6 +130,16 @@ const decodeKey = (kid: string, raw: string): Buffer => {
  *   - If neither is set, EncryptionKeyError is thrown (fail closed): an
  *     encryption helper with no keys is a misconfiguration, never a no-op.
  *
+ * Per-entry validation:
+ *   - A malformed or invalid entry at index 0 (the active key) is always fatal:
+ *     encrypting new data would be impossible without a valid active key.
+ *   - A malformed or invalid entry at any later index (a retired/rotation key)
+ *     is skipped with a console.warn rather than aborting entirely. A single
+ *     operator typo in a low-priority retired key must not break field
+ *     encryption/decryption for the active key that is otherwise valid.
+ *     The skipped entry's kid is never added to the duplicate-id set, so a
+ *     bad retired entry cannot trigger a spurious duplicate error.
+ *
  * Duplicate key ids are rejected so a typo cannot make a retired key
  * unexpectedly shadow the active one.
  */
@@ -152,20 +162,43 @@ export const resolveKeys = (): FieldEncryptionKey[] => {
         'FIELD_ENCRYPTION_KEYS must be a non-empty JSON array of { kid, key } objects',
       )
     }
-    keys = parsed.map((entry, i) => {
+    keys = []
+    for (let i = 0; i < parsed.length; i++) {
+      const entry = parsed[i]
+      const isActive = i === 0
+
+      // Shape validation
       if (
         typeof entry !== 'object' ||
         entry === null ||
         typeof (entry as any).kid !== 'string' ||
         typeof (entry as any).key !== 'string'
       ) {
-        throw new EncryptionKeyError(
-          `FIELD_ENCRYPTION_KEYS[${i}] must be an object with string "kid" and "key" fields`,
-        )
+        const msg =
+          `FIELD_ENCRYPTION_KEYS[${i}] must be an object with string "kid" and "key" fields`
+        if (isActive) {
+          throw new EncryptionKeyError(msg)
+        }
+        console.warn(`[encryption] Skipping malformed retired key at index ${i}: ${msg}`)
+        continue
       }
+
       const kid = (entry as any).kid as string
-      return { kid, key: decodeKey(kid, (entry as any).key as string) }
-    })
+      let keyBuf: Buffer
+      try {
+        keyBuf = decodeKey(kid, (entry as any).key as string)
+      } catch (e) {
+        if (isActive) {
+          throw e
+        }
+        console.warn(
+          `[encryption] Skipping invalid retired key "${kid}" at index ${i}: ${(e as Error).message}`,
+        )
+        continue
+      }
+
+      keys.push({ kid, key: keyBuf })
+    }
   } else if (singleKey && singleKey.trim() !== '') {
     keys = [{ kid: DEFAULT_KEY_ID, key: decodeKey(DEFAULT_KEY_ID, singleKey) }]
   }
@@ -301,3 +334,51 @@ export const encryptNullable = (plaintext: string | null | undefined): string | 
  */
 export const decryptNullable = (stored: string | null | undefined): string | null =>
   stored === null || stored === undefined ? null : decryptField(stored)
+
+export interface KeyUsageAuditReport {
+  countsByKid: Record<string, number>
+  unencryptedCount: number
+  unknownKidCount: number
+  totalCount: number
+}
+
+/**
+ * Extracts the key ID (`kid`) from a ciphertext string produced by `encryptField`.
+ * Returns `null` if the value is not encrypted under a valid v1 scheme.
+ */
+export function getKeyId(stored: string): string | null {
+  if (!isEncrypted(stored)) return null
+  return stored.split(':')[1] ?? null
+}
+
+/**
+ * Audits a collection of stored field values to count how many rows are encrypted under
+ * each key ID (`kid`), how many are unencrypted, and how many use unknown/unconfigured key IDs.
+ */
+export function auditKeyUsage(records: (string | null | undefined)[]): KeyUsageAuditReport {
+  const configuredKids = new Set(resolveKeys().map((k) => k.kid))
+  const countsByKid: Record<string, number> = {}
+  let unencryptedCount = 0
+  let unknownKidCount = 0
+  let totalCount = 0
+
+  for (const record of records) {
+    if (record === null || record === undefined) continue
+    totalCount++
+    if (!isEncrypted(record)) {
+      unencryptedCount++
+      continue
+    }
+    const kid = getKeyId(record)
+    if (kid === null) {
+      unencryptedCount++
+    } else {
+      countsByKid[kid] = (countsByKid[kid] ?? 0) + 1
+      if (!configuredKids.has(kid)) {
+        unknownKidCount++
+      }
+    }
+  }
+
+  return { countsByKid, unencryptedCount, unknownKidCount, totalCount }
+}

@@ -1,9 +1,9 @@
 import type { Store, Options, ClientRateLimitInfo } from 'express-rate-limit'
-import type Redis from 'ioredis'
+import type { Redis } from 'ioredis'
 
 export class RedisStore implements Store {
   private redis: Redis
-  private prefix: string
+  prefix: string
   private windowMs: number
 
   constructor(redis: Redis, prefix: string = 'rl:') {

@@ -48,6 +48,7 @@ import { runReindexBatches, EMBEDDING_REINDEX_JOB_NAME } from '../services/evide
 import { MilestoneRepository } from '../repositories/milestoneRepository.js'
 import { BackfillCursorStore } from '../services/backfillCursorStore.js'
 import { TransactionETLService } from '../services/transactionETL.js'
+import { resolveETLConfig } from '../services/etlWorker.js'
 
 export const adminRouter = Router()
 
@@ -64,12 +65,16 @@ const ValidOverrideReasonCodes = [
 
 type OverrideReasonCode = (typeof ValidOverrideReasonCodes)[number]
 
-// Track processed overrides for idempotency (in production, use distributed cache like Redis)
-const processedOverrides = new Map<string, { auditLogId: string; timestamp: string }>()
+import { DbIdempotencyStore } from '../services/idempotency.js'
+
+// Track processed overrides for idempotency
+const processedOverrides = new DbIdempotencyStore(db)
 
 // Test helper - clear processed overrides for test isolation
-export const clearProcessedOverrides = (): void => {
-  processedOverrides.clear()
+export const clearProcessedOverrides = async (): Promise<void> => {
+  if (process.env.NODE_ENV === 'test') {
+    await db('idempotency_keys').delete()
+  }
 }
 
 // Export valid reason codes for tests and documentation
@@ -79,7 +84,7 @@ const isValidReasonCode = (reason: unknown): reason is OverrideReasonCode =>
   typeof reason === 'string' && ValidOverrideReasonCodes.includes(reason as OverrideReasonCode)
 
 // Sanitize reason text to prevent PII/secrets leakage
-const sanitizeReasonText = (reason: string): string => {
+export const sanitizeReasonText = (reason: string): string => {
   // Remove potential secrets/PII patterns
   return reason
     .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g, '[REDACTED_EMAIL]')
@@ -422,8 +427,10 @@ adminRouter.get(
   }),
   async (req, res) => {
     try {
-      const limit = getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined
-      const offset = getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined
+      const rawLimit = getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined
+      const rawOffset = getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined
+      const limit = rawLimit !== undefined && Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(100, Math.floor(rawLimit)) : undefined
+      const offset = rawOffset !== undefined && Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : undefined
 
       const logs = await listAuditLogs({
         organization_id: (req.filters as any)?.organization_id,
@@ -544,8 +551,9 @@ adminRouter.post('/overrides/vaults/:id/cancel', requireStepUp(), async (req, re
 
   // 2. Check idempotency - prevent repeated overrides
   const effectiveIdempotencyKey = idempotencyKey ?? `${req.user!.userId}:${id}:cancel`
-  const existingOverride = processedOverrides.get(effectiveIdempotencyKey)
-  if (existingOverride) {
+  const existingOverrideRaw = await processedOverrides.getStoredResponse(effectiveIdempotencyKey, { userId: req.user!.userId, orgId: null })
+  if (existingOverrideRaw) {
+    const existingOverride = typeof existingOverrideRaw === 'string' ? JSON.parse(existingOverrideRaw) : existingOverrideRaw
     res.status(409).json({
       error: 'Override already processed - idempotent replay',
       idempotencyKey: effectiveIdempotencyKey,
@@ -575,10 +583,10 @@ adminRouter.post('/overrides/vaults/:id/cancel', requireStepUp(), async (req, re
           idempotency_key: effectiveIdempotencyKey,
         },
       })
-      processedOverrides.set(effectiveIdempotencyKey, {
+      await processedOverrides.storeResponse(effectiveIdempotencyKey, {
         auditLogId: auditLog.id,
         timestamp: auditLog.created_at,
-      })
+      }, { userId: req.user!.userId, orgId: null })
 
       res.status(409).json({
         error: 'Vault is already cancelled',
@@ -631,10 +639,10 @@ adminRouter.post('/overrides/vaults/:id/cancel', requireStepUp(), async (req, re
   })
 
   // 6. Record for idempotency
-  processedOverrides.set(effectiveIdempotencyKey, {
+  await processedOverrides.storeResponse(effectiveIdempotencyKey, {
     auditLogId: auditLog.id,
     timestamp: auditLog.created_at,
-  })
+  }, { userId: req.user!.userId, orgId: null })
 
   res.status(200).json({
     vault: cancelResult.vault,
@@ -647,7 +655,8 @@ adminRouter.post('/overrides/vaults/:id/cancel', requireStepUp(), async (req, re
 
 adminRouter.get('/transaction-etl/drift-report', async (req, res) => {
   try {
-    const etl = new TransactionETLService({ horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org', batchSize: Number(req.query.batchSize) || 50 })
+    const config = resolveETLConfig()
+    const etl = new TransactionETLService({ ...config, batchSize: Number(req.query.batchSize) || 50 })
     const report = await etl.reconcileVaults()
     res.status(200).json(report)
   } catch (error) {
@@ -659,7 +668,8 @@ adminRouter.get('/transaction-etl/drift-report', async (req, res) => {
 adminRouter.post('/vaults/:id/auto-repair', requireStepUp(), async (req, res) => {
   try {
     const { id } = req.params
-    const etl = new TransactionETLService({ horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org', batchSize: 50 })
+    const config = resolveETLConfig()
+    const etl = new TransactionETLService({ ...config, batchSize: 50 })
     
     const result = await etl.autoRepairVault(id, req.user!.userId)
     
@@ -682,12 +692,14 @@ adminRouter.post('/vaults/:id/auto-repair', requireStepUp(), async (req, res) =>
 // User Management Endpoints
 adminRouter.get('/users', async (req, res) => {
   try {
+    const rawLimit = getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined
+    const rawOffset = getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined
     const filters = {
       role: getStringQuery(req.query.role) as UserRole | undefined,
       status: getStringQuery(req.query.status) as UserStatus | undefined,
       search: getStringQuery(req.query.search),
-      limit: getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined,
-      offset: getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined,
+      limit: rawLimit !== undefined && Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(100, Math.floor(rawLimit)) : undefined,
+      offset: rawOffset !== undefined && Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : undefined,
       includeDeleted: req.query.includeDeleted === 'true',
     }
 
@@ -773,7 +785,7 @@ adminRouter.delete(
     let result: DeleteResult | null
 
     if (hard) {
-      result = await userService.hardDeleteUser(req.params.id)
+      result = await userService.hardDeleteUser(req.params.id, req.user!.userId)
     } else {
       result = await userService.softDeleteUser(req.params.id)
     }
@@ -789,22 +801,26 @@ adminRouter.delete(
       })
     }
 
-    const auditLog = await createAuditLog({
-      actor_user_id: req.user!.userId,
-      action: hard ? 'user.hard_delete' : 'user.soft_delete',
-      target_type: 'user',
-      target_id: req.params.id,
-      metadata: {
-        deletion_type: result.deletionType,
-        deleted_at: result.deletedAt,
-        target_email: targetUser.email
-      },
-    })
+    let auditLog
+
+    if (!hard) {
+      auditLog = await createAuditLog({
+        actor_user_id: req.user!.userId,
+        action: 'user.soft_delete',
+        target_type: 'user',
+        target_id: req.params.id,
+        metadata: {
+          deletion_type: result.deletionType,
+          deleted_at: result.deletedAt,
+          target_email: targetUser.email
+        },
+      })
+    }
 
     res.status(200).json({
       message: hard ? 'User permanently deleted' : 'User soft-deleted',
       result,
-      auditLogId: auditLog.id
+      ...(auditLog ? { auditLogId: auditLog.id } : {})
     })
   } catch (error) {
     res.status(500).json({ error: 'Internal server error' })
@@ -891,12 +907,10 @@ adminRouter.get('/db/metrics', metricsRateLimiter, async (req: Request, res: Res
           total: metrics.pool.totalConnections,
           capacity: metrics.pool.poolSize,
         },
-        slowQueries: metrics.slowQueries.map((query) => ({
-          hash: query.queryHash,
-          pattern: query.queryPattern,
-          maxDurationMs: query.duration,
-          occurrences: query.count,
-          lastOccurred: query.lastOccurred,
+        slowQueries: metrics.slowQueries.map((entry) => ({
+          fingerprint: entry.fingerprint,
+          durationMs: entry.durationMs,
+          capturedAt: entry.capturedAt,
         })),
         warnings: metrics.warnings,
       },
