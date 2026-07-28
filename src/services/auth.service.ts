@@ -339,5 +339,3 @@ export class AuthService {
         return { credentialId, counter: newCounter }
     }
 }
-</absolute_path>
-</create_file>

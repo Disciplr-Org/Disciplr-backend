@@ -1,8 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
- #1037-Export-download-authorization-relies-on-isOrgMember(),-a-dead-in-memory-check-that's-never-populated-(src/routes/exports.ts)-FIX
 
-import { completeVault } from '../services/vaultTransitions.js'
 import { vaults } from './vaults.js'
 
 import { requireUser, requireVerifier } from '../middleware/rbac.js'
@@ -36,9 +34,6 @@ import db from '../db/index.js'
 export const milestonesRouter = Router({ mergeParams: true })
 
 // POST /api/vaults/:vaultId/milestones
- #1037-Export-download-authorization-relies-on-isOrgMember(),-a-dead-in-memory-check-that's-never-populated-(src/routes/exports.ts)-FIX
-milestonesRouter.post('/', authenticate, requireUser, (req: Request, res: Response, next: NextFunction) => {
-
 milestonesRouter.post('/', authenticate, requireUser, async (req: Request, res: Response, next: NextFunction) => {
 
   const { vaultId } = req.params
@@ -76,10 +71,7 @@ milestonesRouter.post('/', authenticate, requireUser, async (req: Request, res: 
 })
 
 // GET /api/vaults/:vaultId/milestones
- #1037-Export-download-authorization-relies-on-isOrgMember(),-a-dead-in-memory-check-that's-never-populated-(src/routes/exports.ts)-FIX
-milestonesRouter.get('/', authenticate, (req: Request, res: Response, next: NextFunction) => {
-
-milestonesRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
+milestonesRouter.get('/', authenticate, async (req: Request, res: Response, next: NextFunction) => {
 
   const { vaultId } = req.params
   const vault = await getVaultById(vaultId)
@@ -93,9 +85,6 @@ milestonesRouter.get('/', async (req: Request, res: Response, next: NextFunction
 })
 
 // PATCH /api/vaults/:vaultId/milestones/:id/verify
-#1037-Export-download-authorization-relies-on-isOrgMember(),-a-dead-in-memory-check-that's-never-populated-(src/routes/exports.ts)-FIX
-milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, (req: Request, res: Response, next: NextFunction) => {
-
 milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, async (req: Request, res: Response, next: NextFunction) => {
 
   const { vaultId, id } = req.params
@@ -117,16 +106,10 @@ milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, async (req:
 
   let vaultCompleted = false
   if (allMilestonesVerified(vaultId) && vault.status === 'active') {
- #1037-Export-download-authorization-relies-on-isOrgMember(),-a-dead-in-memory-check-that's-never-populated-(src/routes/exports.ts)-FIX
-    const result = completeVault(vaultId)
-    vaultCompleted = result.success
-
-    // Use DB-backed transition
     const trxResult = await db.transaction(async (trx) => {
       return await transitionVaultStatus(trx, vaultId, 'completed')
     })
     vaultCompleted = trxResult.success
-
   }
 
   res.json({ milestone: verified, vaultCompleted })
