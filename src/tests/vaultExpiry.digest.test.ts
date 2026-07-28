@@ -487,5 +487,26 @@ describe('digestRenderer', () => {
       expect(formatLeadTime(24 * 60 * 60 * 1000)).toBe('1 day')
       expect(formatLeadTime(72 * 60 * 60 * 1000)).toBe('3 days')
     })
+
+    it('uses floor (conservative) not round for sub-boundary day durations (#1291)', () => {
+      // 35 h = 1.46 days → Math.round would give "1 days"; floor gives "1 day"
+      expect(formatLeadTime(35 * 60 * 60 * 1000)).toBe('1 day')
+      // 47 h = 1.96 days → Math.round would give "2 days"; floor gives "1 day"
+      expect(formatLeadTime(47 * 60 * 60 * 1000)).toBe('1 day')
+      // 60 h = 2.5 days → Math.round would give "3 days" (misleadingly urgent); floor gives "2 days"
+      expect(formatLeadTime(60 * 60 * 60 * 1000)).toBe('2 days')
+      // 71 h = 2.96 days → Math.round would give "3 days"; floor gives "2 days"
+      expect(formatLeadTime(71 * 60 * 60 * 1000)).toBe('2 days')
+    })
+
+    it('uses singular "day" not "1 days" for exactly-floor-to-1-day durations (#1291)', () => {
+      // 25 h floors to 1 → must be "1 day", not "1 days"
+      expect(formatLeadTime(25 * 60 * 60 * 1000)).toBe('1 day')
+    })
+
+    it('uses plural "days" for durations flooring to 2 or more days', () => {
+      expect(formatLeadTime(48 * 60 * 60 * 1000)).toBe('2 days')
+      expect(formatLeadTime(96 * 60 * 60 * 1000)).toBe('4 days')
+    })
   })
 })

@@ -1,3 +1,4 @@
+import { getEnv } from '../config/env.js'
 import { getPrisma } from '../lib/prismaScope.js'
 import { hashPassword, comparePassword, generateAccessToken, generateRefreshToken, verifyRefreshToken, hashToken } from '../lib/auth-utils.js'
 import { createAuditLog } from '../lib/audit-logs.js'
@@ -82,6 +83,7 @@ export class AuthService {
             tokenFingerprint: tokenHash.slice(0, 12),
         }, userId)
     }
+
     static async register(input: RegisterInput) {
         try {
             await this.ensurePasswordIsAllowed(input.password, { email: input.email })
@@ -337,4 +339,5 @@ export class AuthService {
         return { credentialId, counter: newCounter }
     }
 }
-
+</absolute_path>
+</create_file>

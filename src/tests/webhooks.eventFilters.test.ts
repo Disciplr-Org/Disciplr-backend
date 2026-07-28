@@ -79,20 +79,20 @@ beforeEach(() => {
 
 describe('addSubscriber event type validation', () => {
   it('accepts empty events array (wildcard)', async () => {
-    const sub = await addSubscriber(TEST_ORG, 'https://example.com/hook', 'secret', [])
+    const sub = await addSubscriber(TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key', [])
     expect(sub.events).toEqual([])
   })
 
   it('accepts known event types', async () => {
     for (const event of KNOWN_EVENT_TYPES) {
-      const sub = await addSubscriber(TEST_ORG, 'https://example.com/hook', 'secret', [event])
+      const sub = await addSubscriber(TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key', [event])
       expect(sub.events).toEqual([event])
     }
   })
 
   it('accepts multiple known event types', async () => {
     const sub = await addSubscriber(
-      TEST_ORG, 'https://example.com/hook', 'secret',
+      TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key',
       ['vault_created', 'vault_completed'],
     )
     expect(sub.events).toEqual(['vault_created', 'vault_completed'])
@@ -100,14 +100,14 @@ describe('addSubscriber event type validation', () => {
 
   it('rejects unknown event types', async () => {
     await expect(
-      addSubscriber(TEST_ORG, 'https://example.com/hook', 'secret', ['vault_slashed']),
+      addSubscriber(TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key', ['vault_slashed']),
     ).rejects.toThrow('Unknown event type: "vault_slashed"')
   })
 
   it('rejects if any event type is unknown', async () => {
     await expect(
       addSubscriber(
-        TEST_ORG, 'https://example.com/hook', 'secret',
+        TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key',
         ['vault_created', 'vault_slashed'],
       ),
     ).rejects.toThrow('Unknown event type: "vault_slashed"')
@@ -131,7 +131,7 @@ describe('dispatchWebhookEvent event type filtering', () => {
   })
 
   it('delivers to subscriber with empty events (wildcard)', async () => {
-    await addSubscriber(TEST_ORG, 'https://example.com/hook', 'secret', [])
+    await addSubscriber(TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key', [])
     fetchMock.mockResolvedValue({ status: 200 } as Response)
 
     const results = await dispatchWebhookEvent(makePayload('vault_created'))
@@ -140,7 +140,7 @@ describe('dispatchWebhookEvent event type filtering', () => {
   })
 
   it('delivers when subscriber event type matches', async () => {
-    await addSubscriber(TEST_ORG, 'https://example.com/hook', 'secret', ['vault_completed'])
+    await addSubscriber(TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key', ['vault_completed'])
     fetchMock.mockResolvedValue({ status: 200 } as Response)
 
     const results = await dispatchWebhookEvent(makePayload('vault_completed'))
@@ -149,7 +149,7 @@ describe('dispatchWebhookEvent event type filtering', () => {
   })
 
   it('skips delivery when subscriber event type does not match', async () => {
-    await addSubscriber(TEST_ORG, 'https://example.com/hook', 'secret', ['vault_completed'])
+    await addSubscriber(TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key', ['vault_completed'])
     fetchMock.mockResolvedValue({ status: 200 } as Response)
 
     const results = await dispatchWebhookEvent(makePayload('vault_created'))
@@ -158,9 +158,9 @@ describe('dispatchWebhookEvent event type filtering', () => {
   })
 
   it('delivers only to matching subscribers among many', async () => {
-    await addSubscriber(TEST_ORG, 'https://a.example.com/hook', 'secret', ['vault_created'])
-    await addSubscriber(TEST_ORG, 'https://b.example.com/hook', 'secret', ['vault_completed'])
-    await addSubscriber(TEST_ORG, 'https://c.example.com/hook', 'secret', [])
+    await addSubscriber(TEST_ORG, 'https://a.example.com/hook', 'a-valid-secret-key', ['vault_created'])
+    await addSubscriber(TEST_ORG, 'https://b.example.com/hook', 'a-valid-secret-key', ['vault_completed'])
+    await addSubscriber(TEST_ORG, 'https://c.example.com/hook', 'a-valid-secret-key', [])
     fetchMock.mockResolvedValue({ status: 200 } as Response)
 
     const results = await dispatchWebhookEvent(makePayload('vault_created'))
@@ -170,7 +170,7 @@ describe('dispatchWebhookEvent event type filtering', () => {
   })
 
   it('works with milestone and settlement event types', async () => {
-    await addSubscriber(TEST_ORG, 'https://example.com/hook', 'secret', ['milestone_created'])
+    await addSubscriber(TEST_ORG, 'https://example.com/hook', 'a-valid-secret-key', ['milestone_created'])
     fetchMock.mockResolvedValue({ status: 200 } as Response)
 
     const results = await dispatchWebhookEvent(makePayload('milestone_created'))

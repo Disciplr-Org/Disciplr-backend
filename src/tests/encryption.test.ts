@@ -13,7 +13,7 @@
  * fresh on every call, so each test sets the exact key set it needs.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from '@jest/globals'
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals'
 import { randomBytes } from 'node:crypto'
 import {
   encryptField,
@@ -21,6 +21,8 @@ import {
   encryptNullable,
   decryptNullable,
   isEncrypted,
+  getKeyId,
+  auditKeyUsage,
   resolveKeys,
   DecryptionError,
   EncryptionKeyError,
@@ -291,6 +293,66 @@ describe('key configuration validation', () => {
     expect(() => resolveKeys()).toThrow(/Duplicate field encryption key id "dup"/)
   })
 
+  it('skips a malformed retired key (index > 0) and warns, without affecting the active key', () => {
+    const activeKey = genKey()
+    delete process.env.FIELD_ENCRYPTION_KEY
+    // Index 1 is missing the "key" field — should be skipped with a warning.
+    process.env.FIELD_ENCRYPTION_KEYS = JSON.stringify([
+      { kid: 'active', key: activeKey },
+      { kid: 'bad-retired' }, // missing key field
+    ])
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    let resolved: ReturnType<typeof resolveKeys> | undefined
+    expect(() => { resolved = resolveKeys() }).not.toThrow()
+    expect(resolved).toHaveLength(1)
+    expect(resolved![0].kid).toBe('active')
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Skipping malformed retired key at index 1'),
+    )
+    warnSpy.mockRestore()
+  })
+
+  it('skips a retired key with an invalid base64/length value and warns', () => {
+    const activeKey = genKey()
+    delete process.env.FIELD_ENCRYPTION_KEY
+    // Index 1 has a key that is only 16 bytes — too short.
+    process.env.FIELD_ENCRYPTION_KEYS = JSON.stringify([
+      { kid: 'active', key: activeKey },
+      { kid: 'short-retired', key: randomBytes(16).toString('base64') },
+    ])
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    let resolved: ReturnType<typeof resolveKeys> | undefined
+    expect(() => { resolved = resolveKeys() }).not.toThrow()
+    expect(resolved).toHaveLength(1)
+    expect(resolved![0].kid).toBe('active')
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Skipping invalid retired key "short-retired"'),
+    )
+    warnSpy.mockRestore()
+  })
+
+  it('still throws fatally when the active key (index 0) is malformed', () => {
+    delete process.env.FIELD_ENCRYPTION_KEY
+    // Index 0 is missing the "key" field — must throw, not skip.
+    process.env.FIELD_ENCRYPTION_KEYS = JSON.stringify([
+      { kid: 'bad-active' }, // missing key field — active key
+      { kid: 'ok-retired', key: genKey() },
+    ])
+    expect(() => resolveKeys()).toThrow(EncryptionKeyError)
+    expect(() => resolveKeys()).toThrow(/string "kid" and "key"/)
+  })
+
+  it('still throws fatally when the active key (index 0) has invalid key material', () => {
+    delete process.env.FIELD_ENCRYPTION_KEY
+    // Active key is only 16 bytes — must throw.
+    process.env.FIELD_ENCRYPTION_KEYS = JSON.stringify([
+      { kid: 'short-active', key: randomBytes(16).toString('base64') },
+      { kid: 'ok-retired', key: genKey() },
+    ])
+    expect(() => resolveKeys()).toThrow(EncryptionKeyError)
+    expect(() => resolveKeys()).toThrow(/must decode to 32 bytes/)
+  })
+
   it('prefers FIELD_ENCRYPTION_KEYS over FIELD_ENCRYPTION_KEY when both are set', () => {
     process.env.FIELD_ENCRYPTION_KEY = genKey()
     process.env.FIELD_ENCRYPTION_KEYS = JSON.stringify([{ kid: 'json-key', key: genKey() }])
@@ -316,5 +378,51 @@ describe('encryptNullable / decryptNullable', () => {
     expect(encrypted).not.toBeNull()
     expect(isEncrypted(encrypted!)).toBe(true)
     expect(decryptNullable(encrypted)).toBe('present')
+  })
+})
+
+// ─── Key Rotation Auditing ───────────────────────────────────────────────────────
+
+describe('getKeyId and auditKeyUsage', () => {
+  beforeEach(() => useSingleKey())
+
+  it('getKeyId extracts kid from encrypted string and returns null for unencrypted string', () => {
+    const encrypted = encryptField('test-secret')
+    expect(getKeyId(encrypted)).toBe('default')
+    expect(getKeyId('unencrypted-plaintext')).toBeNull()
+  })
+
+  it('auditKeyUsage counts records by kid, unencrypted rows, and unknown kids', () => {
+    const k1 = genKey()
+    const k2 = genKey()
+    delete process.env.FIELD_ENCRYPTION_KEY
+    process.env.FIELD_ENCRYPTION_KEYS = JSON.stringify([
+      { kid: 'k1', key: k1 },
+      { kid: 'k2', key: k2 },
+    ])
+
+    const encK1 = encryptField('data1')
+    const encK1_2 = encryptField('data2')
+
+    // Write under k2
+    process.env.FIELD_ENCRYPTION_KEYS = JSON.stringify([
+      { kid: 'k2', key: k2 },
+      { kid: 'k1', key: k1 },
+    ])
+    const encK2 = encryptField('data3')
+
+    const fakeUnknownKidEnc = 'v1:retired_kid:iv:tag:cipher'
+
+    const records = [encK1, encK1_2, encK2, 'plaintext_secret', fakeUnknownKidEnc, null, undefined]
+
+    const report = auditKeyUsage(records)
+    expect(report.totalCount).toBe(5)
+    expect(report.unencryptedCount).toBe(1)
+    expect(report.unknownKidCount).toBe(1)
+    expect(report.countsByKid).toEqual({
+      k1: 2,
+      k2: 1,
+      retired_kid: 1,
+    })
   })
 })

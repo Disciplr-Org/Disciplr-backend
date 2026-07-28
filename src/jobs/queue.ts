@@ -483,6 +483,18 @@ export class InMemoryJobQueue {
     }
   }
 
+  private recordFailedJob(job: InternalQueuedJob<JobType>, error: string): void {
+    this.totals.failed += 1
+    this.failedJobs.unshift({
+      jobId: job.id,
+      type: job.type,
+      failedAt: new Date().toISOString(),
+      attempts: job.attempt,
+      error,
+    })
+    this.trimHistory(this.failedJobs)
+  }
+
   private recordCompletedJob(job: InternalQueuedJob<JobType>, durationMs: number): void {
     this.totals.completed += 1
     this.completedJobs.unshift({

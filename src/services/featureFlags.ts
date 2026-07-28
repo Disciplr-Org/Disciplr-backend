@@ -164,10 +164,32 @@ export async function getFlag(
   orgId: string | null,
   context: FeatureFlagContext = {},
 ): Promise<boolean> {
-  // Org-specific and fallback-to-global lookups share one cache key per
-  // (name, orgId, context), since an org either has an override or falls
-  // through to the global evaluation - never both in the same call.
-  const cacheKey = getCacheKey(name, orgId, orgId ? context : undefined)
+  // Try organization-specific flag first (if orgId provided)
+  if (orgId) {
+    const cacheKey = getCacheKey(name, orgId, context)
+    const cached = cache.get(cacheKey)
+    if (cached !== null) {
+      return cached
+    }
+
+    try {
+      const row = await db('feature_flags').where({ name, org_id: orgId }).first() as FeatureFlagRow | undefined
+      if (row) {
+        const value = coerceBoolean(row.enabled)
+        cache.set(cacheKey, value)
+        return value
+      }
+    } catch (error) {
+      console.error(`Error fetching org-specific flag ${name} for org ${orgId}:`, error)
+    }
+  }
+
+  // Fall back to global default (org_id = null)
+  const globalCacheKey = getCacheKey(name, orgId, orgId ? context : undefined)
+  const globalCached = cache.get(globalCacheKey)
+  if (globalCached !== null) {
+    return globalCached
+  }
 
   try {
     return await getOrSet<boolean>(cacheKey, FLAG_CACHE_TTL_SECONDS, async () => {

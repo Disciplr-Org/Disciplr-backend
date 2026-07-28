@@ -22,7 +22,8 @@ import {
   securityMetricsMiddleware,
   securityRateLimitMiddleware,
 } from "./security/abuse-monitor.js";
-import { initializeDatabase, closeDatabase } from "./db/database.js";
+import { initializeDatabase } from "./db/database.js";
+import { closePgPool } from "./db/pool.js";
 import { getEtlWorker } from "./services/etlWorker.js";
 import { createShutdownHandler } from "./server/shutdown.js";
 import { createNotificationService } from "./services/notifications/factory.js";
@@ -87,7 +88,7 @@ const shutdownHandler = createShutdownHandler({
   server,
   jobSystem,
   etlWorker,
-  closeDb: closeDatabase,
+  closeDb: closePgPool,
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

@@ -46,14 +46,20 @@ function parseStatusSet(raw: string): Set<number> {
  *
  * All sensitive fields are automatically redacted by Pino's redact configuration.
  */
+const DOWNLOAD_TOKEN_RE = /(\/api\/exports\/download\/)[^/?]+/
+
+function sanitizeUrl(url: string): string {
+  return url.replace(DOWNLOAD_TOKEN_RE, '$1[Redacted]')
+}
+
 export const requestLogger = (req: Request, res: Response, next: NextFunction) => {
   const start = Date.now()
   const correlationId = getOrGenerateCorrelationId(req)
   const requestLogger = withCorrelationId(logger, correlationId)
 
   const method = req.method
-  const url = req.originalUrl
-  const path = req.path
+  const url = sanitizeUrl(req.originalUrl)
+  const path = sanitizeUrl(req.path)
   const queryString = req.url.includes('?') ? req.url.split('?')[1] : undefined
   const userId = req.headers['x-user-id'] as string | undefined
   const userRole = req.headers['x-user-role'] as string | undefined

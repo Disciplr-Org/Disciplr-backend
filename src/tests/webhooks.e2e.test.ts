@@ -61,7 +61,7 @@ describe('Webhook Delivery Pipeline (E2E)', () => {
   })
 
   it('successfully delivers a signed webhook when an event matches the subscriber filter', async () => {
-    const secret = 'super-secret'
+    const secret = 'super-secret-key-long'
     const targetUrl = `http://127.0.0.2:${sinkPort}/hook`
     
     addSubscriber(targetUrl, secret, ['vault_completed'])
@@ -91,7 +91,7 @@ describe('Webhook Delivery Pipeline (E2E)', () => {
   })
 
   it('retries delivery when the sink initially fails and eventually succeeds', async () => {
-    const secret = 'retry-secret'
+    const secret = 'retry-secret-key-123'
     addSubscriber(`http://127.0.0.2:${sinkPort}/retry`, secret, ['vault_completed'])
     
     sinkStatusQueue.push(503, 200)
@@ -107,7 +107,7 @@ describe('Webhook Delivery Pipeline (E2E)', () => {
   }, 10000)
 
   it('detects a signature mismatch if validated against the wrong secret', async () => {
-    const secret = 'correct-secret'
+    const secret = 'correct-secret-123'
     addSubscriber(`http://127.0.0.2:${sinkPort}/sig`, secret, ['vault_completed'])
     
     await processor.processEvent(mockVaultCreatedEvent)
@@ -118,12 +118,12 @@ describe('Webhook Delivery Pipeline (E2E)', () => {
     expect(receivedRequests).toHaveLength(1)
     const req = receivedRequests[0]
     
-    const wrongSig = signPayload('wrong-secret', req.body)
+    const wrongSig = signPayload('wrong-secret-12345', req.body)
     expect(req.headers['x-disciplr-signature']).not.toBe(wrongSig)
   })
 
   it('does not deliver if the event type does not match the subscriber filter', async () => {
-    addSubscriber(`http://127.0.0.2:${sinkPort}/nomatch`, 'secret', ['vault_failed'])
+    addSubscriber(`http://127.0.0.2:${sinkPort}/nomatch`, 'a-valid-secret-key', ['vault_failed'])
     
     await processor.processEvent(mockVaultCreatedEvent)
     await processor.processEvent(mockVaultCompletedEvent)
@@ -135,10 +135,10 @@ describe('Webhook Delivery Pipeline (E2E)', () => {
 
   it('rejects an SSRF-blocked URL and does not attempt delivery', () => {
     expect(() => {
-      addSubscriber('http://127.0.0.1/hook', 'secret', ['vault_completed'])
+      addSubscriber('http://127.0.0.1/hook', 'a-valid-secret-key', ['vault_completed'])
     }).toThrow('Webhook URL not permitted')
     expect(() => {
-      addSubscriber('http://localhost/hook', 'secret', ['vault_completed'])
+      addSubscriber('http://localhost/hook', 'a-valid-secret-key', ['vault_completed'])
     }).toThrow('Webhook URL not permitted')
   })
 })

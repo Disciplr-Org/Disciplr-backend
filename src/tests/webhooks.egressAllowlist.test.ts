@@ -221,27 +221,27 @@ describe('egress allowlist — registration enforcement', () => {
     await addEgressAllowlistEntry(ORG, 'allowed.example.com')
 
     await expect(
-      addSubscriber(ORG, 'https://evil.example.com/hook', 'secret', ['vault_created']),
+      addSubscriber(ORG, 'https://evil.example.com/hook', 'a-valid-secret-key', ['vault_created']),
     ).rejects.toThrow(/egress allowlist/i)
   })
 
   it('allows addSubscriber when host is on the allowlist', async () => {
     await addEgressAllowlistEntry(ORG, 'allowed.example.com')
 
-    const sub = await addSubscriber(ORG, 'https://allowed.example.com/hook', 'secret', ['vault_created'])
+    const sub = await addSubscriber(ORG, 'https://allowed.example.com/hook', 'a-valid-secret-key', ['vault_created'])
     expect(sub.url).toBe('https://allowed.example.com/hook')
   })
 
   it('allows subdomain of an allowlisted host', async () => {
     await addEgressAllowlistEntry(ORG, 'example.com')
 
-    const sub = await addSubscriber(ORG, 'https://hooks.example.com/cb', 'secret', ['vault_created'])
+    const sub = await addSubscriber(ORG, 'https://hooks.example.com/cb', 'a-valid-secret-key', ['vault_created'])
     expect(sub.url).toBe('https://hooks.example.com/cb')
   })
 
   it('allows any allowed-SSRF host when org has no allowlist', async () => {
     // OTHER_ORG has no allowlist — only SSRF guard applies
-    const sub = await addSubscriber(OTHER_ORG, 'https://any-valid.example.com/hook', 'secret', [])
+    const sub = await addSubscriber(OTHER_ORG, 'https://any-valid.example.com/hook', 'a-valid-secret-key', [])
     expect(sub.url).toBe('https://any-valid.example.com/hook')
   })
 
@@ -249,7 +249,7 @@ describe('egress allowlist — registration enforcement', () => {
     await addEgressAllowlistEntry(ORG, 'allowed.example.com')
 
     await expect(
-      upsertSubscriber(ORG, 'https://not-allowed.example.com/hook', 'secret', []),
+      upsertSubscriber(ORG, 'https://not-allowed.example.com/hook', 'a-valid-secret-key', []),
     ).rejects.toThrow(/egress allowlist/i)
   })
 
@@ -258,7 +258,7 @@ describe('egress allowlist — registration enforcement', () => {
     await addEgressAllowlistEntry(ORG, '169.254.169.254')
 
     await expect(
-      addSubscriber(ORG, 'http://169.254.169.254/latest/meta-data', 'secret', []),
+      addSubscriber(ORG, 'http://169.254.169.254/latest/meta-data', 'a-valid-secret-key', []),
     ).rejects.toThrow(/not permitted/i)
   })
 })
@@ -268,7 +268,7 @@ describe('egress allowlist — delivery-time enforcement', () => {
     // Add two entries so the allowlist stays non-empty after removing hooks.example.com
     await addEgressAllowlistEntry(ORG, 'hooks.example.com')
     await addEgressAllowlistEntry(ORG, 'other.example.com')
-    await addSubscriber(ORG, 'https://hooks.example.com/cb', 'secret', ['vault_created'])
+    await addSubscriber(ORG, 'https://hooks.example.com/cb', 'a-valid-secret-key', ['vault_created'])
 
     // Remove the subscriber's host — allowlist still exists (other.example.com remains)
     await removeEgressAllowlistEntry(ORG, 'hooks.example.com')
@@ -292,7 +292,7 @@ describe('egress allowlist — delivery-time enforcement', () => {
     } as Response)
     global.fetch = fetchMock as any
 
-    await addSubscriber(OTHER_ORG, 'https://hooks.example.com/cb', 'secret', ['vault_created'])
+    await addSubscriber(OTHER_ORG, 'https://hooks.example.com/cb', 'a-valid-secret-key', ['vault_created'])
 
     const results = await dispatchWebhookEvent({ ...PAYLOAD, organizationId: OTHER_ORG })
 
@@ -308,7 +308,7 @@ describe('egress allowlist — delivery-time enforcement', () => {
       id: 'sub-ssrf',
       organizationId: ORG,
       url: 'http://169.254.169.254/hook',
-      secret: 'secret',
+      secret: 'a-valid-secret-key',
       previousSecret: null,
       rotatedAt: null,
       events: ['vault_created'],
@@ -334,7 +334,7 @@ describe('egress allowlist — replayDeadLetter enforcement', () => {
     // Add two entries so the allowlist stays non-empty after removing hooks.example.com
     await addEgressAllowlistEntry(ORG, 'hooks.example.com')
     await addEgressAllowlistEntry(ORG, 'other.example.com')
-    const sub = await addSubscriber(ORG, 'https://hooks.example.com/cb', 'secret', ['vault_created'])
+    const sub = await addSubscriber(ORG, 'https://hooks.example.com/cb', 'a-valid-secret-key', ['vault_created'])
 
     // Remove subscriber's host — allowlist still exists (other.example.com remains)
     await removeEgressAllowlistEntry(ORG, 'hooks.example.com')
