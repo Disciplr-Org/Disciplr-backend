@@ -45,6 +45,7 @@ interface InvitationRow {
   org_id: string
   email: string
   token_hash: string
+  role: string
   expires_at: Date
   accepted_at: Date | null
   revoked_at: Date | null
@@ -204,11 +205,13 @@ afterEach(() => {
 })
 
 // Issues an invitation as an org admin and returns the raw acceptance token.
-async function inviteToAlpha(email = 'erin@example.com'): Promise<string> {
+async function inviteToAlpha(email = 'erin@example.com', role?: string): Promise<string> {
+  const body: Record<string, string> = { email }
+  if (role) body.role = role
   const res = await request(app)
     .post(`/api/organizations/${ORG_ALPHA}/invitations`)
     .set('Authorization', bearer('alice', 'owner'))
-    .send({ email })
+    .send(body)
   expect(res.status).toBe(201)
   expect(res.body.token).toMatch(/^[0-9a-f]{64}$/)
   return res.body.token
@@ -224,7 +227,7 @@ describe('Org-member invitation acceptance — end to end (issue #668)', () => {
     const token = await inviteToAlpha()
     const accept = await request(app)
       .post(`/api/organizations/${ORG_ALPHA}/invitations/accept`)
-      .send({ token, userId: 'erin', role: 'member' })
+      .send({ token, userId: 'erin' })
     expect(accept.status).toBe(200)
     expect(accept.body).toMatchObject({ orgId: ORG_ALPHA, userId: 'erin', role: 'member' })
 
@@ -245,7 +248,7 @@ describe('Org-member invitation acceptance — end to end (issue #668)', () => {
     const token = await inviteToAlpha()
     await request(app)
       .post(`/api/organizations/${ORG_ALPHA}/invitations/accept`)
-      .send({ token, userId: 'erin', role: 'member' })
+      .send({ token, userId: 'erin' })
       .expect(200)
 
     // Accepted into Alpha only — Beta's roster must stay off-limits.
@@ -254,11 +257,11 @@ describe('Org-member invitation acceptance — end to end (issue #668)', () => {
     expect(crossOrg.body.error).toMatch(/not a member/i)
   })
 
-  it('honours the role requested at acceptance time', async () => {
-    const token = await inviteToAlpha()
+  it('honours the role set at invitation creation time', async () => {
+    const token = await inviteToAlpha('frank@example.com', 'admin')
     const accept = await request(app)
       .post(`/api/organizations/${ORG_ALPHA}/invitations/accept`)
-      .send({ token, userId: 'frank', role: 'admin' })
+      .send({ token, userId: 'frank' })
     expect(accept.status).toBe(200)
     expect(accept.body.role).toBe('admin')
     expect(getMemberRole(ORG_ALPHA, 'frank')).toBe('admin')
@@ -268,12 +271,12 @@ describe('Org-member invitation acceptance — end to end (issue #668)', () => {
     const token = await inviteToAlpha()
     await request(app)
       .post(`/api/organizations/${ORG_ALPHA}/invitations/accept`)
-      .send({ token, userId: 'erin', role: 'member' })
+      .send({ token, userId: 'erin' })
       .expect(200)
 
     const replay = await request(app)
       .post(`/api/organizations/${ORG_ALPHA}/invitations/accept`)
-      .send({ token, userId: 'erin', role: 'member' })
+      .send({ token, userId: 'erin' })
     expect(replay.status).toBe(400)
     expect(replay.body.error.message).toMatch(/invalid or expired/i)
     expect(getOrgMembers(ORG_ALPHA).filter((m) => m.userId === 'erin')).toHaveLength(1)
@@ -286,6 +289,7 @@ describe('Org-member invitation acceptance — end to end (issue #668)', () => {
       org_id: ORG_ALPHA,
       email: 'late@example.com',
       token_hash: sha256(rawToken),
+      role: 'member',
       expires_at: new Date(Date.now() - 1000), // already expired
       accepted_at: null,
       revoked_at: null,
@@ -293,7 +297,7 @@ describe('Org-member invitation acceptance — end to end (issue #668)', () => {
 
     const res = await request(app)
       .post(`/api/organizations/${ORG_ALPHA}/invitations/accept`)
-      .send({ token: rawToken, userId: 'erin', role: 'member' })
+      .send({ token: rawToken, userId: 'erin' })
     expect(res.status).toBe(400)
     expect(res.body.error.message).toMatch(/invalid or expired/i)
     expect(getMemberRole(ORG_ALPHA, 'erin')).toBeUndefined()
