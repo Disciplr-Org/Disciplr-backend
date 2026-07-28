@@ -1,7 +1,11 @@
 import { Horizon } from '@stellar/stellar-sdk'
 import type { Transaction, HorizonOperation, ETLConfig, VaultReference } from '../types/transactions.js'
 import db from '../db/index.js'
-import { getSorobanConfig } from './soroban.js'
+import { getSorobanConfig, getSorobanClient, type OnChainVaultState } from './soroban.js'
+import { logVaultDriftAnomaly } from '../security/abuse-monitor.js'
+import { CheckpointStore } from './checkpointStore.js'
+
+const ETL_CHECKPOINT_KEY = '__TRANSACTION_ETL_GLOBAL__'
 
 export class TransactionETLService {
   private server: Horizon.Server
