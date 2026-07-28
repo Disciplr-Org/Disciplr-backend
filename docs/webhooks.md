@@ -1,10 +1,14 @@
-# Webhooks
+# Webhook subscriptions
 
-## Overview
+Tenant-scoped webhook subscriptions are exposed under `/api/webhooks`.
 
-The webhook system delivers lifecycle events (e.g. `vault_created`, `vault_completed`, `vault_failed`, `vault_cancelled`) to registered subscriber URLs via HTTP POST with HMAC-SHA256 signature verification.
+## Endpoints
 
-## Subscriber Management
+- `POST /api/webhooks?orgId=<orgId>` creates a subscription
+- `GET /api/webhooks?orgId=<orgId>` lists subscriptions for the current organization
+- `GET /api/webhooks/:id?orgId=<orgId>` returns a single subscription
+- `POST /api/webhooks/:id/rotate-secret?orgId=<orgId>` rotates the secret and returns it once
+- `DELETE /api/webhooks/:id?orgId=<orgId>` deletes a subscription
 
 Subscribers are stored in-memory (same pattern as API keys). Each subscriber has:
 
@@ -31,9 +35,120 @@ Subscribers are stored in-memory (same pattern as API keys). Each subscriber has
 | `x-disciplr-event-id` | Originating event ID in `{txHash}:{eventIndex}` format |
 | `x-disciplr-delivery-timestamp` | ISO 8601 timestamp |
 
-## Dead-Letter Queue
+## Circuit Breaker
 
-When a delivery permanently fails (exhausts retries), the failed delivery is persisted to the `webhook_dead_letters` table for later inspection and replay.
+Each subscriber has an associated circuit breaker that isolates chronically failing endpoints so healthy deliveries are not delayed.
+
+### States
+
+| State | Behavior |
+|-------|----------|
+| **CLOSED** | Normal operation. Delivery proceeds. Failures increment a counter. |
+| **OPEN** | All deliveries are short-circuited directly to the dead-letter queue. No HTTP requests are made. |
+| **HALF_OPEN** | Exactly one probe request is allowed. Success transitions back to CLOSED; failure transitions to OPEN. |
+
+### State Machine
+
+```
+CLOSED → (failure count ≥ threshold) → OPEN → (timeout elapses) → HALF_OPEN → (probe succeeds) → CLOSED
+                                                                      → (probe fails) → OPEN
+```
+
+### Configuration
+
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `WEBHOOK_CIRCUIT_BREAKER_THRESHOLD` | `5` | Consecutive failures within the window needed to trip to OPEN |
+| `WEBHOOK_CIRCUIT_BREAKER_WINDOW_MS` | `60_000` | Sliding window (ms) for counting failures |
+| `WEBHOOK_CIRCUIT_BREAKER_HALF_OPEN_TIMEOUT_MS` | `30_000` | Time (ms) before an OPEN breaker transitions to HALF_OPEN for a probe |
+
+### Persistence
+
+Breaker state is persisted in the `webhook_breaker_states` table and survives restarts. An in-memory cache is used at runtime; the cache is invalidated only on restart or via `resetBreakerCache()` (test helper).
+
+### Metrics
+
+Breaker state counts are exposed as Prometheus gauges at `/api/metrics`:
+
+| Metric | Description |
+|--------|-------------|
+| `disciplr_webhook_breaker_closed` | Subscribers in CLOSED state |
+| `disciplr_webhook_breaker_open` | Subscribers in OPEN state |
+| `disciplr_webhook_breaker_half_open` | Subscribers in HALF_OPEN state |
+
+### Window Replay (Admin)
+
+When a subscriber endpoint was down for a maintenance window, an operator can
+redeliver all dead-letter entries from a time range using the admin window-replay
+endpoint.
+
+#### `POST /api/admin/webhooks/:subscriber_id/replay`
+
+Replays all dead-letter entries for a subscriber within `[start_time, end_time]`.
+Uses the existing signing and delivery path (HMAC-SHA256, schema versioning,
+circuit breaker checks).
+
+**Authorization:** Admin only (`x-user-role: admin`).
+
+**Request Body:**
+```json
+{
+  "start_time": "2026-06-27T00:00:00.000Z",
+  "end_time": "2026-06-28T00:00:00.000Z",
+  "replay_marker": "optional-unique-idempotency-key",
+  "max_events": 500
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `start_time` | string (ISO 8601) | Yes | Start of the time window (inclusive) |
+| `end_time` | string (ISO 8601) | Yes | End of the time window (inclusive) |
+| `replay_marker` | string | No | Idempotency key — re-using the same marker returns cached results without re-sending deliveries |
+| `max_events` | integer | No | Rate bound: maximum events to replay (default 500, min 1) |
+
+**Response 200:**
+```json
+{
+  "replayed": true,
+  "count": 42,
+  "success_count": 40,
+  "failure_count": 2,
+  "replay_marker": "optional-unique-idempotency-key"
+}
+```
+
+**Response 400 (validation error):**
+```json
+{ "error": "start_time is required (ISO 8601)" }
+```
+
+**Response 404 (subscriber not found):**
+```json
+{ "error": "Subscriber not found" }
+```
+
+**Idempotency with replay_marker:**
+
+When a `replay_marker` is provided, the endpoint stores the result keyed by that
+marker. Subsequent calls with the same marker return the original result without
+making any new delivery attempts. This is safe to retry on network timeouts or
+interruptions.
+
+**Rate bounding:**
+
+The `max_events` parameter limits the number of entries processed in a single
+request (default 500, cap at subscriber count). For larger windows, operators
+should paginate by narrowing the time range.
+
+**Audit log entry:**
+
+Each replay writes an audit log entry with action `webhook.window_replay`,
+including `startTime`, `endTime`, `count`, `successCount`, and `failureCount`.
+
+---
+
+When a delivery permanently fails (exhausts retries) or is short-circuited by an open breaker, the failed delivery is persisted to the `webhook_dead_letters` table for later inspection and replay.
 
 ### Schema
 
@@ -83,109 +198,101 @@ Response (404):
 { "error": "Dead letter not found or already replayed" }
 ```
 
-## Testing
+## Delivery Analytics
 
-Run webhook tests:
-```bash
-npm test -- --testPathPattern=webhooks
-```
+Every delivery attempt (success or failure, including retried attempts) is persisted to the `webhook_delivery_attempts` table. This powers the per-subscriber stats endpoint and allows operators to diagnose flaky integrations without querying raw tables.
 
-DLQ tests require a PostgreSQL database (`DATABASE_URL`). Without it, they are skipped gracefully.
-
----
-
-# Webhook Delivery System
-
-The webhook system delivers vault lifecycle events to registered HTTP endpoints. Subscribers are stored in PostgreSQL and scoped per organization.
-
-## Storage Model
-
-Webhook subscribers are stored in the `webhook_subscribers` table:
+### Schema
 
 | Column | Type | Description |
-|---|---|---|
-| `id` | `uuid` (PK, auto-generated) | Unique subscriber identifier |
-| `organization_id` | `varchar(255)` | Owning organization (NOT NULL) |
-| `url` | `varchar(2048)` | Target webhook URL |
-| `secret` | `text` | HMAC signing secret |
-| `events` | `jsonb` | Array of event types to receive; empty array = wildcard (all events) |
-| `active` | `boolean` | Whether the subscriber is active |
-| `created_at` | `timestamptz` | Creation timestamp |
-| `updated_at` | `timestamptz` | Last update timestamp |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `subscriber_id` | UUID | Subscriber that was targeted |
+| `event_id` | TEXT | Event ID (`{txHash}:{eventIndex}`) |
+| `event_type` | VARCHAR(128) | Event type |
+| `status_code` | INTEGER | HTTP status code from the last attempt (null on timeout or circuit-breaker short-circuit) |
+| `success` | BOOLEAN | Whether the delivery ultimately succeeded |
+| `latency_ms` | INTEGER | Wall-clock time in ms including all retry backoffs |
+| `error` | TEXT | Error message on failure (null on success) |
+| `attempt_number` | INTEGER | Total number of HTTP attempts made (1–3) |
+| `attempted_at` | TIMESTAMPTZ | When the delivery was finalized |
 
-Index: `(organization_id, active)` for efficient org-scoped lookups.
+Indexed on `(subscriber_id, attempted_at)` for efficient time-windowed aggregations.
 
-## Secret Handling Decision
+### Admin API — Delivery Stats
 
-The `secret` column stores the HMAC signing secret in plaintext. Hashing is not viable because the raw secret is required to compute HMAC-SHA256 signatures for outgoing webhook requests.
+#### GET `/api/admin/webhooks/:id/stats`
 
-**Recommendation for production:** Encrypt the secret at rest using one of:
-- PostgreSQL `pgcrypto` extension (`pgp_sym_encrypt` / `pgp_sym_decrypt`)
-- Application-level AES-256-GCM encryption before storage, with the encryption key managed via a secrets manager (AWS KMS, HashiCorp Vault)
+Returns aggregated delivery analytics for a single subscriber over a configurable time window. Admin-only.
 
-The trade-off is that the encryption key must be available to the application at runtime to decrypt secrets for signing, which shifts the protection boundary from the database layer to the key management layer.
+**Query params:**
 
-## Organization Isolation
+| Param | Default | Description |
+|-------|---------|-------------|
+| `window` | `24h` | Time window — format `<N>h` (1–72) or `<N>d` (1–3). Max 72 h. |
 
-All subscriber queries are scoped by `organization_id`. When dispatching events, only subscribers belonging to the same organization as the event source receive the delivery. This prevents cross-tenant information leakage.
-
-## API
-
-### `addSubscriber(organizationId, url, secret, events)`
-
-Creates a new webhook subscriber. The URL is validated against the SSRF allowlist (`isUrlAllowed`). Returns the created subscriber.
-
-### `removeSubscriber(id)`
-
-Deletes a subscriber by ID. Returns `true` if found.
-
-### `listSubscribers(organizationId)`
-
-Returns all active subscribers for an organization.
-
-### `dispatchWebhookEvent(payload)`
-
-Delivers an event to all eligible active subscribers for the organization specified in `payload.organizationId`. Uses exponential-backoff retry (max 3 attempts). Failures are collected per-subscriber.
-
----
-
-## Outbound Webhooks
-The Disciplr backend dispatches webhooks to subscribers when specific events occur. Subscribers can register to receive webhook deliveries for events such as `vault_created`, `vault_completed`, etc.
-
-The outbound webhooks include signatures in headers which the subscriber can verify.
-
-## Inbound Webhooks
-
-When third-party providers (e.g., payment gateways) send webhook callbacks to our backend, we must ensure these callbacks are authentic, timely, and not replayed.
-
-### Verification Flow
-
-The inbound webhook endpoint uses the `webhookVerify` middleware to validate requests:
-1. **Timestamp Check**: Ensures the request was generated recently.
-2. **Replay Protection**: Stores a nonce combined with the timestamp. If the same nonce is seen again within the allowed time window, the request is rejected.
-3. **Signature Verification**: Validates the HMAC-SHA256 signature calculated over the timestamp, nonce, and raw request body using a shared secret.
-
-### Required Headers
-Inbound webhook requests must include the following headers:
-- `x-webhook-signature`: The HMAC-SHA256 signature in the format `sha256=<hex_digest>`.
-- `x-webhook-timestamp`: A unix timestamp (in milliseconds) representing when the request was made.
-- `x-webhook-nonce`: A unique string for the request.
-
-### Calculating the Signature
-The signature is generated as an HMAC-SHA256 digest of the following string:
-`<timestamp>.<nonce>.<raw_body>`
-
-Using the shared secret (`WEBHOOK_INBOUND_SECRET`):
-
-```javascript
-const crypto = require('crypto');
-
-const secret = process.env.WEBHOOK_INBOUND_SECRET;
-const timestamp = Date.now();
-const nonce = crypto.randomUUID();
-const rawBody = JSON.stringify(payload); // Ensure this matches exactly what is sent over the wire
-
-const signatureString = `${timestamp}.${nonce}.${rawBody}`;
-const digest = crypto.createHmac('sha256', secret).update(signatureString).digest('hex');
-const signatureHeader = `sha256=${digest}`;
+**Response (200):**
+```json
+{
+  "subscriber_id": "3f1a...",
+  "window": "24h",
+  "window_start": "2026-06-28T00:00:00.000Z",
+  "window_end":   "2026-06-29T00:00:00.000Z",
+  "attempt_count": 120,
+  "success_count": 115,
+  "failure_count": 5,
+  "success_rate": 0.958,
+  "p50_latency_ms": 130,
+  "p95_latency_ms": 420,
+  "last_failure_reason": "HTTP 503",
+  "breaker_state": "CLOSED"
+}
 ```
+
+- `success_rate` is rounded to 3 decimal places (0–1).
+- `p50_latency_ms` / `p95_latency_ms` are `null` when no attempts exist in the window.
+- `last_failure_reason` is taken from the most recent `webhook_dead_letters` entry within the window.
+- `breaker_state` is the live circuit-breaker state (`CLOSED`, `OPEN`, `HALF_OPEN`, or `null` if no state has been recorded).
+
+**Error responses:**
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Invalid or out-of-range `window` parameter |
+| 401 | Missing or invalid Bearer token |
+| 403 | Authenticated user is not an admin |
+| 404 | Subscriber ID not found |
+
+## Test-Ping Endpoint
+
+`POST /api/webhooks/:id/test` lets subscribers self-verify their delivery URL and HMAC wiring before real vault events start flowing.
+
+### Authorization
+
+- Caller must be authenticated (Bearer JWT).
+- The subscriber must belong to the caller's organization (`enterpriseId` in the JWT must match `organizationId` on the subscriber). Cross-org pings return **403**.
+
+### Rate Limiting
+
+5 requests per subscriber per 60 seconds to prevent abuse as an SSRF probe.
+
+### Request
+
+```http
+POST /api/webhooks/{subscriberId}/test
+Authorization: Bearer <token>
+```
+
+No request body required.
+
+### Response (200 — always returned for delivery attempts)
+
+```json
+{
+  "url": "https://example.com/webhook",
+  "events": ["vault_created"],
+  "active": true
+}
+```
+
+The `url` must be a permitted public HTTP(S) URL. Secrets are returned only on creation and rotation.

@@ -1,5 +1,7 @@
 import { db } from '../db/knex.js'
 import type { Knex } from 'knex'
+import { createHash, randomUUID } from 'crypto'
+import { redact } from '../middleware/privacy-logger.js'
 
 export type AuditLogMetadata = Record<string, unknown>
 
@@ -12,6 +14,8 @@ export type AuditLog = {
   target_id: string
   metadata: AuditLogMetadata
   created_at: string
+  prev_hash?: string | null
+  row_hash?: string | null
 }
 
 export type AuditLogFilters = {
@@ -23,7 +27,12 @@ export type AuditLogFilters = {
   offset?: number
 }
 
-const makeId = (): string => `audit-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+const makeId = (): string => randomUUID()
+
+export const AUDIT_LOG_GENESIS_HASH = '0'.repeat(64)
+
+const getOrganizationChainKey = (organizationId?: string | null): string | null =>
+  organizationId || null
 
 const toSnakeCase = (input: string): string =>
   input
@@ -75,9 +84,71 @@ const sanitizeMetadata = (metadata: Record<string, unknown> = {}): AuditLogMetad
   return normalized
 }
 
+let auditLogWriterOverride: ((entry: any) => Promise<AuditLog>) | null = null
+
+export const setAuditLogWriterForTests = (writer: any | null): void => {
+  auditLogWriterOverride = writer
+}
+
+const normalizeTimestamp = (value: unknown): string => {
+  if (value instanceof Date) return value.toISOString()
+  return new Date(String(value)).toISOString()
+}
+
+const normalizeJson = (value: unknown): unknown => {
+  if (value === null || typeof value !== 'object') return value
+  if (value instanceof Date) return value.toISOString()
+  if (Array.isArray(value)) return value.map(normalizeJson)
+
+  return Object.keys(value as Record<string, unknown>)
+    .sort()
+    .reduce<Record<string, unknown>>((acc, key) => {
+      acc[key] = normalizeJson((value as Record<string, unknown>)[key])
+      return acc
+    }, {})
+}
+
+const stableStringify = (value: unknown): string => JSON.stringify(normalizeJson(value))
+
+export const canonicalizeAuditLogRow = (row: AuditLog): string =>
+  stableStringify({
+    id: row.id,
+    actor_user_id: row.actor_user_id,
+    organization_id: row.organization_id ?? null,
+    action: row.action,
+    target_type: row.target_type,
+    target_id: row.target_id,
+    metadata: row.metadata ?? {},
+    created_at: normalizeTimestamp(row.created_at),
+  })
+
+export const computeAuditLogHash = (row: AuditLog, previousHash: string): string => {
+  const content = `${canonicalizeAuditLogRow(row)}:${previousHash}`
+  return createHash('sha256').update(content).digest('hex')
+}
+
+export const lookupPreviousAuditLogHash = async (
+  organization_id?: string,
+): Promise<string> => {
+  const chainKey = organization_id || null
+
+  let query = db('audit_logs')
+    .orderBy('created_at', 'desc')
+    .orderBy('id', 'desc')
+
+  query = chainKey === null ? query.whereNull('organization_id') : query.where('organization_id', chainKey)
+
+  const previous = await query.first()
+  return previous?.row_hash ?? AUDIT_LOG_GENESIS_HASH
+}
+
 export const createAuditLog = async (
   entry: Omit<AuditLog, 'id' | 'created_at'> & { organization_id?: string },
 ): Promise<AuditLog> => {
+  if (auditLogWriterOverride) {
+    return auditLogWriterOverride(entry)
+  }
+
   if (!entry.actor_user_id || !entry.action || !entry.target_type || !entry.target_id) {
     throw new Error('Invalid audit log entry: missing required fields')
   }
@@ -99,25 +170,29 @@ export const createAuditLog = async (
     metadata: normalizedMetadata,
   }
 
-  // Insert into database
-  const insertPayload: Record<string, unknown> = {
-    id: auditLog.id,
-    actor_user_id: auditLog.actor_user_id,
-    action: auditLog.action,
-    target_type: auditLog.target_type,
-    target_id: auditLog.target_id,
-    metadata: auditLog.metadata,
-    created_at: auditLog.created_at,
-  }
+  return await db.transaction(async (trx) => {
+    const prevHash = await lookupPreviousAuditLogHash(auditLog.organization_id)
+    const rowHash = computeAuditLogHash(auditLog, prevHash)
 
-  // Only include organization_id when explicitly provided to avoid failing on older schemas
-  if (typeof auditLog.organization_id !== 'undefined') {
-    insertPayload.organization_id = auditLog.organization_id
-  }
+    const insertPayload: Record<string, unknown> = {
+      id: auditLog.id,
+      actor_user_id: auditLog.actor_user_id,
+      action: auditLog.action,
+      target_type: auditLog.target_type,
+      target_id: auditLog.target_id,
+      metadata: auditLog.metadata,
+      created_at: auditLog.created_at,
+      prev_hash: prevHash,
+      row_hash: rowHash,
+    }
 
-  const [insertedLog] = await db('audit_logs').insert(insertPayload).returning('*')
+    if (typeof auditLog.organization_id !== 'undefined') {
+      insertPayload.organization_id = auditLog.organization_id
+    }
 
-  return insertedLog
+    const [insertedLog] = await trx('audit_logs').insert(insertPayload).returning('*')
+    return insertedLog
+  })
 }
 
 export const listAuditLogs = async (filters: AuditLogFilters = {}): Promise<AuditLog[]> => {
@@ -161,6 +236,114 @@ export const getAuditLogById = async (id: string): Promise<AuditLog | undefined>
     .first()
   
   return log || undefined
+}
+
+export type AuditLogIntegrityFailure = {
+  id: string
+  index: number
+  reason: 'missing_hash' | 'prev_hash_mismatch' | 'row_hash_mismatch'
+  expected?: string
+  actual?: string | null
+}
+
+export type AuditLogVerificationResult = {
+  organization_id: string | null
+  verified: boolean
+  checked_count: number
+  head_hash: string
+  tail_hash: string
+  failures: AuditLogIntegrityFailure[]
+}
+
+export const verifyAuditLogChain = async (
+  organizationId?: string | null,
+): Promise<AuditLogVerificationResult> => {
+  const chainKey = getOrganizationChainKey(organizationId)
+  let query = db('audit_logs').select('*').orderBy('created_at', 'asc').orderBy('id', 'asc')
+  query = chainKey === null ? query.whereNull('organization_id') : query.where('organization_id', chainKey)
+
+  const rows = await query
+  let expectedPrevHash = AUDIT_LOG_GENESIS_HASH
+  const failures: AuditLogIntegrityFailure[] = []
+
+  rows.forEach((row: AuditLog, index: number) => {
+    if (!row.prev_hash || !row.row_hash) {
+      failures.push({
+        id: row.id,
+        index,
+        reason: 'missing_hash',
+      })
+      expectedPrevHash = row.row_hash ?? expectedPrevHash
+      return
+    }
+
+    if (row.prev_hash !== expectedPrevHash) {
+      failures.push({
+        id: row.id,
+        index,
+        reason: 'prev_hash_mismatch',
+        expected: expectedPrevHash,
+        actual: row.prev_hash,
+      })
+    }
+
+    const expectedRowHash = computeAuditLogHash(row, row.prev_hash!)
+    if (row.row_hash !== expectedRowHash) {
+      failures.push({
+        id: row.id,
+        index,
+        reason: 'row_hash_mismatch',
+        expected: expectedRowHash,
+        actual: row.row_hash,
+      })
+    }
+
+    expectedPrevHash = row.row_hash
+  })
+
+  return {
+    organization_id: chainKey,
+    verified: failures.length === 0,
+    checked_count: rows.length,
+    head_hash: rows[0]?.row_hash ?? AUDIT_LOG_GENESIS_HASH,
+    tail_hash: rows[rows.length - 1]?.row_hash ?? AUDIT_LOG_GENESIS_HASH,
+    failures,
+  }
+}
+
+export type AuditLogExport = {
+  organization_id: string
+  exported_at: string
+  chain: AuditLogVerificationResult
+  audit_logs: AuditLog[]
+  proof: Array<{
+    id: string
+    prev_hash: string | null
+    row_hash: string | null
+  }>
+}
+
+export const exportAuditLogsForOrganization = async (organizationId: string): Promise<AuditLogExport> => {
+  const rows = await db('audit_logs')
+    .select('*')
+    .where('organization_id', organizationId)
+    .orderBy('created_at', 'asc')
+    .orderBy('id', 'asc')
+
+  const chain = await verifyAuditLogChain(organizationId)
+  const redactedRows = redact(rows) as AuditLog[]
+
+  return {
+    organization_id: organizationId,
+    exported_at: new Date().toISOString(),
+    chain,
+    audit_logs: redactedRows,
+    proof: rows.map((row: AuditLog) => ({
+      id: row.id,
+      prev_hash: row.prev_hash ?? null,
+      row_hash: row.row_hash ?? null,
+    })),
+  }
 }
 
 // Testing helper - clear audit logs for test isolation

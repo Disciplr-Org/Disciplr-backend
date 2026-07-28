@@ -6,9 +6,23 @@
  * similarity search over 768-dimensional embedding vectors.
  */
 
+exports.config = { transaction: false }
+
 exports.up = async function up(knex) {
   // Enable pgvector; idempotent – safe to run repeatedly.
-  await knex.raw('CREATE EXTENSION IF NOT EXISTS vector')
+  // If pgvector is not installed on the server, skip gracefully.
+  let hasVector = false
+  try {
+    await knex.raw('CREATE EXTENSION IF NOT EXISTS vector')
+    hasVector = true
+  } catch (err) {
+    console.warn(
+      'pgvector extension is not available — skipping milestone_embeddings table creation.',
+      err.message,
+    )
+  }
+
+  if (!hasVector) return
 
   await knex.schema.createTable('milestone_embeddings', (table) => {
     table.uuid('milestone_id').primary()

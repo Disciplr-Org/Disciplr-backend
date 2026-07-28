@@ -36,7 +36,7 @@ describe('webhook SSRF guard', () => {
     ['DNS-rebinding-style loopback hostname', 'http://hook.localtest.me/callback'],
   ])('blocks %s', (_label, url) => {
     expect(isUrlAllowed(url, [])).toBe(false)
-    expect(() => addSubscriber(url, 'secret', [])).toThrow(/not permitted/i)
+    expect(() => addSubscriber(url, 'a-valid-secret-key', [])).toThrow(/not permitted/i)
   })
 
   it('enforces WEBHOOK_ALLOWED_HOSTS while still blocking internal targets', () => {
@@ -56,7 +56,7 @@ describe('webhook SSRF guard', () => {
     global.fetch = fetchMock as any
     jest.spyOn(console, 'error').mockImplementation(() => undefined)
 
-    addSubscriber('https://hooks.example.com/webhook', 'secret', ['vault_created'])
+    addSubscriber('https://hooks.example.com/webhook', 'a-valid-secret-key', ['vault_created'])
 
     const results = await dispatchWebhookEvent(payload)
 

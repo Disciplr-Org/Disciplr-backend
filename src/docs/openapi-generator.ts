@@ -3,11 +3,18 @@ import {
   OpenAPIRegistry,
   extendZodWithOpenApi,
 } from '@asteasolutions/zod-to-openapi'
-import { z } from 'zod'
+import { z, type ZodTypeAny } from 'zod'
 import { registerSchema, loginSchema } from '../lib/validation.js'
 import { UserRole } from '../types/user.js'
 
 extendZodWithOpenApi(z)
+
+// The current zod-to-openapi typings are stricter than the installed Zod v4 schema
+// surface, so we use this narrow bridge at the registry boundary to keep the
+// generator type-safe without changing runtime behavior.
+function asOpenApiSchema(schema: ZodTypeAny): any {
+  return schema as any
+}
 
 // ==================== EXPORT SCHEMAS ====================
 
@@ -44,22 +51,22 @@ registry.registerComponent('securitySchemes', 'bearerAuth', {
 })
 
 // --- Shared Schemas ---
-const PaginationCursor = registry.registerComponent('schemas', 'PaginationCursor', z.object({
+const PaginationCursor = registry.registerComponent('schemas', 'PaginationCursor', asOpenApiSchema(z.object({
   limit: z.number(),
   cursor: z.string().optional(),
   next_cursor: z.string().optional(),
   has_more: z.boolean(),
   count: z.number(),
-}))
+})))
 
-const ErrorEnvelope = registry.registerComponent('schemas', 'ErrorEnvelope', z.object({
+const ErrorEnvelope = registry.registerComponent('schemas', 'ErrorEnvelope', asOpenApiSchema(z.object({
   error: z.object({
     code: z.string().openapi({ example: 'VALIDATION_ERROR' }),
     message: z.string().openapi({ example: 'Invalid request parameters' }),
     details: z.unknown().optional(),
     requestId: z.string().optional().openapi({ example: 'req_123' }),
   }),
-}))
+})))
 
 const VaultSchema = registry.register(
   'Vault',
@@ -105,6 +112,7 @@ registry.registerPath({
             status: z.string().openapi({ example: 'ok' }),
             timestamp: z.string().datetime(),
             uptime: z.number(),
+            service: z.string(),
             jobs: z.any(),
           }),
         },
@@ -165,8 +173,15 @@ registry.registerPath({
   security: [{ bearerAuth: [] }],
   responses: {
     200: {
-      description: 'List of vaults',
-      content: { 'application/json': { schema: z.array(VaultSchema) } },
+      description: 'Paginated list of vaults',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.array(VaultSchema),
+            pagination: z.any(),
+          }),
+        },
+      },
     },
   },
 })
@@ -608,12 +623,14 @@ registry.registerPath({
       schema: { type: 'string' },
     },
   ],
-  requestBody: {
-    content: {
-      'application/json': {
-        schema: z.object({
-          role: z.enum(['USER', 'VERIFIER', 'ADMIN']),
-        }),
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: asOpenApiSchema(z.object({
+            role: z.enum(['USER', 'VERIFIER', 'ADMIN']),
+          })),
+        },
       },
     },
   },
@@ -639,12 +656,14 @@ registry.registerPath({
       schema: { type: 'string' },
     },
   ],
-  requestBody: {
-    content: {
-      'application/json': {
-        schema: z.object({
-          status: z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED']),
-        }),
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: asOpenApiSchema(z.object({
+            status: z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED']),
+          })),
+        },
       },
     },
   },
@@ -789,23 +808,25 @@ registry.registerPath({
       schema: { type: 'string' },
     },
   ],
-  requestBody: {
-    content: {
-      'application/json': {
-        schema: z.object({
-          reasonCode: z.enum([
-            'USER_REQUEST',
-            'FRAUD_DETECTED',
-            'SYSTEM_ERROR',
-            'POLICY_VIOLATION',
-            'EMERGENCY_ADMIN_ACTION',
-            'COMPLIANCE_REQUIREMENT',
-            'TESTING_CLEANUP',
-          ]),
-          reason: z.string().optional(),
-          idempotencyKey: z.string().optional(),
-          details: z.string().optional(),
-        }),
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: asOpenApiSchema(z.object({
+            reasonCode: z.enum([
+              'USER_REQUEST',
+              'FRAUD_DETECTED',
+              'SYSTEM_ERROR',
+              'POLICY_VIOLATION',
+              'EMERGENCY_ADMIN_ACTION',
+              'COMPLIANCE_REQUIREMENT',
+              'TESTING_CLEANUP',
+            ]),
+            reason: z.string().optional(),
+            idempotencyKey: z.string().optional(),
+            details: z.string().optional(),
+          })),
+        },
       },
     },
   },

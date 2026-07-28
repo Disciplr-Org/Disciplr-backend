@@ -281,11 +281,14 @@ paths:
                     format: date-time
                   uptime:
                     type: number
+                  service:
+                    type: string
                   jobs: {}
                 required:
                   - status
                   - timestamp
                   - uptime
+                  - service
   /api/auth/register:
     post:
       summary: Register a new user
@@ -362,13 +365,19 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: List of vaults
+          description: Paginated list of vaults
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Vault"
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Vault"
+                  pagination: {}
+                required:
+                  - data
     post:
       summary: Create a new vault
       tags:

@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from 'express'
+import { sanitizePrivacyPayload } from '../utils/privacy.js'
 
 // ─── Error Codes ─────────────────────────────────────────────────────────────
 // Machine-readable codes clients can branch on without parsing message strings.
@@ -16,6 +17,8 @@ export const ErrorCode = {
   CONFLICT: 'CONFLICT',
   // 413
   PAYLOAD_TOO_LARGE: 'PAYLOAD_TOO_LARGE',
+  // 415
+  UNSUPPORTED_MEDIA_TYPE: 'UNSUPPORTED_MEDIA_TYPE',
   // 422
   UNPROCESSABLE: 'UNPROCESSABLE',
   // 429
@@ -120,6 +123,10 @@ export class AppError extends Error {
     return new AppError(413, ErrorCode.PAYLOAD_TOO_LARGE, message)
   }
 
+  static unsupportedMediaType(message = 'Content-Type must be application/json') {
+    return new AppError(415, ErrorCode.UNSUPPORTED_MEDIA_TYPE, message)
+  }
+
   /** Parses an unknown error from Soroban RPC into an AppError if it contains a recognized contract error code */
   static fromContractError(err: unknown): AppError | null {
     const message = err instanceof Error ? err.message : String(err)
@@ -166,9 +173,45 @@ export const errorHandler = (
   // PII is not logged: we only record method, path, and a sanitised message.
   const requestId = (req.headers['x-request-id'] as string | undefined) ?? undefined
 
+  // Determine if we are in a production environment
+  const isProduction = process.env.NODE_ENV === 'production'
+
+  // Sanitize any echoed PII from error details in production
+  const sanitizeDetails = (details: unknown) =>
+    isProduction ? sanitizePrivacyPayload(details) : details
+
   // Sanitize and convert express body-parser size limit errors
   if (err && typeof err === 'object' && 'status' in err && err.status === 413 && 'type' in err && (err as any).type === 'entity.too.large') {
     err = new AppError(413, ErrorCode.PAYLOAD_TOO_LARGE, 'Payload too large')
+  }
+
+  if (err instanceof SorobanTimeoutError) {
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'app_error',
+        service: 'disciplr-backend',
+        code: err.code,
+        status: err.status,
+        method: req.method,
+        path: req.path,
+        requestId,
+        message: err.message,
+        timestamp: new Date().toISOString(),
+      }),
+    )
+
+    const body: ErrorResponse = {
+      error: {
+        code: err.code,
+        message: err.message,
+        details: sanitizeDetails({ txHash: err.txHash, elapsedMs: err.elapsedMs }),
+        ...(requestId && { requestId }),
+      },
+    }
+
+    res.status(err.status).json(body)
+    return
   }
 
   if (err instanceof AppError) {
@@ -191,7 +234,7 @@ export const errorHandler = (
       error: {
         code: err.code,
         message: err.message,
-        ...(err.details !== undefined && { details: err.details }),
+        ...(err.details !== undefined && { details: sanitizeDetails(err.details) }),
         ...(requestId && { requestId }),
       },
     }
@@ -201,7 +244,11 @@ export const errorHandler = (
   }
 
   // Unknown / unexpected errors – never leak internals to the client.
-  const message = err instanceof Error ? err.message : 'Internal server error'
+  // In production, always use a generic message. In dev, show the real error.
+  const responseMessage = 'Internal server error'
+  const logMessage = isProduction
+    ? responseMessage
+    : err instanceof Error ? err.message : responseMessage
 
   console.error(
     JSON.stringify({
@@ -213,7 +260,7 @@ export const errorHandler = (
       requestId,
       // Only log the message, not the full stack, to avoid leaking internals in
       // structured log aggregators that forward to external services.
-      message,
+      message: logMessage,
       timestamp: new Date().toISOString(),
     }),
   )
@@ -221,7 +268,7 @@ export const errorHandler = (
   const body: ErrorResponse = {
     error: {
       code: ErrorCode.INTERNAL_ERROR,
-      message: 'Internal server error',
+      message: responseMessage,
       ...(requestId && { requestId }),
     },
   }

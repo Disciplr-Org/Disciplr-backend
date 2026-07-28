@@ -36,7 +36,7 @@ describeDb('webhook dead-letter queue', () => {
   })
 
   it('persists a dead letter when delivery exhausts retries', async () => {
-    addSubscriber('https://example.com/hook', 'secret', [])
+    addSubscriber('https://example.com/hook', 'a-valid-secret-key', [])
     fetchMock.mockResolvedValue({ status: 503 } as Response)
 
     await dispatchWebhookEvent(makePayload())
@@ -52,7 +52,7 @@ describeDb('webhook dead-letter queue', () => {
   }, 20_000)
 
   it('does not persist a dead letter on successful delivery', async () => {
-    addSubscriber('https://example.com/hook', 'secret', [])
+    addSubscriber('https://example.com/hook', 'a-valid-secret-key', [])
     fetchMock.mockResolvedValue({ status: 200 } as Response)
 
     await dispatchWebhookEvent(makePayload())
@@ -87,7 +87,7 @@ describeDb('webhook dead-letter queue', () => {
   })
 
   it('replayDeadLetter re-delivers and stamps replayed_at', async () => {
-    const sub = addSubscriber('https://example.com/hook', 'secret', [])
+    const sub = addSubscriber('https://example.com/hook', 'a-valid-secret-key', [])
     fetchMock.mockResolvedValue({ status: 200 } as Response)
 
     const { db } = await import('../db/index.js')
@@ -110,7 +110,7 @@ describeDb('webhook dead-letter queue', () => {
   })
 
   it('replayDeadLetter fails gracefully when delivery fails', async () => {
-    const sub = addSubscriber('https://example.com/hook', 'secret', [])
+    const sub = addSubscriber('https://example.com/hook', 'a-valid-secret-key', [])
     fetchMock.mockResolvedValue({ status: 500 } as Response)
 
     const { db } = await import('../db/index.js')
@@ -134,7 +134,7 @@ describeDb('webhook dead-letter queue', () => {
   }, 20_000)
 
   it('replayDeadLetter rejects already-replayed entries', async () => {
-    const sub = addSubscriber('https://example.com/hook', 'secret', [])
+    const sub = addSubscriber('https://example.com/hook', 'a-valid-secret-key', [])
 
     const { db } = await import('../db/index.js')
     const [row] = await db('webhook_dead_letters')

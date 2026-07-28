@@ -1,6 +1,4 @@
-import assert from 'node:assert/strict'
 import type { AddressInfo } from 'node:net'
-import { afterEach, beforeEach, test } from 'node:test'
 import express from 'express'
 import { analyticsRouter } from './analytics.js'
 import { createApiKey, resetApiKeysTable } from '../services/apiKeys.js'
@@ -75,7 +73,7 @@ test('returns milestone completion trends over time', async () => {
     },
   )
 
-  assert.equal(res.status, 200)
+  expect(res.status).toBe(200)
   const body = (await res.json()) as {
     buckets: Array<{
       bucketStart: string
@@ -86,11 +84,11 @@ test('returns milestone completion trends over time', async () => {
     }>
   }
 
-  assert.equal(body.buckets.length, 32)
-  assert.equal(body.buckets[1]?.total, 1)
-  assert.equal(body.buckets[1]?.successes, 1)
-  assert.equal(body.buckets[2]?.total, 1)
-  assert.equal(body.buckets[2]?.failures, 1)
+  expect(body.buckets.length).toBe(32)
+  expect(body.buckets[1]?.total).toBe(1)
+  expect(body.buckets[1]?.successes).toBe(1)
+  expect(body.buckets[2]?.total).toBe(1)
+  expect(body.buckets[2]?.failures).toBe(1)
 })
 
 test('returns behavior score for a user', async () => {
@@ -118,7 +116,7 @@ test('returns behavior score for a user', async () => {
     },
   )
 
-  assert.equal(res.status, 200)
+  expect(res.status).toBe(200)
   const body = (await res.json()) as {
     userId: string
     successes: number
@@ -126,10 +124,10 @@ test('returns behavior score for a user', async () => {
     behaviorScore: number
   }
 
-  assert.equal(body.userId, 'user-42')
-  assert.equal(body.successes, 1)
-  assert.equal(body.failures, 1)
-  assert.equal(body.behaviorScore, 5)
+  expect(body.userId).toBe('user-42')
+  expect(body.successes).toBe(1)
+  expect(body.failures).toBe(1)
+  expect(body.behaviorScore).toBe(5)
 })
 
 test('includes milestone events that fall exactly on the requested date boundaries', async () => {
@@ -167,7 +165,7 @@ test('includes milestone events that fall exactly on the requested date boundari
     },
   )
 
-  assert.equal(res.status, 200)
+  expect(res.status).toBe(200)
   const body = (await res.json()) as {
     buckets: Array<{
       bucketStart: string
@@ -178,9 +176,9 @@ test('includes milestone events that fall exactly on the requested date boundari
     }>
   }
 
-  assert.equal(body.buckets.length, 3)
-  assert.deepEqual(
-    body.buckets.map(({ total, successes, failures }) => ({ total, successes, failures })),
+  expect(body.buckets.length).toBe(3)
+  expect(
+    body.buckets.map(({ total).toEqual(successes, failures }) => ({ total, successes, failures })),
     [
       { total: 1, successes: 1, failures: 0 },
       { total: 1, successes: 0, failures: 1 },
@@ -209,7 +207,7 @@ test('returns empty milestone buckets when no events fall in the requested range
     },
   )
 
-  assert.equal(res.status, 200)
+  expect(res.status).toBe(200)
   const body = (await res.json()) as {
     buckets: Array<{
       bucketStart: string
@@ -220,9 +218,9 @@ test('returns empty milestone buckets when no events fall in the requested range
     }>
   }
 
-  assert.equal(body.buckets.length, 2)
-  assert.deepEqual(
-    body.buckets.map(({ total, successes, failures }) => ({ total, successes, failures })),
+  expect(body.buckets.length).toBe(2)
+  expect(
+    body.buckets.map(({ total).toEqual(successes, failures }) => ({ total, successes, failures })),
     [
       { total: 0, successes: 0, failures: 0 },
       { total: 0, successes: 0, failures: 0 },
@@ -240,9 +238,9 @@ test('rejects milestone trend requests when from is after to', async () => {
     },
   )
 
-  assert.equal(res.status, 400)
+  expect(res.status).toBe(400)
   const body = (await res.json()) as { error: string }
-  assert.equal(body.error, '`from` must be less than or equal to `to`.')
+  expect(body.error).toBe('`from` must be less than or equal to `to`.')
 })
 
 test('filters behavior score to the requested range and includes edge timestamps', async () => {
@@ -286,7 +284,7 @@ test('filters behavior score to the requested range and includes edge timestamps
     },
   )
 
-  assert.equal(res.status, 200)
+  expect(res.status).toBe(200)
   const body = (await res.json()) as {
     userId: string
     successes: number
@@ -296,12 +294,12 @@ test('filters behavior score to the requested range and includes edge timestamps
     evaluatedTo: string | null
   }
 
-  assert.equal(body.userId, 'user-99')
-  assert.equal(body.successes, 1)
-  assert.equal(body.failures, 1)
-  assert.equal(body.behaviorScore, 4)
-  assert.equal(body.evaluatedFrom, from)
-  assert.equal(body.evaluatedTo, to)
+  expect(body.userId).toBe('user-99')
+  expect(body.successes).toBe(1)
+  expect(body.failures).toBe(1)
+  expect(body.behaviorScore).toBe(4)
+  expect(body.evaluatedFrom).toBe(from)
+  expect(body.evaluatedTo).toBe(to)
 })
 
 test('rejects behavior score requests without a userId', async () => {
@@ -311,9 +309,9 @@ test('rejects behavior score requests without a userId', async () => {
     headers: { 'x-api-key': apiKey },
   })
 
-  assert.equal(res.status, 400)
+  expect(res.status).toBe(400)
   const body = (await res.json()) as { error: string }
-  assert.equal(body.error, '`userId` is required.')
+  expect(body.error).toBe('`userId` is required.')
 })
 
 // ─── List Contract Tests for Analytics ─────────────────────────────────────
@@ -330,7 +328,7 @@ test('validates date range filtering contract for trends', async () => {
     },
   )
 
-  assert.equal(res.status, 200)
+  expect(res.status).toBe(200)
   const body = (await res.json()) as {
     buckets: Array<{
       bucketStart: string
@@ -339,9 +337,9 @@ test('validates date range filtering contract for trends', async () => {
   }
 
   // Validates date range filtering contract - returns buckets within range
-  assert.ok(body.buckets.length > 0)
-  assert.ok(body.buckets.every(b => new Date(b.bucketStart) >= new Date(from)))
-  assert.ok(body.buckets.every(b => new Date(b.bucketEnd) <= new Date(to)))
+  expect(body.buckets.length > 0).toBeTruthy()
+  expect(body.buckets.every(b => new Date(b.bucketStart).toBeTruthy() >= new Date(from)))
+  expect(body.buckets.every(b => new Date(b.bucketEnd).toBeTruthy() <= new Date(to)))
 })
 
 test('validates groupBy parameter contract (day and week)', async () => {
@@ -361,22 +359,22 @@ test('validates groupBy parameter contract (day and week)', async () => {
     `${baseUrl}/api/analytics/milestones/trends?from=2025-01-01T00:00:00.000Z&to=2025-01-14T00:00:00.000Z&groupBy=day`,
     { headers: { 'x-api-key': apiKey } },
   )
-  assert.equal(dayRes.status, 200)
+  expect(dayRes.status).toBe(200)
   const dayBody = (await dayRes.json()) as { buckets: Array<{ bucketStart: string }> }
 
   // Day grouping should have ~14 buckets (2 weeks)
-  assert.ok(dayBody.buckets.length >= 13 && dayBody.buckets.length <= 15)
+  expect(dayBody.buckets.length >= 13 && dayBody.buckets.length <= 15).toBeTruthy()
 
   // Test week grouping
   const weekRes = await fetch(
     `${baseUrl}/api/analytics/milestones/trends?from=2025-01-01T00:00:00.000Z&to=2025-01-14T00:00:00.000Z&groupBy=week`,
     { headers: { 'x-api-key': apiKey } },
   )
-  assert.equal(weekRes.status, 200)
+  expect(weekRes.status).toBe(200)
   const weekBody = (await weekRes.json()) as { buckets: Array<{ bucketStart: string }> }
 
   // Week grouping should have ~2 buckets (2 weeks)
-  assert.ok(weekBody.buckets.length >= 2 && weekBody.buckets.length <= 3)
+  expect(weekBody.buckets.length >= 2 && weekBody.buckets.length <= 3).toBeTruthy()
 })
 
 test('validates date range filtering contract for behavior scores', async () => {
@@ -413,21 +411,21 @@ test('validates date range filtering contract for behavior scores', async () => 
     { headers: { 'x-api-key': apiKey } },
   )
 
-  assert.equal(res.status, 200)
+  expect(res.status).toBe(200)
   const body = (await res.json()) as {
     successes: number
     failures: number
   }
 
   // Should only count the event within the date range
-  assert.equal(body.successes, 1)
-  assert.equal(body.failures, 0)
+  expect(body.successes).toBe(1)
+  expect(body.failures).toBe(0)
 })
 
 test('requires authentication for analytics endpoints', async () => {
   const res = await fetch(`${baseUrl}/api/analytics/milestones/trends?from=2025-01-01T00:00:00.000Z&to=2025-01-07T00:00:00.000Z&groupBy=day`)
 
-  assert.equal(res.status, 401)
+  expect(res.status).toBe(401)
 })
 
 test('validates user isolation in analytics - cannot access other user events', async () => {
@@ -454,12 +452,12 @@ test('validates user isolation in analytics - cannot access other user events', 
     { headers: { 'x-api-key': apiKey } },
   )
 
-  assert.equal(res.status, 200)
+  expect(res.status).toBe(200)
   const body = (await res.json()) as {
     userId: string
     successes: number
   }
 
-  assert.equal(body.userId, 'user-a')
-  assert.equal(body.successes, 1) // Only user-a's event
+  expect(body.userId).toBe('user-a')
+  expect(body.successes).toBe(1) // Only user-a's event
 })

@@ -39,8 +39,8 @@ exports.up = async function(knex) {
  * @returns { Promise<void> }
  */
 exports.down = async function(knex) {
-  // Drop table; do not forcibly drop the enum here to avoid removing it
-  // when other migrations might rely on it. If desired, a separate cleanup
-  // migration should remove the type when it's safe to do so.
-  await knex.schema.dropTableIfExists('milestones');
+  // Use CASCADE because earlier migrations (validations, etc.) may have
+  // foreign keys referencing milestones that haven't been dropped yet at
+  // this point in the rollback order.
+  await knex.raw('DROP TABLE IF EXISTS milestones CASCADE');
 };

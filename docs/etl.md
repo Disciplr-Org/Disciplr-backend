@@ -119,3 +119,111 @@ npx jest --testPathPattern="etlWorker|transactionETL" --run
 # With coverage
 npx jest --testPathPattern="etlWorker|transactionETL" --coverage --run
 ```
+
+---
+
+## Vault State Reconciliation
+
+### Overview
+
+The vault reconciliation job compares persisted vault state in the database with on-chain state from the Soroban contract to detect drift caused by missed Horizon events or failed ETL batches. This is a **read-only** operation that reports anomalies without auto-correcting them.
+
+### Reconciliation Job
+
+**Job Type**: `vault.reconcile`
+
+**Handler**: `TransactionETLService.reconcileVaults()`
+
+**Schedule**: Run periodically (e.g., daily or hourly) via the job system.
+
+### How It Works
+
+1. **Fetches persisted vaults** from the `vaults` table (all vaults or a subset via `vaultIds` option)
+2. **Reads on-chain state** via `soroban.getVault()` for each vault in batches
+3. **Compares key fields**:
+   - `status` (normalized for case-insensitive comparison)
+   - `amount`
+   - `verifier` address
+   - `success_destination` address
+   - `failure_destination` address
+4. **Reports drift** via structured logs using the abuse-monitor taxonomy:
+   - `vault.vault_missing_onchain` - vault exists in DB but not on-chain
+   - `vault.vault_state_drift` - one or more fields differ between DB and on-chain
+   - `vault.vault_reconciliation_error` - error during reconciliation (e.g., RPC timeout)
+
+### Job Payload
+
+```typescript
+interface VaultReconcileJobPayload {
+  vaultIds?: string[]    // Optional: specific vault IDs to reconcile
+  batchSize?: number     // Optional: batch size for RPC calls (default: 50)
+}
+```
+
+### Example Usage
+
+```ts
+// Enqueue a reconciliation job for all vaults
+await enqueueJob('vault.reconcile', { batchSize: 50 })
+
+// Enqueue a reconciliation job for specific vaults
+await enqueueJob('vault.reconcile', { vaultIds: ['vault-1', 'vault-2'] })
+```
+
+### Result
+
+The reconciliation returns:
+
+```typescript
+{
+  totalVaults: number      // Total vaults to reconcile
+  checked: number          // Successfully checked vaults
+  driftDetected: number    // Vaults with state drift
+  missingOnChain: number   // Vaults missing on-chain
+  errors: number           // Reconciliation errors
+}
+```
+
+### Idempotency and Resumability
+
+- **Idempotent**: Running the same reconciliation multiple times produces consistent results
+- **Resumable**: If aborted via `AbortSignal`, the job can be re-run; no partial state is persisted
+- **Bounded**: Processes vaults in configurable batches to avoid RPC rate limiting
+
+### Configuration
+
+Requires Soroban configuration (same as vault submission):
+
+- `SOROBAN_CONTRACT_ID`
+- `SOROBAN_NETWORK_PASSPHRASE`
+- `SOROBAN_SOURCE_ACCOUNT`
+- `SOROBAN_RPC_URL`
+- `SOROBAN_SECRET_KEY`
+
+If Soroban is not configured, the job skips reconciliation and returns zero counts.
+
+### Drift Response
+
+When drift is detected:
+
+1. **Log the anomaly** with full context (vault ID, drifted fields, persisted vs on-chain values)
+2. **Do NOT auto-correct** - manual intervention is required to replay missed events
+3. **Alert operators** via monitoring systems that consume the structured logs
+
+### Testing
+
+```bash
+# Run reconciliation tests
+bun test src/tests/transactionETL.reconcile.test.ts
+
+# With coverage
+bun test src/tests/transactionETL.reconcile.test.ts --coverage
+```
+
+Test coverage includes:
+- Status drift detection
+- Missing on-chain vault
+- RPC timeout handling
+- Fully consistent run (zero drift)
+- Batch processing with abort signal
+

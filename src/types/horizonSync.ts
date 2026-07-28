@@ -134,6 +134,23 @@ export interface HorizonListenerConfig {
 export interface ProcessorConfig {
   maxRetries: number
   retryBackoffMs: number
+  batchSize?: number
+}
+
+export interface BatchProcessingResult {
+  total: number
+  succeeded: number
+  failed: number
+  skipped: number
+  durationMs: number
+  results: ProcessingResult[]
+}
+
+export interface ProcessingResult {
+  success: boolean
+  eventId: string
+  error?: string
+  retryCount?: number
 }
 
 export interface RetryConfig {

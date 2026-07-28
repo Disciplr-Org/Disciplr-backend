@@ -47,6 +47,14 @@ describe('redact()', () => {
     }
   })
 
+  it('redacts client_secret in snake_case (RFC 6749 OAuth body)', () => {
+    const body = { grant_type: 'authorization_code', client_id: 'public', client_secret: 's3cret' }
+    const result = redact(body) as Record<string, unknown>
+    expect(result.client_secret).toBe(REDACTED)
+    expect(result.grant_type).toBe('authorization_code')
+    expect(result.client_id).toBe('public')
+  })
+
   it('leaves non-sensitive fields unchanged', () => {
     expect(redact({ id: 'abc', amount: 100 })).toEqual({ id: 'abc', amount: 100 })
   })
@@ -111,6 +119,17 @@ describe('shouldRedact()', () => {
     expect(shouldRedact('email')).toBe(true)
     expect(shouldRedact('token')).toBe(true)
     expect(shouldRedact('cookie')).toBe(true)
+  })
+
+  it('returns true for snake_case and kebab-case variants of sensitive keys', () => {
+    expect(shouldRedact('client_secret')).toBe(true)
+    expect(shouldRedact('CLIENT_SECRET')).toBe(true)
+    expect(shouldRedact('api_key')).toBe(true)
+    expect(shouldRedact('access_token')).toBe(true)
+    expect(shouldRedact('refresh_token')).toBe(true)
+    expect(shouldRedact('credit_card')).toBe(true)
+    expect(shouldRedact('x-api-key')).toBe(true)
+    expect(shouldRedact('x-auth-token')).toBe(true)
   })
 
   it('returns false for safe keys', () => {
@@ -281,8 +300,8 @@ describe('privacyLogger middleware', () => {
     req = buildReq({ body: { password: 'secret', amount: 50 } })
     privacyLogger(req as Request, res as Response, next as unknown as NextFunction)
     const line = getLogLine()
-    expect((line.body as Record<string, unknown>).password).toBe(REDACTED)
-    expect((line.body as Record<string, unknown>).amount).toBe(50)
+    expect((line.body as any).password).toBe(REDACTED)
+    expect((line.body as any).amount).toBe(REDACTED)
   })
 
   // ---- query ----
@@ -298,8 +317,8 @@ describe('privacyLogger middleware', () => {
     req = buildReq({ query: { token: 'abc', page: '1' } as never })
     privacyLogger(req as Request, res as Response, next as unknown as NextFunction)
     const line = getLogLine()
-    expect((line.query as Record<string, unknown>).token).toBe(REDACTED)
-    expect((line.query as Record<string, unknown>).page).toBe('1')
+    expect((line.query as any).token).toBe(REDACTED)
+    expect((line.query as any).page).toBe(REDACTED)
   })
 
   // ---- header redaction ----

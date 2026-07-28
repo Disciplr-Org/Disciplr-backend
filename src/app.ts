@@ -1,13 +1,44 @@
+import { httpMetricsMiddleware } from './observability/httpMetrics.js';
+import { tracingMiddleware } from './observability/tracingMiddleware.js';
 import cors from 'cors'
 import express from 'express'
 import helmet from 'helmet'
 import { config } from './config/index.js'
+import { corsOptions } from './config/cors.js'
 import { privacyLogger } from './middleware/privacy-logger.js'
+import { csrfProtection } from './middleware/auth.js'
 import { AUTH_JSON_MAX_BYTES, JOBS_JSON_MAX_BYTES } from './middleware/requestBodyLimits.js'
 import { adminRouter } from './routes/admin.js'
 import { notificationsRouter } from './routes/notifications.js'
+import { metricsRouter } from './routes/metrics.js'
+import { metricsAuth } from './middleware/metricsAuth.js'
+import { metricsRateLimiter } from './middleware/rateLimiter.js'
+import webhookRouter from './routes/webhooks.js'
+import { errorHandler } from './middleware/errorHandler.js'
 
 export const app = express()
+
+// ── Trust proxy ────────────────────────────────────────────────────────────
+// Must be set before any middleware that reads req.ip so that Express
+// resolves the real client IP from the correct X-Forwarded-For position.
+// The value is controlled by the TRUST_PROXY env var (default: "false").
+// See docs/configuration.md for the full list of accepted values and the
+// security implications of each.
+{
+  const raw = config.trustProxy
+  // Convert the string to the type Express expects:
+  //   "true"/"false" → boolean, a numeric string → number, else keep as string.
+  let trustProxyValue: string | number | boolean = raw
+  if (raw === 'true') trustProxyValue = true
+  else if (raw === 'false') trustProxyValue = false
+  else {
+    const asNumber = Number(raw)
+    if (!isNaN(asNumber) && String(asNumber) === raw) trustProxyValue = asNumber
+  }
+  app.set('trust proxy', trustProxyValue)
+}
+app.use(httpMetricsMiddleware);
+app.use(tracingMiddleware);
 
 // ---------------------------------------------------------------------------
 // Helmet — API-only hardened configuration
@@ -115,37 +146,8 @@ app.use(
   }),
 )
 
-const corsOptions: cors.CorsOptions = {
-  origin: (origin, callback) => {
-    // Non-browser / server-to-server requests carry no Origin header — pass through
-    if (!origin) {
-      callback(null, true)
-      return
-    }
-
-    const allowed = config.corsOrigins
-    if (allowed === '*' || (Array.isArray(allowed) && allowed.includes(origin))) {
-      callback(null, true)
-    } else {
-      // Emit a structured log so rejected origins are observable in prod logs
-      console.log(
-        JSON.stringify({
-          level: 'warn',
-          event: 'security.cors_rejected',
-          service: 'disciplr-backend',
-          origin,
-          timestamp: new Date().toISOString(),
-        }),
-      )
-      callback(null, false)
-    }
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'idempotency-key'],
-  credentials: true,
-}
-
 app.use(cors(corsOptions))
+
 // Route-specific parsers must run before the global parser so tighter limits
 // still apply to chunked requests that omit Content-Length.
 app.use('/api/auth', express.json({ limit: AUTH_JSON_MAX_BYTES }))
@@ -159,14 +161,17 @@ app.use((_req, res, next) => {
 
 app.use(privacyLogger)
 
-// Core routes mounted here for test compatibility
+// ── Core routes ─────────────────────────────────────────────────────────────
 app.use('/api/admin', adminRouter)
-import { metricsRouter } from './routes/metrics.js';
-import { authenticate } from './middleware/auth.js'
-import { requireAdmin } from './middleware/rbac.js'
-import { metricsRateLimiter } from './middleware/rateLimiter.js'
+app.use('/api/notifications', notificationsRouter)
 
-// Register metrics endpoint with admin guard and rate limiter
-app.use('/api/metrics', authenticate, requireAdmin, metricsRateLimiter, metricsRouter);
+// Metrics endpoint — scraper-authenticated and rate-limited
+app.use('/api/metrics', metricsAuth, metricsRateLimiter, metricsRouter)
+
+// Webhook subscriber management — org-scoped
+app.use('/api/webhooks', webhookRouter)
+
+// ── Error handling (must be last) ────────────────────────────────────────────
+app.use(errorHandler)
 
 // Additional routes are mounted in index.ts

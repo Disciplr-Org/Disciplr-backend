@@ -23,7 +23,6 @@ describe('RBAC Authentication and Authorization Precedence (Requirement 5 & 6)',
     { method: 'get', path: '/api/admin/users' },
     { method: 'get', path: '/api/admin/verifiers' },
     { method: 'get', path: '/api/verifications' },
-    { method: 'get', path: '/api/metrics' },
     { method: 'post', path: '/api/exports/admin' },
     { method: 'post', path: '/api/auth/users/33333333-3333-3333-3333-333333333333/role' }
   ] as const

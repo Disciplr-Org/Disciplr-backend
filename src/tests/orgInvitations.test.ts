@@ -45,7 +45,12 @@ jest.unstable_mockModule('../services/membership.js', async () => ({
   listOrgMemberships: jest.fn(),
   createMembership: jest.fn().mockResolvedValue({ role: 'member' }),
   removeMembership: jest.fn(),
-  updateMemberRole: jest.fn(),
+  changeRole: jest.fn(),
+  transferOwnership: jest.fn(),
+  resendInvitation: jest.fn(),
+  revokeInvitation: jest.fn(),
+  InvitationNotFoundError: class InvitationNotFoundError extends Error {},
+  InvitationAcceptedError: class InvitationAcceptedError extends Error {},
   LastAdminError: class LastAdminError extends Error {},
 }))
 
@@ -90,14 +95,16 @@ app.use(errorHandler)
 
 // ── Helpers ─────────────────────────────────────────────────────────────────--
 
-function seedPendingInvitation(tokenHash: string, orgId = 'org-abc') {
+function seedPendingInvitation(tokenHash: string, orgId = 'org-abc', overrides: Partial<Record<string, unknown>> = {}) {
   dbMock._pending = {
     id: 'inv-1',
     org_id: orgId,
     email: 'invitee@example.com',
     token_hash: tokenHash,
+    role: 'member',
     expires_at: new Date(Date.now() + 86400_000),
     accepted_at: null,
+    ...overrides,
   }
 }
 
@@ -185,7 +192,7 @@ describe('POST /api/organizations/:orgId/invitations/accept', () => {
       .post('/api/organizations/org-abc/invitations/accept')
       .send({ token: 'deadbeef'.repeat(8), userId: 'user-2' })
     expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/invalid or expired/i)
+    expect(res.body.error.message).toMatch(/invalid or expired/i)
   })
 
   it('returns 400 when token hash does not match', async () => {
@@ -213,7 +220,7 @@ describe('POST /api/organizations/:orgId/invitations/accept', () => {
     expect(res.body.role).toBe('member')
   })
 
-  it('defaults role to member when not specified', async () => {
+  it('defaults role to member when not specified at creation', async () => {
     const rawToken = crypto.randomBytes(32).toString('hex')
     const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex')
     seedPendingInvitation(tokenHash)

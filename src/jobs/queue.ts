@@ -6,6 +6,7 @@ import {
   type JobPayloadByType,
   type JobType,
 } from './types.js'
+import { getTracer } from '../observability/tracing.js'
 
 interface InternalQueuedJob<T extends JobType = JobType> {
   id: string
@@ -15,6 +16,7 @@ interface InternalQueuedJob<T extends JobType = JobType> {
   maxAttempts: number
   createdAt: number
   runAt: number
+  leasedAt?: number
 }
 
 interface CompletedJobRecord {
@@ -78,15 +80,47 @@ export interface QueueMetrics {
   recentFailures: FailedJobRecord[]
 }
 
+export interface ReclaimedJobRecord {
+  jobId: string
+  type: JobType
+  attempt: number
+  maxAttempts: number
+  leaseAgeMs: number
+}
+
+export interface SweepResult {
+  sweptAt: string
+  staleLeaseMs: number
+  reclaimed: ReclaimedJobRecord[]
+  deadLettered: DeadLetterJobRecord[]
+}
+
+export interface QueueDepthByState {
+  queued: number
+  delayed: number
+  active: number
+  stuckActive: number
+  deadLetter: number
+}
+
+export interface QueueDepthReport {
+  generatedAt: string
+  staleLeaseMs: number
+  totalDepth: number
+  byType: Record<JobType, QueueDepthByState>
+}
+
 export interface JobQueueOptions {
   concurrency?: number
   pollIntervalMs?: number
   historyLimit?: number
+  staleLeaseMs?: number
 }
 
 const DEFAULT_CONCURRENCY = 2
 const DEFAULT_POLL_INTERVAL_MS = 250
 const DEFAULT_HISTORY_LIMIT = 50
+const DEFAULT_STALE_LEASE_MS = 300_000
 const SHUTDOWN_WAIT_MS = 2_000
 
 const sleep = async (ms: number): Promise<void> => {
@@ -96,13 +130,19 @@ const sleep = async (ms: number): Promise<void> => {
 }
 
 const createEmptyTypeMetrics = (): Record<JobType, QueueTypeMetrics> => {
-  return {
-    'notification.send': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0, deadLetter: 0 },
-    'deadline.check': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0, deadLetter: 0 },
-    'oracle.call': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0, deadLetter: 0 },
-    'analytics.recompute': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0, deadLetter: 0 },
-    'export.generate': { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0, deadLetter: 0 },
+  const byType = {} as Record<JobType, QueueTypeMetrics>
+  for (const type of JOB_TYPES) {
+    byType[type] = { queued: 0, delayed: 0, active: 0, completed: 0, failed: 0, deadLetter: 0 }
   }
+  return byType
+}
+
+const createEmptyDepthByState = (): Record<JobType, QueueDepthByState> => {
+  const byType = {} as Record<JobType, QueueDepthByState>
+  for (const type of JOB_TYPES) {
+    byType[type] = { queued: 0, delayed: 0, active: 0, stuckActive: 0, deadLetter: 0 }
+  }
+  return byType
 }
 
 const getErrorMessage = (error: unknown): string => {
@@ -140,6 +180,7 @@ export class InMemoryJobQueue {
   private readonly concurrency: number
   private readonly pollIntervalMs: number
   private readonly historyLimit: number
+  private readonly staleLeaseMs: number
 
   private startedAt: number | null = null
   private running = false
@@ -150,6 +191,7 @@ export class InMemoryJobQueue {
     this.concurrency = asPositiveInteger(options.concurrency, DEFAULT_CONCURRENCY)
     this.pollIntervalMs = asPositiveInteger(options.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS)
     this.historyLimit = asPositiveInteger(options.historyLimit, DEFAULT_HISTORY_LIMIT)
+    this.staleLeaseMs = asPositiveInteger(options.staleLeaseMs, DEFAULT_STALE_LEASE_MS)
   }
 
   registerHandler<T extends JobType>(type: T, handler: JobHandler<T>): void {
@@ -282,6 +324,91 @@ export class InMemoryJobQueue {
     }
   }
 
+  getQueueDepthReport(staleLeaseMs: number = this.staleLeaseMs): QueueDepthReport {
+    const now = Date.now()
+    const byType = createEmptyDepthByState()
+
+    for (const job of this.pendingJobs) {
+      if (job.runAt <= now) {
+        byType[job.type].queued += 1
+      } else {
+        byType[job.type].delayed += 1
+      }
+    }
+
+    for (const job of this.activeJobs.values()) {
+      byType[job.type].active += 1
+      if (now - job.leasedAt! > staleLeaseMs) {
+        byType[job.type].stuckActive += 1
+      }
+    }
+
+    for (const deadLetter of this.deadLetterJobs) {
+      byType[deadLetter.type].deadLetter += 1
+    }
+
+    let totalDepth = 0
+    for (const type of JOB_TYPES) {
+      totalDepth += byType[type].queued + byType[type].delayed + byType[type].active
+    }
+
+    return {
+      generatedAt: new Date(now).toISOString(),
+      staleLeaseMs,
+      totalDepth,
+      byType,
+    }
+  }
+
+  sweepStaleLeases(staleLeaseMs: number = this.staleLeaseMs): SweepResult {
+    const now = Date.now()
+    const reclaimed: ReclaimedJobRecord[] = []
+    const deadLettered: DeadLetterJobRecord[] = []
+
+    for (const [jobId, job] of [...this.activeJobs]) {
+      const leaseAgeMs = now - job.leasedAt!
+      if (leaseAgeMs <= staleLeaseMs) {
+        continue
+      }
+
+      this.activeJobs.delete(jobId)
+
+      if (job.attempt >= job.maxAttempts) {
+        this.moveToDeadLetter(
+          job,
+          `Stuck job reclaimed: lease age ${leaseAgeMs}ms exceeded staleLeaseMs ${staleLeaseMs}ms`,
+        )
+        deadLettered.push(this.deadLetterJobs[0])
+      } else {
+        this.totals.retried += 1
+        job.leasedAt = undefined
+        job.runAt = now
+        this.pendingJobs.push(job)
+        reclaimed.push({
+          jobId: job.id,
+          type: job.type,
+          attempt: job.attempt,
+          maxAttempts: job.maxAttempts,
+          leaseAgeMs,
+        })
+      }
+    }
+
+    if (reclaimed.length > 0) {
+      this.sortPendingJobs()
+      if (this.running) {
+        void this.drain()
+      }
+    }
+
+    return {
+      sweptAt: new Date(now).toISOString(),
+      staleLeaseMs,
+      reclaimed,
+      deadLettered,
+    }
+  }
+
   private async drain(): Promise<void> {
     if (!this.running || this.draining) {
       return
@@ -313,15 +440,26 @@ export class InMemoryJobQueue {
     }
 
     job.attempt += 1
+    const startedAt = Date.now()
+    job.leasedAt = startedAt
     this.activeJobs.set(job.id, job)
     this.totals.executions += 1
-    const startedAt = Date.now()
 
     try {
-      await handler(job.payload, {
-        jobId: job.id,
-        attempt: job.attempt,
-      })
+      const tracer = getTracer()
+      await tracer.withSpan(
+        `job.${job.type}`,
+        async (span) => {
+          span.setAttribute('job.type', job.type)
+          span.setAttribute('job.id', job.id)
+          span.setAttribute('job.attempt', job.attempt)
+          span.setAttribute('job.max_attempts', job.maxAttempts)
+          await handler(job.payload, {
+            jobId: job.id,
+            attempt: job.attempt,
+          })
+        },
+      )
       this.recordCompletedJob(job, Date.now() - startedAt)
     } catch (error) {
       const message = getErrorMessage(error)
@@ -343,6 +481,18 @@ export class InMemoryJobQueue {
         void this.drain()
       }
     }
+  }
+
+  private recordFailedJob(job: InternalQueuedJob<JobType>, error: string): void {
+    this.totals.failed += 1
+    this.failedJobs.unshift({
+      jobId: job.id,
+      type: job.type,
+      failedAt: new Date().toISOString(),
+      attempts: job.attempt,
+      error,
+    })
+    this.trimHistory(this.failedJobs)
   }
 
   private recordCompletedJob(job: InternalQueuedJob<JobType>, durationMs: number): void {

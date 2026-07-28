@@ -1,15 +1,62 @@
-import assert from 'node:assert/strict'
+import '../tests/setup.js'
 import type { AddressInfo } from 'node:net'
-import { afterEach, beforeEach, test } from 'node:test'
 import express from 'express'
 import { analyticsRouter } from './analytics.js'
 import { apiKeysRouter } from './apiKeys.js'
-import { resetApiKeysTable } from '../services/apiKeys.js'
+import { resetApiKeysTable, setApiKeyRepositoryForTests } from '../services/apiKeys.js'
+import { setAuditLogWriterForTests } from '../lib/audit-logs.js'
+import { AuthService } from '../services/auth.service.js'
 
 let baseUrl = ''
 let server: ReturnType<express.Express['listen']> | null = null
+const originalValidate = AuthService.validateStepUpSession
+
+const makeRepo = () => {
+  const store = new Map()
+  return {
+    async create(record: any) {
+      store.set(record.id, { ...record })
+    },
+    async listForUser(userId: string) {
+      return Array.from(store.values())
+        .filter((record: any) => record.userId === userId)
+        .sort((left: any, right: any) => right.createdAt.localeCompare(left.createdAt))
+    },
+    async getById(id: string) {
+      return store.get(id) ?? null
+    },
+    async update(record: any) {
+      store.set(record.id, { ...record })
+      return store.get(record.id)
+    },
+    async findByIdForUser(id: string, userId: string) {
+      const record: any = store.get(id)
+      if (!record || record.userId !== userId) {
+        return null
+      }
+      return record
+    },
+    async findByHashPrefix(prefix: string) {
+      return Array.from(store.values()).filter((record: any) => record.keyHash.slice(0, 12) === prefix)
+    },
+    async reset() {
+      store.clear()
+    },
+  }
+}
 
 beforeEach(async () => {
+  AuthService.validateStepUpSession = async (sessionId: string) => {
+    return { userId: sessionId } as any
+  }
+  setApiKeyRepositoryForTests(makeRepo() as any)
+  setAuditLogWriterForTests(async (entry: any) => {
+    return {
+      id: 'mock-audit-id',
+      created_at: new Date().toISOString(),
+      ...entry,
+    } as any
+  })
   await resetApiKeysTable()
   const app = express()
   app.use(express.json())
@@ -24,6 +71,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  AuthService.validateStepUpSession = originalValidate
   if (!server) {
     return
   }
@@ -53,17 +101,17 @@ test('creates, lists, rotates, and revokes API keys for an authenticated user', 
     }),
   })
 
-  assert.equal(createResponse.status, 201)
+  expect(createResponse.status).toBe(201)
   const createdBody = (await createResponse.json()) as {
     apiKey: string
     apiKeyMeta: { id: string; userId: string; revokedAt: string | null; scopes: string[]; keyHash?: string }
   }
 
   assert.match(createdBody.apiKey, /^dsk_/)
-  assert.equal(createdBody.apiKeyMeta.userId, 'user-123')
-  assert.equal(createdBody.apiKeyMeta.revokedAt, null)
-  assert.deepEqual(createdBody.apiKeyMeta.scopes, ['read:analytics', 'read:vaults'])
-  assert.equal('keyHash' in createdBody.apiKeyMeta, false)
+  expect(createdBody.apiKeyMeta.userId).toBe('user-123')
+  expect(createdBody.apiKeyMeta.revokedAt).toBe(null)
+  expect(createdBody.apiKeyMeta.scopes).toEqual(['read:analytics', 'read:vaults'])
+  expect('keyHash' in createdBody.apiKeyMeta).toBe(false)
 
   const listResponse = await fetch(`${baseUrl}/api/api-keys`, {
     headers: {
@@ -71,15 +119,15 @@ test('creates, lists, rotates, and revokes API keys for an authenticated user', 
     },
   })
 
-  assert.equal(listResponse.status, 200)
+  expect(listResponse.status).toBe(200)
   const listBody = (await listResponse.json()) as {
     apiKeys: Array<{ id: string; keyHash?: string; scopes: string[] }>
   }
 
-  assert.equal(listBody.apiKeys.length, 1)
-  assert.equal(listBody.apiKeys[0].id, createdBody.apiKeyMeta.id)
-  assert.equal('keyHash' in listBody.apiKeys[0], false)
-  assert.deepEqual(listBody.apiKeys[0].scopes, ['read:analytics', 'read:vaults'])
+  expect(listBody.apiKeys.length).toBe(1)
+  expect(listBody.apiKeys[0].id).toBe(createdBody.apiKeyMeta.id)
+  expect('keyHash' in listBody.apiKeys[0]).toBe(false)
+  expect(listBody.apiKeys[0].scopes).toEqual(['read:analytics', 'read:vaults'])
 
   const rotateResponse = await fetch(`${baseUrl}/api/api-keys/${createdBody.apiKeyMeta.id}/rotate`, {
     method: 'POST',
@@ -88,7 +136,7 @@ test('creates, lists, rotates, and revokes API keys for an authenticated user', 
     },
   })
 
-  assert.equal(rotateResponse.status, 200)
+  expect(rotateResponse.status).toBe(200)
   const rotateBody = (await rotateResponse.json()) as {
     apiKey: string
     apiKeyMeta: { id: string; revokedAt: string | null; keyHash?: string }
@@ -96,31 +144,32 @@ test('creates, lists, rotates, and revokes API keys for an authenticated user', 
 
   assert.match(rotateBody.apiKey, /^dsk_/)
   assert.notEqual(rotateBody.apiKey, createdBody.apiKey)
-  assert.equal(rotateBody.apiKeyMeta.id, createdBody.apiKeyMeta.id)
-  assert.equal('keyHash' in rotateBody.apiKeyMeta, false)
+  expect(rotateBody.apiKeyMeta.id).toBe(createdBody.apiKeyMeta.id)
+  expect('keyHash' in rotateBody.apiKeyMeta).toBe(false)
 
   const oldKeyResponse = await fetch(`${baseUrl}/api/analytics/vaults`, {
     headers: {
       'x-api-key': createdBody.apiKey,
     },
   })
-  assert.equal(oldKeyResponse.status, 401)
+  expect(oldKeyResponse.status).toBe(401)
 
   const newKeyResponse = await fetch(`${baseUrl}/api/analytics/vaults`, {
     headers: {
       'x-api-key': rotateBody.apiKey,
     },
   })
-  assert.equal(newKeyResponse.status, 200)
+  expect(newKeyResponse.status).toBe(200)
 
   const revokeResponse = await fetch(`${baseUrl}/api/api-keys/${createdBody.apiKeyMeta.id}/revoke`, {
     method: 'POST',
     headers: {
       'x-user-id': 'user-123',
+      'x-step-up-session-id': 'user-123',
     },
   })
 
-  assert.equal(revokeResponse.status, 200)
+  expect(revokeResponse.status).toBe(200)
   const revokeBody = (await revokeResponse.json()) as {
     apiKeyMeta: { revokedAt: string | null }
   }
@@ -131,7 +180,7 @@ test('creates, lists, rotates, and revokes API keys for an authenticated user', 
       'x-api-key': rotateBody.apiKey,
     },
   })
-  assert.equal(revokedResponse.status, 401)
+  expect(revokedResponse.status).toBe(401)
 })
 
 test('rejects rotation for keys owned by a different user', async () => {
@@ -156,7 +205,7 @@ test('rejects rotation for keys owned by a different user', async () => {
     },
   })
 
-  assert.equal(rotateResponse.status, 404)
+  expect(rotateResponse.status).toBe(404)
 })
 
 test('validates scopes and rejects revoked API keys on protected analytics routes', async () => {
@@ -172,7 +221,7 @@ test('validates scopes and rejects revoked API keys on protected analytics route
     }),
   })
 
-  assert.equal(createResponse.status, 201)
+  expect(createResponse.status).toBe(201)
   const createdBody = (await createResponse.json()) as {
     apiKey: string
     apiKeyMeta: { id: string }
@@ -183,19 +232,20 @@ test('validates scopes and rejects revoked API keys on protected analytics route
       'x-api-key': createdBody.apiKey,
     },
   })
-  assert.equal(forbiddenResponse.status, 403)
+  expect(forbiddenResponse.status).toBe(403)
 
   const allowedResponse = await fetch(`${baseUrl}/api/analytics/vaults`, {
     headers: {
       'x-api-key': createdBody.apiKey,
     },
   })
-  assert.equal(allowedResponse.status, 200)
+  expect(allowedResponse.status).toBe(200)
 
   await fetch(`${baseUrl}/api/api-keys/${createdBody.apiKeyMeta.id}/revoke`, {
     method: 'POST',
     headers: {
       'x-user-id': 'user-321',
+      'x-step-up-session-id': 'user-321',
     },
   })
 
@@ -204,7 +254,7 @@ test('validates scopes and rejects revoked API keys on protected analytics route
       'x-api-key': createdBody.apiKey,
     },
   })
-  assert.equal(revokedResponse.status, 401)
+  expect(revokedResponse.status).toBe(401)
 })
 
 test('returns structured validation errors for invalid API key create payloads', async () => {
@@ -220,7 +270,7 @@ test('returns structured validation errors for invalid API key create payloads',
     }),
   })
 
-  assert.equal(response.status, 400)
+  expect(response.status).toBe(400)
   const body = (await response.json()) as {
     error: {
       code: string
@@ -229,8 +279,8 @@ test('returns structured validation errors for invalid API key create payloads',
     }
   }
 
-  assert.equal(body.error.code, 'VALIDATION_ERROR')
-  assert.equal(body.error.message, 'Invalid request payload')
-  assert.equal(body.error.fields.some((field) => field.path === 'label'), true)
-  assert.equal(body.error.fields.some((field) => field.path === 'scopes[1]'), true)
+  expect(body.error.code).toBe('VALIDATION_ERROR')
+  expect(body.error.message).toBe('Invalid request payload')
+  expect(body.error.fields.some((field) => field.path === 'label')).toBe(true)
+  expect(body.error.fields.some((field) => field.path === 'scopes[1]')).toBe(true)
 })

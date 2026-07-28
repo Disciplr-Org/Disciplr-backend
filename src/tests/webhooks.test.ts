@@ -28,14 +28,18 @@ jest.unstable_mockModule('../repositories/webhookSubscriberRepository.js', () =>
         url: string
         secret: string
         events: string[]
+        schemaVersion?: number
       }): Promise<WebhookSubscriber> => {
         const sub: WebhookSubscriber = {
           id: randomUUID(),
           organizationId: data.organizationId,
           url: data.url,
           secret: data.secret,
+          previousSecret: null,
+          rotatedAt: null,
           events: [...data.events],
           active: true,
+          schemaVersion: data.schemaVersion ?? 1,
           createdAt: new Date().toISOString(),
         }
         mockSubscribers.push(sub)
@@ -50,6 +54,11 @@ jest.unstable_mockModule('../repositories/webhookSubscriberRepository.js', () =>
       }
       return false
     }),
+    getBreakerState: jest.fn(async () => null),
+    upsertBreakerState: jest.fn(async () => {}),
+    tryTransitionToHalfOpen: jest.fn(async () => false),
+    removeBreakerState: jest.fn(async () => true),
+    getAllBreakerStates: jest.fn(async () => []),
   })),
 }))
 
@@ -70,45 +79,66 @@ const TEST_ORG = 'test-org-id'
 
 describe('signPayload', () => {
   it('returns a sha256= prefixed hex string', () => {
-    const sig = signPayload('secret', '{"hello":"world"}')
+    const sig = signPayload('a-valid-secret-key', '{"hello":"world"}')
     expect(sig).toMatch(/^sha256=[0-9a-f]{64}$/)
   })
 
   it('produces a deterministic signature for the same inputs', () => {
     const body = '{"eventType":"vault_created"}'
-    expect(signPayload('s3cr3t', body)).toBe(signPayload('s3cr3t', body))
+    expect(signPayload('s3cr3t-key-long', body)).toBe(signPayload('s3cr3t-key-long', body))
   })
 
   it('produces different signatures for different secrets', () => {
     const body = '{"eventType":"vault_created"}'
-    expect(signPayload('secret-a', body)).not.toBe(signPayload('secret-b', body))
+    expect(signPayload('secret-key-alpha', body)).not.toBe(signPayload('secret-key-bravo', body))
   })
 
   it('produces different signatures for different bodies', () => {
-    expect(signPayload('secret', 'body-a')).not.toBe(signPayload('secret', 'body-b'))
+    expect(signPayload('a-valid-secret-key', 'body-a')).not.toBe(signPayload('a-valid-secret-key', 'body-b'))
+  })
+
+  it('throws for an empty secret', () => {
+    expect(() => signPayload('', 'body')).toThrow(/at least/)
+  })
+
+  it('throws for a secret shorter than minimum length', () => {
+    expect(() => signPayload('short', 'body')).toThrow(/at least/)
+  })
+
+  it('throws for a non-string secret', () => {
+    expect(() => signPayload(null as any, 'body')).toThrow(/at least/)
+    expect(() => signPayload(undefined as any, 'body')).toThrow(/at least/)
   })
 })
 
 describe('verifySignature', () => {
   it('returns true for a correct signature', () => {
     const body = '{"hello":"world"}'
-    const sig = signPayload('my-secret', body)
-    expect(verifySignature('my-secret', body, sig)).toBe(true)
+    const sig = signPayload('my-secret-key-ok', body)
+    expect(verifySignature('my-secret-key-ok', body, sig)).toBe(true)
   })
 
   it('returns false for a tampered body', () => {
-    const sig = signPayload('my-secret', 'original-body')
-    expect(verifySignature('my-secret', 'tampered-body', sig)).toBe(false)
+    const sig = signPayload('my-secret-key-ok', 'original-body')
+    expect(verifySignature('my-secret-key-ok', 'tampered-body', sig)).toBe(false)
   })
 
   it('returns false for a wrong secret', () => {
     const body = '{"hello":"world"}'
-    const sig = signPayload('correct-secret', body)
-    expect(verifySignature('wrong-secret', body, sig)).toBe(false)
+    const sig = signPayload('correct-secret-ok', body)
+    expect(verifySignature('wrong-secret-ok!!', body, sig)).toBe(false)
   })
 
   it('returns false for a length-mismatched signature', () => {
-    expect(verifySignature('secret', 'body', 'sha256=tooshort')).toBe(false)
+    expect(verifySignature('a-valid-secret-key', 'body', 'sha256=tooshort')).toBe(false)
+  })
+
+  it('returns false for an empty secret', () => {
+    expect(verifySignature('', 'body', 'sha256=abcdef')).toBe(false)
+  })
+
+  it('returns false for a secret shorter than minimum length', () => {
+    expect(verifySignature('short', 'body', 'sha256=abcdef')).toBe(false)
   })
 })
 
@@ -181,7 +211,7 @@ describe('subscriber management', () => {
     const sub = await addSubscriber(
       TEST_ORG,
       'https://example.com/hook',
-      'secret',
+      'a-valid-secret-key',
       ['vault_created'],
     )
     expect(sub.id).toBeTruthy()
@@ -235,7 +265,7 @@ describe('dispatchWebhookEvent', () => {
   })
 
   it('delivers to a matching subscriber with correct HMAC signature', async () => {
-    const secret = 'test-secret'
+    const secret = 'test-secret-key-123'
     await addSubscriber(TEST_ORG, 'https://example.com/hook', secret, ['vault_created'])
     fetchMock.mockResolvedValue({ status: 200 } as Response)
 
@@ -262,8 +292,8 @@ describe('dispatchWebhookEvent', () => {
   })
 
   it('delivers to all subscribers when events list is empty (wildcard)', async () => {
-    await addSubscriber(TEST_ORG, 'https://a.example.com/hook', 'secretA', [])
-    await addSubscriber(TEST_ORG, 'https://b.example.com/hook', 'secretB', [])
+    await addSubscriber(TEST_ORG, 'https://a.example.com/hook', 'secretAlpha-123', [])
+    await addSubscriber(TEST_ORG, 'https://b.example.com/hook', 'secretBravo-123', [])
     fetchMock.mockResolvedValue({ status: 200 } as Response)
 
     const results = await dispatchWebhookEvent(makePayload('vault_completed'))

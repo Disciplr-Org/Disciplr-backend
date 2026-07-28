@@ -38,7 +38,7 @@ jest.unstable_mockModule('../db/index.js', () => ({
 }))
 
 // Mock markVaultExpiries used in the handler
-jest.unstable_mockModule('../services/vault.js', () => ({
+jest.unstable_mockModule('../services/vaultExpiry.service.js', () => ({
   markVaultExpiries: jest.fn<any>().mockResolvedValue(0),
 }))
 
@@ -67,7 +67,8 @@ jest.unstable_mockModule('../services/soroban.js', () => ({
 const { startExpirationChecker, stopExpirationChecker } = await import(
   '../services/expirationScheduler.js'
 )
-const { defaultJobHandlers } = await import('../jobs/handlers.js')
+const { createDefaultJobHandlers } = await import('../jobs/handlers.js')
+const defaultJobHandlers = createDefaultJobHandlers({ send: async () => {} } as any)
 
 // ─── Suite ────────────────────────────────────────────────────────────────────
 

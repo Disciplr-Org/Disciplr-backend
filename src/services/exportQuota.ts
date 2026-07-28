@@ -1,4 +1,5 @@
 import type { Knex } from 'knex'
+import { AsyncMutex } from '../utils/asyncMutex.js'
 
 export interface OrgQuotaEntry {
   orgId: string
@@ -30,22 +31,26 @@ const utcDateString = (d = new Date()): string => d.toISOString().slice(0, 10)
 
 const createInMemoryOrgQuotaRepository = (): OrgQuotaRepository => {
   const store = new Map<string, OrgQuotaEntry>()
+  const mutex = new AsyncMutex()
   const key = (orgId: string, date: string, metric: string) => `${orgId}:${date}:${metric}`
 
   return {
     async increment(orgId, date, metric, dailyLimit) {
-      const k = key(orgId, date, metric)
-      const existing = store.get(k)
-      const entry: OrgQuotaEntry = {
-        orgId,
-        quotaDate: date,
-        metric,
-        count: (existing?.count ?? 0) + 1,
-        limit: dailyLimit,
-        updatedAt: new Date().toISOString(),
-      }
-      store.set(k, entry)
-      return { ...entry }
+      // Atomically read, check, and increment under mutex
+      return mutex.runExclusive(() => {
+        const k = key(orgId, date, metric)
+        const existing = store.get(k)
+        const entry: OrgQuotaEntry = {
+          orgId,
+          quotaDate: date,
+          metric,
+          count: (existing?.count ?? 0) + 1,
+          limit: dailyLimit,
+          updatedAt: new Date().toISOString(),
+        }
+        store.set(k, entry)
+        return { ...entry }
+      })
     },
     async get(orgId, date, metric) {
       const entry = store.get(key(orgId, date, metric))
