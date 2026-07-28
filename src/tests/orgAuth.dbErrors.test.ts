@@ -24,6 +24,9 @@ jest.unstable_mockModule('../models/organizations.js', () => ({
   getMemberRole: jest.fn(),
 }))
 
+// loadModuleGuard prevents TS from tree-shaking the import; the mock above
+// ensures getOrganization/getMemberRole are never actually called.
+
 const { requireOrgRole, requireTeamRole } = await import('../middleware/orgAuth.js')
 const { errorHandler } = await import('../middleware/errorHandler.js')
 
