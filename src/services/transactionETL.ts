@@ -1,6 +1,7 @@
 import { Horizon } from '@stellar/stellar-sdk'
 import type { Transaction, HorizonOperation, ETLConfig, VaultReference } from '../types/transactions.js'
 import db from '../db/index.js'
+import { getSorobanConfig } from './soroban.js'
 
 export class TransactionETLService {
   private server: Horizon.Server
@@ -438,6 +439,64 @@ export class TransactionETLService {
       
     } catch (error) {
       console.error(`Error processing account ${account}:`, error)
+    }
+  }
+
+  async reconcileVaults(): Promise<{
+    totalVaults: number
+    checked: number
+    driftDetected: boolean
+    missingOnChain: number
+    errors: string[]
+    driftedVaults: any[]
+  }> {
+    const config = getSorobanConfig()
+
+    if (!config) {
+      console.log('Soroban not configured, skipping vault reconciliation')
+      return {
+        totalVaults: 0,
+        checked: 0,
+        driftDetected: false,
+        missingOnChain: 0,
+        errors: [],
+        driftedVaults: [],
+      }
+    }
+
+    console.log('Starting vault reconciliation...')
+    const vaults = await db('vaults').select('*')
+    const driftedVaults: any[] = []
+    const errors: string[] = []
+
+    for (const vault of vaults) {
+      try {
+        // Check if vault exists on-chain
+        const onChainVault = await this.server
+          .accounts()
+          .accountId(vault.creator)
+          .call()
+
+        if (!onChainVault) {
+          driftedVaults.push({
+            id: vault.id,
+            creator: vault.creator,
+            reason: 'Missing on-chain',
+          })
+        }
+      } catch (error) {
+        const msg = `Error checking vault ${vault.id}: ${error instanceof Error ? error.message : String(error)}`
+        errors.push(msg)
+      }
+    }
+
+    return {
+      totalVaults: vaults.length,
+      checked: vaults.length,
+      driftDetected: driftedVaults.length > 0,
+      missingOnChain: driftedVaults.length,
+      errors,
+      driftedVaults,
     }
   }
 }
