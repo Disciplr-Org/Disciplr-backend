@@ -221,7 +221,7 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, async (req:
       return next(AppError.conflict('Verifier has already voted on this milestone'))
     }
 
-    // Reject late votes on already-settled milestones
+    // Reject late votes on already-settled milestones (using cached milestone)
     const approvalThreshold = (milestone as any)?.approvalThreshold || 1
     const totalVerifiers = (milestone as any)?.totalVerifiers as number | undefined
 
