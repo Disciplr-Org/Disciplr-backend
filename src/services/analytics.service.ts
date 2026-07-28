@@ -154,7 +154,7 @@ export async function getOverallAnalytics(): Promise<VaultAnalytics> {
       successRate: summary.success_rate,
       lastUpdated: summary.last_updated,
     }
-  }, orgId)
+  })
 }
 
 export async function getAnalyticsByPeriod(

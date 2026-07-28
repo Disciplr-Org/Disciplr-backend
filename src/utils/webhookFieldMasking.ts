@@ -223,13 +223,14 @@ function applyPolicyToChild(value: unknown, path: string, policy: FieldPolicy): 
   }
 
   if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>
     const out: Record<string, unknown> = {}
-    for (const key of Object.keys(value)) {
+    for (const key of Object.keys(obj)) {
       const childPath = path ? `${path}.${key}` : key
-      const sub = applyPolicyToChild(value[key], childPath, policy)
+      const sub = applyPolicyToChild(obj[key], childPath, policy)
       if (sub === undefined) continue
       // Drop empty intermediate objects so we don't emit `{ a: {} }`.
-      if (typeof sub === 'object' && !Array.isArray(sub) && Object.keys(sub).length === 0) continue
+      if (typeof sub === 'object' && sub !== null && !Array.isArray(sub) && Object.keys(sub).length === 0) continue
       out[key] = sub
     }
     return out

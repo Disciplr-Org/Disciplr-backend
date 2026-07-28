@@ -406,14 +406,14 @@ async function submitTransaction(
             .setTimeout(30)
             .build()
 
-          const prepared = await retryRpc('prepareTransaction', config, () =>
+          const prepared: any = await retryRpc('prepareTransaction', config, () =>
             server.prepareTransaction(tx),
           )
           prepared.sign(keypair)
 
           // sendTransaction is retried on the SAME endpoint for transient network
           // errors; switching endpoints only happens if it never returns at all.
-          const response = await retryRpc('sendTransaction', config, () =>
+          const response: any = await retryRpc('sendTransaction', config, () =>
             server.sendTransaction(prepared),
           )
           responseHash = response.hash
@@ -437,7 +437,7 @@ async function submitTransaction(
               if (Date.now() >= deadline) {
                 throw new SorobanTimeoutError(response.hash, config.submitTimeoutMs)
               }
-              const result = await server.getTransaction(response.hash)
+              const result: any = await server.getTransaction(response.hash)
               if (result.status === 'NOT_FOUND') {
                 throw Object.assign(new Error('transaction_pending'), { retryable: true })
               }
@@ -453,7 +453,7 @@ async function submitTransaction(
 
           activePool.recordSuccess(url)
           span.setAttribute('soroban.tx_hash', response.hash)
-          span.setStatus({ code: 'OK' })
+          span.setStatus({ code: 'OK' } as any)
           return { txHash: response.hash }
 
         } catch (err) {
@@ -722,13 +722,13 @@ export const createDefaultSorobanClient = (
       scValToNative,
     } = await import('@stellar/stellar-sdk')
 
-    const server = new SorobanRpc.Server(config.rpcUrl)
+    const server = new SorobanRpc.Server(config.rpcUrl as string)
     const contract = new Contract(config.contractId)
 
     try {
-      const callOp = contract.call('get_vault', nativeToScVal(vaultId, { type: 'string' }))
+      const callOp: any = contract.call('get_vault', nativeToScVal(vaultId, { type: 'string' }))
 
-      const result = await server.simulateTransaction(callOp)
+      const result: any = await server.simulateTransaction(callOp)
 
       if (result.result === undefined || result.result === null) {
         return null
