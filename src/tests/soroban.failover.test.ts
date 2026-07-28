@@ -217,10 +217,22 @@ describe('SorobanRpcPool', () => {
     expect(pool.getHealthStatuses()[0].status).toBe('down')
   })
 
-  it('does not probe healthy or degraded endpoints', async () => {
+  it('probes degraded endpoints (not just down) and recovers them on success', async () => {
     const probe = jest.fn<ProbeFunction>().mockResolvedValue(true)
     const pool = createRpcPool([PRIMARY_URL, SECONDARY_URL], { failureThreshold: 3, probe })
     pool.recordFailure(SECONDARY_URL) // degraded
+
+    await pool.probeNow()
+
+    // Degraded endpoints are now probed so they can recover without traffic
+    expect(probe).toHaveBeenCalledWith(SECONDARY_URL, expect.any(Number))
+    expect(pool.getHealthStatuses().find((s) => s.maskedUrl.includes('secondary'))?.status).toBe('healthy')
+  })
+
+  it('does not probe healthy endpoints', async () => {
+    const probe = jest.fn<ProbeFunction>().mockResolvedValue(true)
+    const pool = createRpcPool([PRIMARY_URL, SECONDARY_URL], { failureThreshold: 3, probe })
+    // both are healthy
 
     await pool.probeNow()
 
@@ -246,6 +258,82 @@ describe('SorobanRpcPool', () => {
     pool.stopProbing()
     // No assertion needed — this verifies no error is thrown and timer is cleared
     pool.stopProbing() // safe to call twice
+  })
+
+  // ─── Degraded endpoint recovery ──────────────────────────────────────────
+
+  it('recovers a degraded endpoint through successful probe (no traffic needed)', async () => {
+    const probe = jest.fn<ProbeFunction>().mockResolvedValue(true)
+    const pool = createRpcPool([PRIMARY_URL], { failureThreshold: 3, probe })
+    pool.recordFailure(PRIMARY_URL) // 1 fail → degraded
+
+    // Degraded endpoint is deprioritised in ordering but still available
+    expect(pool.getOrderedUrls()[0]).toBe(PRIMARY_URL) // only endpoint
+    expect(pool.isAvailable(PRIMARY_URL)).toBe(true)
+
+    await pool.probeNow()
+
+    expect(probe).toHaveBeenCalledWith(PRIMARY_URL, expect.any(Number))
+    const [status] = pool.getHealthStatuses()
+    expect(status.status).toBe('healthy')
+    expect(status.failureCount).toBe(0)
+  })
+
+  it('recovers multiple degraded endpoints in one probe pass', async () => {
+    const probe = jest.fn<ProbeFunction>().mockResolvedValue(true)
+    const pool = createRpcPool(
+      ['https://rpc-a.example.com', 'https://rpc-b.example.com', 'https://rpc-c.example.com'],
+      { failureThreshold: 3, probe },
+    )
+    pool.recordFailure('https://rpc-a.example.com')
+    pool.recordFailure('https://rpc-b.example.com')
+
+    await pool.probeNow()
+
+    expect(probe).toHaveBeenCalledTimes(2)
+    const statuses = pool.getHealthStatuses()
+    expect(statuses.every((s) => s.status === 'healthy')).toBe(true)
+  })
+
+  it('probes degraded and down endpoints in a mixed pool, but not healthy ones', async () => {
+    const probe = jest.fn<ProbeFunction>().mockResolvedValue(true)
+    const pool = createRpcPool(
+      ['https://rpc-a.example.com', 'https://rpc-b.example.com', 'https://rpc-c.example.com'],
+      { failureThreshold: 2, probe },
+    )
+    pool.recordFailure('https://rpc-a.example.com')          // degraded (1 fail)
+    pool.recordFailure('https://rpc-b.example.com')          // degraded (1 fail)
+    pool.recordFailure('https://rpc-b.example.com')          // down (2 fails)
+
+    await pool.probeNow()
+
+    // Both non-healthy endpoints probed (degraded + down), healthy skipped
+    expect(probe).toHaveBeenCalledTimes(2)
+    expect(pool.getHealthStatuses().every((s) => s.status === 'healthy')).toBe(true)
+  })
+
+  it('leaves a degraded endpoint as degraded when probe fails', async () => {
+    const probe = jest.fn<ProbeFunction>().mockResolvedValue(false)
+    const pool = createRpcPool([PRIMARY_URL], { failureThreshold: 3, probe })
+    pool.recordFailure(PRIMARY_URL)
+
+    await pool.probeNow()
+
+    const [status] = pool.getHealthStatuses()
+    expect(status.status).toBe('degraded')
+    expect(probe).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves consecutiveFailures intact when probe fails on a degraded endpoint', async () => {
+    const probe = jest.fn<ProbeFunction>().mockResolvedValue(false)
+    const pool = createRpcPool([PRIMARY_URL], { failureThreshold: 3, probe })
+    pool.recordFailure(PRIMARY_URL) // degraded, 1 failure
+
+    await pool.probeNow()
+
+    const [status] = pool.getHealthStatuses()
+    expect(status.status).toBe('degraded')
+    expect(status.failureCount).toBe(1) // unchanged
   })
 })
 
@@ -410,6 +498,7 @@ describe('submitTransaction failover (via createDefaultSorobanClient)', () => {
     const alwaysFailServer = makeNetworkErrorServer('503 service unavailable')
     const pool = createRpcPool([PRIMARY_URL, SECONDARY_URL], { failureThreshold: 2 })
 
+    // First call: primary (degraded after 1 failure), secondary (healthy) succeeds
     const client = createDefaultSorobanClient(
       makeFakeSdkWithRouting({
         [PRIMARY_URL]: alwaysFailServer,
@@ -417,22 +506,23 @@ describe('submitTransaction failover (via createDefaultSorobanClient)', () => {
       }),
       pool,
     )
-
-    // First call: primary fails once → degraded
     await client.submitVaultCreation(BASE_CONFIG, VAULT_ARGS)
     expect(pool.getHealthStatuses().find((s) => s.maskedUrl.includes('primary'))?.status).toBe('degraded')
 
-    // Second call: primary fails again → down
-    const alwaysFailServer2 = makeNetworkErrorServer('503 service unavailable')
+    // Second call: primary is now degraded, so healthy secondary is tried first
+    // but it also fails — forcing the routing to try primary, which fails again
+    // and reaches the threshold.
+    const failBoth = makeNetworkErrorServer('503 service unavailable')
     const client2 = createDefaultSorobanClient(
       makeFakeSdkWithRouting({
-        [PRIMARY_URL]: alwaysFailServer2,
-        [SECONDARY_URL]: makeOkServer('tx-secondary-2'),
+        [PRIMARY_URL]: failBoth,
+        [SECONDARY_URL]: failBoth,
       }),
       pool,
     )
-    await client2.submitVaultCreation(BASE_CONFIG, VAULT_ARGS)
+    await expect(client2.submitVaultCreation(BASE_CONFIG, VAULT_ARGS)).rejects.toThrow()
     expect(pool.getHealthStatuses().find((s) => s.maskedUrl.includes('primary'))?.status).toBe('down')
+    expect(pool.getHealthStatuses().find((s) => s.maskedUrl.includes('secondary'))?.status).toBe('degraded')
   })
 
   // ─── Re-probe and recovery ─────────────────────────────────────────────────
