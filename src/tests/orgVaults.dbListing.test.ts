@@ -22,7 +22,6 @@ import { randomUUID } from 'node:crypto'
 import type { Knex } from 'knex'
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from '@jest/globals'
 import { setupTestDatabase, teardownTestDatabase } from './helpers/testDatabase.js'
-import { setOrganizations, setOrgMembers } from '../models/organizations.js'
 import { generateAccessToken } from '../lib/auth-utils.js'
 import { UserRole } from '../types/user.js'
 
@@ -66,13 +65,13 @@ describe('GET /api/organizations/:orgId/vaults (DB-backed listing)', () => {
 
   beforeEach(async () => {
     await db('vaults').del()
-    setOrganizations([{ id: ORG_ID, name: 'Integration Org', createdAt: new Date().toISOString() }])
-    setOrgMembers([{ orgId: ORG_ID, userId: USER_ID, role: 'owner' }])
+    await db('organizations').insert({ id: ORG_ID, name: 'Integration Org', created_at: new Date().toISOString() })
+    await db('org_members').insert({ org_id: ORG_ID, user_id: USER_ID, role: 'owner' })
   })
 
-  afterEach(() => {
-    setOrganizations([])
-    setOrgMembers([])
+  afterEach(async () => {
+    await db('org_members').del()
+    await db('organizations').del()
   })
 
   it('lists a vault created via POST /api/vaults', async () => {
