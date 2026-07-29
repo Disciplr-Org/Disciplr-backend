@@ -15,6 +15,7 @@ import { metricsAuth } from './middleware/metricsAuth.js'
 import { metricsRateLimiter } from './middleware/rateLimiter.js'
 import webhookRouter from './routes/webhooks.js'
 import { errorHandler } from './middleware/errorHandler.js'
+import { mountVersionedRoute } from './middleware/versioning.js'
 
 export const app = express()
 app.use(httpMetricsMiddleware);
@@ -130,8 +131,11 @@ app.use(cors(corsOptions))
 
 // Route-specific parsers must run before the global parser so tighter limits
 // still apply to chunked requests that omit Content-Length.
+// Limits apply to both the legacy and versioned paths.
 app.use('/api/auth', express.json({ limit: AUTH_JSON_MAX_BYTES }))
+app.use('/api/v1/auth', express.json({ limit: AUTH_JSON_MAX_BYTES }))
 app.use('/api/jobs/enqueue', express.json({ limit: JOBS_JSON_MAX_BYTES }))
+app.use('/api/v1/jobs/enqueue', express.json({ limit: JOBS_JSON_MAX_BYTES }))
 app.use(express.json())
 
 app.use((_req, res, next) => {
@@ -142,14 +146,14 @@ app.use((_req, res, next) => {
 app.use(privacyLogger)
 
 // ── Core routes ─────────────────────────────────────────────────────────────
-app.use('/api/admin', adminRouter)
-app.use('/api/notifications', notificationsRouter)
+mountVersionedRoute(app, '/api/admin', '/api/v1/admin', adminRouter)
+mountVersionedRoute(app, '/api/notifications', '/api/v1/notifications', notificationsRouter)
 
 // Metrics endpoint — scraper-authenticated and rate-limited
-app.use('/api/metrics', metricsAuth, metricsRateLimiter, metricsRouter)
+mountVersionedRoute(app, '/api/metrics', '/api/v1/metrics', metricsAuth, metricsRateLimiter, metricsRouter)
 
 // Webhook subscriber management — org-scoped
-app.use('/api/webhooks', webhookRouter)
+mountVersionedRoute(app, '/api/webhooks', '/api/v1/webhooks', webhookRouter)
 
 // ── Error handling (must be last) ────────────────────────────────────────────
 app.use(errorHandler)
