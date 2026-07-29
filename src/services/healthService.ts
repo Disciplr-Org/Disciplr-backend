@@ -3,6 +3,7 @@ import { db } from '../db/knex.js';
 import type { BackgroundJobSystem } from '../jobs/system.js';
 import { getSorobanBootResult } from './sorobanBoot.js';
 import { getRpcPoolHealth, type RpcEndpointHealth } from './soroban.js';
+import { getPendingCount, getDueCount } from './deferredReminders.service.js';
 
 const DEFAULT_TIMEOUT_MS = 3000;
 
@@ -45,12 +46,13 @@ export const healthService = {
   },
 
   async buildDeepHealthStatus(jobSystem: BackgroundJobSystem) {
-    const [dbResult, migrationResult, jobResult, horizonResult, schedulerResult] = await Promise.allSettled([
+    const [dbResult, migrationResult, jobResult, horizonResult, schedulerResult, deferredResult] = await Promise.allSettled([
       this.checkDatabase(),
       this.checkMigrations(),
       Promise.resolve(this.checkJobSystem(jobSystem)),
       this.checkHorizonListener(),
       this.checkExpirationScheduler(),
+      this.checkDeferredReminders(),
     ]);
 
     const database =
@@ -78,10 +80,15 @@ export const healthService = {
         ? schedulerResult.value
         : { status: 'down', error: String(schedulerResult.reason?.message ?? 'Unknown error') };
 
+    const deferredReminders =
+      deferredResult.status === 'fulfilled'
+        ? deferredResult.value
+        : { status: 'down', error: String(deferredResult.reason?.message ?? 'Unknown error') };
+
     const sorobanBoot = this.checkSorobanBoot();
     const sorobanRpcPool = this.checkSorobanRpcPool();
 
-    const components = [database, migrations, jobs, horizonListener, expirationScheduler];
+    const components = [database, migrations, jobs, horizonListener, expirationScheduler, deferredReminders];
     const isDown = components.some((c: any) => c.status === 'down');
     const isDegraded =
       components.some((c: any) => c.status === 'stale') ||
@@ -97,6 +104,7 @@ export const healthService = {
         jobs,
         horizonListener,
         expirationScheduler,
+        deferredReminders,
         sorobanBoot,
         sorobanRpcPool,
       },
@@ -280,6 +288,28 @@ export const healthService = {
     } catch (error: any) {
       return { status: 'down', error: error.message }
     }
+  },
+
+  async checkDeferredReminders(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<{
+    status: string;
+    pendingCount: number;
+    dueCount: number;
+    error?: string;
+  }> {
+    try {
+      const [pendingCount, dueCount] = await Promise.all([
+        withTimeout(getPendingCount(), timeoutMs, 'Deferred reminders pending count'),
+        withTimeout(getDueCount(), timeoutMs, 'Deferred reminders due count'),
+      ]);
+      return { status: 'up', pendingCount, dueCount };
+    } catch (error: any) {
+      return { status: 'down', pendingCount: 0, dueCount: 0, error: error.message };
+    }
+  },
+
+  // Kept for backward compatibility; not used by the new health endpoints.
+  async checkHorizon(): Promise<{ status: string; error?: string }> {
+    return { status: 'down', error: 'Deprecated' };
   },
 };
 
