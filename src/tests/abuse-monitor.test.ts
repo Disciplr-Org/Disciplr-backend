@@ -97,12 +97,12 @@ describe('AbuseMonitor Heuristics', () => {
     jest.advanceTimersByTime(1000)
     const result = smallMonitor.record({ id: 'user3', type: 'request', weight: 200 })
 
-    // user3 was tracked — its high-weight signal should cause the expected return value
+    // user3 was tracked ? its high-weight signal should cause the expected return value
     // (false here because 200 < 9999 penaltyScoreLimit)
     expect(result).toBe(false)
 
     // user3 is now in the map; user1 (LRU) was evicted, user2 survives
-    // We can verify by driving user3 score over the limit — it must be tracked
+    // We can verify by driving user3 score over the limit ? it must be tracked
     const flagged = smallMonitor.record({ id: 'user3', type: 'auth_fail', weight: 9999 })
     expect(flagged).toBe(true)
 
@@ -117,7 +117,7 @@ describe('AbuseMonitor Heuristics', () => {
     // Fill the single slot
     smallMonitor.record({ id: 'early-actor', type: 'request' })
 
-    // A new high-weight actor arrives — it must displace early-actor and be scored
+    // A new high-weight actor arrives ? it must displace early-actor and be scored
     jest.advanceTimersByTime(500)
     const flagged = smallMonitor.record({ id: 'new-bad-actor', type: 'auth_fail', weight: 9999 })
     expect(flagged).toBe(true)
