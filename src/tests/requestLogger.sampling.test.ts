@@ -286,24 +286,58 @@ describe('requestLogger sampling', () => {
     })
   })
 
-  describe('structured log content', () => {
-    it('includes expected fields in the log object', () => {
-      req.method = 'POST'
-      req.path = '/api/vaults/123'
-      req.headers = { 'x-user-id': 'user-1', 'x-user-role': 'admin' }
-      req.body = { name: 'test' }
+   describe('structured log content', () => {
+     it('includes expected fields in the log object', () => {
+       req.method = 'POST'
+       req.path = '/api/vaults/123'
+       req.headers = { 'x-user-id': 'user-1', 'x-user-role': 'admin' }
+       req.body = { name: 'test' }
 
-      requestLogger(req as Request, res as Response, next)
-      res.emitFinish()
+       requestLogger(req as Request, res as Response, next)
+       res.emitFinish()
 
-      const logArg = mockLogger.info.mock.calls[0][0]
-      expect(logArg.event).toBe('http.request')
-      expect(logArg.req.method).toBe('POST')
-      expect(logArg.req.path).toBe('/api/vaults/123')
-      expect(logArg.req.userId).toBe('user-1')
-      expect(logArg.req.userRole).toBe('admin')
-      expect(logArg.res.statusCode).toBe(200)
-      expect(logArg.durationMs).toEqual(expect.any(Number))
-    })
-  })
+       const logArg = mockLogger.info.mock.calls[0][0]
+       expect(logArg.event).toBe('http.request')
+       expect(logArg.req.method).toBe('POST')
+       expect(logArg.req.path).toBe('/api/vaults/123')
+       expect(logArg.req.userId).toBe('user-1')
+       expect(logArg.req.userRole).toBe('admin')
+       expect(logArg.res.statusCode).toBe(200)
+       expect(logArg.durationMs).toEqual(expect.any(Number))
+     })
+
+     it('redacts download token from url and path', () => {
+       const token = 'eyJhbGciOiJIUzI1NiJ9.eyJqb2iI6ImprMSIsInVzZXIiOiJ1MSIsImV4cCI6MTcxMDAwMDAwMCwiaWF0IjoxNzEwMDAwMDAwfQ.signature'
+       req.method = 'GET'
+       req.path = `/api/exports/download/${token}`
+       req.originalUrl = `/api/exports/download/${token}`
+       req.url = `/api/exports/download/${token}`
+       req.headers = {}
+       req.body = {}
+
+       requestLogger(req as Request, res as Response, next)
+       res.emitFinish()
+
+       const logArg = mockLogger.info.mock.calls[0][0]
+       expect(logArg.req.url).toBe(`/api/exports/download/[Redacted]`)
+       expect(logArg.req.path).toBe(`/api/exports/download/[Redacted]`)
+     })
+
+     it('preserves query parameters when redacting download token', () => {
+       const token = 'eyJhbGciOiJIUzI1NiJ9.eyJqb2iI6ImprMSIsInVzZXIiOiJ1MSIsImV4cCI6MTcxMDAwMDAwMCwiaWF0IjoxNzEwMDAwMDAwfQ.signature'
+       req.method = 'GET'
+       req.path = `/api/exports/download/${token}`
+       req.originalUrl = `/api/exports/download/${token}?format=csv`
+       req.url = `/api/exports/download/${token}?format=csv`
+       req.headers = {}
+       req.body = {}
+
+       requestLogger(req as Request, res as Response, next)
+       res.emitFinish()
+
+       const logArg = mockLogger.info.mock.calls[0][0]
+       expect(logArg.req.url).toBe(`/api/exports/download/[Redacted]?format=csv`)
+       expect(logArg.req.path).toBe(`/api/exports/download/[Redacted]`)
+     })
+   })
 })

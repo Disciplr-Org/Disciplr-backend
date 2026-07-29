@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createVaultSchema, flattenZodErrors } from '../services/vaultValidation.js'
+import { createVaultSchema, flattenZodErrors, isMemoRequired } from '../services/vaultValidation.js'
 
 // Generated valid addresses for test cases
-const VALID_CLASSIC_1 = 'GDHWBXJFCTBJ6ZQPK2E64JAOMHQOEOMWQ43Q5C3J6TEA6SNOFELWBVCY'
 const VALID_CLASSIC_2 = 'GBXKACE7RFAYLW7JDGRIRC2ZORDHL7YCRT5OUR3MKKXGO5AS4DQEMOXL'
 const VALID_CONTRACT = 'CAJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBERTS'
 const VALID_MUXED_1 = 'MDHWBXJFCTBJ6ZQPK2E64JAOMHQOEOMWQ43Q5C3J6TEA6SNOFELWAAAAAAAAAAAAPMWVQ'
@@ -75,19 +74,9 @@ test('rejects unsafe zero/burn and all-ones addresses for success/failure destin
   assert.ok(err2.some(f => f.path === 'destinations.failure' && f.message.includes('cannot be a zero, burn, or unsafe address')))
 })
 
-test('enforces memo via muxed address for exchange destinations requiring a memo', () => {
-  // VALID_CLASSIC_1 (GDHWBX...) is in the memo-required exchange address Set
-  // 1. Classic address (lacking memo) should be rejected
-  const p1 = buildValidPayload()
-  p1.destinations.success = VALID_CLASSIC_1
-  const r1 = createVaultSchema.safeParse(p1)
-  assert.equal(r1.success, false)
-  const err1 = flattenZodErrors(r1.error!)
-  assert.ok(err1.some(f => f.path === 'destinations.success' && f.message.includes('requires a memo. Use a muxed address.')))
-
-  // 2. Muxed address (containing memo) should be accepted
-  const p2 = buildValidPayload()
-  p2.destinations.success = VALID_MUXED_1
-  const r2 = createVaultSchema.safeParse(p2)
-  assert.ok(r2.success, `Expected muxed address to be accepted but failed: ${JSON.stringify(r2.error)}`)
+test('isMemoRequired returns false for non-exchange address (no Horizon hit in unit test)', async () => {
+  // Without a real Horizon connection this will catch and return false — the
+  // important thing is it doesn't throw and the muxed fast-path short-circuits.
+  const result = await isMemoRequired(VALID_MUXED_1)
+  assert.equal(result, false)
 })

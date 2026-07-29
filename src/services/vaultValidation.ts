@@ -1,7 +1,9 @@
 import { z } from 'zod'
 import { utcTimestampSchema } from '../lib/validation.js'
-import { StrKey } from '@stellar/stellar-sdk'
+import { Horizon, StrKey } from '@stellar/stellar-sdk'
 export { flattenZodErrors } from '../lib/validation.js'
+
+const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/
 
 // ─── Soroban-aligned constants ───────────────────────────────────────────────
 
@@ -17,39 +19,86 @@ export const VAULT_MILESTONES_MIN = 1
 /** Maximum number of milestones in a vault. This caps request size and enforces operational limits. */
 export const VAULT_MILESTONES_MAX = 20
 
-// Mock exchange addresses requiring a memo.
-// GDHWBXJFCTBJ6ZQPK2E64JAOMHQOEOMWQ43Q5C3J6TEA6SNOFELWBVCY (Valid Classic 1) is the primary mock exchange for testing.
-export const MEMO_REQUIRED_EXCHANGES = new Set([
-  'GDHWBXJFCTBJ6ZQPK2E64JAOMHQOEOMWQ43Q5C3J6TEA6SNOFELWBVCY',
-])
-
 export function getClassicAddress(address: string): string {
-  try {
-    if (StrKey.isValidMed25519PublicKey(address)) {
+  if (address.startsWith('M')) {
+    try {
       const decoded = StrKey.decodeMed25519PublicKey(address)
       return StrKey.encodeEd25519PublicKey(decoded.slice(0, 32))
+    } catch {
+      throw new Error(`Invalid muxed address format`);
     }
-  } catch {
-    // ignore
   }
   return address
 }
 
-export function isUnsafeAddress(address: string): boolean {
+/**
+ * Result of checking whether an address is unsafe or has decode errors.
+ * - isBurnAddress: true if the address is all-zero or all-ones (burn address)
+ * - decodeError: true if the SDK failed to decode for reasons other than validation
+ */
+export interface UnsafeAddressResult {
+  isBurnAddress: boolean
+  decodeError: boolean
+}
+
+/**
+ * Checks if an address is a burn address (all-zero or all-ones bytes).
+ * Returns an object distinguishing between genuine burn addresses and decode failures.
+ */
+export function checkAddressSafety(address: string): UnsafeAddressResult {
+  // First, validate the address format
+  const isValidEd = StrKey.isValidEd25519PublicKey(address)
+  const isValidMed = StrKey.isValidMed25519PublicKey(address)
+  
+  if (!isValidEd && !isValidMed) {
+    // Not a valid format, but this is not a decode error - just invalid
+    return { isBurnAddress: false, decodeError: false }
+  }
+
   try {
     let pubkey: Buffer
-    if (StrKey.isValidEd25519PublicKey(address)) {
+    if (isValidEd) {
       pubkey = StrKey.decodeEd25519PublicKey(address)
-    } else if (StrKey.isValidMed25519PublicKey(address)) {
-      pubkey = StrKey.decodeMed25519PublicKey(address).slice(0, 32)
     } else {
-      return false
+      pubkey = StrKey.decodeMed25519PublicKey(address).slice(0, 32)
     }
+    
     const allZeros = pubkey.every((b) => b === 0x00)
     const allOnes = pubkey.every((b) => b === 0xff)
-    return allZeros || allOnes
+    
+    return {
+      isBurnAddress: allZeros || allOnes,
+      decodeError: false
+    }
+  } catch (error) {
+    // An unexpected decode error occurred despite validation passing
+    return {
+      isBurnAddress: false,
+      decodeError: true
+    }
+  }
+}
+
+/**
+ * Legacy function for backward compatibility.
+ * Returns true if the address is unsafe (burn address OR decode error).
+ * @deprecated Use checkAddressSafety() for more granular error handling
+ */
+export function isUnsafeAddress(address: string): boolean {
+  const result = checkAddressSafety(address)
+  return result.isBurnAddress || result.decodeError
+}
+
+// Checks SEP-29: returns true if the account has set config.memo_required=1
+export async function isMemoRequired(address: string, horizonUrl?: string): Promise<boolean> {
+  const classic = getClassicAddress(address)
+  if (!StrKey.isValidEd25519PublicKey(classic)) return false
+  try {
+    const server = new Horizon.Server(horizonUrl ?? process.env.HORIZON_URL ?? 'https://horizon.stellar.org')
+    const account = await server.loadAccount(classic)
+    return account.data_attr?.['config.memo_required'] === 'MQ=='  // base64("1")
   } catch {
-    return true
+    return false
   }
 }
 
@@ -102,11 +151,26 @@ const amountStringSchema = z.preprocess(
 
 // ─── Milestone schema ────────────────────────────────────────────────────────
 
-const milestoneSchema = z.object({
+/** Maximum length for milestone title. */
+export const MILESTONE_TITLE_MAX = 200
+
+/** Maximum length for milestone description. */
+export const MILESTONE_DESCRIPTION_MAX = 2000
+
+/**
+ * Canonical milestone field schema shared between vault-creation and the
+ * standalone milestone-creation endpoint.  Both code paths must produce
+ * milestones that satisfy the same invariants.
+ */
+export const milestoneSchema = z.object({
   title: z
     .string({ message: 'is required' })
-    .refine((v) => v.trim().length > 0, 'is required'),
-  description: z.string().optional(),
+    .refine((v) => v.trim().length > 0, 'is required')
+    .refine((v) => v.trim().length <= MILESTONE_TITLE_MAX, `must be at most ${MILESTONE_TITLE_MAX} characters`),
+  description: z
+    .string()
+    .max(MILESTONE_DESCRIPTION_MAX, `must be at most ${MILESTONE_DESCRIPTION_MAX} characters`)
+    .optional(),
   dueDate: utcTimestampSchema,
   amount: amountStringSchema,
 })
@@ -190,42 +254,35 @@ export const createVaultSchema = z
       }
     }
 
-    // Reject unsafe success/failure destination addresses
-    if (isUnsafeAddress(data.destinations.success)) {
+    // Reject unsafe success/failure destination addresses with specific error messages
+    const successSafety = checkAddressSafety(data.destinations.success)
+    if (successSafety.isBurnAddress) {
       ctx.addIssue({
         code: 'custom',
-        message: 'Destination address cannot be a zero, burn, or unsafe address',
+        message: 'Destination address cannot be a zero or burn address (all-zero or all-ones bytes)',
+        path: ['destinations', 'success'],
+      })
+    } else if (successSafety.decodeError) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Failed to decode destination address - unexpected SDK error',
         path: ['destinations', 'success'],
       })
     }
-    if (isUnsafeAddress(data.destinations.failure)) {
+    
+    const failureSafety = checkAddressSafety(data.destinations.failure)
+    if (failureSafety.isBurnAddress) {
       ctx.addIssue({
         code: 'custom',
-        message: 'Destination address cannot be a zero, burn, or unsafe address',
+        message: 'Destination address cannot be a zero or burn address (all-zero or all-ones bytes)',
         path: ['destinations', 'failure'],
       })
-    }
-
-    // Reject exchange destinations lacking a memo
-    const successClassic = getClassicAddress(data.destinations.success)
-    if (MEMO_REQUIRED_EXCHANGES.has(successClassic)) {
-      if (!StrKey.isValidMed25519PublicKey(data.destinations.success)) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Destination is a known exchange that requires a memo. Use a muxed address.',
-          path: ['destinations', 'success'],
-        })
-      }
-    }
-    const failureClassic = getClassicAddress(data.destinations.failure)
-    if (MEMO_REQUIRED_EXCHANGES.has(failureClassic)) {
-      if (!StrKey.isValidMed25519PublicKey(data.destinations.failure)) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Destination is a known exchange that requires a memo. Use a muxed address.',
-          path: ['destinations', 'failure'],
-        })
-      }
+    } else if (failureSafety.decodeError) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Failed to decode destination address - unexpected SDK error',
+        path: ['destinations', 'failure'],
+      })
     }
 
     // Validate embedded muxed address memo ID range

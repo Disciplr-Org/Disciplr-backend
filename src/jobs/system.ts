@@ -8,10 +8,12 @@ import {
 } from './queue.js'
 import { type EnqueueOptions, type JobPayloadByType, type JobType } from './types.js'
 import { recoverPendingExportJobs } from '../services/exportQueue.js'
+import { listOrganizations } from '../services/organization.js'
 import {
   createNotificationService,
   type NotificationService,
 } from '../services/notifications/factory.js'
+import type { AbuseMonitor } from '../services/abuse-monitor.js'
 import db from '../db/index.js'
 import { getPgPool } from '../db/pool.js'
 import { MilestoneRepository } from '../repositories/milestoneRepository.js'
@@ -166,12 +168,14 @@ class SchedulerRegistry {
 export class BackgroundJobSystem {
   private readonly queue: InMemoryJobQueue
   private readonly schedulerRegistry: SchedulerRegistry
+  private readonly abuseMonitor?: AbuseMonitor
   private started = false
   private shuttingDown = false
 
   constructor(
     notificationService?: NotificationService,
     embeddingReindex?: EmbeddingReindexDependencies,
+    abuseMonitor?: AbuseMonitor,
   ) {
     this.queue = new InMemoryJobQueue({
       concurrency: parsePositiveInteger(process.env.JOB_WORKER_CONCURRENCY, 2),
@@ -180,6 +184,7 @@ export class BackgroundJobSystem {
       staleLeaseMs: parsePositiveInteger(process.env.JOB_STALE_LEASE_MS, 300_000),
     })
     this.schedulerRegistry = new SchedulerRegistry()
+    this.abuseMonitor = abuseMonitor
 
     const resolvedNotificationService =
       notificationService ?? createNotificationService(process.env.NOTIFICATION_PROVIDER ?? 'console')
@@ -188,7 +193,11 @@ export class BackgroundJobSystem {
       cursorStore: new BackfillCursorStore(db),
       embeddingProvider: createEmbeddingProvider(),
     }
-    const handlers = createDefaultJobHandlers(resolvedNotificationService, resolvedEmbeddingReindex)
+    const handlers = createDefaultJobHandlers(
+      resolvedNotificationService,
+      resolvedEmbeddingReindex,
+      (type, payload, options) => this.enqueue(type, payload, options),
+    )
 
     this.queue.registerHandler('notification.send', handlers['notification.send'])
     this.queue.registerHandler('deadline.check', handlers['deadline.check'])
@@ -197,6 +206,7 @@ export class BackgroundJobSystem {
     this.queue.registerHandler('analytics.report.generate', handlers['analytics.report.generate'])
     this.queue.registerHandler('export.generate', handlers['export.generate'])
     this.queue.registerHandler('sessions.cleanup', handlers['sessions.cleanup'])
+    this.queue.registerHandler('retention.purge', handlers['retention.purge'])
     this.queue.registerHandler('outbox.relay', handlers['outbox.relay'])
     this.queue.registerHandler('embeddings.reindex', handlers['embeddings.reindex'])
     this.queue.registerHandler('saved-search.evaluate', handlers['saved-search.evaluate'])
@@ -306,6 +316,18 @@ export class BackgroundJobSystem {
       process.env.ANALYTICS_REPORT_INTERVAL_MS,
       24 * 60 * 60_000, // 24 hours
     )
+    const milestoneRemindersIntervalMs = parsePositiveInteger(
+      process.env.MILESTONE_REMINDERS_INTERVAL_MS,
+      15 * 60_000, // 15 minutes
+    )
+    const milestoneRemindersDigestIntervalMs = parsePositiveInteger(
+      process.env.MILESTONE_REMINDERS_DIGEST_INTERVAL_MS,
+      15 * 60_000, // 15 minutes
+    )
+    const milestoneRemindersDeferredIntervalMs = parsePositiveInteger(
+      process.env.MILESTONE_REMINDERS_DEFERRED_INTERVAL_MS,
+      5 * 60_000, // 5 minutes
+    )
 
     this.schedulerRegistry.registerJob({
       name: 'deadline.check',
@@ -339,6 +361,36 @@ export class BackgroundJobSystem {
       },
     })
 
+    const retentionPurgeIntervalMs = parsePositiveInteger(
+      process.env.RETENTION_PURGE_INTERVAL_MS,
+      86_400_000,
+    )
+    const retentionPurgeBatchSize = parsePositiveInteger(
+      process.env.RETENTION_PURGE_BATCH_SIZE,
+      500,
+    )
+
+    this.schedulerRegistry.registerJob({
+      name: 'retention.purge',
+      intervalMs: retentionPurgeIntervalMs,
+      immediate: true,
+      initialDelayMs: 20_000,
+      execute: async () => {
+        try {
+          const organizations = await listOrganizations()
+          for (const org of organizations) {
+            this.enqueue('retention.purge', {
+              organizationId: org.id,
+              batchSize: retentionPurgeBatchSize,
+            })
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          console.error(`[jobs:retention.purge] failed to enqueue jobs: ${message}`)
+        }
+      },
+    })
+
     this.schedulerRegistry.registerJob({
       name: 'outbox.relay',
       intervalMs: outboxRelayIntervalMs,
@@ -369,6 +421,36 @@ export class BackgroundJobSystem {
     })
 
     this.schedulerRegistry.registerJob({
+      name: 'milestone.reminders',
+      intervalMs: milestoneRemindersIntervalMs,
+      immediate: true,
+      initialDelayMs: 5_000,
+      execute: () => {
+        this.enqueue('milestone.reminders', {})
+      },
+    })
+
+    this.schedulerRegistry.registerJob({
+      name: 'milestone.reminders.digest',
+      intervalMs: milestoneRemindersDigestIntervalMs,
+      immediate: true,
+      initialDelayMs: 10_000,
+      execute: () => {
+        this.enqueue('milestone.reminders.digest', {})
+      },
+    })
+
+    this.schedulerRegistry.registerJob({
+      name: 'milestone.reminders.deferred',
+      intervalMs: milestoneRemindersDeferredIntervalMs,
+      immediate: true,
+      initialDelayMs: 15_000,
+      execute: () => {
+        this.enqueue('milestone.reminders.deferred', {})
+      },
+    })
+
+    this.schedulerRegistry.registerJob({
       name: 'analytics.report.generate',
       intervalMs: analyticsReportIntervalMs,
       immediate: false,
@@ -376,5 +458,22 @@ export class BackgroundJobSystem {
         this.enqueue('analytics.report.generate', {})
       },
     })
+
+    if (this.abuseMonitor) {
+      const abuseMonitorCleanupIntervalMs = parsePositiveInteger(
+        process.env.ABUSE_MONITOR_CLEANUP_INTERVAL_MS,
+        300_000, // 5 minutes
+      )
+
+      this.schedulerRegistry.registerJob({
+        name: 'abuse-monitor.cleanup',
+        intervalMs: abuseMonitorCleanupIntervalMs,
+        immediate: false,
+        initialDelayMs: 30_000,
+        execute: () => {
+          this.abuseMonitor!.cleanup()
+        },
+      })
+    }
   }
 }

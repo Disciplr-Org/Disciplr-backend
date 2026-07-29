@@ -204,12 +204,17 @@ describe('createNotification — dedup-key suppression', () => {
         insert(row: Record<string, unknown>) {
           insertCalls += 1
           if (insertCalls === 1) {
-            return Promise.resolve([{ ...row, id: 'notif-new-1', created_at: new Date() }])
+            return {
+              returning: () => Promise.resolve([{ ...row, id: 'notif-new-1', created_at: new Date() }]),
+            }
           }
-          // Postgres-style unique-violation error
+          // Postgres-style unique-violation error — wrap in a thenable with
+          // .returning() so notification.ts's insert(row).returning('*') chain works.
           const err: Error & { code?: string } = new Error('duplicate key value violates unique constraint')
           err.code = '23505'
-          return Promise.reject(err)
+          return {
+            returning: () => Promise.reject(err),
+          }
         },
         where() {
           return {
@@ -226,9 +231,12 @@ describe('createNotification — dedup-key suppression', () => {
       db: dbModule,
     }))
 
-    // isNotificationEnabled must return true so the insert is reached
+    // isNotificationEnabled must return true so the insert is reached.
+    // ALLOWED_CHANNELS must also be exported so the channel-validation guard in
+    // notification.ts can import it from the mocked module.
     jest.unstable_mockModule('../models/notificationPreferences.js', () => ({
       isNotificationEnabled: jest.fn(async () => true),
+      ALLOWED_CHANNELS: ['email'],
     }))
 
     const mod = await import('../services/notification.js')
@@ -309,7 +317,9 @@ describe('createNotification — dedup-key suppression', () => {
           const id = `notif-${seq}`
           insertedRows.push(id)
           // No collisions — always succeed
-          return Promise.resolve([{ ...row, id, created_at: new Date() }])
+          return {
+            returning: () => Promise.resolve([{ ...row, id, created_at: new Date() }]),
+          }
         },
         where() {
           return {
@@ -325,6 +335,7 @@ describe('createNotification — dedup-key suppression', () => {
     }))
     jest.unstable_mockModule('../models/notificationPreferences.js', () => ({
       isNotificationEnabled: jest.fn(async () => true),
+      ALLOWED_CHANNELS: ['email'],
     }))
 
     const mod = await import('../services/notification.js')
@@ -357,7 +368,9 @@ describe('createNotification — dedup-key suppression', () => {
         insert() {
           const err: Error & { code?: string } = new Error('duplicate key')
           err.code = '23505'
-          return Promise.reject(err)
+          return {
+            returning: () => Promise.reject(err),
+          }
         },
         // Pretend the lookup also fails — createNotification must re-throw.
         where() {
@@ -374,6 +387,7 @@ describe('createNotification — dedup-key suppression', () => {
     }))
     jest.unstable_mockModule('../models/notificationPreferences.js', () => ({
       isNotificationEnabled: jest.fn(async () => true),
+      ALLOWED_CHANNELS: ['email'],
     }))
 
     const mod = await import('../services/notification.js')
@@ -402,6 +416,7 @@ describe('createNotification — channel gating', () => {
   it('returns null when the (org, type, channel) preference is disabled', async () => {
     jest.unstable_mockModule('../models/notificationPreferences.js', () => ({
       isNotificationEnabled: jest.fn(async () => false),
+      ALLOWED_CHANNELS: ['email'],
     }))
 
     const chain = () => ({
@@ -433,6 +448,7 @@ describe('createNotification — channel gating', () => {
         observed.push({ org, type, channel })
         return true
       }),
+      ALLOWED_CHANNELS: ['email'],
     }))
 
     const inserted: Array<Record<string, unknown>> = []
@@ -441,7 +457,9 @@ describe('createNotification — channel gating', () => {
       return {
         insert(row: Record<string, unknown>) {
           inserted.push(row)
-          return Promise.resolve([{ ...row, id: 'nid', created_at: new Date() }])
+          return {
+            returning: () => Promise.resolve([{ ...row, id: 'nid', created_at: new Date() }]),
+          }
         },
         where() {
           return { first: jest.fn(async () => undefined) }
@@ -465,5 +483,108 @@ describe('createNotification — channel gating', () => {
 
     expect(result?.id).toBe('nid')
     expect(observed).toEqual([{ org: 'org-1', type: 'vault_completed', channel: 'email' }])
+  })
+})
+
+// ─── 5. createNotification — channel validation ───────────────────────────────
+
+describe('createNotification — channel validation', () => {
+  beforeEach(() => {
+    jest.resetModules()
+    jest.restoreAllMocks()
+  })
+
+  it('throws for an unrecognised channel before touching the DB or preferences', async () => {
+    const insertSpy = jest.fn()
+    const chain = () => ({ insert: insertSpy })
+
+    jest.unstable_mockModule('../db/index.js', () => ({
+      default: chain,
+      db: chain,
+    }))
+
+    const isEnabledSpy = jest.fn(async () => true)
+    jest.unstable_mockModule('../models/notificationPreferences.js', () => ({
+      isNotificationEnabled: isEnabledSpy,
+      ALLOWED_CHANNELS: ['email'],
+    }))
+
+    const mod = await import('../services/notification.js')
+
+    await expect(
+      mod.createNotification({
+        user_id: 'user-1',
+        type: 'vault_completed',
+        title: 't',
+        message: 'm',
+        channel: 'sms',
+      }),
+    ).rejects.toThrow(/Unsupported notification channel/)
+
+    // Guard must fire before any DB write or preference lookup
+    expect(insertSpy).not.toHaveBeenCalled()
+    expect(isEnabledSpy).not.toHaveBeenCalled()
+  })
+
+  it('throws for an empty string channel', async () => {
+    const chain = () => ({ insert: jest.fn() })
+
+    jest.unstable_mockModule('../db/index.js', () => ({
+      default: chain,
+      db: chain,
+    }))
+    jest.unstable_mockModule('../models/notificationPreferences.js', () => ({
+      isNotificationEnabled: jest.fn(async () => true),
+      ALLOWED_CHANNELS: ['email'],
+    }))
+
+    const mod = await import('../services/notification.js')
+
+    await expect(
+      mod.createNotification({
+        user_id: 'user-1',
+        type: 'vault_completed',
+        title: 't',
+        message: 'm',
+        channel: '',
+      }),
+    ).rejects.toThrow(/Unsupported notification channel/)
+  })
+
+  it('succeeds for the valid email channel', async () => {
+    jest.unstable_mockModule('../models/notificationPreferences.js', () => ({
+      isNotificationEnabled: jest.fn(async () => true),
+      ALLOWED_CHANNELS: ['email'],
+    }))
+
+    const chain = (table: string) => {
+      if (table !== 'notifications') throw new Error(`unexpected ${table}`)
+      return {
+        insert(row: Record<string, unknown>) {
+          return {
+            returning: () => Promise.resolve([{ ...row, id: 'nid', created_at: new Date() }]),
+          }
+        },
+        where() {
+          return { first: jest.fn(async () => undefined) }
+        },
+      }
+    }
+
+    jest.unstable_mockModule('../db/index.js', () => ({
+      default: chain,
+      db: chain,
+    }))
+
+    const mod = await import('../services/notification.js')
+    const result = await mod.createNotification({
+      user_id: 'user-1',
+      type: 'vault_completed',
+      title: 't',
+      message: 'm',
+      channel: 'email',
+    })
+
+    expect(result?.id).toBe('nid')
   })
 })

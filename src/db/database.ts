@@ -26,7 +26,11 @@ export type AnalyticsSummaryRow = {
 const analyticsStorage = (process.env.ANALYTICS_STORAGE ?? '').toLowerCase()
 const shouldUsePostgres = analyticsStorage === 'postgres'
 
-const getPool = (): Pool => getPgPool()
+const getPool = (): Pool => {
+  const pool = getPgPool()
+  if (!pool) throw new Error('PostgreSQL pool is not configured')
+  return pool
+}
 
 const initializePostgresSchema = async (pool: Pool): Promise<void> => {
   await pool.query(`
@@ -236,4 +240,12 @@ export function getTimeRangeFilter(period: string): { startDate: string; endDate
   return { startDate, endDate }
 }
 
-export const db = getPool()
+// Use the non-throwing getPgPool() directly here (rather than the getPool()
+// wrapper above) — this is a module-level default export evaluated at
+// import time, before env may be initialized (e.g. in tests that import
+// this module transitively before calling initEnv()). getPool() throws in
+// that case, which would crash every importer at load time; getPgPool()
+// degrades gracefully to null instead, matching the pattern used elsewhere
+// in src/db/pool.ts and src/db/index.ts. Callers that actually query this
+// default pool are only exercised once the real env/DATABASE_URL is live.
+export const db = getPgPool() as Pool

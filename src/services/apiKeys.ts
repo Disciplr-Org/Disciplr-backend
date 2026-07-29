@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import argon2 from 'argon2'
 import type { Pool } from 'pg'
-import type { ApiKeyAuthContext, ApiKeyRecord, ApiScope } from '../types/auth.js'
+import { ApiScope, type ApiKeyAuthContext, type ApiKeyRecord } from '../types/auth.js'
 import { utcNow } from '../utils/timestamps.js'
 import { getPgPool } from '../db/pool.js'
 
@@ -73,11 +73,13 @@ const parseApiKey = (apiKey: string): { apiKeyId: string; secret: string } | nul
   return { apiKeyId: match[1], secret: match[2] }
 }
 
-const normalizeScopes = (scopes: string[]): string[] => {
-  return Array.from(new Set(scopes.map((scope) => scope.trim()).filter(Boolean))).sort()
+const validApiScopes = new Set(Object.values(ApiScope))
+
+const normalizeScopes = (scopes: string[]): ApiScope[] => {
+  return Array.from(new Set(scopes.map((scope) => scope.trim()).filter(Boolean))).filter((scope): scope is string => validApiScopes.has(scope as unknown as ApiScope)).sort() as ApiScope[]
 }
 
-const normalizeScopeColumn = (scopes: string[] | string | null): string[] => {
+const normalizeScopeColumn = (scopes: string[] | string | null): ApiScope[] => {
   if (Array.isArray(scopes)) {
     return normalizeScopes(scopes)
   }
@@ -107,7 +109,7 @@ const redactApiKeyForLogs = (apiKey: string | undefined): string => {
   return `${API_KEY_PREFIX}_${parsed.apiKeyId}.***`
 }
 
-const asIsoString = (value: string | Date | null): string | null => {
+const asIsoString = (value: string | Date | null | undefined): string | null => {
   if (!value) {
     return null
   }
@@ -121,7 +123,7 @@ const toRecord = (row: ApiKeyRow): ApiKeyRecord => ({
   orgId: row.org_id,
   keyHash: row.key_hash,
   label: row.label,
-  scopes: normalizeScopeColumn(row.scopes) as ApiScope[],
+  scopes: normalizeScopeColumn(row.scopes),
   createdAt: asIsoString(row.created_at)!,
   revokedAt: asIsoString(row.revoked_at),
   lastUsedAt: asIsoString(row.last_used_at),
@@ -545,7 +547,7 @@ export const validateApiKey = async (
     return { valid: false, reason: 'revoked' }
   }
 
-  const normalizedRequiredScopes = normalizeScopes(requiredScopes as unknown as string[])
+  const normalizedRequiredScopes = normalizeScopes(requiredScopes)
   const missingScope = normalizedRequiredScopes.find((scope) => !record.scopes.includes(scope))
   if (missingScope) {
     return { valid: false, reason: 'forbidden' }

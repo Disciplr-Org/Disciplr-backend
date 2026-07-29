@@ -108,11 +108,15 @@ function localToUTC(
   // We need to iterate to find the correct UTC time that corresponds to this local time
   const targetLocalTime = new Date(dateStr + 'Z')
 
-  // Binary search for the correct UTC time
+  // Iteratively refine the UTC guess.
+  // This uses a fixed-point/Newton-style iterative correction rather than binary search.
   // Start with a rough estimate (assuming UTC)
   let utcGuess = new Date(dateStr + 'Z')
 
-  for (let i = 0; i < 3; i++) {
+  const MAX_ITERATIONS = 10
+  let converged = false
+
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
     // Format the guess in the target timezone
     const parts = formatter.formatToParts(utcGuess)
     const guessHour = parseInt(parts.find(p => p.type === 'hour')?.value ?? '0', 10)
@@ -124,10 +128,17 @@ function localToUTC(
     const guessMinutes = guessHour * 60 + guessMinute
     const diffMinutes = targetMinutes - guessMinutes
 
-    if (diffMinutes === 0) break
+    if (diffMinutes === 0) {
+      converged = true
+      break
+    }
 
     // Adjust the guess
     utcGuess = new Date(utcGuess.getTime() + diffMinutes * 60 * 1000)
+  }
+
+  if (!converged) {
+    throw new Error(`Failed to converge to a valid UTC time for local time ${dateStr} in timezone ${timezone}`)
   }
 
   return utcGuess

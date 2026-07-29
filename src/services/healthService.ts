@@ -281,10 +281,5 @@ export const healthService = {
       return { status: 'down', error: error.message }
     }
   },
-
-  // Kept for backward compatibility; not used by the new health endpoints.
-  async checkHorizon(): Promise<{ status: string; error?: string }> {
-    return { status: 'down', error: 'Deprecated' };
-  },
 };
 
