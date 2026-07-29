@@ -199,11 +199,23 @@ export class BackgroundJobSystem {
       (type, payload, options) => this.enqueue(type, payload, options),
     )
 
-    for (const [type, handler] of Object.entries(handlers)) {
-      if (handler) {
-        this.queue.registerHandler(type as JobType, handler as any)
-      }
-    }
+    // Register all job handlers explicitly — never rely on Object.entries
+    // which can silently skip handlers if createDefaultJobHandlers misses one.
+    this.queue.registerHandler('notification.send', handlers['notification.send']!)
+    this.queue.registerHandler('deadline.check', handlers['deadline.check']!)
+    this.queue.registerHandler('oracle.call', handlers['oracle.call']!)
+    this.queue.registerHandler('analytics.recompute', handlers['analytics.recompute']!)
+    this.queue.registerHandler('analytics.report.generate', handlers['analytics.report.generate']!)
+    this.queue.registerHandler('export.generate', handlers['export.generate']!)
+    this.queue.registerHandler('sessions.cleanup', handlers['sessions.cleanup']!)
+    this.queue.registerHandler('vault.reconcile', handlers['vault.reconcile']!)
+    this.queue.registerHandler('outbox.relay', handlers['outbox.relay']!)
+    this.queue.registerHandler('embeddings.reindex', handlers['embeddings.reindex']!)
+    this.queue.registerHandler('milestone.reminders', handlers['milestone.reminders']!)
+    this.queue.registerHandler('milestone.reminders.digest', handlers['milestone.reminders.digest']!)
+    this.queue.registerHandler('milestone.reminders.deferred', handlers['milestone.reminders.deferred']!)
+    this.queue.registerHandler('retention.purge', handlers['retention.purge']!)
+    this.queue.registerHandler('saved-search.evaluate', handlers['saved-search.evaluate']!)
   }
 
   start(): void {
