@@ -89,7 +89,8 @@ export async function runSorobanBootPrecheck(
   }
 
   try {
-    const funded = await isAccountFunded(config.sourceAccount, config.rpcUrl, fetchFn)
+    const rpcUrl = (config as any).rpcUrls?.[0] ?? (config as any).rpcUrl
+    const funded = await isAccountFunded(config.sourceAccount, rpcUrl, fetchFn)
     if (funded) {
       log('info', 'soroban.boot.already_funded', { account: config.sourceAccount })
       return { ran: true, alreadyFunded: true, funded: false }

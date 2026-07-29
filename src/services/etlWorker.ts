@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { getEnv, type Env } from '../config/env.js'
 import { TransactionETLService } from '../services/transactionETL.js'
 import type { ETLBatchResult, ETLConfig } from '../types/transactions.js'
 
@@ -144,7 +145,7 @@ export class ETLWorker {
     const { signal } = this.abortController
 
     this.activeRun = this.etlService
-      .runETL()
+      .runETL(signal, batchId)
       .then(() => {
         console.log(`[ETLWorker] Batch ${batchId} completed`)
       })
@@ -167,18 +168,69 @@ export class ETLWorker {
 // Default singleton
 // ---------------------------------------------------------------------------
 
-const defaultConfig: ETLConfig = {
-  horizonUrl: process.env.HORIZON_URL ?? 'https://horizon-testnet.stellar.org',
-  networkPassphrase:
-    process.env.STELLAR_NETWORK_PASSPHRASE ?? 'Test SDF Network ; September 2015',
-  batchSize: 100,
-  maxRetries: 3,
-  backfillFrom: process.env.ETL_BACKFILL_FROM
-    ? new Date(process.env.ETL_BACKFILL_FROM)
-    : undefined,
-  backfillTo: process.env.ETL_BACKFILL_TO
-    ? new Date(process.env.ETL_BACKFILL_TO)
-    : undefined,
+export const TESTNET_HORIZON_URL = 'https://horizon-testnet.stellar.org'
+export const TESTNET_NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015'
+
+/**
+ * Build the default {@link ETLConfig} from the validated environment.
+ *
+ * `HORIZON_URL` / `STELLAR_NETWORK_PASSPHRASE` fall back to Stellar's public
+ * testnet only outside production. In production the fallback is a
+ * misconfiguration that would silently sync testnet data into mainnet
+ * tables, so we fail closed instead of starting the worker.
+ *
+ * @param env  Defaults to the validated env — pass a custom record in tests.
+ */
+export function resolveETLConfig(env: Env = getEnv()): ETLConfig {
+  const fallbacks: string[] = []
+  if (!env.HORIZON_URL) fallbacks.push('HORIZON_URL')
+  if (!env.STELLAR_NETWORK_PASSPHRASE) fallbacks.push('STELLAR_NETWORK_PASSPHRASE')
+
+  if (fallbacks.length > 0) {
+    if (env.NODE_ENV === 'production') {
+      throw new Error(
+        `[ETLWorker] Refusing to start in production: ${fallbacks.join(', ')} ` +
+          'not set — the ETL worker would silently sync from the Stellar ' +
+          'TESTNET. Set HORIZON_URL and STELLAR_NETWORK_PASSPHRASE to ' +
+          'mainnet values (or explicitly to testnet if that is intended).',
+      )
+    }
+
+    console.warn(
+      JSON.stringify({
+        level: 'warn',
+        event: 'config.testnet_default',
+        service: 'disciplr-backend',
+        variables: fallbacks,
+        message: `ETL worker falling back to Stellar testnet defaults for: ${fallbacks.join(', ')}`,
+        timestamp: new Date().toISOString(),
+      }),
+    )
+  }
+
+  return {
+    horizonUrl: env.HORIZON_URL || TESTNET_HORIZON_URL,
+    networkPassphrase: env.STELLAR_NETWORK_PASSPHRASE || TESTNET_NETWORK_PASSPHRASE,
+    batchSize: 100,
+    maxRetries: 3,
+    backfillFrom: env.ETL_BACKFILL_FROM ? new Date(env.ETL_BACKFILL_FROM) : undefined,
+    backfillTo: env.ETL_BACKFILL_TO ? new Date(env.ETL_BACKFILL_TO) : undefined,
+  }
 }
 
-export const etlWorker = new ETLWorker(defaultConfig)
+let defaultWorker: ETLWorker | null = null
+
+/**
+ * Lazily constructed default worker.
+ *
+ * Static imports are hoisted ahead of `initEnv()` in src/index.ts, so the
+ * worker cannot be built at module load time — `getEnv()` would throw.
+ * Deferring construction to first use lets the config come from the
+ * centralized, validated environment.
+ */
+export function getEtlWorker(): ETLWorker {
+  if (defaultWorker === null) {
+    defaultWorker = new ETLWorker(resolveETLConfig())
+  }
+  return defaultWorker
+}

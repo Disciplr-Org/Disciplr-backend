@@ -2,21 +2,18 @@
 name = "accountability_vault"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-soroban-sdk = "21.0.0"
+soroban-sdk = { workspace = true }
 
 [dev-dependencies]
-soroban-sdk = { version = "21.0.0", features = ["testutils"] }
+soroban-sdk = { workspace = true, features = ["testutils"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [lints]
 workspace = true
-
-[profile.release]
-opt-level = "z"
-overflow-checks = true
-lto = true
-codegen-units = 1

@@ -1,4 +1,7 @@
+import { describe, expect, test } from '@jest/globals'
 import { parseHorizonEvent } from '../services/eventParser.js'
+import type { HorizonEvent } from '../services/eventParser.js'
+import type { VaultEventPayload } from '../types/horizonSync.js'
 
 describe('eventParser vaultId format validation', () => {
   const txHash = 'abcdef1234567890'
@@ -14,7 +17,7 @@ describe('eventParser vaultId format validation', () => {
       failureDestination: 'GFAILUREDEST'
     }
 
-    const rawEvent = {
+    const rawEvent: HorizonEvent = {
       type: 'contract_event',
       ledger: 123,
       ledgerClosedAt: new Date().toISOString(),
@@ -27,10 +30,10 @@ describe('eventParser vaultId format validation', () => {
       txHash
     }
 
-    const result = parseHorizonEvent(rawEvent as any)
+    const result = parseHorizonEvent(rawEvent)
     expect(result.success).toBe(true)
     if (result.success) {
-      expect(result.event.payload.vaultId).toBe(payload.vaultId)
+      expect((result.event.payload as VaultEventPayload).vaultId).toBe(payload.vaultId)
     }
   })
 
@@ -45,7 +48,7 @@ describe('eventParser vaultId format validation', () => {
       failureDestination: 'GFAILUREDEST'
     }
 
-    const rawEvent = {
+    const rawEvent: HorizonEvent = {
       type: 'contract_event',
       ledger: 124,
       ledgerClosedAt: new Date().toISOString(),
@@ -58,7 +61,7 @@ describe('eventParser vaultId format validation', () => {
       txHash
     }
 
-    const result = parseHorizonEvent(rawEvent as any)
+    const result = parseHorizonEvent(rawEvent)
     expect(result.success).toBe(false)
   })
 })

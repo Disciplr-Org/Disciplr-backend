@@ -15,9 +15,13 @@ import {
   isExportIdempotencyConflictError,
   type ExportFormat,
   type ExportScope,
+  ALLOWED_COLUMNS,
 } from '../services/exportQueue.js'
 import { checkAndIncrementExportQuota } from '../services/exportQuota.js'
 import { getEnv } from '../config/index.js'
+import { resolveS3Config, getExportSignedUrl } from '../services/exportS3.js'
+import { createAuditLog } from '../lib/audit-logs.js'
+import { isOrgMember } from '../models/organizations.js'
 
 const resolveOrgId = (req: AuthenticatedRequest): string =>
   // Only derive orgId from verified JWT claims. Do NOT trust query params or headers.
@@ -41,21 +45,70 @@ const enforceExportQuota = async (
   return true
 }
 
+type ParseOptionsResult = {
+  format: ExportFormat
+  scope: ExportScope
+  columns?: Record<string, string[]>
+}
+
+const negotiateFormat = (req: AuthenticatedRequest, queryFormat?: string): ExportFormat => {
+  const normalizedQueryFormat = queryFormat?.toLowerCase()
+  if (normalizedQueryFormat && ['csv', 'json', 'ndjson'].includes(normalizedQueryFormat)) {
+    return normalizedQueryFormat as ExportFormat
+  }
+
+  const acceptHeader = req.headers.accept
+  if (acceptHeader) {
+    if (acceptHeader.includes('text/csv')) return 'csv'
+    if (acceptHeader.includes('application/x-ndjson')) return 'ndjson'
+    if (acceptHeader.includes('application/json')) return 'json'
+  }
+
+  return 'json'
+}
+
 export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
   const router = Router()
 
-  const parseOptions = (req: AuthenticatedRequest): { format: ExportFormat; scope: ExportScope } | null => {
-    const format = (req.query.format ?? 'json') as string
+  const parseOptions = (req: AuthenticatedRequest): ParseOptionsResult | null => {
+    const format = negotiateFormat(req, req.query.format as string | undefined)
     const scope = (req.query.scope ?? 'all') as string
+    const columnsParam = req.query.columns as string | undefined
 
-    const validFormats = ['csv', 'json']
     const validScopes = ['vaults', 'transactions', 'analytics', 'all']
-
-    if (!validFormats.includes(format) || !validScopes.includes(scope)) {
+    if (!validScopes.includes(scope)) {
       return null
     }
 
-    return { format: format as ExportFormat, scope: scope as ExportScope }
+    const result: ParseOptionsResult = {
+      format,
+      scope: scope as ExportScope,
+    }
+
+    if (columnsParam) {
+      try {
+        const parsedColumns: Record<string, string[]> = typeof columnsParam === 'string'
+          ? JSON.parse(columnsParam)
+          : columnsParam
+        result.columns = {}
+
+        for (const [section, cols] of Object.entries(parsedColumns)) {
+          const allowed = ALLOWED_COLUMNS[section as keyof typeof ALLOWED_COLUMNS]
+          if (!allowed) {
+            return null
+          }
+
+          if (!Array.isArray(cols) || !cols.every(col => allowed.includes(col))) {
+            return null
+          }
+          result.columns[section as keyof typeof ALLOWED_COLUMNS] = cols
+        }
+      } catch {
+        return null
+      }
+    }
+
+    return result
   }
 
   const buildAcceptedResponse = (jobId: string) => ({
@@ -67,7 +120,7 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
   router.post('/me', authenticate, requireScopes(ApiScope.ReadAnalytics, ApiScope.ReadVaults), async (req: AuthenticatedRequest, res: Response) => {
     const options = parseOptions(req)
     if (!options) {
-      res.status(400).json({ error: 'Invalid format or scope parameter' })
+      res.status(400).json({ error: 'Invalid format, scope, or columns parameter' })
       return
     }
 
@@ -76,9 +129,11 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
     try {
       const job = await enqueueExportJob(jobSystem, {
         userId: req.user!.userId,
+        orgId: resolveOrgId(req),
         isAdmin: false,
         scope: options.scope,
         format: options.format,
+        columns: options.columns as any,
         idempotencyKey: req.header('idempotency-key') ?? undefined,
       })
 
@@ -97,7 +152,7 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
   router.post('/admin', authenticate, requireAdmin, requireScopes(ApiScope.ReadAnalytics, ApiScope.ReadVaults), async (req: AuthenticatedRequest, res: Response) => {
     const options = parseOptions(req)
     if (!options) {
-      res.status(400).json({ error: 'Invalid format or scope parameter' })
+      res.status(400).json({ error: 'Invalid format, scope, or columns parameter' })
       return
     }
 
@@ -109,10 +164,12 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
     try {
       const job = await enqueueExportJob(jobSystem, {
         userId: req.user!.userId,
+        orgId: resolveOrgId(req),
         isAdmin: true,
         targetUserId,
         scope: options.scope,
         format: options.format,
+        columns: options.columns as any,
         idempotencyKey: req.header('idempotency-key') ?? undefined,
       })
 
@@ -151,16 +208,14 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
       return
     }
 
-    const downloadToken = signDownloadToken(job.id, job.userId, 3600)
-
     res.json({
       jobId: job.id,
       status: 'done',
       attempts: job.attempts,
       maxAttempts: job.maxAttempts,
       completedAt: job.completedAt,
-      downloadUrl: `/api/exports/download/${downloadToken}`,
-      expiresInSeconds: 3600,
+      downloadUrl: `/api/exports/${job.id}/download`,
+      expiresInSeconds: 60,
     })
   })
 
@@ -197,6 +252,80 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
       }),
     )
 
+    res.send(job.result)
+  })
+
+  router.get('/:id/download', authenticate, async (req: AuthenticatedRequest, res: Response) => {
+    const job = await getJob(req.params.id)
+    if (!job || job.status !== 'done') {
+      res.status(404).json({ error: 'Export not ready or not found' })
+      return
+    }
+
+    const callerOrgId = resolveOrgId(req)
+    const jobOrgId = job.orgId ?? job.userId
+    const isOwner = (jobOrgId === callerOrgId) || (job.userId === req.user!.userId) || isOrgMember(jobOrgId, req.user!.userId)
+
+    if (!isOwner && req.user!.role !== 'ADMIN') {
+      res.status(403).json({ error: 'Forbidden: Cross-organization export download rejected' })
+      return
+    }
+
+    try {
+      await createAuditLog({
+        actor_user_id: req.user!.userId,
+        organization_id: callerOrgId !== req.user!.userId ? callerOrgId : undefined,
+        action: 'export.download',
+        target_type: 'export_job',
+        target_id: job.id,
+        metadata: {
+          jobId: job.id,
+          format: job.format,
+          scope: job.scope,
+          storage: job.s3Key ? 's3' : 'local',
+        },
+      })
+    } catch (err) {
+      console.warn('Failed to record audit log for export download:', err)
+    }
+
+    console.info(
+      JSON.stringify({
+        level: 'info',
+        event: 'exports.download_served',
+        jobId: job.id,
+        principal: req.user!.userId,
+        org: callerOrgId,
+        timestamp: new Date().toISOString(),
+      }),
+    )
+
+    const s3Config = resolveS3Config()
+    if (s3Config && job.s3Key) {
+      const shortTtlSeconds = Number.parseInt(process.env.EXPORT_SIGNED_URL_SHORT_TTL_S ?? '60', 10)
+      const signedUrl = await getExportSignedUrl(s3Config, job.s3Key, shortTtlSeconds)
+      if (req.headers.accept?.includes('application/json') || req.query.redirect === 'false') {
+        res.json({ downloadUrl: signedUrl, expiresInSeconds: shortTtlSeconds })
+        return
+      }
+      res.redirect(302, signedUrl)
+      return
+    }
+
+    if (!job.result) {
+      res.status(404).json({ error: 'Export result data unavailable' })
+      return
+    }
+
+    const mimeType = job.format === 'csv'
+      ? 'text/csv; charset=utf-8'
+      : job.format === 'json'
+      ? 'application/json; charset=utf-8'
+      : 'application/x-ndjson'
+
+    res.setHeader('Content-Type', mimeType)
+    res.setHeader('Content-Disposition', `attachment; filename="${job.filename ?? 'export'}"`)
+    res.setHeader('Content-Length', job.result.length)
     res.send(job.result)
   })
 

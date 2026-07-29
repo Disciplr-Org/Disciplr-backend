@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Horizon Listener is a long-running service that connects to the Stellar Horizon API, streams Soroban contract events for the configured contract addresses, and writes them into the application database.
+The Horizon Listener is a long-running service that connects to the Stellar Horizon API, streams Soroban contract events for the configured contract addresses, and writes them into the application database. This listener is a key component of the event processing pipeline (see [Event Processing Guide](event-processing.md) for context on how these events are subsequently handled).
 
 Key properties:
 
@@ -11,7 +11,7 @@ Key properties:
 | Delivery guarantee | **At-least-once** |
 | Duplicate defence | `processed_events` idempotency table |
 | Cursor storage | `horizon_checkpoints` table (per-contract) |
-| Admin tooling | `GET/POST/DELETE /admin/horizon/checkpoints/*` |
+| Admin tooling | `GET /api/admin/horizon/listener`, `POST /api/admin/horizon/listener/reset-cursor` |
 
 ---
 
@@ -88,7 +88,7 @@ All settings are validated at startup by `src/config/env.ts` (fail-fast with str
 node dist/services/horizonListenerMain.js
 ```
 
-Or via `ts-node`/`tsx` in development:
+Or via `tsx` in development:
 
 ```bash
 tsx src/services/horizonListenerMain.ts
@@ -98,70 +98,96 @@ Structured JSON logs are written to stdout.  All fatal errors exit with code `1`
 
 ---
 
-## Admin Checkpoint Endpoints
+## Admin Listener Endpoints
 
-All endpoints require an authenticated admin session (`Authorization: Bearer <token>`).  They are mounted under `/admin` which applies `authenticate` + `requireAdmin` middleware.
+All endpoints require an authenticated admin session (`Authorization: Bearer <token>`).  They are mounted under `/api/admin` which applies `authenticate` + `requireAdmin` middleware, preserving the 401-before-403 invariant.
 
-### List all checkpoints
+### Inspect listener status
 
 ```
-GET /admin/horizon/checkpoints
+GET /api/admin/horizon/listener
 ```
 
 Response `200`:
 ```json
 {
-  "checkpoints": [
-    {
-      "id": 1,
-      "contractAddress": "CDISCIPLR…",
-      "lastLedger": 50000,
-      "lastPagingToken": "50000-0",
-      "updatedAt": "2026-04-27T12:00:00.000Z",
-      "createdAt": "2026-04-01T00:00:00.000Z"
+  "data": {
+    "cursor": {
+      "effectiveLedger": 50000,
+      "checkpoints": [
+        {
+          "contractAddress": "CDISCIPLR...",
+          "lastLedger": 50000,
+          "lastPagingToken": "50000-0",
+          "updatedAt": "2026-04-27T12:00:00.000Z",
+          "createdAt": "2026-04-01T00:00:00.000Z"
+        }
+      ]
+    },
+    "lastProcessedLedger": 50000,
+    "latestProcessedLedger": 50000,
+    "lag": 3,
+    "heartbeatAgeMs": 12000,
+    "lastProcessedAt": "2026-04-27T12:00:00.000Z",
+    "listenerStateUpdatedAt": "2026-04-27T12:00:00.000Z",
+    "lastError": {
+      "eventId": "evt-123",
+      "message": "temporary parse failure",
+      "retryCount": 1,
+      "failedAt": "2026-04-27T12:01:00.000Z"
     }
-  ]
+  }
 }
 ```
 
-### Inspect one contract
+`cursor.effectiveLedger` is the minimum stored checkpoint ledger across configured contracts, which is the ledger the listener uses as the safe resume floor. `lag` is the most recent in-process monitor measurement and may be `null` until the monitor has run.
+
+### Reset the listener cursor
 
 ```
-GET /admin/horizon/checkpoints/:contractAddress
-```
-
-Returns `404` if no checkpoint exists for that address.
-
-### Reset a checkpoint
-
-```
-POST /admin/horizon/checkpoints/:contractAddress/reset
+POST /api/admin/horizon/listener/reset-cursor
 Content-Type: application/json
 
 {
+  "contractAddress": "CDISCIPLR...",
   "ledger": 45000,
-  "pagingToken": "45000-0"
+  "pagingToken": "45000-0",
+  "reason": "rewind after bad checkpoint",
+  "force": false
 }
 ```
 
-- `ledger` (integer ≥ 0, required) — target ledger
-- `pagingToken` (string, optional) — Horizon paging token for the ledger
+- `contractAddress` (string, optional only when exactly one contract can be inferred) - target contract checkpoint.
+- `ledger` (integer >= 0, required) - target ledger.
+- `pagingToken` (string, optional) - Horizon paging token for the ledger.
+- `reason` (string, optional) - audit context. Obvious secrets and PII are redacted.
+- `force` (boolean, optional) - required to reset behind already processed events.
 
 Response `200`:
 ```json
 {
-  "message": "Checkpoint reset",
-  "checkpoint": { … }
+  "message": "Horizon listener cursor reset",
+  "checkpoint": {
+    "contractAddress": "CDISCIPLR...",
+    "lastLedger": 45000,
+    "lastPagingToken": "45000-0",
+    "updatedAt": "2026-04-27T12:05:00.000Z",
+    "createdAt": "2026-04-01T00:00:00.000Z"
+  },
+  "previousCheckpoint": {
+    "contractAddress": "CDISCIPLR...",
+    "lastLedger": 50000,
+    "lastPagingToken": "50000-0",
+    "updatedAt": "2026-04-27T12:00:00.000Z",
+    "createdAt": "2026-04-01T00:00:00.000Z"
+  },
+  "latestProcessedLedger": 50000,
+  "forced": true,
+  "auditLogId": "audit-123"
 }
 ```
 
-### Delete a checkpoint
-
-```
-DELETE /admin/horizon/checkpoints/:contractAddress
-```
-
-Removes the checkpoint row entirely.  On the next listener start, the contract resumes from `START_LEDGER`.
+If `ledger` is lower than the highest `processed_events.ledger_number`, the API returns `409` unless `force=true`. This guard prevents accidental replay behind already-committed events while still giving operators an audited break-glass path for incident recovery.
 
 ---
 
@@ -187,14 +213,19 @@ If a bug caused the checkpoint to advance without actually persisting business d
 
 1. **Stop the listener** to prevent concurrent writes.
 2. Identify the last reliable ledger (check `processed_events.ledger_number` or Stellar explorer).
-3. Reset the checkpoint:
+3. Inspect the current listener state:
    ```bash
-   curl -X POST https://api.example.com/admin/horizon/checkpoints/CDISCIPLR… \
+   curl https://api.example.com/api/admin/horizon/listener \
+     -H "Authorization: Bearer <admin-token>"
+   ```
+4. Reset the cursor. Use `force=true` only when the target ledger is intentionally behind already processed events:
+   ```bash
+   curl -X POST https://api.example.com/api/admin/horizon/listener/reset-cursor \
      -H "Authorization: Bearer <admin-token>" \
      -H "Content-Type: application/json" \
-     -d '{"ledger": 49000}'
+     -d '{"contractAddress":"CDISCIPLR...","ledger":49000,"pagingToken":"49000-0","reason":"rewind after bad checkpoint","force":true}'
    ```
-4. Restart the listener — events from ledger 49 000 are replayed; already-processed events are skipped by the idempotency check.
+5. Restart the listener — events from ledger 49 000 are replayed; already-processed events are skipped by the idempotency check.
 
 ---
 
@@ -207,10 +238,10 @@ If a bug caused the checkpoint to advance without actually persisting business d
 To start a new contract from a specific ledger rather than `START_LEDGER`, seed a checkpoint before restarting:
 
 ```bash
-curl -X POST https://api.example.com/admin/horizon/checkpoints/CNEWCONTRACT \
+curl -X POST https://api.example.com/api/admin/horizon/listener/reset-cursor \
   -H "Authorization: Bearer <admin-token>" \
   -H "Content-Type: application/json" \
-  -d '{"ledger": 999000}'
+  -d '{"contractAddress":"CNEWCONTRACT","ledger":999000}'
 ```
 
 ---
@@ -218,11 +249,7 @@ curl -X POST https://api.example.com/admin/horizon/checkpoints/CNEWCONTRACT \
 ### Scenario 4 — Remove a contract address
 
 1. Remove the address from `CONTRACT_ADDRESS`.
-2. (Optional) Delete its checkpoint to avoid table growth:
-   ```bash
-   curl -X DELETE https://api.example.com/admin/horizon/checkpoints/COLDCONTRACT \
-     -H "Authorization: Bearer <admin-token>"
-   ```
+2. (Optional) leave the checkpoint row in place for auditability, or remove it with a controlled database maintenance task.
 3. Restart the listener.
 
 ---
@@ -243,8 +270,62 @@ systemctl restart disciplr-horizon-listener
 
 ---
 
+## Cursor Persistence Semantics
+
+### Boot — resume from last checkpoint
+
+On startup `HorizonListener.loadEffectiveStartLedger()` queries `CheckpointStore.getCheckpoint(contractAddress)` for **every** contract in `CONTRACT_ADDRESS`.  The Horizon stream is opened from the **minimum** confirmed ledger across all contracts:
+
+```
+effectiveLedger = min(
+  checkpoint.lastLedger   // for each contract that has a row
+  config.startLedger      // fallback for contracts with no row
+)
+```
+
+This guarantees that no contract falls behind.  Contracts whose stored ledger is already higher than the stream cursor will receive replayed events, but the `processed_events` idempotency table absorbs those duplicates without side-effects.
+
+### Advance — cursor written only after durable commit
+
+The checkpoint is written **after** `EventProcessor.processEvent()` returns `{ success: true }`, which itself only returns success after the database transaction containing the business logic and the `processed_events` row has been committed.
+
+Sequence per event:
+
+```
+1. BEGIN TRANSACTION
+2.   INSERT / UPDATE business table  (vault / milestone / validation)
+3.   INSERT processed_events         (idempotency record)
+4. COMMIT
+5. CheckpointStore.upsertCheckpoint(contractId, ledger, pagingToken)
+```
+
+If the process crashes between steps 4 and 5, the event is re-delivered on next boot.  Step 2 is skipped on re-delivery (idempotency check), and step 5 succeeds on the second attempt — so the cursor catches up automatically.
+
+### Connection loss — cursor is never reset
+
+When the Horizon SSE connection drops, `HorizonListener` enters a retry loop with exponential backoff (1 s → 2 s → 4 s → … → 60 s cap).  The cursor stored in `horizon_checkpoints` is **not modified** during reconnect attempts.  Once the connection is restored, the stream resumes from the same checkpoint that was last confirmed.
+
+### Filtering — cursor is not advanced for filtered events
+
+Events from contract addresses not listed in `CONTRACT_ADDRESS` are dropped before parsing.  No checkpoint write occurs for filtered events.
+
+### Parse failures — cursor is not advanced
+
+If `EventParser.parseHorizonEvent()` returns `{ success: false }`, the event is logged and skipped.  No checkpoint write occurs.  The stream advances to the next event naturally via the SSE protocol, so the listener does not stall on persistent parse failures.
+
+---
+
+## Incident Response
+
+For step-by-step recovery when the listener stalls and the slash backlog builds
+up, see the dedicated runbook:
+**[Horizon Listener Stall Runbook](runbooks/horizon-stall.md)**
+
+---
+
 ## Security Notes
 
-- Checkpoint reset/delete endpoints are **admin-only** and emit audit log entries (`horizon.checkpoint.reset`, `horizon.checkpoint.deleted`).
+- Listener status and cursor-reset endpoints are **admin-only**.
+- Cursor resets emit audit log entries (`horizon.listener.cursor_reset`) containing before/after cursor details, force status, latest processed ledger, request context, and sanitized operator reason.
 - Secrets (`DATABASE_URL`, JWT keys) are never included in structured log output — only field names and validation messages appear.
-- RBAC is enforced by `requireAdmin` middleware on the entire `/admin` router.
+- RBAC is enforced by `requireAdmin` middleware on the entire `/api/admin` router.
