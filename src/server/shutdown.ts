@@ -1,6 +1,7 @@
 import type { Server } from "node:http";
 import { BackgroundJobSystem } from "../jobs/system.js";
 import { ETLWorker } from "../services/etlWorker.js";
+import { flushPendingUpdates } from "../services/apiKeys.js";
 import {
   getInFlightCount,
   setDraining,
@@ -121,7 +122,11 @@ export function createShutdownHandler(options: ShutdownOptions) {
       });
       console.log("[Shutdown] HTTP server closed");
 
-      // 4. Close Database
+      // 4. Flush buffered API key usage stats
+      console.log("[Shutdown] Flushing API key usage stats...");
+      await flushPendingUpdates();
+
+      // 5. Close Database
       console.log("[Shutdown] Closing database connection...");
       await closeDb();
 
