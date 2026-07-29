@@ -11,8 +11,12 @@ export interface QuietHoursConfig {
 
 /**
  * Parses HH:MM time string to minutes since midnight.
+ * Throws an error if the input is not a valid HH:MM format.
  */
 export function parseTimeToMinutes(time: string): number {
+  if (!isValidTimeFormat(time)) {
+    throw new Error(`Invalid time format: ${time}. Expected HH:MM.`);
+  }
   const [hours, minutes] = time.split(':').map(Number)
   return hours * 60 + minutes
 }
