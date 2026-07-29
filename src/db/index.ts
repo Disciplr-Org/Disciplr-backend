@@ -47,19 +47,11 @@ const knexConfig = {
 
 export const db = knex(knexConfig)
 
- #1037-Export-download-authorization-relies-on-isOrgMember(),-a-dead-in-memory-check-that's-never-populated-(src/routes/exports.ts)-FIX
 const sslEnabled = nodeEnv === 'production' || process.env.DATABASE_SSL === 'true'
 const rejectUnauthorized = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false'
 
 export const pool = new Pool({
   connectionString: databaseUrl,
-
-const sslEnabled = getEnv().NODE_ENV === 'production' || process.env.DATABASE_SSL === 'true'
-const rejectUnauthorized = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false'
-
-export const pool = new Pool({
-  connectionString: getEnv().DATABASE_URL,
-
   ssl: sslEnabled
     ? rejectUnauthorized
       ? { rejectUnauthorized: true }

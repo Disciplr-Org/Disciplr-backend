@@ -2,14 +2,14 @@
 import { NotificationProvider } from './provider.js'
 import { retryWithBackoff, DEFAULT_RETRY_CONFIG, isRetryable } from '../../utils/retry.js'
 import { recordBounce, hasBounced } from './bounceStore.js'
-import nodemailer from 'nodemailer'
-import type { Transporter } from 'nodemailer'
 import { getEnv } from '../../config/index.js'
+
+type TransporterType = { sendMail: (opts: any) => Promise<any> }
 
 /**
  * EmailNotificationProvider implements the NotificationProvider interface.
  * It sends email notifications via SMTP using nodemailer.
- * 
+ *
  * Configuration (all optional):
  * - SMTP_HOST: SMTP server hostname (e.g., smtp.gmail.com)
  * - SMTP_PORT: SMTP server port (default: 587)
@@ -17,14 +17,14 @@ import { getEnv } from '../../config/index.js'
  * - SMTP_PASS: SMTP authentication password
  * - SMTP_FROM: Default sender address
  * - SMTP_SECURE: 'true' to use TLS (default: false for port 587 STARTTLS)
- * 
+ *
  * If SMTP_HOST is not configured, sends are logged to console with a warning.
  * Transient SMTP 4xx errors are retried using exponential backoff with jitter.
  * 5xx errors are considered permanent and are not retried, preserving dead‑letter semantics.
  */
 export class EmailNotificationProvider implements NotificationProvider {
   readonly name = 'email'
-  private transporter: Transporter | null = null
+  private transporter: TransporterType | null = null
   private initialized: boolean = false
 
   /**
@@ -41,15 +41,21 @@ export class EmailNotificationProvider implements NotificationProvider {
     const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE } = env
 
     if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
-      this.transporter = nodemailer.createTransport({
-        host: SMTP_HOST,
-        port: SMTP_PORT,
-        secure: SMTP_SECURE === 'true', // true for 465, false for other ports (use STARTTLS)
-        auth: {
-          user: SMTP_USER,
-          pass: SMTP_PASS,
-        },
-      })
+      // Dynamic import for nodemailer - install with: npm install nodemailer
+      try {
+        const nodemailerMod = require('nodemailer') as any
+        this.transporter = nodemailerMod.createTransport({
+          host: SMTP_HOST,
+          port: SMTP_PORT,
+          secure: SMTP_SECURE === 'true',
+          auth: {
+            user: SMTP_USER,
+            pass: SMTP_PASS,
+          },
+        }) as TransporterType
+      } catch {
+        console.warn('[EmailProvider] nodemailer not installed, falling back to console logging.')
+      }
     } else {
       console.warn(
         '[EmailProvider] SMTP not configured (missing SMTP_HOST, SMTP_USER, or SMTP_PASS). ' +

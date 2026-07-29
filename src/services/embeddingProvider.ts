@@ -77,7 +77,7 @@ export async function detectEmbeddingDrift(
   db: EmbeddingDriftDb,
   currentModelVersion: string = CURRENT_EMBEDDING_MODEL_VERSION,
 ): Promise<EmbeddingDriftReport> {
-  const rows: Array<{ model_version: string; count: string | number }> = await db('milestone_embeddings')
+  const rows: Array<{ model_version: string; count: string | number }> = await (db('milestone_embeddings') as any)
     .select('model_version')
     .count('milestone_id as count')
     .groupBy('model_version')

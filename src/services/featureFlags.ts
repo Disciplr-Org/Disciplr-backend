@@ -164,53 +164,39 @@ export async function getFlag(
   orgId: string | null,
   context: FeatureFlagContext = {},
 ): Promise<boolean> {
-  // Try organization-specific flag first (if orgId provided)
   if (orgId) {
     const cacheKey = getCacheKey(name, orgId, context)
-    const cached = cache.get(cacheKey)
-    if (cached !== null) {
-      return cached
-    }
-
-    try {
-      const row = await db('feature_flags').where({ name, org_id: orgId }).first() as FeatureFlagRow | undefined
-      if (row) {
-        const value = coerceBoolean(row.enabled)
-        cache.set(cacheKey, value)
-        return value
+    const orgVal = await getOrSet<boolean | null>(cacheKey, FLAG_CACHE_TTL_SECONDS, async () => {
+      try {
+        const row = await db('feature_flags').where({ name, org_id: orgId }).first() as FeatureFlagRow | undefined
+        return row ? coerceBoolean(row.enabled) : null
+      } catch (error) {
+        console.error(`Error fetching org-specific flag ${name} for org ${orgId}:`, error)
+        return null
       }
-    } catch (error) {
-      console.error(`Error fetching org-specific flag ${name} for org ${orgId}:`, error)
-    }
+    })
+    if (orgVal !== null) return orgVal
   }
 
-  // Fall back to global default (org_id = null)
+  const effectiveOrgId = orgId ?? 'global'
   const globalCacheKey = getCacheKey(name, orgId, orgId ? context : undefined)
-  const globalCached = cache.get(globalCacheKey)
-  if (globalCached !== null) {
-    return globalCached
-  }
-
-  try {
-    return await getOrSet<boolean>(cacheKey, FLAG_CACHE_TTL_SECONDS, async () => {
-      if (orgId) {
-        try {
-          const row = await db('feature_flags').where({ name, org_id: orgId }).first() as FeatureFlagRow | undefined
-          if (row) {
-            return coerceBoolean(row.enabled)
-          }
-        } catch (error) {
-          console.error(`Error fetching org-specific flag ${name} for ${orgId}:`, error)
-        }
+  return getOrSet<boolean>(globalCacheKey, FLAG_CACHE_TTL_SECONDS, async () => {
+    if (orgId) {
+      try {
+        const row = await db('feature_flags').where({ name, org_id: orgId }).first() as FeatureFlagRow | undefined
+        if (row) return coerceBoolean(row.enabled)
+      } catch (error) {
+        console.error(`Error fetching org-specific flag ${name} for ${orgId}:`, error)
       }
-
+    }
+    try {
       const globalRow = await db('feature_flags').where({ name, org_id: null }).first() as FeatureFlagRow | undefined
       return evaluateTargetedFlag(globalRow, name, orgId, context)
-    })
-  } catch (error) {
-    console.error(`Error fetching flag ${name}:`, error)
-    return false
-  }
+    } catch (error) {
+      console.error(`Error fetching global flag ${name}:`, error)
+      return false
+    }
+  })
 }
 
 /**

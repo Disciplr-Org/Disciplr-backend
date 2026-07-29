@@ -19,6 +19,7 @@ function createApp(): express.Application {
 const MINIMAL_ENV = {
   NODE_ENV: 'test' as const,
   DATABASE_URL: 'postgres://user:pass@localhost:5432/db',
+  DOWNLOAD_SECRET: 'test-download-secret-at-least-16-chars',
 }
 
 // ── Auth middleware tests ───────────────────────────────────────────────────

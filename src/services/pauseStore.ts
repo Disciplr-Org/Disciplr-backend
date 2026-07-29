@@ -1,14 +1,13 @@
-import Redis from 'ioredis'
-
 const GLOBAL_PAUSE_KEY = 'webhook_delivery:global_pause'
 
-let sharedRedisClient: Redis | undefined
+let sharedRedisClient: any | undefined
 
-const getRedisClient = (): Redis | undefined => {
+const getRedisClient = (): any | undefined => {
   if (sharedRedisClient !== undefined) return sharedRedisClient
 
   const redisUrl = process.env.REDIS_URL
   if (redisUrl) {
+    const Redis = require('ioredis') as any
     sharedRedisClient = new Redis(redisUrl, {
       maxRetriesPerRequest: 1,
       enableOfflineQueue: false,

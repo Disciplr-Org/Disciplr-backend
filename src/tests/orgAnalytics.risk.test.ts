@@ -4,6 +4,9 @@ jest.unstable_mockModule('../middleware/orgAuth.js', () => ({
   requireOrgAccess: jest.fn((...roles) => (req, res, next) => {
     next()
   }),
+  requireOrgRole: jest.fn((...roles) => (req, res, next) => {
+    next()
+  }),
 }))
 
 import express from 'express'

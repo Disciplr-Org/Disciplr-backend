@@ -25,14 +25,14 @@ const createApiKeySchema = z.object({
 })
 
 apiKeysRouter.get('/', async (req, res) => {
-  const userId = req.user.userId
+  const userId = req.user!.userId
   const apiKeys = (await listApiKeysForUser(userId)).map(({ keyHash: _keyHash, ...publicRecord }) => publicRecord)
 
   res.json({ apiKeys })
 })
 
 apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
-  const userId = req.user.userId
+  const userId = req.user!.userId
   const parseResult = createApiKeySchema.safeParse(req.body)
   if (!parseResult.success) {
     res.status(400).json(formatValidationError(parseResult.error))
@@ -42,8 +42,8 @@ apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
   const { label, scopes, orgId } = parseResult.data
 
   // Validate scope names against the typed ApiScope enum
-  const validScopes = new Set(Object.values(ApiScope))
-  const invalidIndex = scopes.findIndex((s: string) => !validScopes.has(s))
+  const validScopeValues = new Set(Object.values(ApiScope) as string[])
+  const invalidIndex = scopes.findIndex((s: string) => !validScopeValues.has(s))
   if (invalidIndex !== -1) {
     res.status(400).json({
       error: {
@@ -59,7 +59,7 @@ apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
     userId,
     orgId: orgId?.trim() || undefined,
     label,
-    scopes,
+    scopes: scopes as ApiScope[],
   })
 
   const { keyHash: _keyHash, ...publicRecord } = record
@@ -70,7 +70,7 @@ apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
 })
 
 apiKeysRouter.post('/:id/rotate', apiKeyRateLimiter, async (req, res) => {
-  const userId = req.user.userId
+  const userId = req.user!.userId
   const rotated = await rotateApiKey({
     apiKeyId: req.params.id,
     userId,
@@ -97,7 +97,7 @@ apiKeysRouter.post('/:id/rotate', apiKeyRateLimiter, async (req, res) => {
 })
 
 apiKeysRouter.post('/:id/revoke', requireStepUp(), async (req, res) => {
-  const userId = req.user.userId
+  const userId = req.user!.userId
   const record = await revokeApiKey(req.params.id, userId)
 
   if (!record) {

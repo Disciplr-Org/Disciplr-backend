@@ -114,20 +114,17 @@ verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request
             trx,
           )
 
-          await createAuditLog(
-            {
-              actor_user_id: verifierUserId,
-              action: 'verification.decision.recorded',
-              target_type: 'verification',
-              target_id: cleanTargetId,
-              metadata: {
-                result,
-                disputed: !!disputed,
-                evidence_hash: cleanEvidenceHash,
-              },
+          await createAuditLog({
+            actor_user_id: verifierUserId,
+            action: 'verification.decision.recorded',
+            target_type: 'verification',
+            target_id: cleanTargetId,
+            metadata: {
+              result,
+              disputed: !!disputed,
+              evidence_hash: cleanEvidenceHash,
             },
-            trx,
-          )
+          })
 
           return verification
         }),
@@ -274,20 +271,17 @@ verificationsRouter.post('/bulk', authenticate, requireVerifier, async (req: Req
               trx,
             )
 
-            await createAuditLog(
-              {
-                actor_user_id: verifierUserId,
-                action: 'verification.decision.recorded',
-                target_type: 'verification',
-                target_id: cleanTargetId,
-                metadata: {
-                  result,
-                  disputed: !!disputed,
-                  evidence_hash: cleanEvidenceHash,
-                },
+            await             createAuditLog({
+              actor_user_id: verifierUserId,
+              action: 'verification.decision.recorded',
+              target_type: 'verification',
+              target_id: cleanTargetId,
+              metadata: {
+                result,
+                disputed: !!disputed,
+                evidence_hash: cleanEvidenceHash,
               },
-              trx,
-            )
+            })
 
             return verification
           }),

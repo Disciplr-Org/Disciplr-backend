@@ -186,7 +186,7 @@ export class UserService {
       return null
     }
 
-    await getPrisma().$transaction(async (tx) => {
+    await getPrisma().$transaction(async (tx: any) => {
       await tx.refreshToken.deleteMany({
         where: { userId: id }
       })

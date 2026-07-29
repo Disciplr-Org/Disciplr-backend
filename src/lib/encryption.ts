@@ -53,6 +53,35 @@ export interface FieldEncryptionKey {
   key: Buffer
 }
 
+// ── Key caching ────────────────────────────────────────────────────────────
+// resolveKeys() is expensive: it reads process.env, JSON.parses the keys
+// config, and base64-decodes/validates every key. encryptField / decryptField
+// are on the hot path for webhook delivery, so we memoize the resolved key set
+// and only re-resolve when invalidateKeys() is called (e.g. during a key
+// rotation).
+// ────────────────────────────────────────────────────────────────────────────
+
+let _cachedKeys: FieldEncryptionKey[] | null = null
+
+/** Returns the resolved key set, using the cache when populated. */
+function getCachedKeys(): FieldEncryptionKey[] {
+  if (_cachedKeys === null) {
+    _cachedKeys = resolveKeys()
+  }
+  return _cachedKeys
+}
+
+/**
+ * Invalidate the resolved-key cache.
+ *
+ * Call this after an explicit key rotation (e.g. after updating
+ * FIELD_ENCRYPTION_KEY or FIELD_ENCRYPTION_KEYS at runtime) so the next
+ * encrypt/decrypt operation picks up the new key material without a restart.
+ */
+export function invalidateKeys(): void {
+  _cachedKeys = null
+}
+
 /** Raised on any condition that prevents recovering the original plaintext. */
 export class DecryptionError extends Error {
   constructor(message: string) {
@@ -192,11 +221,11 @@ export const resolveKeys = (): FieldEncryptionKey[] => {
 }
 
 /** Returns the active key (first configured) used to encrypt new data. */
-const activeKey = (): FieldEncryptionKey => resolveKeys()[0]
+const activeKey = (): FieldEncryptionKey => getCachedKeys()[0]
 
 /** Looks up a key by id, returning undefined if no such key is configured. */
 const keyById = (kid: string): FieldEncryptionKey | undefined =>
-  resolveKeys().find((k) => k.kid === kid)
+  getCachedKeys().find((k) => k.kid === kid)
 
 /**
  * Encrypts a plaintext field value under the active key.
