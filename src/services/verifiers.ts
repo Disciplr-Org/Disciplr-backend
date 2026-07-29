@@ -210,15 +210,17 @@ export const listVerifierProfiles = async (opts: ListVerifierProfilesOptions = {
  * `createVerifierAuditLog`. Callers should migrate to `transitionVerifier`
  * and pass an explicit `VerifierMutationContext`.
  *
- * A synthetic system context is used here because the legacy signature did
- * not accept an actor/reason. Audit logs created via this path will carry
- * `actor_user_id: 'system'` to make the bypass-free path visible.
+ * Accepts an optional `VerifierMutationContext` so callers that do have
+ * actor/reason information can still get an accurate audit trail. When
+ * omitted (the legacy call shape), the affected user is recorded as the
+ * actor so the bypass-free path remains visible in the audit log.
  */
 export const setVerifierStatus = async (
   userId: string,
   status: VerifierStatus,
+  context?: VerifierMutationContext,
 ): Promise<VerifierProfile | null> => {
-  const result = await transitionVerifier(userId, status, { actorUserId: 'system' })
+  const result = await transitionVerifier(userId, status, context ?? { actorUserId: userId })
   return result?.after ?? null
 }
 
