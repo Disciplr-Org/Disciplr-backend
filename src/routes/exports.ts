@@ -23,10 +23,20 @@ import { resolveS3Config, getExportSignedUrl } from '../services/exportS3.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { isOrgMember } from '../models/organizations.js'
 
+/**
+ * Derive the org identifier used for quota and access-control decisions.
+ *
+ * SECURITY: orgId MUST come only from the verified JWT payload populated by the
+ * `authenticate` middleware. Never read orgId from `req.query`, `req.headers`,
+ * or any other client-supplied input — those values are attacker-controlled and
+ * carry no membership verification.
+ */
 const resolveOrgId = (req: AuthenticatedRequest): string =>
-  // Only derive orgId from verified JWT claims. Do NOT trust query params or headers.
-  // Some JWTs may include an orgId claim; prefer that, otherwise fall back to the userId.
-  (req.user as any)?.orgId as string | undefined ?? req.user!.userId
+  // The current JWTPayload type does not carry an orgId claim, so we always
+  // fall back to the authenticated userId as the quota-accounting key.
+  // If a future JWT version adds a verified orgId claim, it should be
+  // added to JWTPayload and read from req.user.orgId (no cast required).
+  req.user!.userId
 
 const enforceExportQuota = async (
   req: AuthenticatedRequest,
