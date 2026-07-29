@@ -102,12 +102,20 @@ export async function setOrgNotificationPreferences(
  * Consulted by the dispatch path before a notification is created. A
  * category-specific row always wins over the whole-channel row, which in
  * turn wins over the all-enabled default.
+ *
+ * Returns `false` immediately for any channel that is not in ALLOWED_CHANNELS
+ * so that an unrecognised caller-supplied channel fails closed rather than
+ * silently defaulting to "send".
  */
 export async function isNotificationEnabled(
   organizationId: string | null | undefined,
   category: string,
   channel: string = 'email',
 ): Promise<boolean> {
+  if (!(ALLOWED_CHANNELS as readonly string[]).includes(channel)) {
+    return false
+  }
+
   if (!organizationId) return true
 
   const rows: PreferenceRow[] = await db('org_notification_preferences')

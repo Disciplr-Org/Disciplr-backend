@@ -13,6 +13,7 @@ import {
   createNotificationService,
   type NotificationService,
 } from '../services/notifications/factory.js'
+import type { AbuseMonitor } from '../services/abuse-monitor.js'
 import db from '../db/index.js'
 import { getPgPool } from '../db/pool.js'
 import { MilestoneRepository } from '../repositories/milestoneRepository.js'
@@ -167,12 +168,14 @@ class SchedulerRegistry {
 export class BackgroundJobSystem {
   private readonly queue: InMemoryJobQueue
   private readonly schedulerRegistry: SchedulerRegistry
+  private readonly abuseMonitor?: AbuseMonitor
   private started = false
   private shuttingDown = false
 
   constructor(
     notificationService?: NotificationService,
     embeddingReindex?: EmbeddingReindexDependencies,
+    abuseMonitor?: AbuseMonitor,
   ) {
     this.queue = new InMemoryJobQueue({
       concurrency: parsePositiveInteger(process.env.JOB_WORKER_CONCURRENCY, 2),
@@ -181,6 +184,7 @@ export class BackgroundJobSystem {
       staleLeaseMs: parsePositiveInteger(process.env.JOB_STALE_LEASE_MS, 300_000),
     })
     this.schedulerRegistry = new SchedulerRegistry()
+    this.abuseMonitor = abuseMonitor
 
     const resolvedNotificationService =
       notificationService ?? createNotificationService(process.env.NOTIFICATION_PROVIDER ?? 'console')
@@ -448,5 +452,22 @@ export class BackgroundJobSystem {
         this.enqueue('analytics.report.generate', {})
       },
     })
+
+    if (this.abuseMonitor) {
+      const abuseMonitorCleanupIntervalMs = parsePositiveInteger(
+        process.env.ABUSE_MONITOR_CLEANUP_INTERVAL_MS,
+        300_000, // 5 minutes
+      )
+
+      this.schedulerRegistry.registerJob({
+        name: 'abuse-monitor.cleanup',
+        intervalMs: abuseMonitorCleanupIntervalMs,
+        immediate: false,
+        initialDelayMs: 30_000,
+        execute: () => {
+          this.abuseMonitor!.cleanup()
+        },
+      })
+    }
   }
 }

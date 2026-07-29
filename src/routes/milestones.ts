@@ -1,5 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
+
+import { vaults } from './vaults.js'
+
 import { requireUser, requireVerifier } from '../middleware/rbac.js'
 import {
   createMilestoneWithThreshold,
@@ -18,6 +21,10 @@ import {
   DuplicateVerifierVoteError,
   getVerifierProfile,
 } from '../services/verifiers.js'
+import {
+  milestoneSchema,
+  flattenZodErrors,
+} from '../services/vaultValidation.js'
 
 import { completeVault, transitionVaultStatus } from '../services/vaultTransitions.js'
 import { getVaultById } from '../services/vaultStore.js'
@@ -28,6 +35,7 @@ export const milestonesRouter = Router({ mergeParams: true })
 
 // POST /api/vaults/:vaultId/milestones
 milestonesRouter.post('/', authenticate, requireUser, async (req: Request, res: Response, next: NextFunction) => {
+
   const { vaultId } = req.params
   const vault = await getVaultById(vaultId)
 
@@ -39,29 +47,32 @@ milestonesRouter.post('/', authenticate, requireUser, async (req: Request, res: 
     return next(AppError.conflict('Cannot add milestones to a non-active vault'))
   }
 
-  const { description, approvalThreshold = 1 } = req.body as {
-    description?: string
-    approvalThreshold?: number
-  }
-  if (!description?.trim()) {
-    return next(AppError.badRequest('description is required'))
+  // Validate milestone fields using the same schema as vault creation.
+  const parsed = milestoneSchema.safeParse(req.body)
+  if (!parsed.success) {
+    return next(AppError.badRequest('Invalid milestone payload', flattenZodErrors(parsed.error)))
   }
 
+  const { title, description, dueDate, amount } = parsed.data
+
+  const { approvalThreshold = 1 } = req.body as { approvalThreshold?: number }
   if (!Number.isInteger(approvalThreshold) || approvalThreshold < 1) {
     return next(AppError.badRequest('approvalThreshold must be a positive integer'))
   }
 
   const milestone = createMilestoneWithThreshold(
     vaultId,
-    description.trim(),
+    // Use title + optional description as the canonical description stored on the record.
+    description ? `${title}: ${description}` : title,
     approvalThreshold,
     vault.verifier,
   )
-  res.status(201).json(milestone)
+  res.status(201).json({ ...milestone, title, description, dueDate, amount })
 })
 
 // GET /api/vaults/:vaultId/milestones
-milestonesRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
+milestonesRouter.get('/', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+
   const { vaultId } = req.params
   const vault = await getVaultById(vaultId)
 
@@ -75,6 +86,7 @@ milestonesRouter.get('/', async (req: Request, res: Response, next: NextFunction
 
 // PATCH /api/vaults/:vaultId/milestones/:id/verify
 milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, async (req: Request, res: Response, next: NextFunction) => {
+
   const { vaultId, id } = req.params
 
   const vault = await getVaultById(vaultId)
@@ -94,7 +106,6 @@ milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, async (req:
 
   let vaultCompleted = false
   if (allMilestonesVerified(vaultId) && vault.status === 'active') {
-    // Use DB-backed transition
     const trxResult = await db.transaction(async (trx) => {
       return await transitionVaultStatus(trx, vaultId, 'completed')
     })
@@ -193,7 +204,7 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, async (req:
       return next(AppError.conflict('Verifier has already voted on this milestone'))
     }
 
-    // Reject late votes on already-settled milestones
+    // Reject late votes on already-settled milestones (using cached milestone)
     const approvalThreshold = (milestone as any)?.approvalThreshold || 1
     const totalVerifiers = (milestone as any)?.totalVerifiers as number | undefined
 
@@ -260,7 +271,7 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, async (req:
 })
 
 // GET /api/vaults/:vaultId/milestones/:id/approval-status
-// Get detailed approval status for a milestone
+// Get detailed approval status for a milestone (requires authentication)
 milestonesRouter.get('/:id/approval-status', authenticate, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { vaultId, id } = req.params

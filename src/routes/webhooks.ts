@@ -9,7 +9,7 @@ import {
   addSubscriber,
   listSubscribers,
   removeSubscriber,
-  updateSubscriberSecret,
+  rotateSubscriberSecret,
   isUrlAllowed,
 } from '../services/webhooks.js'
 
@@ -47,7 +47,7 @@ webhookRouter.post(
       }
 
       const secret = randomUUID().replace(/-/g, '')
-      const subscription = addSubscriber(url, secret, events, orgId, active)
+      const subscription = await addSubscriber(orgId, url, secret, events)
 
       return res.status(201).json({
         secret,
@@ -76,7 +76,7 @@ webhookRouter.get(
         return next(AppError.badRequest('orgId is required'))
       }
 
-      const subscriptions = listSubscribers(orgId).map((subscription) => serializeSubscription(subscription))
+      const subscriptions = (await listSubscribers(orgId)).map((subscription) => serializeSubscription(subscription))
       return res.json({ subscriptions })
     } catch (error) {
       return next(error)
@@ -94,7 +94,8 @@ webhookRouter.get(
         return next(AppError.badRequest('orgId is required'))
       }
 
-      const subscription = listSubscribers(orgId).find((item) => item.id === req.params.id)
+      const subs = await listSubscribers(orgId)
+      const subscription = subs.find((item) => item.id === req.params.id)
       if (!subscription) {
         return next(AppError.notFound('Webhook subscription not found'))
       }
@@ -121,13 +122,14 @@ webhookRouter.post(
         return next(AppError.badRequest('orgId is required'))
       }
 
-      const subscription = listSubscribers(orgId).find((item) => item.id === req.params.id)
+      const subs = await listSubscribers(orgId)
+      const subscription = subs.find((item) => item.id === req.params.id)
       if (!subscription) {
         return next(AppError.notFound('Webhook subscription not found'))
       }
 
       const secret = randomUUID().replace(/-/g, '')
-      const updated = updateSubscriberSecret(req.params.id, secret, orgId)
+      const updated = await rotateSubscriberSecret(req.params.id, secret, orgId)
       if (!updated) {
         return next(AppError.notFound('Webhook subscription not found'))
       }
@@ -149,7 +151,7 @@ webhookRouter.delete(
         return next(AppError.badRequest('orgId is required'))
       }
 
-      const deleted = removeSubscriber(req.params.id, orgId)
+      const deleted = await removeSubscriber(req.params.id)
       if (!deleted) {
         return next(AppError.notFound('Webhook subscription not found'))
       }

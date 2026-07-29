@@ -23,6 +23,7 @@ export type AuditLogFilters = {
   action?: string
   target_type?: string
   target_id?: string
+  organization_id?: string
   limit?: number
   offset?: number
 }

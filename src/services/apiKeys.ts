@@ -76,7 +76,7 @@ const parseApiKey = (apiKey: string): { apiKeyId: string; secret: string } | nul
 const validApiScopes = new Set(Object.values(ApiScope))
 
 const normalizeScopes = (scopes: string[]): ApiScope[] => {
-  return Array.from(new Set(scopes.map((scope) => scope.trim()).filter(Boolean))).filter((scope) => validApiScopes.has(scope)).sort() as ApiScope[]
+  return Array.from(new Set(scopes.map((scope) => scope.trim()).filter(Boolean))).filter((scope): scope is string => validApiScopes.has(scope as unknown as ApiScope)).sort() as ApiScope[]
 }
 
 const normalizeScopeColumn = (scopes: string[] | string | null): ApiScope[] => {
@@ -109,7 +109,7 @@ const redactApiKeyForLogs = (apiKey: string | undefined): string => {
   return `${API_KEY_PREFIX}_${parsed.apiKeyId}.***`
 }
 
-const asIsoString = (value: string | Date | null): string | null => {
+const asIsoString = (value: string | Date | null | undefined): string | null => {
   if (!value) {
     return null
   }

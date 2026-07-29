@@ -24,7 +24,9 @@ import { createAuditLog } from '../lib/audit-logs.js'
 import { isOrgMember } from '../models/organizations.js'
 
 const resolveOrgId = (req: AuthenticatedRequest): string =>
-  (req as any).orgId as string | undefined ?? (req.query.orgId as string | undefined) ?? (req.headers['x-organization-id'] as string | undefined) ?? (req.user as any)?.orgId ?? req.user!.userId
+  // Only derive orgId from verified JWT claims. Do NOT trust query params or headers.
+  // Some JWTs may include an orgId claim; prefer that, otherwise fall back to the userId.
+  (req.user as any)?.orgId as string | undefined ?? req.user!.userId
 
 const enforceExportQuota = async (
   req: AuthenticatedRequest,
