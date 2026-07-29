@@ -1,7 +1,7 @@
 import { jest, describe, it, expect, beforeEach } from '@jest/globals'
 import { AbuseMonitor } from '../services/abuse-monitor.js'
 import { logger } from '../middleware/logger.js'
-import { emitTestSuspiciousEvent, __resetSecurityMonitorForTests, getAbuseCategoryCounts } from '../security/abuse-monitor.js'
+import { emitTestSuspiciousEvent, __resetSecurityMonitorForTests, getAbuseCategoryCounts, logVaultDriftAnomaly } from '../security/abuse-monitor.js'
 import type { AbuseCategory } from '../types/security.js'
 
 describe('AbuseMonitor Heuristics', () => {
@@ -24,7 +24,7 @@ describe('AbuseMonitor Heuristics', () => {
     expect(isAbusive).toBe(true)
   })
 
-  it('should not leak plain-text PII in logs', () => {
+  it('should not leak plain-text PII in logs and use full 64-character actorHash', () => {
     const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
     const pii = 'user@example.com'
     
@@ -33,6 +33,9 @@ describe('AbuseMonitor Heuristics', () => {
     const logOutput = consoleSpy.mock.calls[0][0]
     expect(logOutput).not.toContain(pii)
     expect(logOutput).toContain('actorHash')
+    
+    const parsed = JSON.parse(logOutput)
+    expect(parsed.actorHash).toHaveLength(64)
     
     consoleSpy.mockRestore()
   })
@@ -77,14 +80,49 @@ describe('AbuseMonitor Heuristics', () => {
     expect(monitor.record({ id, type: 'request', weight: 10 })).toBe(true)
   })
 
-  it('should not track new IDs when maxEntries is reached', () => {
-    const smallMonitor = new AbuseMonitor({ maxEntries: 2 })
+  it('evicts the least-recently-active entry (LRU) when maxEntries is reached', () => {
+    jest.useFakeTimers()
+
+    const smallMonitor = new AbuseMonitor({ maxEntries: 2, penaltyScoreLimit: 9999 })
+
+    // user1 is recorded first (oldest lastSeen)
     smallMonitor.record({ id: 'user1', type: 'request' })
+
+    // Advance time so user2 has a newer lastSeen than user1
+    jest.advanceTimersByTime(1000)
     smallMonitor.record({ id: 'user2', type: 'request' })
-    
-    // Third unique ID should not be recorded (should return false/ignored)
+
+    // Map is now full.  A new actor (user3) must evict the LRU entry (user1),
+    // NOT silently return false as the old guard did.
+    jest.advanceTimersByTime(1000)
     const result = smallMonitor.record({ id: 'user3', type: 'request', weight: 200 })
+
+    // user3 was tracked — its high-weight signal should cause the expected return value
+    // (false here because 200 < 9999 penaltyScoreLimit)
     expect(result).toBe(false)
+
+    // user3 is now in the map; user1 (LRU) was evicted, user2 survives
+    // We can verify by driving user3 score over the limit — it must be tracked
+    const flagged = smallMonitor.record({ id: 'user3', type: 'auth_fail', weight: 9999 })
+    expect(flagged).toBe(true)
+
+    jest.useRealTimers()
+  })
+
+  it('tracks a new actor after LRU eviction rather than permanently ignoring it', () => {
+    jest.useFakeTimers()
+
+    const smallMonitor = new AbuseMonitor({ maxEntries: 1, penaltyScoreLimit: 9999 })
+
+    // Fill the single slot
+    smallMonitor.record({ id: 'early-actor', type: 'request' })
+
+    // A new high-weight actor arrives — it must displace early-actor and be scored
+    jest.advanceTimersByTime(500)
+    const flagged = smallMonitor.record({ id: 'new-bad-actor', type: 'auth_fail', weight: 9999 })
+    expect(flagged).toBe(true)
+
+    jest.useRealTimers()
   })
 })
 
@@ -190,5 +228,61 @@ describe('security/abuse-monitor structured events (pino integration)', () => {
 
     const counts = getAbuseCategoryCounts()
     expect(counts['brute-force']).toBe(2)
+  })
+
+  it('logVaultDriftAnomaly emits structured vault_missing_onchain event', () => {
+    const spy = jest.spyOn(logger, 'warn').mockImplementation(() => {})
+
+    logVaultDriftAnomaly('vault_missing_onchain', {
+      vaultId: 'vault-123',
+      persistedStatus: 'active',
+    })
+
+    expect(spy).toHaveBeenCalledTimes(1)
+    const payload = spy.mock.calls[0][0]
+    expect(payload.event).toBe('vault.vault_missing_onchain')
+    expect(payload.ip).toBe('')
+    expect(payload.vaultId).toBe('vault-123')
+    expect(payload.persistedStatus).toBe('active')
+
+    spy.mockRestore()
+  })
+
+  it('logVaultDriftAnomaly emits structured vault_state_drift event', () => {
+    const spy = jest.spyOn(logger, 'warn').mockImplementation(() => {})
+
+    logVaultDriftAnomaly('vault_state_drift', {
+      vaultId: 'vault-456',
+      driftedFields: ['status', 'amount'],
+      persisted: { status: 'active', amount: '1000' },
+      onChain: { status: 'completed', amount: '2000' },
+    })
+
+    expect(spy).toHaveBeenCalledTimes(1)
+    const payload = spy.mock.calls[0][0]
+    expect(payload.event).toBe('vault.vault_state_drift')
+    expect(payload.ip).toBe('')
+    expect(payload.vaultId).toBe('vault-456')
+    expect(payload.driftedFields).toEqual(['status', 'amount'])
+
+    spy.mockRestore()
+  })
+
+  it('logVaultDriftAnomaly emits structured vault_reconciliation_error event', () => {
+    const spy = jest.spyOn(logger, 'warn').mockImplementation(() => {})
+
+    logVaultDriftAnomaly('vault_reconciliation_error', {
+      vaultId: 'vault-789',
+      error: 'RPC timeout',
+    })
+
+    expect(spy).toHaveBeenCalledTimes(1)
+    const payload = spy.mock.calls[0][0]
+    expect(payload.event).toBe('vault.vault_reconciliation_error')
+    expect(payload.ip).toBe('')
+    expect(payload.vaultId).toBe('vault-789')
+    expect(payload.error).toBe('RPC timeout')
+
+    spy.mockRestore()
   })
 })

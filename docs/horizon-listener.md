@@ -270,6 +270,51 @@ systemctl restart disciplr-horizon-listener
 
 ---
 
+## Cursor Persistence Semantics
+
+### Boot — resume from last checkpoint
+
+On startup `HorizonListener.loadEffectiveStartLedger()` queries `CheckpointStore.getCheckpoint(contractAddress)` for **every** contract in `CONTRACT_ADDRESS`.  The Horizon stream is opened from the **minimum** confirmed ledger across all contracts:
+
+```
+effectiveLedger = min(
+  checkpoint.lastLedger   // for each contract that has a row
+  config.startLedger      // fallback for contracts with no row
+)
+```
+
+This guarantees that no contract falls behind.  Contracts whose stored ledger is already higher than the stream cursor will receive replayed events, but the `processed_events` idempotency table absorbs those duplicates without side-effects.
+
+### Advance — cursor written only after durable commit
+
+The checkpoint is written **after** `EventProcessor.processEvent()` returns `{ success: true }`, which itself only returns success after the database transaction containing the business logic and the `processed_events` row has been committed.
+
+Sequence per event:
+
+```
+1. BEGIN TRANSACTION
+2.   INSERT / UPDATE business table  (vault / milestone / validation)
+3.   INSERT processed_events         (idempotency record)
+4. COMMIT
+5. CheckpointStore.upsertCheckpoint(contractId, ledger, pagingToken)
+```
+
+If the process crashes between steps 4 and 5, the event is re-delivered on next boot.  Step 2 is skipped on re-delivery (idempotency check), and step 5 succeeds on the second attempt — so the cursor catches up automatically.
+
+### Connection loss — cursor is never reset
+
+When the Horizon SSE connection drops, `HorizonListener` enters a retry loop with exponential backoff (1 s → 2 s → 4 s → … → 60 s cap).  The cursor stored in `horizon_checkpoints` is **not modified** during reconnect attempts.  Once the connection is restored, the stream resumes from the same checkpoint that was last confirmed.
+
+### Filtering — cursor is not advanced for filtered events
+
+Events from contract addresses not listed in `CONTRACT_ADDRESS` are dropped before parsing.  No checkpoint write occurs for filtered events.
+
+### Parse failures — cursor is not advanced
+
+If `EventParser.parseHorizonEvent()` returns `{ success: false }`, the event is logged and skipped.  No checkpoint write occurs.  The stream advances to the next event naturally via the SSE protocol, so the listener does not stall on persistent parse failures.
+
+---
+
 ## Incident Response
 
 For step-by-step recovery when the listener stalls and the slash backlog builds

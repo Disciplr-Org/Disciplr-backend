@@ -8,10 +8,12 @@ import {
 } from './queue.js'
 import { type EnqueueOptions, type JobPayloadByType, type JobType } from './types.js'
 import { recoverPendingExportJobs } from '../services/exportQueue.js'
+import { listOrganizations } from '../services/organization.js'
 import {
   createNotificationService,
   type NotificationService,
 } from '../services/notifications/factory.js'
+import type { AbuseMonitor } from '../services/abuse-monitor.js'
 import db from '../db/index.js'
 import { getPgPool } from '../db/pool.js'
 import { MilestoneRepository } from '../repositories/milestoneRepository.js'
@@ -166,12 +168,14 @@ class SchedulerRegistry {
 export class BackgroundJobSystem {
   private readonly queue: InMemoryJobQueue
   private readonly schedulerRegistry: SchedulerRegistry
+  private readonly abuseMonitor?: AbuseMonitor
   private started = false
   private shuttingDown = false
 
   constructor(
     notificationService?: NotificationService,
     embeddingReindex?: EmbeddingReindexDependencies,
+    abuseMonitor?: AbuseMonitor,
   ) {
     this.queue = new InMemoryJobQueue({
       concurrency: parsePositiveInteger(process.env.JOB_WORKER_CONCURRENCY, 2),
@@ -180,6 +184,7 @@ export class BackgroundJobSystem {
       staleLeaseMs: parsePositiveInteger(process.env.JOB_STALE_LEASE_MS, 300_000),
     })
     this.schedulerRegistry = new SchedulerRegistry()
+    this.abuseMonitor = abuseMonitor
 
     const resolvedNotificationService =
       notificationService ?? createNotificationService(process.env.NOTIFICATION_PROVIDER ?? 'console')
@@ -188,16 +193,254 @@ export class BackgroundJobSystem {
       cursorStore: new BackfillCursorStore(db),
       embeddingProvider: createEmbeddingProvider(),
     }
-    const handlers = createDefaultJobHandlers(resolvedNotificationService, resolvedEmbeddingReindex)
+    const handlers = createDefaultJobHandlers(
+      resolvedNotificationService,
+      resolvedEmbeddingReindex,
+      (type, payload, options) => this.enqueue(type, payload, options),
+    )
 
     this.queue.registerHandler('notification.send', handlers['notification.send'])
     this.queue.registerHandler('deadline.check', handlers['deadline.check'])
     this.queue.registerHandler('oracle.call', handlers['oracle.call'])
     this.queue.registerHandler('analytics.recompute', handlers['analytics.recompute'])
+    this.queue.registerHandler('analytics.report.generate', handlers['analytics.report.generate'])
     this.queue.registerHandler('export.generate', handlers['export.generate'])
     this.queue.registerHandler('sessions.cleanup', handlers['sessions.cleanup'])
+    this.queue.registerHandler('retention.purge', handlers['retention.purge'])
     this.queue.registerHandler('outbox.relay', handlers['outbox.relay'])
     this.queue.registerHandler('embeddings.reindex', handlers['embeddings.reindex'])
+    this.queue.registerHandler('saved-search.evaluate', handlers['saved-search.evaluate'])
+    
+    // INJECTED HANDLERS (Issue #1248)
+    this.queue.registerHandler('milestone.reminders', handlers['milestone.reminders'])
+    this.queue.registerHandler('milestone.reminders.digest', handlers['milestone.reminders.digest'])
+    this.queue.registerHandler('milestone.reminders.deferred', handlers['milestone.reminders.deferred'])
+    this.queue.registerHandler('vault.reconcile', handlers['vault.reconcile'])
+  }
+
+  start(): void {
+    if (this.started) {
+      return
+    }
+cat << 'EOF' > src/jobs/system.ts
+import { createDefaultJobHandlers, type EmbeddingReindexDependencies } from './handlers.js'
+import {
+  InMemoryJobQueue,
+  type QueueMetrics,
+  type QueuedJobReceipt,
+  type QueueDepthReport,
+  type SweepResult,
+} from './queue.js'
+import { type EnqueueOptions, type JobPayloadByType, type JobType } from './types.js'
+import { recoverPendingExportJobs } from '../services/exportQueue.js'
+import { listOrganizations } from '../services/organization.js'
+import {
+  createNotificationService,
+  type NotificationService,
+} from '../services/notifications/factory.js'
+import type { AbuseMonitor } from '../services/abuse-monitor.js'
+import db from '../db/index.js'
+import { getPgPool } from '../db/pool.js'
+import { MilestoneRepository } from '../repositories/milestoneRepository.js'
+import { BackfillCursorStore } from '../services/backfillCursorStore.js'
+import { createEmbeddingProvider } from '../services/embeddingProvider.js'
+
+const parsePositiveInteger = (value: string | undefined, fallback: number): number => {
+  if (!value) {
+    return fallback
+  }
+
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback
+  }
+
+  return Math.floor(parsed)
+}
+
+/**
+ * Generates a deterministic advisory lock key from a job name string.
+ * Uses a simple hash to convert the string to two 32-bit integers for PostgreSQL advisory locks.
+ */
+function jobNameToAdvisoryLockKey(jobName: string): [number, number] {
+  let h1 = 0xdeadbeef
+  let h2 = 0xcafebabe
+  for (let i = 0; i < jobName.length; i++) {
+    h1 = Math.imul(31, h1) + jobName.charCodeAt(i)
+    h2 = Math.imul(17, h2) + jobName.charCodeAt(i)
+  }
+  return [h1 | 0, h2 | 0]
+}
+
+interface ScheduledJobConfig {
+  name: string
+  intervalMs: number
+  execute: () => Promise<void> | void
+  immediate?: boolean
+  initialDelayMs?: number
+}
+
+class SchedulerRegistry {
+  private readonly scheduledJobs: Map<string, ScheduledJobConfig> = new Map()
+  private readonly timers: Map<string, NodeJS.Timeout> = new Map()
+  private readonly runningJobs: Set<string> = new Set()
+
+  registerJob(config: ScheduledJobConfig): void {
+    this.scheduledJobs.set(config.name, config)
+  }
+
+  async tryAcquireLock(jobName: string): Promise<boolean> {
+    const pool = getPgPool()
+    if (!pool) {
+      return true
+    }
+
+    const [key1, key2] = jobNameToAdvisoryLockKey(jobName)
+    const client = await pool.connect()
+    try {
+      const result = await client.query(
+        'SELECT pg_try_advisory_lock($1, $2) as acquired',
+        [key1, key2]
+      )
+      return result.rows[0].acquired as boolean
+    } catch (error) {
+      console.error(`[SchedulerRegistry] Failed to acquire advisory lock for ${jobName}:`, error)
+      return false
+    } finally {
+      client.release()
+    }
+  }
+
+  async releaseLock(jobName: string): Promise<void> {
+    const pool = getPgPool()
+    if (!pool) {
+      return
+    }
+
+    const [key1, key2] = jobNameToAdvisoryLockKey(jobName)
+    const client = await pool.connect()
+    try {
+      await client.query('SELECT pg_advisory_unlock($1, $2)', [key1, key2])
+    } catch (error) {
+      console.error(`[SchedulerRegistry] Failed to release advisory lock for ${jobName}:`, error)
+    } finally {
+      client.release()
+    }
+  }
+
+  private async runJobWithOverlapGuard(config: ScheduledJobConfig): Promise<void> {
+    if (this.runningJobs.has(config.name)) {
+      console.log(`[SchedulerRegistry] Job ${config.name} already running locally, skipping`)
+      return
+    }
+
+    const lockAcquired = await this.tryAcquireLock(config.name)
+    if (!lockAcquired) {
+      console.log(`[SchedulerRegistry] Could not acquire lock for ${config.name}, skipping (another replica holds the lock)`)
+      return
+    }
+
+    this.runningJobs.add(config.name)
+    const now = new Date()
+    try {
+      await config.execute()
+      await db('scheduler_heartbeats')
+        .insert({
+          name: config.name,
+          last_run_at: now,
+        })
+        .onConflict('name')
+        .merge({
+          last_run_at: now,
+        })
+    } catch (error) {
+      console.error(`[SchedulerRegistry] Job ${config.name} failed:`, error)
+    } finally {
+      this.runningJobs.delete(config.name)
+      await this.releaseLock(config.name)
+    }
+  }
+
+  start(): void {
+    for (const config of this.scheduledJobs.values()) {
+      if (config.immediate) {
+        const delay = config.initialDelayMs ?? 0
+        setTimeout(() => {
+          void this.runJobWithOverlapGuard(config)
+        }, delay)
+      }
+
+      const timer = setInterval(() => {
+        void this.runJobWithOverlapGuard(config)
+      }, config.intervalMs)
+
+      if (typeof timer.unref === 'function') {
+        timer.unref()
+      }
+
+      this.timers.set(config.name, timer)
+    }
+  }
+
+  stop(): void {
+    for (const timer of this.timers.values()) {
+      clearInterval(timer)
+    }
+    this.timers.clear()
+  }
+}
+
+export class BackgroundJobSystem {
+  private readonly queue: InMemoryJobQueue
+  private readonly schedulerRegistry: SchedulerRegistry
+  private readonly abuseMonitor?: AbuseMonitor
+  private started = false
+  private shuttingDown = false
+
+  constructor(
+    notificationService?: NotificationService,
+    embeddingReindex?: EmbeddingReindexDependencies,
+    abuseMonitor?: AbuseMonitor,
+  ) {
+    this.queue = new InMemoryJobQueue({
+      concurrency: parsePositiveInteger(process.env.JOB_WORKER_CONCURRENCY, 2),
+      pollIntervalMs: parsePositiveInteger(process.env.JOB_QUEUE_POLL_INTERVAL_MS, 250),
+      historyLimit: parsePositiveInteger(process.env.JOB_HISTORY_LIMIT, 50),
+      staleLeaseMs: parsePositiveInteger(process.env.JOB_STALE_LEASE_MS, 300_000),
+    })
+    this.schedulerRegistry = new SchedulerRegistry()
+    this.abuseMonitor = abuseMonitor
+
+    const resolvedNotificationService =
+      notificationService ?? createNotificationService(process.env.NOTIFICATION_PROVIDER ?? 'console')
+    const resolvedEmbeddingReindex = embeddingReindex ?? {
+      source: new MilestoneRepository(db),
+      cursorStore: new BackfillCursorStore(db),
+      embeddingProvider: createEmbeddingProvider(),
+    }
+    const handlers = createDefaultJobHandlers(
+      resolvedNotificationService,
+      resolvedEmbeddingReindex,
+      (type, payload, options) => this.enqueue(type, payload, options),
+    )
+
+    this.queue.registerHandler('notification.send', handlers['notification.send'])
+    this.queue.registerHandler('deadline.check', handlers['deadline.check'])
+    this.queue.registerHandler('oracle.call', handlers['oracle.call'])
+    this.queue.registerHandler('analytics.recompute', handlers['analytics.recompute'])
+    this.queue.registerHandler('analytics.report.generate', handlers['analytics.report.generate'])
+    this.queue.registerHandler('export.generate', handlers['export.generate'])
+    this.queue.registerHandler('sessions.cleanup', handlers['sessions.cleanup'])
+    this.queue.registerHandler('retention.purge', handlers['retention.purge'])
+    this.queue.registerHandler('outbox.relay', handlers['outbox.relay'])
+    this.queue.registerHandler('embeddings.reindex', handlers['embeddings.reindex'])
+    this.queue.registerHandler('saved-search.evaluate', handlers['saved-search.evaluate'])
+    
+    // INJECTED HANDLERS (Issue #1248)
+    this.queue.registerHandler('milestone.reminders', handlers['milestone.reminders'])
+    this.queue.registerHandler('milestone.reminders.digest', handlers['milestone.reminders.digest'])
+    this.queue.registerHandler('milestone.reminders.deferred', handlers['milestone.reminders.deferred'])
+    this.queue.registerHandler('vault.reconcile', handlers['vault.reconcile'])
   }
 
   start(): void {
@@ -296,6 +539,26 @@ export class BackgroundJobSystem {
       process.env.EMBEDDING_REINDEX_INTERVAL_MS,
       600_000, // 10 minutes
     )
+    const savedSearchEvalIntervalMs = parsePositiveInteger(
+      process.env.SAVED_SEARCH_EVAL_INTERVAL_MS,
+      15 * 60_000, // 15 minutes
+    )
+    const analyticsReportIntervalMs = parsePositiveInteger(
+      process.env.ANALYTICS_REPORT_INTERVAL_MS,
+      24 * 60 * 60_000, // 24 hours
+    )
+    const milestoneRemindersIntervalMs = parsePositiveInteger(
+      process.env.MILESTONE_REMINDERS_INTERVAL_MS,
+      15 * 60_000, // 15 minutes
+    )
+    const milestoneRemindersDigestIntervalMs = parsePositiveInteger(
+      process.env.MILESTONE_REMINDERS_DIGEST_INTERVAL_MS,
+      15 * 60_000, // 15 minutes
+    )
+    const milestoneRemindersDeferredIntervalMs = parsePositiveInteger(
+      process.env.MILESTONE_REMINDERS_DEFERRED_INTERVAL_MS,
+      5 * 60_000, // 5 minutes
+    )
 
     this.schedulerRegistry.registerJob({
       name: 'deadline.check',
@@ -329,6 +592,36 @@ export class BackgroundJobSystem {
       },
     })
 
+    const retentionPurgeIntervalMs = parsePositiveInteger(
+      process.env.RETENTION_PURGE_INTERVAL_MS,
+      86_400_000,
+    )
+    const retentionPurgeBatchSize = parsePositiveInteger(
+      process.env.RETENTION_PURGE_BATCH_SIZE,
+      500,
+    )
+
+    this.schedulerRegistry.registerJob({
+      name: 'retention.purge',
+      intervalMs: retentionPurgeIntervalMs,
+      immediate: true,
+      initialDelayMs: 20_000,
+      execute: async () => {
+        try {
+          const organizations = await listOrganizations()
+          for (const org of organizations) {
+            this.enqueue('retention.purge', {
+              organizationId: org.id,
+              batchSize: retentionPurgeBatchSize,
+            })
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          console.error(`[jobs:retention.purge] failed to enqueue jobs: ${message}`)
+        }
+      },
+    })
+
     this.schedulerRegistry.registerJob({
       name: 'outbox.relay',
       intervalMs: outboxRelayIntervalMs,
@@ -348,5 +641,70 @@ export class BackgroundJobSystem {
         this.enqueue('embeddings.reindex', {})
       },
     })
+
+    this.schedulerRegistry.registerJob({
+      name: 'saved-search.evaluate',
+      intervalMs: savedSearchEvalIntervalMs,
+      immediate: false,
+      execute: () => {
+        this.enqueue('saved-search.evaluate', {})
+      },
+    })
+
+    this.schedulerRegistry.registerJob({
+      name: 'milestone.reminders',
+      intervalMs: milestoneRemindersIntervalMs,
+      immediate: true,
+      initialDelayMs: 5_000,
+      execute: () => {
+        this.enqueue('milestone.reminders', {})
+      },
+    })
+
+    this.schedulerRegistry.registerJob({
+      name: 'milestone.reminders.digest',
+      intervalMs: milestoneRemindersDigestIntervalMs,
+      immediate: true,
+      initialDelayMs: 10_000,
+      execute: () => {
+        this.enqueue('milestone.reminders.digest', {})
+      },
+    })
+
+    this.schedulerRegistry.registerJob({
+      name: 'milestone.reminders.deferred',
+      intervalMs: milestoneRemindersDeferredIntervalMs,
+      immediate: true,
+      initialDelayMs: 15_000,
+      execute: () => {
+        this.enqueue('milestone.reminders.deferred', {})
+      },
+    })
+
+    this.schedulerRegistry.registerJob({
+      name: 'analytics.report.generate',
+      intervalMs: analyticsReportIntervalMs,
+      immediate: false,
+      execute: () => {
+        this.enqueue('analytics.report.generate', {})
+      },
+    })
+
+    if (this.abuseMonitor) {
+      const abuseMonitorCleanupIntervalMs = parsePositiveInteger(
+        process.env.ABUSE_MONITOR_CLEANUP_INTERVAL_MS,
+        300_000, // 5 minutes
+      )
+
+      this.schedulerRegistry.registerJob({
+        name: 'abuse-monitor.cleanup',
+        intervalMs: abuseMonitorCleanupIntervalMs,
+        immediate: false,
+        initialDelayMs: 30_000,
+        execute: () => {
+          this.abuseMonitor!.cleanup()
+        },
+      })
+    }
   }
 }

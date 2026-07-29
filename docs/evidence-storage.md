@@ -1,58 +1,97 @@
-# Evidence Storage Contract
+# Evidence and Export Object Storage
 
-This service stores signed object-storage references for verification evidence without persisting raw PII or document contents.
+This document describes the security rules applied to S3 object-key construction
+and content-type validation for evidence references and export uploads.
 
-## What is stored
+---
 
-- `verification_id` — links the reference to the recorded verification decision.
-- `evidence_hash` — integrity checksum for the submitted evidence payload.
-- `reference_url` — signed object-storage URL (e.g. S3-compatible signed URL).
-- `expires_at` — expiry timestamp extracted from the signed URL.
-- `created_at` — insertion timestamp.
+## S3 Object-Key Rules
 
-## What is not stored
+All object keys are tenant-prefixed to ensure cross-tenant isolation:
 
-- Raw evidence files.
-- User-uploaded document contents.
-- Sensitive personal data from the payload.
+```
+exports/<job-id>/<filename>
+```
 
-## Ingestion rules
+### Key Segment Sanitisation
 
-- `POST /api/verifications` now accepts `evidenceHash` and `evidenceReferenceUrl`.
-- `evidenceHash` must be a non-empty alphanumeric-hyphen-underscore string between 32 and 128 characters.
-- `evidenceReferenceUrl` must be an HTTP/HTTPS signed object-storage URL.
-- URL expiry is validated by parsing one of:
-  - `X-Amz-Expires` with `X-Amz-Date`
-  - `Expires`
-  - `expires`
-- Expired URLs are rejected.
+Every user-influenced path segment (job ID, filename) is passed through
+`sanitizeS3KeySegment` before the key is assembled. The function enforces:
 
-## Persistence
+| Rule | Effect |
+|------|--------|
+| Null bytes (`\0`) | **Rejected** — throws `S3KeyTraversalError` |
+| `..` in any slash-delimited component | **Rejected** — throws `S3KeyTraversalError` |
+| Single `.` in any slash-delimited component | **Rejected** — throws `S3KeyTraversalError` |
+| Leading `/` or `//…` | **Stripped** — cannot escape the tenant prefix |
+| Embedded `/` sequences | **Collapsed to `-`** — segment stays within a single path component |
 
-A new `evidence_references` table stores evidence metadata.
-This table is created by the new database migration `db/migrations/20260527000000_create_evidence_references.cjs`.
+Because the tenant prefix (`exports/`) is prepended _after_ sanitisation,
+no caller-supplied value can navigate above or outside the intended prefix.
 
-## Audit logging
+### Why this matters
 
-Audit logs do not include the raw signed URL.
-Only evidence metadata such as `evidenceHash` and the fact that evidence was attached are recorded.
+Without sanitisation, a segment such as `../../other-org/secrets.csv` would
+produce the key `exports/../../other-org/secrets.csv`, which many S3-compatible
+stores normalise to `other-org/secrets.csv`, overwriting another tenant's
+object.
 
-## Similarity Search
+---
 
-To detect near-duplicate or low-effort submissions, evidence supports a hybrid similarity search combining vector embeddings and keyword/text matching.
+## Content-Type Allowlist
 
-### Hybrid Search Implementation
-- **Vector Search (HNSW)**: The `milestone_embeddings` table uses an HNSW index on the `embedding` column with the `vector_cosine_ops` operator class.
-  - **Tradeoffs**: HNSW provides superior recall and faster query times compared to IVFFlat, though it consumes slightly more memory and index build time.
-  - **Parameters**: Built with `m = 16` and `ef_construction = 64` as standards for 768-dimensional embeddings.
-- **Keyword Search (pg_trgm)**: The `evidence_references` table is indexed with GIN indexes (`gin_trgm_ops`) on `reference_url` and `evidence_hash`.
-  - This acts as a fallback for evidence that shares few embedded features but has exactly or near-exactly matching URLs or hashes.
-- **Scoring**: A fused score is calculated as `w1 * vector_distance + w2 * keyword_distance`. Both vector and keyword use distance metrics where `0` implies an exact match.
+`uploadToS3` calls `assertAllowedContentType` before sending the upload. Any
+content type not in `ALLOWED_CONTENT_TYPES` causes an `S3ContentTypeError` and
+the upload is aborted.
 
-## Relationship to milestone embeddings
+### Permitted content types
 
-This service intentionally does **not** generate or store embeddings — see "What is not stored"
-above. Similarity-search embeddings for milestones (used for near-duplicate / low-effort
-submission detection) are a separate subsystem keyed by `milestone_id`, not evidence rows, and are
-kept in sync by an offline reindex backfill job. See "Embedding reindex backfill job" in
-`docs/milestones.md` for that job's design, resumability, and rate-limiting.
+| MIME type | Use |
+|-----------|-----|
+| `text/csv` | Export CSV downloads |
+| `text/csv; charset=utf-8` | Export CSV downloads |
+| `application/json` | Export JSON downloads |
+| `application/json; charset=utf-8` | Export JSON downloads |
+| `application/x-ndjson` | Export NDJSON downloads |
+| `application/pdf` | Evidence attachments |
+| `image/png` | Evidence screenshots |
+| `image/jpeg` | Evidence screenshots |
+| `image/webp` | Evidence screenshots |
+
+### Rejected categories
+
+- `text/html` — served directly, creates XSS vectors
+- `application/javascript` / `text/javascript` — active content
+- `application/octet-stream` — generic binary, potential executable
+- `text/xml` / `application/xml` — XXE vectors
+- Any type not explicitly listed above
+
+To add a new type, update `ALLOWED_CONTENT_TYPES` in
+`src/services/exportS3.ts` and extend the test matrix in
+`src/tests/exportS3.traversal.test.ts`.
+
+---
+
+## Evidence URL Validation
+
+Evidence references store pre-signed object-storage URLs supplied by callers.
+They are **not** built by the backend, but they are validated before acceptance:
+
+1. **SSRF guard** — `validateEvidenceUrlSafety` calls `isUrlAllowed`, which
+   blocks RFC 1918 private ranges, loopback, link-local, and non-allowlisted
+   hosts. See `src/services/evidence.ts` for the implementation.
+2. **Expiry check** — the signed URL must not already be expired. Both
+   AWS-style (`X-Amz-Expires` + `X-Amz-Date`) and epoch-style (`Expires`)
+   parameters are supported.
+3. **Protocol enforcement** — only `http:` and `https:` are accepted.
+
+---
+
+## Adding a New Upload Path
+
+1. Determine the tenant prefix (e.g. `evidence/<org-id>/`).
+2. Pass every user-supplied path segment through `sanitizeS3KeySegment`.
+3. Choose the correct content type and confirm it is in `ALLOWED_CONTENT_TYPES`.
+4. Call `uploadToS3` — it enforces the content-type allowlist automatically.
+5. Add test cases covering traversal inputs and the disallowed-content-type
+   path to `src/tests/exportS3.traversal.test.ts`.

@@ -6,7 +6,13 @@ import type { BackgroundJobSystem } from '../jobs/system.js'
 import { Readable, Transform } from 'node:stream'
 import { createGzip, gzipSync } from 'node:zlib'
 import { maskPii, sanitizePrivacyPayload, sanitizePrivacyString } from '../utils/privacy.js'
-import { resolveS3Config, uploadToS3 } from '../services/exportS3.js'
+import { resolveS3Config, uploadToS3, sanitizeS3KeySegment } from '../services/exportS3.js'
+
+export const EXPORT_STREAM_CONFIG = {
+  CHUNK_SIZE_BYTES: 512 * 1024,
+  MEMORY_CEILING_BYTES: 512 * 1024 * 1024,
+  SLOW_CONSUMER_RPS: 10,
+} as const
 
 export type ExportFormat = 'csv' | 'json' | 'ndjson'
 export type ExportScope = 'vaults' | 'transactions' | 'analytics' | 'all'
@@ -37,6 +43,7 @@ export type DlqMetricsHook = (event: DlqMetricsEvent) => void
 export interface ExportJob {
   id: string
   userId: string
+  orgId?: string
   isAdmin: boolean
   targetUserId?: string
   scope: ExportScope
@@ -57,6 +64,7 @@ export interface ExportJob {
 
 export interface EnqueueExportJobInput {
   userId: string
+  orgId?: string
   isAdmin: boolean
   targetUserId?: string
   scope: ExportScope
@@ -69,6 +77,7 @@ export interface EnqueueExportJobInput {
 interface ExportJobRecord {
   id: string
   requester_user_id: string
+  org_id?: string | null
   requester_is_admin: boolean
   target_user_id: string | null
   scope: ExportScope
@@ -169,7 +178,7 @@ export const ALLOWED_COLUMNS: Record<keyof ExportData, string[]> = {
   analytics: CSV_SCHEMAS.analytics.columns.map(c => c.key),
 }
 
-const hashExportRequest = (input: Pick<EnqueueExportJobInput, 'targetUserId' | 'scope' | 'format' | 'columns'>): string => {
+const hashExportRequest = (input: Pick<EnqueueExportJobInput, 'targetUserId' | 'scope' | 'format' | 'columns' | 'orgId' | 'isAdmin'>): string => {
   return crypto
     .createHash('sha256')
     .update(JSON.stringify({
@@ -177,6 +186,8 @@ const hashExportRequest = (input: Pick<EnqueueExportJobInput, 'targetUserId' | '
       scope: input.scope,
       format: input.format,
       columns: input.columns ?? null,
+      orgId: input.orgId ?? null,
+      isAdmin: input.isAdmin,
     }))
     .digest('hex')
 }
@@ -206,6 +217,7 @@ const sanitizeExportTelemetry = (
 const toExportJob = (record: ExportJobRecord): ExportJob => ({
   id: record.id,
   userId: record.requester_user_id,
+  orgId: record.org_id ?? undefined,
   isAdmin: record.requester_is_admin,
   targetUserId: record.target_user_id ?? undefined,
   scope: record.scope,
@@ -227,6 +239,7 @@ const toExportJob = (record: ExportJobRecord): ExportJob => ({
 const toRecord = (job: ExportJob): ExportJobRecord => ({
   id: job.id,
   requester_user_id: job.userId,
+  org_id: job.orgId ?? null,
   requester_is_admin: job.isAdmin,
   target_user_id: job.targetUserId ?? null,
   scope: job.scope,
@@ -347,15 +360,129 @@ export const configureExportJobRepository = (repository: ExportJobRepository): v
 
 const DEFAULT_MAX_DLQ_SIZE = 100
 
-let dlqStore: DlqEntry[] = []
-let dlqMaxSize = DEFAULT_MAX_DLQ_SIZE
+interface DlqRepository {
+  insert(entry: DlqEntry): Promise<void>
+  remove(jobId: string): Promise<DlqEntry | undefined>
+  find(jobId: string): Promise<DlqEntry | undefined>
+  list(): Promise<DlqEntry[]>
+  depth(): Promise<number>
+  clear(): Promise<number>
+  reset(): Promise<void>
+}
+
+const createInMemoryDlqRepository = (maxSize = DEFAULT_MAX_DLQ_SIZE): DlqRepository => {
+  let store: DlqEntry[] = []
+  let cap = maxSize
+  return {
+    async insert(entry) {
+      while (store.length >= cap) store.shift()
+      store.push(entry)
+    },
+    async remove(jobId) {
+      const index = store.findIndex(e => e.jobId === jobId)
+      if (index === -1) return undefined
+      const [entry] = store.splice(index, 1)
+      return entry
+    },
+    async find(jobId) {
+      return store.find(e => e.jobId === jobId)
+    },
+    async list() {
+      return [...store].reverse()
+    },
+    async depth() {
+      return store.length
+    },
+    async clear() {
+      const count = store.length
+      store = []
+      return count
+    },
+    async reset() {
+      store = []
+      cap = maxSize
+    },
+  }
+}
+
+export const createKnexDlqRepository = (db: Knex): DlqRepository => ({
+  async insert(entry) {
+    await db('export_dlq_entries')
+      .insert({
+        job_id: entry.jobId,
+        job_type: entry.jobType,
+        failure_reason: entry.failureReason,
+        error_message: entry.errorMessage,
+        attempt_count: entry.attemptCount,
+        failed_at: entry.failedAt,
+        sanitised_context: JSON.stringify(entry.sanitisedContext),
+      })
+      .onConflict('job_id')
+      .merge()
+  },
+  async remove(jobId) {
+    const [row] = await db('export_dlq_entries').where({ job_id: jobId }).delete().returning('*')
+    if (!row) return undefined
+    return toDlqEntry(row)
+  },
+  async find(jobId) {
+    const row = await db('export_dlq_entries').where({ job_id: jobId }).first()
+    return row ? toDlqEntry(row) : undefined
+  },
+  async list() {
+    const rows = await db('export_dlq_entries').orderBy('failed_at', 'desc')
+    return rows.map(toDlqEntry)
+  },
+  async depth() {
+    const [{ count }] = await db('export_dlq_entries').count('job_id as count')
+    return Number(count)
+  },
+  async clear() {
+    const [{ count }] = await db('export_dlq_entries').count('job_id as count')
+    await db('export_dlq_entries').delete()
+    return Number(count)
+  },
+  async reset() {
+    await db('export_dlq_entries').delete()
+  },
+})
+
+interface DlqEntryRecord {
+  job_id: string
+  job_type: string
+  failure_reason: string
+  error_message: string
+  attempt_count: number
+  failed_at: string
+  sanitised_context: string
+}
+
+const toDlqEntry = (row: DlqEntryRecord): DlqEntry => ({
+  jobId: row.job_id,
+  jobType: row.job_type,
+  failureReason: row.failure_reason as FailureReason,
+  errorMessage: row.error_message,
+  attemptCount: row.attempt_count,
+  failedAt: typeof row.failed_at === 'string' ? row.failed_at : new Date(row.failed_at).toISOString(),
+  sanitisedContext: typeof row.sanitised_context === 'string'
+    ? JSON.parse(row.sanitised_context)
+    : row.sanitised_context,
+})
+
+let dlqRepository: DlqRepository = createInMemoryDlqRepository()
 let dlqMetricsHook: DlqMetricsHook | undefined
+
+export const configureDlqRepository = (repository: DlqRepository): void => {
+  dlqRepository = repository
+}
 
 export const configureDlq = (options?: { maxSize?: number; metricsHook?: DlqMetricsHook }): void => {
   if (options?.maxSize !== undefined) {
-    dlqMaxSize = Math.max(1, Math.floor(options.maxSize))
+    dlqRepository = createInMemoryDlqRepository(Math.max(1, Math.floor(options.maxSize)))
   }
-  dlqMetricsHook = options?.metricsHook
+  if (options?.metricsHook !== undefined) {
+    dlqMetricsHook = options.metricsHook
+  }
 }
 
 const sanitiseDlqContext = (job: ExportJob): Record<string, unknown> => {
@@ -363,20 +490,6 @@ const sanitiseDlqContext = (job: ExportJob): Record<string, unknown> => {
     { ...exportUserTokens(job), scope: job.scope, format: job.format, isAdmin: job.isAdmin, requestHash: job.requestHash },
     exportPiiValues(job),
   ) as Record<string, unknown>
-}
-
-const dlqInsert = (entry: DlqEntry): void => {
-  while (dlqStore.length >= dlqMaxSize) {
-    dlqStore.shift()
-  }
-  dlqStore.push(entry)
-}
-
-const dlqRemove = (jobId: string): DlqEntry | undefined => {
-  const index = dlqStore.findIndex(e => e.jobId === jobId)
-  if (index === -1) return undefined
-  const [entry] = dlqStore.splice(index, 1)
-  return entry
 }
 
 const safeInvokeMetricsHook = (event: DlqMetricsEvent): void => {
@@ -400,19 +513,14 @@ export async function resetExportJobs(): Promise<void> {
   await exportJobRepository.reset()
 }
 
-export const getDlqEntries = (): readonly DlqEntry[] => {
-  const copy = [...dlqStore]
-  copy.reverse()
-  return copy
-}
+export const getDlqEntries = (): Promise<readonly DlqEntry[]> => dlqRepository.list()
 
-export const getDlqEntry = (jobId: string): DlqEntry | undefined =>
-  dlqStore.find(e => e.jobId === jobId)
+export const getDlqEntry = (jobId: string): Promise<DlqEntry | undefined> => dlqRepository.find(jobId)
 
-export const getDlqDepth = (): number => dlqStore.length
+export const getDlqDepth = (): Promise<number> => dlqRepository.depth()
 
 export const requeueDlqEntry = async (jobId: string): Promise<boolean> => {
-  const entry = dlqRemove(jobId)
+  const entry = await dlqRepository.remove(jobId)
   if (!entry) return false
 
   const job = await exportJobRepository.get(jobId)
@@ -429,30 +537,29 @@ export const requeueDlqEntry = async (jobId: string): Promise<boolean> => {
   safeInvokeMetricsHook({
     event: 'entry_requeued',
     jobId,
-    dlqDepth: dlqStore.length,
+    dlqDepth: await dlqRepository.depth(),
     timestamp: new Date().toISOString(),
   })
 
   return true
 }
 
-export const discardDlqEntry = (jobId: string): boolean => {
-  const entry = dlqRemove(jobId)
+export const discardDlqEntry = async (jobId: string): Promise<boolean> => {
+  const entry = await dlqRepository.remove(jobId)
   if (!entry) return false
 
   safeInvokeMetricsHook({
     event: 'entry_discarded',
     jobId,
-    dlqDepth: dlqStore.length,
+    dlqDepth: await dlqRepository.depth(),
     timestamp: new Date().toISOString(),
   })
 
   return true
 }
 
-export const clearDlq = (): number => {
-  const count = dlqStore.length
-  dlqStore = []
+export const clearDlq = async (): Promise<number> => {
+  const count = await dlqRepository.clear()
 
   safeInvokeMetricsHook({
     event: 'dlq_cleared',
@@ -464,9 +571,9 @@ export const clearDlq = (): number => {
   return count
 }
 
-export const resetDlq = (): void => {
-  dlqStore = []
-  dlqMaxSize = DEFAULT_MAX_DLQ_SIZE
+export const resetDlq = async (): Promise<void> => {
+  await dlqRepository.reset()
+  dlqRepository = createInMemoryDlqRepository()
   dlqMetricsHook = undefined
 }
 
@@ -734,6 +841,7 @@ export const enqueueExportJob = async (
 
   const created = await exportJobRepository.create({
     userId: input.userId,
+    orgId: input.orgId,
     isAdmin: input.isAdmin,
     targetUserId: input.targetUserId,
     scope: input.scope,
@@ -785,7 +893,9 @@ export async function processJob(
     const s3Config = resolveS3Config()
     let s3Key: string | undefined
     if (s3Config) {
-      const key = `exports/${job.id}/${filename}`
+      const safeJobId = sanitizeS3KeySegment(job.id)
+      const safeFilename = sanitizeS3KeySegment(filename ?? `export-${job.id}`)
+      const key = `exports/${safeJobId}/${safeFilename}`
       const contentType = job.format === 'csv'
         ? 'text/csv; charset=utf-8'
         : job.format === 'json'
@@ -867,13 +977,13 @@ export async function processJob(
         sanitisedContext: sanitiseDlqContext(job),
       }
 
-      dlqInsert(entry)
+      await dlqRepository.insert(entry)
 
       safeInvokeMetricsHook({
         event: 'entry_added',
         jobId: entry.jobId,
         failureReason: entry.failureReason,
-        dlqDepth: dlqStore.length,
+        dlqDepth: await dlqRepository.depth(),
         timestamp: entry.failedAt,
       })
     }

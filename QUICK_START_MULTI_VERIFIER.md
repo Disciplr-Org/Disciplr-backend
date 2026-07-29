@@ -1,5 +1,5 @@
 #!/bin/bash
-# Quick Start Guide for Multi-Verifier Milestone Approval System
+# Multi-Verifier Quick Start
 
 ## Prerequisites
 - Node.js 18+
@@ -205,7 +205,8 @@ const approvals = await getMilestoneApprovals(milestoneId: string)
 // Returns: { approved: [...], rejected: [...], pending: [...] }
 
 // Check if threshold is met
-const isMet = await hasMilestoneMetThreshold(milestoneId, threshold)
+const progress = await getMilestoneApprovalProgress(milestoneId, threshold)
+const isMet = progress.isComplete
 
 // Get comprehensive approval progress
 const progress = await getMilestoneApprovalProgress(milestoneId, threshold)
@@ -235,7 +236,7 @@ const approval = await recordMilestoneApproval(
 )
 
 // Check completion
-const isComplete = await hasMilestoneMetThreshold(milestone.id, 1)
+const isComplete = (await getMilestoneApprovalProgress(milestone.id, 1)).isComplete
 // Returns: true
 ```
 

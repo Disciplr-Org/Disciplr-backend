@@ -21,6 +21,8 @@ export interface MilestoneEmbeddingSource {
 export interface ReindexCursorStore {
   getCursor(jobName: string): Promise<string | null>
   upsertCursor(jobName: string, cursor: string | null): Promise<void>
+  isPaused?(jobName: string): Promise<boolean>
+  recordProgress?(jobName: string, count: number): Promise<void>
 }
 
 export interface ReindexBatchOptions {
@@ -39,6 +41,7 @@ export interface ReindexBatchResult {
   skippedUpToDate: number
   cursor: string | null
   done: boolean
+  paused?: boolean
 }
 
 const DEFAULT_BATCH_SIZE = 50
@@ -49,8 +52,8 @@ const defaultSleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms)
   })
 
-const buildEmbeddingText = (milestone: { title: string; description: string | null }): string =>
-  [milestone.title, milestone.description].filter(Boolean).join('\n')
+export const buildEmbeddingText = (milestone: { title: string; description: string | null }): string =>
+  [milestone.title, milestone.description].filter((part): part is string => part != null).join('\n')
 
 /**
  * Process a single bounded page of the milestones table, (re)generating any
@@ -71,6 +74,15 @@ export async function reindexEvidenceBatch(options: ReindexBatchOptions): Promis
   } = options
 
   const cursor = await cursorStore.getCursor(jobName)
+
+  // Respect pause flag before claiming any work
+  if (cursorStore.isPaused) {
+    const paused = await cursorStore.isPaused(jobName)
+    if (paused) {
+      return { processed: 0, reindexed: 0, skippedUpToDate: 0, cursor, done: false, paused: true }
+    }
+  }
+
   const milestones = await source.listMilestonesAfter(cursor, batchSize)
 
   if (milestones.length === 0) {
@@ -104,6 +116,10 @@ export async function reindexEvidenceBatch(options: ReindexBatchOptions): Promis
   const newCursor = milestones[milestones.length - 1].id
   await cursorStore.upsertCursor(jobName, newCursor)
 
+  if (cursorStore.recordProgress) {
+    await cursorStore.recordProgress(jobName, milestones.length)
+  }
+
   const result: ReindexBatchResult = {
     processed: milestones.length,
     reindexed,
@@ -126,6 +142,7 @@ export interface ReindexRunResult {
   skippedUpToDate: number
   cursor: string | null
   done: boolean
+  paused?: boolean
 }
 
 const DEFAULT_MAX_BATCHES_PER_RUN = 5
@@ -157,7 +174,8 @@ export async function runReindexBatches(options: ReindexRunOptions): Promise<Rei
     totals.cursor = batch.cursor
     totals.done = batch.done
 
-    if (batch.done) {
+    if (batch.done || batch.paused) {
+      if (batch.paused) totals.paused = true
       break
     }
   }

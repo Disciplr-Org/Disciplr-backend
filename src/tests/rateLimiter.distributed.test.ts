@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, jest } from '@jest/globals'
 import express from 'express'
 import request from 'supertest'
-import Redis from 'ioredis'
+import { Redis } from 'ioredis'
 import { createRateLimiter } from '../middleware/rateLimiter.js'
 import { initEnv, getEnv } from '../config/index.js'
 

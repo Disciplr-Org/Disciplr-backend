@@ -80,6 +80,10 @@ Admin-only access requirements for audit query endpoints:
 
 All timestamps are stored, transmitted, and returned in UTC (ISO 8601 with `Z` suffix). Input timestamps must include a timezone designator. See [Timezone Contract](docs/TIMEZONE_CONTRACT.md) for the full specification.
 
+## Configuration
+
+For a complete reference of all supported environment variables, their types, defaults, and security considerations, see [Configuration Reference](docs/configuration.md).
+
 ## Tech stack
 
 ## Background job system

@@ -5,8 +5,9 @@ import {
   clearAuditLogs,
   createAuditLog,
   exportAuditLogsForOrganization,
-  hashAuditLogRow,
+  computeAuditLogHash,
   verifyAuditLogChain,
+  setAuditLogWriterForTests,
 } from '../lib/audit-logs.js'
 
 const organizationId = '00000000-0000-4000-8000-000000000684'
@@ -121,7 +122,7 @@ describe('audit log integrity chain', () => {
       .where({ id: log.id })
       .update({
         metadata: rawMetadata,
-        row_hash: hashAuditLogRow(log.prev_hash, rawRow),
+        row_hash: computeAuditLogHash(rawRow, log.prev_hash!),
       })
 
     const auditExport = await exportAuditLogsForOrganization(organizationId)
@@ -135,5 +136,39 @@ describe('audit log integrity chain', () => {
     expect(serialized).not.toContain('do-not-export')
     expect(serialized).not.toContain('a'.repeat(40))
     expect(auditExport.audit_logs[0].metadata.safe_note).toBe('kept-1')
+  })
+
+  it('creates audit log with real hash chain (no test writer override)', async () => {
+    setAuditLogWriterForTests(null)
+    try {
+      const first = await createAuditLog({
+        actor_user_id: 'user-integration-1',
+        organization_id: organizationId,
+        action: 'member.joined',
+        target_type: 'member',
+        target_id: 'member-1',
+        metadata: { role: 'USER' },
+      })
+
+      const second = await createAuditLog({
+        actor_user_id: 'user-integration-2',
+        organization_id: organizationId,
+        action: 'member.role_changed',
+        target_type: 'member',
+        target_id: 'member-1',
+        metadata: { old_role: 'USER', new_role: 'ADMIN' },
+      })
+
+      expect(first.prev_hash).toBe(AUDIT_LOG_GENESIS_HASH)
+      expect(first.row_hash).toBe(computeAuditLogHash(first, AUDIT_LOG_GENESIS_HASH))
+      expect(second.prev_hash).toBe(first.row_hash)
+      expect(second.row_hash).toBe(computeAuditLogHash(second, first.row_hash))
+
+      const result = await verifyAuditLogChain(organizationId)
+      expect(result.verified).toBe(true)
+      expect(result.checked_count).toBeGreaterThanOrEqual(2)
+    } finally {
+      setAuditLogWriterForTests(null)
+    }
   })
 })
