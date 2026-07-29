@@ -74,9 +74,7 @@ export function getDBHealthMetrics(pgPool: Pool): DBHealthMetrics {
     warnings.push(`High number of slow queries detected (${slowQueries.length})`)
   }
 
-  // availableConnections === 0 already pushes a warning above, so
-  // warnings.length === 0 is the single, non-redundant health gate.
-  const isHealthy = warnings.length === 0
+  const isHealthy = warnings.length === 0 && poolMetrics.availableConnections > 0
 
   return {
     pool: poolMetrics,
