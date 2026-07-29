@@ -49,7 +49,7 @@ const transitionMatrix: Record<VerifierStatus, VerifierStatus[]> = {
   pending: ['pending', 'approved', 'deactivated'],
   approved: ['approved', 'suspended', 'deactivated'],
   suspended: ['suspended', 'approved', 'deactivated'],
-  deactivated: ['deactivated', 'pending'],
+  deactivated: ['deactivated', 'pending', 'approved'],
 }
 
 export const canTransition = (from: VerifierStatus, to: VerifierStatus): boolean =>
