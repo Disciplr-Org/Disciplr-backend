@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express'
 
 export const REDACTED = '[REDACTED]'
 
-const SENSITIVE_KEYS = new Set([
+export const SENSITIVE_KEYS = new Set([
   'password',
   'passwordhash',
   'token',

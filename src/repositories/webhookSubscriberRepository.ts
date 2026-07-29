@@ -21,7 +21,7 @@ interface SubscriberRow {
   secret: string
   previous_secret: string | null
   rotated_at: Date | null
-  events: string[]
+  events: string | string[]
   active: boolean
   schema_version: number
   field_policy: unknown
@@ -89,7 +89,19 @@ function toSubscriber(row: SubscriberRow): WebhookSubscriber {
     rotatedAt: row.rotated_at instanceof Date
       ? row.rotated_at.toISOString()
       : (row.rotated_at ? String(row.rotated_at) : null),
-    events: row.events ?? [],
+    events: (() => {
+      const parsed = typeof row.events === 'string'
+        ? (() => {
+            try {
+              const parsedJson = JSON.parse(row.events)
+              return Array.isArray(parsedJson) ? parsedJson : []
+            } catch {
+              return []
+            }
+          })()
+        : row.events ?? []
+      return parsed
+    })(),
     active: row.active,
     schemaVersion: row.schema_version ?? 1,
     fieldPolicy: parseFieldPolicy(row.field_policy, row.id),
@@ -162,9 +174,9 @@ export class WebhookSubscriberRepository {
         organization_id: data.organizationId,
         url: data.url,
         secret: encryptField(data.secret),
-        events: JSON.stringify(data.events) as any,
+        events: JSON.stringify(data.events),
         schema_version: data.schemaVersion ?? 1,
-        field_policy: JSON.stringify(data.fieldPolicy ?? DEFAULT_FIELD_POLICY) as any,
+        field_policy: JSON.stringify(data.fieldPolicy ?? DEFAULT_FIELD_POLICY),
       })
       .returning('*')
     return toSubscriber(row)
@@ -231,7 +243,7 @@ export class WebhookSubscriberRepository {
     const rows = await this.db<SubscriberRow>('webhook_subscribers')
       .where({ id, organization_id: organizationId })
       .update({
-        field_policy: JSON.stringify(fieldPolicy) as any,
+        field_policy: JSON.stringify(fieldPolicy),
         updated_at: this.db.fn.now(),
       })
       .returning('*')
@@ -294,7 +306,7 @@ export class WebhookSubscriberRepository {
       halfOpenAt?: string | null
     },
   ): Promise<void> {
-    const payload: Record<string, any> = {
+    const payload: Record<string, unknown> = {
       state: data.state,
       updated_at: this.db.fn.now(),
     }

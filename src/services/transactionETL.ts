@@ -472,6 +472,7 @@ export class TransactionETLService {
     driftedVaults: any[]
   }> {
     const config = getSorobanConfig()
+
     if (!config) {
       console.log('Soroban not configured, skipping vault reconciliation')
       return {
@@ -480,6 +481,7 @@ export class TransactionETLService {
         driftDetected: 0,
         missingOnChain: 0,
         errors: 0,
+        driftedVaults: [],
       }
     }
 

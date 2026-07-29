@@ -31,6 +31,7 @@ type OrgInvitation = {
   org_id: string
   email: string
   token_hash: string
+  role: string
   expires_at: Date | string
   accepted_at: Date | string | null
   revoked_at?: Date | string | null
@@ -330,7 +331,7 @@ export const resendInvitation = async (
       expires_at: expiresAt,
       revoked_at: null,
     })
-    .returning(['id', 'org_id', 'email', 'expires_at', 'accepted_at', 'revoked_at'])
+    .returning(['id', 'org_id', 'email', 'role', 'expires_at', 'accepted_at', 'revoked_at'])
 
   return updated
 }
@@ -349,7 +350,7 @@ export const revokeInvitation = async (
   const [updated] = await db('org_invitations')
     .where({ id: invitationId, org_id: orgId })
     .update({ revoked_at: revokedAt })
-    .returning(['id', 'org_id', 'email', 'expires_at', 'accepted_at', 'revoked_at'])
+    .returning(['id', 'org_id', 'email', 'role', 'expires_at', 'accepted_at', 'revoked_at'])
 
   return updated
 }

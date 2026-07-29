@@ -53,6 +53,35 @@ export interface FieldEncryptionKey {
   key: Buffer
 }
 
+// ── Key caching ────────────────────────────────────────────────────────────
+// resolveKeys() is expensive: it reads process.env, JSON.parses the keys
+// config, and base64-decodes/validates every key. encryptField / decryptField
+// are on the hot path for webhook delivery, so we memoize the resolved key set
+// and only re-resolve when invalidateKeys() is called (e.g. during a key
+// rotation).
+// ────────────────────────────────────────────────────────────────────────────
+
+let _cachedKeys: FieldEncryptionKey[] | null = null
+
+/** Returns the resolved key set, using the cache when populated. */
+function getCachedKeys(): FieldEncryptionKey[] {
+  if (_cachedKeys === null) {
+    _cachedKeys = resolveKeys()
+  }
+  return _cachedKeys
+}
+
+/**
+ * Invalidate the resolved-key cache.
+ *
+ * Call this after an explicit key rotation (e.g. after updating
+ * FIELD_ENCRYPTION_KEY or FIELD_ENCRYPTION_KEYS at runtime) so the next
+ * encrypt/decrypt operation picks up the new key material without a restart.
+ */
+export function invalidateKeys(): void {
+  _cachedKeys = null
+}
+
 /** Raised on any condition that prevents recovering the original plaintext. */
 export class DecryptionError extends Error {
   constructor(message: string) {
@@ -101,6 +130,16 @@ const decodeKey = (kid: string, raw: string): Buffer => {
  *   - If neither is set, EncryptionKeyError is thrown (fail closed): an
  *     encryption helper with no keys is a misconfiguration, never a no-op.
  *
+ * Per-entry validation:
+ *   - A malformed or invalid entry at index 0 (the active key) is always fatal:
+ *     encrypting new data would be impossible without a valid active key.
+ *   - A malformed or invalid entry at any later index (a retired/rotation key)
+ *     is skipped with a console.warn rather than aborting entirely. A single
+ *     operator typo in a low-priority retired key must not break field
+ *     encryption/decryption for the active key that is otherwise valid.
+ *     The skipped entry's kid is never added to the duplicate-id set, so a
+ *     bad retired entry cannot trigger a spurious duplicate error.
+ *
  * Duplicate key ids are rejected so a typo cannot make a retired key
  * unexpectedly shadow the active one.
  */
@@ -123,20 +162,43 @@ export const resolveKeys = (): FieldEncryptionKey[] => {
         'FIELD_ENCRYPTION_KEYS must be a non-empty JSON array of { kid, key } objects',
       )
     }
-    keys = parsed.map((entry, i) => {
+    keys = []
+    for (let i = 0; i < parsed.length; i++) {
+      const entry = parsed[i]
+      const isActive = i === 0
+
+      // Shape validation
       if (
         typeof entry !== 'object' ||
         entry === null ||
         typeof (entry as any).kid !== 'string' ||
         typeof (entry as any).key !== 'string'
       ) {
-        throw new EncryptionKeyError(
-          `FIELD_ENCRYPTION_KEYS[${i}] must be an object with string "kid" and "key" fields`,
-        )
+        const msg =
+          `FIELD_ENCRYPTION_KEYS[${i}] must be an object with string "kid" and "key" fields`
+        if (isActive) {
+          throw new EncryptionKeyError(msg)
+        }
+        console.warn(`[encryption] Skipping malformed retired key at index ${i}: ${msg}`)
+        continue
       }
+
       const kid = (entry as any).kid as string
-      return { kid, key: decodeKey(kid, (entry as any).key as string) }
-    })
+      let keyBuf: Buffer
+      try {
+        keyBuf = decodeKey(kid, (entry as any).key as string)
+      } catch (e) {
+        if (isActive) {
+          throw e
+        }
+        console.warn(
+          `[encryption] Skipping invalid retired key "${kid}" at index ${i}: ${(e as Error).message}`,
+        )
+        continue
+      }
+
+      keys.push({ kid, key: keyBuf })
+    }
   } else if (singleKey && singleKey.trim() !== '') {
     keys = [{ kid: DEFAULT_KEY_ID, key: decodeKey(DEFAULT_KEY_ID, singleKey) }]
   }
@@ -159,11 +221,11 @@ export const resolveKeys = (): FieldEncryptionKey[] => {
 }
 
 /** Returns the active key (first configured) used to encrypt new data. */
-const activeKey = (): FieldEncryptionKey => resolveKeys()[0]
+const activeKey = (): FieldEncryptionKey => getCachedKeys()[0]
 
 /** Looks up a key by id, returning undefined if no such key is configured. */
 const keyById = (kid: string): FieldEncryptionKey | undefined =>
-  resolveKeys().find((k) => k.kid === kid)
+  getCachedKeys().find((k) => k.kid === kid)
 
 /**
  * Encrypts a plaintext field value under the active key.

@@ -52,8 +52,8 @@ const defaultSleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms)
   })
 
-const buildEmbeddingText = (milestone: { title: string; description: string | null }): string =>
-  [milestone.title, milestone.description].filter(Boolean).join('\n')
+export const buildEmbeddingText = (milestone: { title: string; description: string | null }): string =>
+  [milestone.title, milestone.description].filter((part): part is string => part != null).join('\n')
 
 /**
  * Process a single bounded page of the milestones table, (re)generating any

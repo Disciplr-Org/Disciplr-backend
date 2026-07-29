@@ -9,6 +9,14 @@ import {
 import type { VaultAnalytics, VaultAnalyticsWithPeriod } from '../types/vault.js'
 import { parseAndNormalizeToUTC, utcNow } from '../utils/timestamps.js'
 import { getOrSet, invalidate } from '../lib/cache.js'
+import { getOrgAnalyticsBatched } from './analyticsBatchLoader.js'
+import type { OrgVaultAnalytics } from './analyticsBatchLoader.js'
+
+// Re-exported so callers can import every analytics helper from this single
+// service module rather than reaching into the individual implementation
+// files directly.
+export { getOrgAnalyticsBatched }
+export { getCohortRetention } from './cohortRetention.js'
 
 export interface OrgRiskAnalyticsVault {
   id?: string
@@ -152,7 +160,7 @@ export async function getOverallAnalytics(): Promise<VaultAnalytics> {
       successRate: summary.success_rate,
       lastUpdated: summary.last_updated,
     }
-  }, orgId)
+  })
 }
 
 export async function getAnalyticsByPeriod(
@@ -256,13 +264,13 @@ export async function updateAnalyticsSummary(orgId?: string): Promise<void> {
  * Render a point-in-time analytics snapshot for a single org.
  * Pulls vault IDs from the in-memory vaults store so it works without a DB.
  */
-export function renderOrgAnalyticsSnapshot(orgId: string): OrgVaultAnalytics & { orgId: string; snapshotAt: string } {
+export async function renderOrgAnalyticsSnapshot(orgId: string): Promise<OrgVaultAnalytics & { orgId: string; snapshotAt: string }> {
   // Import lazily to avoid circular deps and to stay hermetic in tests
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { vaults } = require('../routes/vaults.js') as { vaults: Array<{ id: string; orgId?: string }> }
   const orgVaultIds = vaults
     .filter((v) => v.orgId === orgId)
     .map((v) => v.id)
-  const analytics = getOrgAnalyticsBatched(orgVaultIds)
+  const analytics = await getOrgAnalyticsBatched(orgVaultIds)
   return { ...analytics, orgId, snapshotAt: utcNow() }
 }

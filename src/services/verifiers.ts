@@ -210,15 +210,17 @@ export const listVerifierProfiles = async (opts: ListVerifierProfilesOptions = {
  * `createVerifierAuditLog`. Callers should migrate to `transitionVerifier`
  * and pass an explicit `VerifierMutationContext`.
  *
- * A synthetic system context is used here because the legacy signature did
- * not accept an actor/reason. Audit logs created via this path will carry
- * `actor_user_id: 'system'` to make the bypass-free path visible.
+ * Accepts an optional `VerifierMutationContext` so callers that do have
+ * actor/reason information can still get an accurate audit trail. When
+ * omitted (the legacy call shape), the affected user is recorded as the
+ * actor so the bypass-free path remains visible in the audit log.
  */
 export const setVerifierStatus = async (
   userId: string,
   status: VerifierStatus,
+  context?: VerifierMutationContext,
 ): Promise<VerifierProfile | null> => {
-  const result = await transitionVerifier(userId, status, { actorUserId: 'system' })
+  const result = await transitionVerifier(userId, status, context ?? { actorUserId: userId })
   return result?.after ?? null
 }
 
@@ -281,17 +283,22 @@ export const listVerifications = async (targetIds?: string[]): Promise<Verificat
 }
 
 export const getVerifierStats = async (userId: string) => {
-  const totalQ = db('verifications').where({ verifier_user_id: userId }).count<{ count: string }>('id as count').first()
-  const approvalsQ = db('verifications').where({ verifier_user_id: userId, result: 'approved' }).count<{ count: string }>('id as count').first()
-  const rejectionsQ = db('verifications').where({ verifier_user_id: userId, result: 'rejected' }).count<{ count: string }>('id as count').first()
-  const disputesQ = db('verifications').where({ verifier_user_id: userId, disputed: true }).count<{ count: string }>('id as count').first()
+  const raw = await db.raw<{ rows: Array<{ total: string; approvals: string; rejections: string; disputes: string }> }>(
+    `SELECT
+       COUNT(*)                                          AS total,
+       COUNT(*) FILTER (WHERE result    = 'approved')   AS approvals,
+       COUNT(*) FILTER (WHERE result    = 'rejected')   AS rejections,
+       COUNT(*) FILTER (WHERE disputed  = TRUE)         AS disputes
+     FROM verifications
+     WHERE verifier_user_id = ?`,
+    [userId],
+  )
 
-  const [totalR, approvalsR, rejectionsR, disputesR] = await Promise.all([totalQ, approvalsQ, rejectionsQ, disputesQ])
-
-  const total = Number(totalR?.count ?? 0)
-  const approvals = Number(approvalsR?.count ?? 0)
-  const rejections = Number(rejectionsR?.count ?? 0)
-  const disputes = Number(disputesR?.count ?? 0)
+  const row = raw.rows[0]
+  const total = Number(row?.total ?? 0)
+  const approvals = Number(row?.approvals ?? 0)
+  const rejections = Number(row?.rejections ?? 0)
+  const disputes = Number(row?.disputes ?? 0)
 
   const approvalRatio = total === 0 ? 0 : approvals / total
   const rejectionRatio = total === 0 ? 0 : rejections / total
@@ -450,27 +457,39 @@ export const recordMilestoneApproval = async (
   verifierUserId: string,
   approvalStatus: MilestoneApprovalStatus,
 ): Promise<MilestoneApproval> => {
-  // Check if verifier has already voted
-  const existing = await db('milestone_approvals')
-    .where({
-      milestone_id: milestoneId,
-      verifier_user_id: verifierUserId,
-    })
-    .first()
+  return db.transaction(async (trx) => {
+    const existing = await trx('milestone_approvals')
+      .where({
+        milestone_id: milestoneId,
+        verifier_user_id: verifierUserId,
+      })
+      .first()
 
-  if (existing) {
-    throw new DuplicateVerifierVoteError(milestoneId, verifierUserId)
-  }
+    if (existing) {
+      throw new DuplicateVerifierVoteError(milestoneId, verifierUserId)
+    }
 
-  const [record] = await db('milestone_approvals')
-    .insert({
-      milestone_id: milestoneId,
-      verifier_user_id: verifierUserId,
-      approval_status: approvalStatus,
-    })
-    .returning('*')
+    try {
+      const [record] = await trx('milestone_approvals')
+        .insert({
+          milestone_id: milestoneId,
+          verifier_user_id: verifierUserId,
+          approval_status: approvalStatus,
+        })
+        .returning('*')
 
-  return mapMilestoneApprovalRow(record)
+      return mapMilestoneApprovalRow(record)
+    } catch (err) {
+      const maybeErr = err as { code?: string; message?: string }
+      if (
+        maybeErr.code === '23505'
+        || maybeErr.message?.toLowerCase().includes('unique') === true
+      ) {
+        throw new DuplicateVerifierVoteError(milestoneId, verifierUserId)
+      }
+      throw err
+    }
+  })
 }
 
 /**
@@ -533,17 +552,6 @@ export const getApprovedVerifiersCount = async (milestoneId: string): Promise<nu
 }
 
 /**
- * Get all distinct verifier votes for a milestone.
- */
-export const getAllMilestoneVotes = async (milestoneId: string): Promise<MilestoneApproval[]> => {
-  const rows = await db('milestone_approvals')
-    .where({ milestone_id: milestoneId })
-    .orderBy('created_at', 'asc')
-
-  return rows.map(mapMilestoneApprovalRow)
-}
-
-/**
  * Check if a verifier has already voted on a milestone.
  */
 export const hasVerifierVoted = async (
@@ -558,17 +566,6 @@ export const hasVerifierVoted = async (
     .first()
 
   return !!record
-}
-
-/**
- * Check if a milestone has met its approval threshold.
- */
-export const hasMilestoneMetThreshold = async (
-  milestoneId: string,
-  approvalThreshold: number,
-): Promise<boolean> => {
-  const approvedCount = await getApprovedVerifiersCount(milestoneId)
-  return approvedCount >= approvalThreshold
 }
 
 /**

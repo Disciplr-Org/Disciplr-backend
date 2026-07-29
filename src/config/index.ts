@@ -42,6 +42,7 @@ export type AppConfig = {
   maxJsonBodySize: string
   nodeEnv: string
   logLevel: string
+  trustProxy: string
 }
 
 const _env = process.env.NODE_ENV ?? 'development'
@@ -75,5 +76,11 @@ export const config: AppConfig = {
       if (err.message === 'Env not initialized') return process.env.MAX_JSON_BODY_SIZE ?? '500kb';
       throw err;
     }
-  }
+  },
+  get trustProxy() {
+    try { return getEnv().TRUST_PROXY } catch (err: any) {
+      if (err.message === 'Env not initialized') return process.env.TRUST_PROXY ?? 'false';
+      throw err;
+    }
+  },
 }

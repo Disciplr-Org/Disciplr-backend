@@ -1,7 +1,7 @@
 import { describe, it, expect } from '@jest/globals'
 import request from 'supertest'
 import express, { type Request, type Response, type NextFunction } from 'express'
-import { AppError, ErrorCode, errorHandler } from '../middleware/errorHandler.js'
+import { AppError, ErrorCode, SorobanTimeoutError, errorHandler } from '../middleware/errorHandler.js'
 import { notFound } from '../middleware/notFound.js'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -271,6 +271,22 @@ describe('errorHandler middleware', () => {
     expect(res.status).toBe(429)
     expect(res.body.error.code).toBe('RATE_LIMITED')
     expect(res.body.error.message).toBe('slow down')
+  })
+
+  it('returns 504 for SorobanTimeoutError', async () => {
+    const app = buildApp((_req, _res, next) => {
+      next(new SorobanTimeoutError('tx-hash-123', 45000))
+    })
+
+    const res = await request(app).get('/test')
+    expect(res.status).toBe(504)
+    expect(res.body).toEqual({
+      error: {
+        code: 'SOROBAN_TIMEOUT',
+        message: 'Soroban transaction tx-hash-123 did not finalise within 45000ms',
+        details: { txHash: 'tx-hash-123', elapsedMs: 45000 },
+      },
+    })
   })
 
   it('returns 413 for AppError.payloadTooLarge', async () => {
