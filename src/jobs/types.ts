@@ -119,6 +119,10 @@ export type JobHandler<T extends JobType = JobType> = (
   context: JobContext,
 ) => Promise<void>
 
+export type JobHandlerRegistry = {
+  [K in JobType]?: JobHandler<K>
+}
+
 export interface EnqueueOptions {
   delayMs?: number
   maxAttempts?: number

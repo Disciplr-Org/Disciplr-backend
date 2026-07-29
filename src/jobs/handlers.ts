@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { NotificationService } from '../services/notifications/factory.js'
 import { processJob as processExportJob } from '../services/exportQueue.js'
-import type { EnqueueOptions, JobHandler, JobPayloadByType, JobType } from './types.js'
+import type { EnqueueOptions, JobHandler, JobHandlerRegistry, JobPayloadByType, JobType } from './types.js'
 import { TransactionETLService } from '../services/transactionETL.js'
 import { MilestoneEmbeddingSource, ReindexCursorStore } from '../services/evidenceReindex.js'
 import { EmbeddingProvider } from '../services/embeddingProvider.js'
@@ -37,10 +37,6 @@ export type JobEnqueuer = <T extends JobType>(
   payload: JobPayloadByType[T],
   options?: EnqueueOptions,
 ) => void
-
-type JobHandlerRegistry = {
-  [K in JobType]: JobHandler<K>
-}
 
 const sleep = async (ms: number): Promise<void> => {
   await new Promise((resolve) => {
@@ -153,11 +149,8 @@ export const createDefaultJobHandlers = (
   }
 
   jobHandlers['outbox.relay'] = async (payload, context) => {
-    const count = await relayOutboxBatch()
-    logJob(
-      'outbox.relay',
-      `relayed=${count} attempt=${context.attempt}`,
-    )
+    const relayed = await relayOutboxBatch(payload.batchSize)
+    logJob('outbox.relay', `relayed=${relayed} attempt=${context.attempt}`)
   }
 
   jobHandlers['embeddings.reindex'] = async (payload, context) => {
@@ -175,17 +168,86 @@ export const createDefaultJobHandlers = (
     )
   }
 
-  if (enqueueJob) {
-    jobHandlers['milestone.reminders'] = async (payload, context) => {
-      const remindersSent = await sendMilestoneReminders({
-        leadTimesMs: payload.leadTimesMs,
-        limit: payload.limit,
-      })
-      logJob(
-        'milestone.reminders',
-        `sent ${remindersSent} reminders attempt=${context.attempt}`,
-      )
+  jobHandlers['milestone.reminders'] = async (payload, context) => {
+    const remindersSent = await sendMilestoneReminders({
+      leadTimesMs: payload.leadTimesMs,
+      limit: payload.limit,
+    })
+    logJob(
+      'milestone.reminders',
+      `sent ${remindersSent} reminders attempt=${context.attempt}`,
+    )
+  }
+
+  jobHandlers['milestone.reminders.digest'] = async (payload, context) => {
+    const result = await sendMilestoneDigestReminders({
+      leadTimesMs: payload.leadTimesMs,
+      limit: payload.limit,
+    })
+    logJob(
+      'milestone.reminders.digest',
+      `sent=${result.digestsSent} deferred=${result.digestsDeferred} milestones=${result.totalMilestones} attempt=${context.attempt}`,
+    )
+  }
+
+  jobHandlers['milestone.reminders.deferred'] = async (payload, context) => {
+    const delivered = await processDeferredReminders({
+      batchSize: payload.batchSize,
+    })
+    logJob(
+      'milestone.reminders.deferred',
+      `delivered=${delivered} attempt=${context.attempt}`,
+    )
+  }
+
+  jobHandlers['analytics.report.generate'] = async (payload, context) => {
+    const s3Config = resolveS3Config()
+    const orgIds = payload.orgIds ?? (await getAllOrgIds())
+    let generated = 0
+    let skipped = 0
+    for (const orgId of orgIds) {
+      if (!(await checkAndIncrementReportQuota(orgId))) {
+        skipped += 1
+        continue
+      }
+      const report = await renderOrgAnalyticsSnapshot(orgId)
+      const key = `analytics/${orgId}/${Date.now()}.json`
+      const buffer = Buffer.from(JSON.stringify(report))
+      if (s3Config) {
+        await uploadToS3(s3Config, key, buffer, 'application/json')
+        await saveOrgReport({
+          orgId,
+          s3Key: key,
+          snapshotAt: report.snapshotAt,
+          sizeBytes: buffer.byteLength,
+        })
+      } else {
+        await saveOrgReport({
+          orgId,
+          localBuffer: buffer,
+          snapshotAt: report.snapshotAt,
+          sizeBytes: buffer.byteLength,
+        })
+      }
+      generated += 1
     }
+    logJob(
+      'analytics.report.generate',
+      `generated=${generated} skipped=${skipped} attempt=${context.attempt}`,
+    )
+  }
+
+  jobHandlers['retention.purge'] = async (payload, context) => {
+    const result = await purgeSoftDeletedVaults(payload.organizationId, payload.batchSize)
+    logJob(
+      'retention.purge',
+      `org=${payload.organizationId} deletedVaults=${result.deletedVaults} deletedMilestones=${result.deletedMilestones} attempt=${context.attempt}`,
+    )
+  }
+
+  jobHandlers['saved-search.evaluate'] = async (payload, context) => {
+    // Placeholder for saved-search evaluation
+    logJob('saved-search.evaluate', `evaluated=${payload.searchId} attempt=${context.attempt}`)
   }
 
   return jobHandlers
