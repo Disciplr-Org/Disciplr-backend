@@ -16,3 +16,11 @@ if (!process.env.FIELD_ENCRYPTION_KEY && !process.env.FIELD_ENCRYPTION_KEYS) {
   // 32 zero bytes, base64-encoded — test-only, never use in production.
   process.env.FIELD_ENCRYPTION_KEY = Buffer.alloc(32, 0).toString('base64')
 }
+
+// src/middleware/auth.ts reads DOWNLOAD_SECRET directly from process.env at
+// module-load time and throws if unset, which would otherwise crash every
+// suite that imports it (directly or transitively via app.ts) before any
+// per-test setup runs. Test-only value, never use in production.
+if (!process.env.DOWNLOAD_SECRET) {
+  process.env.DOWNLOAD_SECRET = 'test-download-secret-at-least-16-chars'
+}

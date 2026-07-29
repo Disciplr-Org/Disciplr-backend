@@ -189,8 +189,13 @@ export async function getFlag(
         console.error(`Error fetching org-specific flag ${name} for ${orgId}:`, error)
       }
     }
-    const globalRow = await db('feature_flags').where({ name, org_id: null }).first() as FeatureFlagRow | undefined
-    return evaluateTargetedFlag(globalRow, name, orgId, context)
+    try {
+      const globalRow = await db('feature_flags').where({ name, org_id: null }).first() as FeatureFlagRow | undefined
+      return evaluateTargetedFlag(globalRow, name, orgId, context)
+    } catch (error) {
+      console.error(`Error fetching global flag ${name}:`, error)
+      return false
+    }
   })
 }
 

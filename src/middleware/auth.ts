@@ -44,7 +44,7 @@ export function csrfProtection(
         return
       }
     } catch {
-      // Token wasn't verifiable -> fall through to normal CSRF checks
+      // Token was not verifiable -> fall through to normal CSRF checks
     }
   }
 
