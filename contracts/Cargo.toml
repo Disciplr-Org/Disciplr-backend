@@ -5,10 +5,20 @@ members = [
 ]
 
 [workspace.dependencies]
-soroban-sdk = "23"
+soroban-sdk = "=23.0.1"
+
+[workspace.lints.rust]
+rust_2024_compatibility = "warn"
+missing_docs = "warn"
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
-all = "warn"
+all = { level = "warn", priority = -1 }
+correctness = "warn"
+suspicious = "warn"
+complexity = "warn"
+perf = "warn"
+style = "warn"
 
 [profile.release]
 opt-level = "z"

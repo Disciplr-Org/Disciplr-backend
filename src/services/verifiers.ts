@@ -1,5 +1,6 @@
 import { createAuditLog, AuditLog } from '../lib/audit-logs.js'
 import { db } from '../db/knex.js'
+import type { Knex } from 'knex'
 
 export type VerifierStatus = 'pending' | 'approved' | 'suspended' | 'deactivated'
 export type VerificationResult = 'approved' | 'rejected'
@@ -186,20 +187,41 @@ export const getVerifierProfile = async (userId: string): Promise<VerifierProfil
   return mapVerifierRow(row)
 }
 
-export const listVerifierProfiles = async (): Promise<VerifierProfile[]> => {
-  const rows = await db('verifiers').select('*').orderBy('created_at', 'desc')
+export interface ListVerifierProfilesOptions {
+  limit?: number
+  offset?: number
+}
+
+export const listVerifierProfiles = async (opts: ListVerifierProfilesOptions = {}): Promise<VerifierProfile[]> => {
+  const parsedLimit = Number(opts.limit)
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.floor(parsedLimit) : 100
+  const parsedOffset = Number(opts.offset)
+  const offset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? Math.floor(parsedOffset) : 0
+  const rows = await db('verifiers').select('*').orderBy('created_at', 'desc').limit(limit).offset(offset)
   return rows.map(mapVerifierRow)
 }
 
+/**
+ * @deprecated Use `transitionVerifier` directly.
+ *
+ * This wrapper exists only for backward-compatibility. It delegates to
+ * `transitionVerifier` so that every status change goes through the full
+ * validation pipeline: `canTransition` check, `db.transaction`, and
+ * `createVerifierAuditLog`. Callers should migrate to `transitionVerifier`
+ * and pass an explicit `VerifierMutationContext`.
+ *
+ * Accepts an optional `VerifierMutationContext` so callers that do have
+ * actor/reason information can still get an accurate audit trail. When
+ * omitted (the legacy call shape), the affected user is recorded as the
+ * actor so the bypass-free path remains visible in the audit log.
+ */
 export const setVerifierStatus = async (
   userId: string,
   status: VerifierStatus,
+  context?: VerifierMutationContext,
 ): Promise<VerifierProfile | null> => {
-  const row = await db('verifiers').where({ user_id: userId }).first()
-  if (!row) return null
-
-  const [updated] = await db('verifiers').where({ user_id: userId }).update(mapStatusToUpdates(status)).returning('*')
-  return mapVerifierRow(updated)
+  const result = await transitionVerifier(userId, status, context ?? { actorUserId: userId })
+  return result?.after ?? null
 }
 
 export const recordVerification = async (
@@ -208,8 +230,10 @@ export const recordVerification = async (
   result: VerificationResult,
   disputed = false,
   evidenceHash?: string,
+  trx?: Knex.Transaction,
 ): Promise<VerificationRecord> => {
-  const existing = await db('verifications')
+  const client = trx ?? db
+  const existing = await client('verifications')
     .where({
       verifier_user_id: verifierUserId,
       target_id: targetId,
@@ -217,14 +241,26 @@ export const recordVerification = async (
     .first()
 
   if (existing) {
-    if (existing.result === result) {
-      return mapVerificationRow(existing)
+    if (existing.result !== result) {
+      // Different decision — hard conflict.
+      throw new VerificationConflictError()
     }
 
-    throw new VerificationConflictError()
+    // Same result but caller is submitting different evidence or changing the
+    // disputed flag.  Surface the mismatch rather than silently discarding
+    // the new information.
+    const existingEvidenceHash: string | null = existing.evidence_hash ?? null
+    const incomingEvidenceHash: string | null = evidenceHash ?? null
+    const existingDisputed = !!existing.disputed
+
+    if (existingEvidenceHash !== incomingEvidenceHash || existingDisputed !== disputed) {
+      throw new VerificationConflictError()
+    }
+
+    return mapVerificationRow(existing)
   }
 
-  const [rec] = await db('verifications')
+  const [rec] = await client('verifications')
     .insert({
       verifier_user_id: verifierUserId,
       target_id: targetId,
@@ -237,23 +273,32 @@ export const recordVerification = async (
   return mapVerificationRow(rec)
 }
 
-export const listVerifications = async (): Promise<VerificationRecord[]> => {
-  const rows = await db('verifications').select('*').orderBy('timestamp', 'desc')
+export const listVerifications = async (targetIds?: string[]): Promise<VerificationRecord[]> => {
+  const query = db('verifications').select('*').orderBy('timestamp', 'desc')
+  if (targetIds && targetIds.length > 0) {
+    query.whereIn('target_id', targetIds)
+  }
+  const rows = await query
   return rows.map(mapVerificationRow)
 }
 
 export const getVerifierStats = async (userId: string) => {
-  const totalQ = db('verifications').where({ verifier_user_id: userId }).count<{ count: string }>('id as count').first()
-  const approvalsQ = db('verifications').where({ verifier_user_id: userId, result: 'approved' }).count<{ count: string }>('id as count').first()
-  const rejectionsQ = db('verifications').where({ verifier_user_id: userId, result: 'rejected' }).count<{ count: string }>('id as count').first()
-  const disputesQ = db('verifications').where({ verifier_user_id: userId, disputed: true }).count<{ count: string }>('id as count').first()
+  const raw = await db.raw<{ rows: Array<{ total: string; approvals: string; rejections: string; disputes: string }> }>(
+    `SELECT
+       COUNT(*)                                          AS total,
+       COUNT(*) FILTER (WHERE result    = 'approved')   AS approvals,
+       COUNT(*) FILTER (WHERE result    = 'rejected')   AS rejections,
+       COUNT(*) FILTER (WHERE disputed  = TRUE)         AS disputes
+     FROM verifications
+     WHERE verifier_user_id = ?`,
+    [userId],
+  )
 
-  const [totalR, approvalsR, rejectionsR, disputesR] = await Promise.all([totalQ, approvalsQ, rejectionsQ, disputesQ])
-
-  const total = Number(totalR?.count ?? 0)
-  const approvals = Number(approvalsR?.count ?? 0)
-  const rejections = Number(rejectionsR?.count ?? 0)
-  const disputes = Number(disputesR?.count ?? 0)
+  const row = raw.rows[0]
+  const total = Number(row?.total ?? 0)
+  const approvals = Number(row?.approvals ?? 0)
+  const rejections = Number(row?.rejections ?? 0)
+  const disputes = Number(row?.disputes ?? 0)
 
   const approvalRatio = total === 0 ? 0 : approvals / total
   const rejectionRatio = total === 0 ? 0 : rejections / total
@@ -412,27 +457,39 @@ export const recordMilestoneApproval = async (
   verifierUserId: string,
   approvalStatus: MilestoneApprovalStatus,
 ): Promise<MilestoneApproval> => {
-  // Check if verifier has already voted
-  const existing = await db('milestone_approvals')
-    .where({
-      milestone_id: milestoneId,
-      verifier_user_id: verifierUserId,
-    })
-    .first()
+  return db.transaction(async (trx) => {
+    const existing = await trx('milestone_approvals')
+      .where({
+        milestone_id: milestoneId,
+        verifier_user_id: verifierUserId,
+      })
+      .first()
 
-  if (existing) {
-    throw new DuplicateVerifierVoteError(milestoneId, verifierUserId)
-  }
+    if (existing) {
+      throw new DuplicateVerifierVoteError(milestoneId, verifierUserId)
+    }
 
-  const [record] = await db('milestone_approvals')
-    .insert({
-      milestone_id: milestoneId,
-      verifier_user_id: verifierUserId,
-      approval_status: approvalStatus,
-    })
-    .returning('*')
+    try {
+      const [record] = await trx('milestone_approvals')
+        .insert({
+          milestone_id: milestoneId,
+          verifier_user_id: verifierUserId,
+          approval_status: approvalStatus,
+        })
+        .returning('*')
 
-  return mapMilestoneApprovalRow(record)
+      return mapMilestoneApprovalRow(record)
+    } catch (err) {
+      const maybeErr = err as { code?: string; message?: string }
+      if (
+        maybeErr.code === '23505'
+        || maybeErr.message?.toLowerCase().includes('unique') === true
+      ) {
+        throw new DuplicateVerifierVoteError(milestoneId, verifierUserId)
+      }
+      throw err
+    }
+  })
 }
 
 /**
@@ -445,19 +502,35 @@ export const getMilestoneApprovals = async (
   rejected: MilestoneApproval[]
   pending: MilestoneApproval[]
 }> => {
-  const rows = await db('milestone_approvals')
+  interface MilestoneApprovalRow {
+    id: string
+    milestone_id: string
+    verifier_user_id: string
+    approval_status: unknown
+    created_at: string
+    updated_at: string
+  }
+
+  const rows = await db<MilestoneApprovalRow>('milestone_approvals')
     .where({ milestone_id: milestoneId })
     .orderBy('created_at', 'asc')
 
-  const grouped = {
-    approved: [] as MilestoneApproval[],
-    rejected: [] as MilestoneApproval[],
-    pending: [] as MilestoneApproval[],
+  const VALID_STATUSES = new Set<MilestoneApprovalStatus>(['approved', 'rejected', 'pending'])
+
+  const grouped: Record<MilestoneApprovalStatus, MilestoneApproval[]> = {
+    approved: [],
+    rejected: [],
+    pending: [],
   }
 
   rows.forEach((row) => {
-    const mapped = mapMilestoneApprovalRow(row)
-    grouped[row.approval_status].push(mapped)
+    const status = row.approval_status
+    if (typeof status !== 'string' || !VALID_STATUSES.has(status as MilestoneApprovalStatus)) {
+      // Unrecognised status from DB — route to pending rather than throw
+      grouped.pending.push(mapMilestoneApprovalRow(row))
+      return
+    }
+    grouped[status as MilestoneApprovalStatus].push(mapMilestoneApprovalRow(row))
   })
 
   return grouped
@@ -479,17 +552,6 @@ export const getApprovedVerifiersCount = async (milestoneId: string): Promise<nu
 }
 
 /**
- * Get all distinct verifier votes for a milestone.
- */
-export const getAllMilestoneVotes = async (milestoneId: string): Promise<MilestoneApproval[]> => {
-  const rows = await db('milestone_approvals')
-    .where({ milestone_id: milestoneId })
-    .orderBy('created_at', 'asc')
-
-  return rows.map(mapMilestoneApprovalRow)
-}
-
-/**
  * Check if a verifier has already voted on a milestone.
  */
 export const hasVerifierVoted = async (
@@ -507,22 +569,23 @@ export const hasVerifierVoted = async (
 }
 
 /**
- * Check if a milestone has met its approval threshold.
- */
-export const hasMilestoneMetThreshold = async (
-  milestoneId: string,
-  approvalThreshold: number,
-): Promise<boolean> => {
-  const approvedCount = await getApprovedVerifiersCount(milestoneId)
-  return approvedCount >= approvalThreshold
-}
-
-/**
  * Get approval progress for a milestone (X of Y approvals).
+ *
+ * Veto math (when totalVerifiers N is provided):
+ *   A milestone is irrevocably rejected once it is impossible for approvals
+ *   to ever reach the threshold M:
+ *     isRejected = (approved + remaining) < M
+ *   where remaining = N - totalVoted.
+ *
+ *   Equivalently: rejected > N - M  (more rejections than the veto budget).
+ *
+ * When totalVerifiers is omitted (legacy / N unknown), any single rejection
+ * marks the milestone rejected (conservative default).
  */
 export const getMilestoneApprovalProgress = async (
   milestoneId: string,
   approvalThreshold: number,
+  totalVerifiers?: number,
 ): Promise<{
   approved: number
   rejected: number
@@ -530,19 +593,35 @@ export const getMilestoneApprovalProgress = async (
   required: number
   isComplete: boolean
   isRejected: boolean
+  approvalPercentage: number
 }> => {
   const approvals = await getMilestoneApprovals(milestoneId)
   const approved = approvals.approved.length
   const rejected = approvals.rejected.length
   const pending = approvals.pending.length
+  const totalVoted = approved + rejected + pending
+
+  // Veto math: can we still reach threshold?
+  let isRejected: boolean
+  if (totalVerifiers !== undefined && totalVerifiers > 0) {
+    const remaining = totalVerifiers - totalVoted
+    const maxPossibleApprovals = approved + Math.max(remaining, 0)
+    isRejected = maxPossibleApprovals < approvalThreshold
+  } else {
+    // Legacy: any rejection vetoes
+    isRejected = rejected > 0
+  }
+
+  const approvalPercentage = totalVoted === 0 ? 0 : Math.min((approved / totalVoted) * 100, 100)
 
   return {
     approved,
     rejected,
     pending,
     required: approvalThreshold,
-    isComplete: approved >= approvalThreshold,
-    isRejected: rejected > 0, // Reject if any verifier rejects
+    isComplete: approved >= approvalThreshold && !isRejected,
+    isRejected,
+    approvalPercentage,
   }
 }
 

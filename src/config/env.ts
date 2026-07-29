@@ -31,7 +31,7 @@ const httpUrl = () =>
     .string()
     .refine(
       (url) => /^https?:\/\/./.test(url),
-      'must be a valid HTTP or HTTPS URL (e.g., https://example.com)',
+      "must be a valid HTTP or HTTPS URL (e.g., https://example.com)",
     );
 
 /** Schema for all environment variables consumed by the application. */
@@ -41,20 +41,69 @@ export const envSchema = z
     NODE_ENV: z
       .enum(["development", "production", "test"])
       .default("development"),
+    LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
     PORT: positiveInt(3000),
     SERVICE_NAME: z.string().default("disciplr-backend"),
-    DATABASE_URL: z.string().min(1, "DATABASE_URL is required").refine(
-      (url) => url.startsWith('postgres://') || url.startsWith('postgresql://'),
-      'DATABASE_URL must be a valid PostgreSQL connection URL'
-    ),
+    DATABASE_URL: z
+      .string()
+      .min(1, "DATABASE_URL is required")
+      .refine(
+        (url) =>
+          url.startsWith("postgres://") || url.startsWith("postgresql://"),
+        "DATABASE_URL must be a valid PostgreSQL connection URL",
+      ),
+    REDIS_URL: z
+      .string()
+      .optional()
+      .refine(
+        (url) => !url || url.startsWith("redis://") || url.startsWith("rediss://"),
+        "REDIS_URL must be a valid Redis connection URL (starting with redis:// or rediss://)",
+      ),
+
+    // ── Field encryption (envelope encryption for reversible secrets) ──
+    //
+    // Two ways to configure, in priority order:
+    //   1. FIELD_ENCRYPTION_KEYS – JSON array of { kid, key } objects, where
+    //      `key` is a base64-encoded 32-byte (AES-256) key. The FIRST entry is
+    //      the active key used to encrypt new data; the remaining entries are
+    //      retained so ciphertext written under an older key id still decrypts
+    //      after a rotation.
+    //   2. FIELD_ENCRYPTION_KEY – a single base64-encoded 32-byte key, treated
+    //      as the active key under the reserved key id "default". Convenient for
+    //      development / single-key deployments.
+    //
+    // Validation of the actual key material (length, base64) is performed in
+    // src/lib/encryption.ts so that decryption failures surface with precise,
+    // security-conscious error messages rather than as opaque Zod issues.
+    FIELD_ENCRYPTION_KEY: z.string().optional(),
+    FIELD_ENCRYPTION_KEYS: z.string().optional(),
 
     // ── Auth / secrets ──────────────────────────────────────
-    JWT_SECRET: z.string().min(16, "must be at least 16 characters").default("change-me-in-production-long-secret"),
-    JWT_ACCESS_SECRET: z.string().min(16, "must be at least 16 characters").default("fallback-access-secret"),
-    JWT_REFRESH_SECRET: z.string().min(16, "must be at least 16 characters").default("fallback-refresh-secret"),
-    JWT_ACCESS_EXPIRES_IN: z.string().regex(/^\d+[smhd]$/, "invalid duration format").default("15m"),
-    JWT_REFRESH_EXPIRES_IN: z.string().regex(/^\d+[smhd]$/, "invalid duration format").default("7d"),
-    DOWNLOAD_SECRET: z.string().min(16, "must be at least 16 characters").default("change-me-in-production-long-secret"),
+    JWT_SECRET: z
+      .string()
+      .min(16, "must be at least 16 characters")
+      .default("change-me-in-production-long-secret"),
+    JWT_ACCESS_SECRET: z
+      .string()
+      .min(16, "must be at least 16 characters")
+      .default("fallback-access-secret"),
+    JWT_REFRESH_SECRET: z
+      .string()
+      .min(16, "must be at least 16 characters")
+      .default("fallback-refresh-secret"),
+    JWT_ACCESS_EXPIRES_IN: z
+      .string()
+      .regex(/^\d+[smhd]$/, "invalid duration format")
+      .default("15m"),
+    JWT_REFRESH_EXPIRES_IN: z
+      .string()
+      .regex(/^\d+[smhd]$/, "invalid duration format")
+      .default("7d"),
+    JWT_ISSUER: z.string().min(1, "JWT_ISSUER is required").default("disciplr"),
+    JWT_AUDIENCE: z.string().min(1, "JWT_AUDIENCE is required").default("disciplr-api"),
+    DOWNLOAD_SECRET: z
+      .string()
+      .min(16, "must be at least 16 characters"),
 
     // JWT key rotation support – JSON encoded array of {kid, secret, retiredAt?}
     JWT_KEYS: z
@@ -64,7 +113,8 @@ export const envSchema = z
         if (!val) return [];
         try {
           const parsed = JSON.parse(val);
-          if (!Array.isArray(parsed)) throw new Error("JWT_KEYS must be an array");
+          if (!Array.isArray(parsed))
+            throw new Error("JWT_KEYS must be an array");
           return parsed.map((item: any) => {
             const ret = item.retiredAt ? new Date(item.retiredAt) : undefined;
             return { kid: item.kid, secret: item.secret, retiredAt: ret };
@@ -75,38 +125,49 @@ export const envSchema = z
       }),
 
     // ── Horizon / Stellar ─────────────────────────────────────
-    HORIZON_URL: z.string().optional().refine(
-      (url) => !url || url.startsWith('http://') || url.startsWith('https://'),
-      'HORIZON_URL must be a valid HTTP or HTTPS URL'
-    ),
-    CORS_ORIGINS: z.string().optional().refine(
-      (val) => {
+    HORIZON_URL: z
+      .string()
+      .optional()
+      .refine(
+        (url) =>
+          !url || url.startsWith("http://") || url.startsWith("https://"),
+        "HORIZON_URL must be a valid HTTP or HTTPS URL",
+      ),
+    CORS_ORIGINS: z
+      .string()
+      .optional()
+      .refine((val) => {
         if (val === undefined) return true;
         if (val === "") return false;
-        if (val === '*') return true;
-        const parts = val.split(',');
-        return parts.length > 0 && parts.every(p => p.trim().startsWith('http'));
-      },
-      'CORS_ORIGINS cannot be empty'
-    ),
+        if (val === "*") return true;
+        const parts = val.split(",");
+        return (
+          parts.length > 0 && parts.every((p) => p.trim().startsWith("http"))
+        );
+      }, "CORS_ORIGINS cannot be empty"),
     CONTRACT_ADDRESS: z.string().optional(),
     START_LEDGER: nonNegativeInt(0).optional(),
     RETRY_MAX_ATTEMPTS: nonNegativeInt(3),
     RETRY_BACKOFF_MS: nonNegativeInt(100),
 
     // ── Soroban ────────────────────────────────────────────────
-    SOROBAN_CONTRACT_ID: z.string().optional().refine(
-      (v) => !v || /^C[0-9A-Z]{55}$/.test(v),
-      'must be a valid Soroban contract ID (56-char base32 starting with C)'
-    ),
+    SOROBAN_CONTRACT_ID: z
+      .string()
+      .optional()
+      .refine(
+        (v) => !v || /^C[0-9A-Z]{55}$/.test(v),
+        "must be a valid Soroban contract ID (56-char base32 starting with C)",
+      ),
     SOROBAN_NETWORK_PASSPHRASE: z.string().optional(),
     SOROBAN_SOURCE_ACCOUNT: z.string().optional(),
     SOROBAN_RPC_URL: httpUrl().optional(),
+    SOROBAN_RPC_URLS: z.string().optional(),
     SOROBAN_SECRET_KEY: z.string().optional(),
     SOROBAN_SUBMIT_POLL_INTERVAL_MS: positiveInt(1_000),
     SOROBAN_SUBMIT_POLL_MAX_ATTEMPTS: positiveInt(30),
     SOROBAN_RPC_TIMEOUT_MS: positiveInt(30_000),
     SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS: positiveInt(5_000),
+    SOROBAN_SUBMIT_TIMEOUT_MS: positiveInt(60_000),
     STELLAR_NETWORK_PASSPHRASE: z.string().optional(),
 
     // ── Job system ───────────────────────────────────────────────
@@ -114,12 +175,28 @@ export const envSchema = z
     JOB_QUEUE_POLL_INTERVAL_MS: positiveInt(250),
     JOB_HISTORY_LIMIT: positiveInt(50),
     ENABLE_JOB_SCHEDULER: z.string().optional(),
+    MILESTONE_REMINDERS_INTERVAL_MS: positiveInt(15 * 60_000),
+    MILESTONE_REMINDERS_DIGEST_INTERVAL_MS: positiveInt(15 * 60_000),
+    MILESTONE_REMINDERS_DEFERRED_INTERVAL_MS: positiveInt(5 * 60_000),
+    NOTIFICATION_PROVIDER: z.enum(["email", "console"]).default("console"),
+
+    // ── SMTP / Email provider ────────────────────────────────────
+    SMTP_HOST: z.string().optional(),
+    SMTP_PORT: positiveInt(587),
+    SMTP_USER: z.string().optional(),
+    SMTP_PASS: z.string().optional(),
+    SMTP_FROM: z.string().optional(),
+    SMTP_SECURE: z.string().optional(),
 
     // ── ETL ───────────────────────────────────────────────────────
     ETL_INTERVAL_MINUTES: positiveInt(5),
     ENABLE_ETL_WORKER: z.string().optional(),
     ETL_BACKFILL_FROM: z.string().optional(),
     ETL_BACKFILL_TO: z.string().optional(),
+
+    // ── Metrics / Prometheus scraper access ────────────────
+    METRICS_TOKEN: z.string().optional(),
+    METRICS_ALLOWLIST: z.string().optional(),
 
     // ── Security thresholds ───────────────────────────────────
     SECURITY_RATE_LIMIT_WINDOW_MS: positiveInt(60_000),
@@ -141,9 +218,90 @@ export const envSchema = z
     ANALYTICS_RECOMPUTE_INTERVAL_MS: positiveInt(300_000),
 
     // ── Misc / Limits ───────────────────────────────────────
-    MAX_JSON_BODY_SIZE: z.string().default('500kb'),
+    MAX_JSON_BODY_SIZE: z.string().default("500kb"),
     HORIZON_LAG_THRESHOLD: nonNegativeInt(10),
     HORIZON_SHUTDOWN_TIMEOUT_MS: positiveInt(30_000),
+
+    // ── Trust proxy ─────────────────────────────────────────
+    // Controls Express's "trust proxy" setting.
+    //
+    // Accepted values (passed verbatim to app.set('trust proxy', ...)):
+    //   - "false"  (default) – trust proxy disabled; req.ip is the direct
+    //     TCP peer.  Use this when the server is exposed directly to the
+    //     internet with no reverse proxy in front of it.
+    //   - "true"   – trust any forwarded header (leftmost IP wins).  Only
+    //     safe inside a fully-controlled network where only your proxy can
+    //     reach the app.
+    //   - "loopback" | "linklocal" | "uniquelocal" – trust only proxies
+    //     whose IP falls in the named subnet.
+    //   - A number (e.g. "1") – trust the given hop count of leftmost IPs.
+    //   - A comma-separated list of CIDR ranges / IP addresses, e.g.
+    //     "10.0.0.0/8,172.16.0.0/12".
+    //
+    // Security note: setting this too broadly allows clients to spoof their
+    // IP address via x-forwarded-for, which would corrupt IP-based auditing
+    // and rate-limiting.  Prefer the most restrictive value that matches your
+    // deployment topology (e.g. "loopback" or a specific CIDR).
+    TRUST_PROXY: z.string().default("false"),
+
+    // ── Webhooks ────────────────────────────────────────────
+    WEBHOOK_INBOUND_SECRET: z.string().optional(),
+    WEBHOOK_INBOUND_SKEW_MS: positiveInt(300_000),
+    WEBHOOK_CIRCUIT_BREAKER_THRESHOLD: positiveInt(5),
+    WEBHOOK_CIRCUIT_BREAKER_WINDOW_MS: positiveInt(60_000),
+    WEBHOOK_CIRCUIT_BREAKER_HALF_OPEN_TIMEOUT_MS: positiveInt(30_000),
+
+    // ── Export S3 ───────────────────────────────────────────
+    EXPORT_S3_BUCKET: z.string().optional(),
+    EXPORT_S3_REGION: z.string().optional(),
+    EXPORT_SIGNED_URL_TTL_S: positiveInt(3600),
+
+    // ── HTTP Server Timeouts ─────────────────────────────────
+    // Protects against slow-loris attacks and load balancer connection drops.
+    // Defaults (in ms):
+    //   - keepAliveTimeout: 45,000 (45s, must be < headersTimeout)
+    //   - headersTimeout: 61,000 (61s, Node.js server-level timeout)
+    //   - requestTimeout: 120,000 (120s, full request lifecycle)
+    // Rationale:
+    //   - keepAliveTimeout < headersTimeout prevents keep-alive sockets from
+    //     lingering past when the server would timeout the headers.
+    //   - headersTimeout slightly > 60s accommodates ALB idle timeout defaults.
+    //   - requestTimeout allows slower uploads/downloads but remains bounded.
+    HTTP_KEEPALIVE_TIMEOUT_MS: positiveInt(45_000),
+    HTTP_HEADERS_TIMEOUT_MS: positiveInt(61_000),
+    HTTP_REQUEST_TIMEOUT_MS: positiveInt(120_000),
+
+    // ── Graceful shutdown ──────────────────────────────────
+    // Maximum time (ms) to wait for in-flight HTTP requests to
+    // complete before force-destroying sockets during shutdown.
+    SHUTDOWN_DRAIN_MS: positiveInt(30_000),
+
+    // ── OpenTelemetry / Tracing ───────────────────────────────────
+    OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional(),
+    OTEL_SERVICE_NAME: z.string().optional(),
+    OTEL_TRACES_SAMPLER: z.enum(['always_on', 'always_off', 'traceidratio']).optional(),
+    OTEL_TRACES_SAMPLER_ARG: z
+      .string()
+      .optional()
+      .transform((v) => {
+        if (v === undefined || v === '') return undefined
+        const n = Number.parseFloat(v)
+        return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined
+      }),
+
+    // ── Admin / Debug ──────────────────────────────────────────────
+    ADMIN_API_KEY: z.string().default(""),
+
+    // ── Log sampling ───────────────────────────────────────────────
+    LOG_SAMPLE_RATE: z
+      .string()
+      .default("1")
+      .transform((v) => {
+        const n = Number.parseFloat(v);
+        return Number.isFinite(n) && n >= 0 && n <= 1 ? n : 1;
+      }),
+    LOG_SLOW_THRESHOLD_MS: positiveInt(1000),
+    LOG_ALWAYS_LOG_STATUS: z.string().default("500,502,503"),
   })
   .superRefine((data, ctx) => {
     // Existing CORS warning
@@ -154,15 +312,217 @@ export const envSchema = z
         message: 'CORS_ORIGINS cannot be "*" in production environment',
       });
     }
+
+    // ─ Validate HTTP timeout ordering ─
+    if (data.HTTP_KEEPALIVE_TIMEOUT_MS >= data.HTTP_HEADERS_TIMEOUT_MS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["HTTP_KEEPALIVE_TIMEOUT_MS"],
+        message: `HTTP_KEEPALIVE_TIMEOUT_MS (${data.HTTP_KEEPALIVE_TIMEOUT_MS}ms) must be less than HTTP_HEADERS_TIMEOUT_MS (${data.HTTP_HEADERS_TIMEOUT_MS}ms)`,
+      });
+    }
+
+    if (data.HTTP_HEADERS_TIMEOUT_MS >= data.HTTP_REQUEST_TIMEOUT_MS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["HTTP_HEADERS_TIMEOUT_MS"],
+        message: `HTTP_HEADERS_TIMEOUT_MS (${data.HTTP_HEADERS_TIMEOUT_MS}ms) must be less than HTTP_REQUEST_TIMEOUT_MS (${data.HTTP_REQUEST_TIMEOUT_MS}ms)`,
+      });
+    }
+
     // Additional validation for JWT_KEYS could be added here if needed
   });
 
 export type Env = z.infer<typeof envSchema>;
 export type JwtKey = { kid: string; secret: string; retiredAt?: Date };
+export type EnvWarning = { field: string; message: string };
 
-/** Returns parsed JWT keys from the environment. */
+let _validated: Env | undefined;
+
+/**
+ * Return the validated env, throwing if `initEnv()` has not been called.
+ */
+export function getEnv(): Env {
+  if (!_validated) {
+    throw new Error("Env not initialized");
+  }
+  return _validated!;
+}
+
+/** Reset internal state — exposed for tests only. */
+export function _resetEnvForTesting(): void {
+  _validated = undefined;
+}
+
+/**
+ * Validate `process.env` against the schema.  On success the typed,
+ * transformed env object is returned together with any non-fatal warnings.
+ * On failure the process prints structured errors and exits with code 1
+ * (fail-fast).
+ *
+ * Sensitive values are never included in error output — only field names
+ * and validation messages are logged.
+ *
+ * @param env  Defaults to `process.env` — pass a custom record in tests.
+ */
+export function initEnv(
+  env: Record<string, string | undefined> = process.env,
+): { env: Env; warnings: EnvWarning[] } {
+  if (_validated) return { env: _validated, warnings: [] };
+
+  const result = envSchema.safeParse(env);
+
+  if (!result.success) {
+    const issues = result.error.issues.map((i) => {
+      const path = i.path.join(".");
+      return `  - ${path}: ${i.message}`;
+    });
+
+    console.error(
+      JSON.stringify({
+        level: "fatal",
+        event: "config.env_validation_failed",
+        service: "disciplr-backend",
+        message: "Environment validation failed — aborting startup",
+        errors: issues,
+        timestamp: new Date().toISOString(),
+      }),
+    );
+    process.exit(1);
+  }
+
+  const validated = result.data;
+  _validated = validated;
+  const warnings: EnvWarning[] = [];
+
+  // In production, insecure secret defaults are a misconfiguration worth
+  // surfacing loudly — but they don't warrant a hard crash because the app
+  // can technically still start.
+  if (validated.NODE_ENV === "production") {
+    const insecureDefaults: Array<{ key: keyof Env; sentinel: string }> = [
+      { key: "JWT_SECRET", sentinel: "change-me-in-production-long-secret" },
+      { key: "JWT_ACCESS_SECRET", sentinel: "fallback-access-secret-long" },
+      { key: "JWT_REFRESH_SECRET", sentinel: "fallback-refresh-secret-long" },
+    ];
+
+    for (const { key, sentinel } of insecureDefaults) {
+      if (validated[key] === sentinel) {
+        const w: EnvWarning = {
+          field: key,
+          message: `${key} is using its insecure default value`,
+        };
+        warnings.push(w);
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "config.insecure_default",
+            service: "disciplr-backend",
+            field: key,
+            message: w.message,
+            timestamp: new Date().toISOString(),
+          }),
+        );
+      }
+    }
+  }
+
+  // Detect partially configured Soroban environment variables.
+  const sorobanVars = [
+    "SOROBAN_CONTRACT_ID",
+    "SOROBAN_NETWORK_PASSPHRASE",
+    "SOROBAN_SOURCE_ACCOUNT",
+    "SOROBAN_RPC_URL",
+    "SOROBAN_SECRET_KEY",
+  ];
+  const present = sorobanVars.filter(
+    (key) =>
+      validated[key as keyof Env] !== undefined &&
+      validated[key as keyof Env] !== "",
+  );
+  if (present.length > 0 && present.length < sorobanVars.length) {
+    const w: EnvWarning = {
+      field: "SOROBAN_*",
+      message:
+        "Partial Soroban configuration detected; submit mode will be disabled",
+    };
+    warnings.push(w);
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "config.partial_soroban_configuration",
+        service: "disciplr-backend",
+        field: "SOROBAN_*",
+        message: w.message,
+        timestamp: new Date().toISOString(),
+      }),
+    );
+  }
+
+  return { env: validated, warnings };
+}
+
+/**
+ * Validates and parses environment variables.
+ * Returns parsed env and any non-fatal warnings.
+ * Throws on hard validation failures.
+ */
+export function validateEnv(raw?: Record<string, string | undefined>): {
+  env: Env;
+  warnings: EnvWarning[];
+} {
+  const input = raw ?? process.env;
+  const result = envSchema.safeParse(input);
+
+  if (!result.success) {
+    const messages = result.error.issues
+      .map((i) => `${i.path.join(".")}: ${i.message}`)
+      .join("; ");
+    throw new Error(`Environment validation failed: ${messages}`);
+  }
+
+  const warnings: EnvWarning[] = [];
+
+  // Warn if Soroban vars are partially configured
+  const sorobanVars = [
+    "SOROBAN_CONTRACT_ID",
+    "SOROBAN_NETWORK_PASSPHRASE",
+    "SOROBAN_SOURCE_ACCOUNT",
+    "SOROBAN_RPC_URL",
+    "SOROBAN_SECRET_KEY",
+  ] as const;
+  const sorobanSet = sorobanVars.filter((k) => !!(result.data as any)[k]);
+  if (sorobanSet.length > 0 && sorobanSet.length < sorobanVars.length) {
+    warnings.push({
+      field: "SOROBAN",
+      message: `Soroban is partially configured (${sorobanSet.length}/${sorobanVars.length} vars set). Submit mode disabled.`,
+    });
+  }
+
+  return { env: result.data, warnings };
+}
+
+/** Warnings emitted during validation (not hard failures). */
 export function getJwtKeys(env: Env): JwtKey[] {
-  // The envSchema already transformed JWT_KEYS into an array of objects.
-  // TypeScript cannot infer that, so we cast.
   return (env as any).JWT_KEYS as JwtKey[];
+}
+
+/**
+ * Raw field-encryption configuration, read directly from the environment.
+ *
+ * Resolved independently of the full {@link initEnv} validation so the
+ * encryption helpers (src/lib/encryption.ts) can be used in isolation — e.g. in
+ * unit tests — without requiring a complete, valid application environment.
+ * The actual key material (base64, 32-byte length, key-id uniqueness) is
+ * validated in src/lib/encryption.ts, where decryption failures can surface
+ * precise, security-conscious errors.
+ *
+ * @param env  Defaults to `process.env` — pass a custom record in tests.
+ */
+export function getFieldEncryptionConfig(
+  env: Record<string, string | undefined> = process.env,
+): { key?: string; keys?: string } {
+  return {
+    key: env.FIELD_ENCRYPTION_KEY,
+    keys: env.FIELD_ENCRYPTION_KEYS,
+  };
 }

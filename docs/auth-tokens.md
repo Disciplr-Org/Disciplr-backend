@@ -98,6 +98,15 @@ Revokes **all** sessions and refresh tokens for the user:
 - Revocation sets the `revokedAt` timestamp on the record.
 - Both single-token revocation (`logout`) and bulk revocation (`logout-all`) are supported.
 
+### Refresh Token Reuse Detection
+
+- When a rotated (already-revoked) refresh token is presented, the system treats this as a replay/reuse event. In response it:
+  1. Revokes the entire refresh-token family for the user (sets `revokedAt` on all refresh-token records for the user).
+  2. Revokes all active sessions for the user.
+  3. Emits a security audit event with non-secret metadata (e.g. truncated token fingerprint) for operator review.
+
+This behavior is always enforced (it never fails open) and audit logs are written without including plaintext tokens.
+
 ## Threat Model
 
 | Threat | Mitigation |
@@ -115,7 +124,48 @@ Revokes **all** sessions and refresh tokens for the user:
 |---------------------|---------|-------------|
 | `JWT_ACCESS_SECRET` | `fallback-access-secret` | Secret for signing access tokens |
 | `JWT_REFRESH_SECRET` | `fallback-refresh-secret` | Secret for signing refresh tokens |
+| `JWT_ISSUER` | `disciplr` | Expected issuer claim (`iss`) for access tokens |
+| `JWT_AUDIENCE` | `disciplr-api` | Expected audience claim (`aud`) for access tokens |
 | `JWT_ACCESS_EXPIRES_IN` | `15m` | Access token lifetime |
 | `JWT_REFRESH_EXPIRES_IN` | `7d` | Refresh token lifetime |
+| `SESSIONS_CLEANUP_INTERVAL_MS` | `86400000` (24 h) | How often the cleanup job runs |
 
 > **Warning:** The fallback secrets are for development only. In production, set real secrets of at least 32 characters.
+
+## Session Table Cleanup
+
+The `sessions` table is pruned by the `sessions.cleanup` background job to prevent unbounded growth.
+
+### What it deletes
+
+Rows where `expires_at < now() - interval '30 days'`. Active or recently-expired sessions (within the 30-day grace window) are never touched.
+
+### How it runs
+
+The job is scheduled automatically at startup (with a 10-second delay to let the server warm up) and then repeats every 24 hours. It uses a batched `DELETE … LIMIT 1000` loop so large backlogs are processed incrementally without long-running locks.
+
+### Observability
+
+After each run the job logs:
+
+```
+[jobs:sessions.cleanup] deleted=<N> batchSize=<B> attempt=<A>
+```
+
+### Manual trigger
+
+Enqueue an ad-hoc run via the jobs API:
+
+```bash
+curl -X POST http://localhost:3000/api/jobs/enqueue \
+  -H "Content-Type: application/json" \
+  -d '{"type": "sessions.cleanup", "payload": {}}'
+```
+
+Pass an optional `batchSize` (default `1000`) to tune throughput:
+
+```bash
+curl -X POST http://localhost:3000/api/jobs/enqueue \
+  -H "Content-Type: application/json" \
+  -d '{"type": "sessions.cleanup", "payload": {"batchSize": 500}}'
+```
