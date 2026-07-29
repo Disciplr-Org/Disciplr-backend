@@ -18,6 +18,8 @@
  * never attempts to compile or run them.
  */
 
+import { jest } from '@jest/globals'
+
 // ── Stub every heavy dependency pulled in by admin.ts ──────────────────────
 // These mocks must appear before any import that resolves to admin.ts so that
 // Jest's module registry never loads (or compiles) the real implementations.

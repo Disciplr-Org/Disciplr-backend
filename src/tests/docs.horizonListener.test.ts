@@ -11,7 +11,8 @@ describe('Horizon Listener Documentation Sync', () => {
       RETRY_BACKOFF_MS: '100',
       HORIZON_SHUTDOWN_TIMEOUT_MS: '30000',
       HORIZON_LAG_THRESHOLD: '10',
-      DATABASE_URL: 'postgres://user:pass@localhost:5432/db' // Required by schema
+      DATABASE_URL: 'postgres://user:pass@localhost:5432/db', // Required by schema
+      DOWNLOAD_SECRET: 'test-download-secret-at-least-16-chars',
     };
 
     initEnv(mockEnv);
