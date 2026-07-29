@@ -1,6 +1,14 @@
+/* global global */
+
+
 import { Request, Response, NextFunction } from 'express'
-import crypto from 'crypto'
+import * as crypto from 'crypto'
 import { getEnv } from '../config/index.js'
+import { AppError } from './errorHandler.js'
+
+interface CustomWebhookRequest extends Request {
+  rawBody?: string
+}
 
 // ---------------------------------------------------------------------------
 // Nonce stores
@@ -24,23 +32,23 @@ const nonceCache = new Set<string>()
 const pendingNonces = new Set<string>()
 
 // Sweep expired nonces from both sets to prevent unbounded memory growth.
-setInterval(() => {
+global.setInterval(() => {
   const now = Date.now()
   const skewMs = getEnv().WEBHOOK_INBOUND_SKEW_MS
 
-  for (const store of [nonceCache, pendingNonces]) {
-    for (const entry of store) {
+  ;[nonceCache, pendingNonces].forEach((store) => {
+    store.forEach((entry) => {
       const [timestampStr] = entry.split(':')
       const timestamp = parseInt(timestampStr, 10)
       if (Math.abs(now - timestamp) > skewMs) {
         store.delete(entry)
       }
-    }
-  }
+    })
+  })
 }, 60_000).unref()
 
 export const webhookVerify = async (
-  req: Request,
+  req: CustomWebhookRequest,
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
@@ -97,23 +105,26 @@ export const webhookVerify = async (
     try {
       rawBody = await new Promise<string>((resolve, reject) => {
         let body = ''
+        let limitExceeded = false
         req.on('data', (chunk) => {
+          if (limitExceeded) return
           body += chunk.toString()
           if (body.length > 500_000) {
-            req.destroy()
+            limitExceeded = true
+            next(AppError.payloadTooLarge('Payload exceeds 500KB safety limit'))
             reject(new Error('Payload too large'))
           }
         })
         req.on('end', () => resolve(body))
         req.on('error', reject)
       })
-    } catch (err) {
+    } catch {
       pendingNonces.delete(cacheKey)
-      throw err
+      return
     }
 
     // Store raw body on req for downstream use
-    ;(req as any).rawBody = rawBody
+    req.rawBody = rawBody
 
     // Parse JSON — reject explicitly on malformed input rather than silently
     // substituting {} which would mask bad payloads from downstream handlers.
@@ -135,7 +146,7 @@ export const webhookVerify = async (
 
     if (
       signature.length !== expectedSignature.length ||
-      !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))
+      !crypto.timingSafeEqual(global.Buffer.from(signature), global.Buffer.from(expectedSignature))
     ) {
       pendingNonces.delete(cacheKey)
       res.status(401).json({ error: 'Invalid webhook signature' })
@@ -146,7 +157,7 @@ export const webhookVerify = async (
     pendingNonces.delete(cacheKey)
     nonceCache.add(cacheKey)
     next()
-  } catch (err) {
+  } catch (err: unknown) {
     next(err)
   }
 }

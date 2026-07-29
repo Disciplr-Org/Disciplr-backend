@@ -103,7 +103,6 @@ export class AbuseMonitor {
     return createHash('sha256')
       .update(id)
       .digest('hex')
-      .substring(0, 12)
   }
 
   private emitAbuseEvent(hashedId: string, score: number, signal: AbuseSignal): void {

@@ -1140,6 +1140,48 @@ EXPORT_SIGNED_URL_TTL_S=7200
 
 ---
 
+## Trust Proxy
+
+### TRUST_PROXY
+
+| Property | Value |
+|----------|-------|
+| **Type** | String |
+| **Default** | `false` |
+| **Required** | No |
+| **Sensitive** | No |
+
+Controls Express's `trust proxy` setting, which determines how `req.ip` is resolved when the application sits behind a reverse proxy.
+
+**Why this matters:** `req.ip` (and `req.ips`) is derived from `X-Forwarded-For` only when `trust proxy` is enabled. If the setting is left at `false` (the default), Express ignores `X-Forwarded-For` and uses the direct TCP peer address instead. Enabling it too broadly (e.g. `true`) without network-level controls lets any client forge their IP by setting their own `X-Forwarded-For` header, corrupting IP-based audit logs and rate-limiting.
+
+**Accepted values:**
+
+| Value | Behaviour |
+|-------|-----------|
+| `false` | Disable trust proxy. `req.ip` = TCP peer address. Use when the app is exposed directly to the internet. |
+| `true` | Trust all proxy hops. Use only inside a fully-controlled network where only your proxy can reach the app. |
+| `loopback` | Trust proxies on `127.0.0.0/8` and `::1` only. |
+| `linklocal` | Trust proxies on `169.254.0.0/16` and `fe80::/10`. |
+| `uniquelocal` | Trust proxies on `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`. |
+| `1` (or any integer) | Trust the given number of leftmost hops in `X-Forwarded-For`. |
+| `10.0.0.0/8` (or a comma-separated list of CIDRs/IPs) | Trust only proxies whose IP is in the listed ranges. |
+
+```bash
+# Disabled (default) — direct-to-internet deployment
+TRUST_PROXY=false
+
+# Trust only the local proxy on the same host
+TRUST_PROXY=loopback
+
+# Trust a specific internal CIDR range (e.g. AWS VPC)
+TRUST_PROXY=10.0.0.0/8
+```
+
+> **Security note:** Prefer the most restrictive value that matches your deployment topology. If you add a load balancer or reverse proxy in front of the service, set `TRUST_PROXY` to its IP/CIDR rather than using `true`.
+
+---
+
 ## Logging
 
 ### MAX_JSON_BODY_SIZE

@@ -11,7 +11,7 @@ export class NotificationService {
   }
 
   getProvider(name?: string): NotificationProvider {
-    const providerName = name ?? this.defaultProviderName
+    const providerName = name || this.defaultProviderName
     const provider = this.providers[providerName]
 
     if (!provider) {
@@ -30,7 +30,14 @@ export class NotificationService {
     body: string,
     providerName?: string,
   ): Promise<void> {
-    const provider = this.getProvider(providerName)
+    const resolvedName = providerName ?? this.defaultProviderName
+    const provider = this.providers[resolvedName]
+    if (!provider) {
+      const availableProviders = Object.keys(this.providers).sort().join(', ')
+      throw new Error(
+        `Unknown notification provider "${resolvedName}". Available providers: ${availableProviders}`,
+      )
+    }
     await provider.send(recipient, subject, body)
   }
 

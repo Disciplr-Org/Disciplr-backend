@@ -1,21 +1,21 @@
 import { Request, Response, NextFunction } from "express";
 import { AuthenticatedRequest, getAuthenticatedUserId } from "./auth.js";
 import { AppError } from "./errorHandler.js";
-import {
-  getOrganization,
-  getMemberRole as lookupMemberRole,
-} from "../models/organizations.js";
 import type { OrgRole } from "../models/organizations.js";
 import db from "../db/index.js";
 
 export type { OrgRole } from "../models/organizations.js";
 
 /**
- * In-memory org access middleware (used by orgVaults routes).
- * Checks org existence and membership via in-memory store.
+ * DB-backed org access middleware.
+ * Checks org existence and membership via the organizations and org_members tables.
  */
 export function requireOrgAccess(...allowedRoles: (OrgRole | string)[]) {
-  return (req: AuthenticatedRequest, _res: Response, next: NextFunction) => {
+  return async (
+    req: AuthenticatedRequest,
+    _res: Response,
+    next: NextFunction,
+  ) => {
     const orgId = req.params.orgId || (req.query.orgId as string);
     const userId = getAuthenticatedUserId(req);
 
@@ -24,29 +24,38 @@ export function requireOrgAccess(...allowedRoles: (OrgRole | string)[]) {
       return;
     }
 
-    const org = getOrganization(orgId);
-    if (!org) {
-      next(AppError.notFound("Organization not found"));
-      return;
-    }
-    (req as any).orgId = orgId;
+    try {
+      const org = await db("organizations").where({ id: orgId }).first();
+      if (!org) {
+        next(AppError.notFound("Organization not found"));
+        return;
+      }
+      (req as any).orgId = orgId;
 
-    const role = lookupMemberRole(orgId, userId);
-    if (!role) {
-      next(AppError.forbidden("Forbidden: not a member of this organization"));
-      return;
-    }
+      const membership = await db("org_members")
+        .where({ org_id: orgId, user_id: userId })
+        .first();
 
-    if (!allowedRoles.includes(role)) {
-      next(
-        AppError.forbidden(
-          `Forbidden: requires role ${allowedRoles.join(" or ")}`,
-        ),
-      );
-      return;
-    }
+      if (!membership) {
+        next(
+          AppError.forbidden("Forbidden: not a member of this organization"),
+        );
+        return;
+      }
 
-    next();
+      if (!allowedRoles.includes(membership.role)) {
+        next(
+          AppError.forbidden(
+            `Forbidden: requires role ${allowedRoles.join(" or ")}`,
+          ),
+        );
+        return;
+      }
+
+      next();
+    } catch (err) {
+      next(err);
+    }
   };
 }
 
@@ -71,6 +80,7 @@ export const requireOrgRole = (roles: (OrgRole | string)[]) => {
       const membership = await db("org_members")
         .where({ org_id: orgId, user_id: userId })
         .first();
+      // Missing membership is a normal no-row result (does not throw) → 403.
       if (!membership || !roles.includes(membership.role)) {
         res
           .status(403)
@@ -80,12 +90,9 @@ export const requireOrgRole = (roles: (OrgRole | string)[]) => {
         return;
       }
       next();
-    } catch {
-      res
-        .status(403)
-        .json({
-          error: `Forbidden: requires organization role ${roles.join(" or ")}`,
-        });
+    } catch (err) {
+      // Unexpected DB/infra failures must not look like authorization denials.
+      next(err);
     }
   };
 };
@@ -111,6 +118,7 @@ export const requireTeamRole = (roles: (OrgRole | string)[]) => {
       const membership = await db("team_members")
         .where({ team_id: teamId, user_id: userId })
         .first();
+      // Missing membership is a normal no-row result (does not throw) → 403.
       if (!membership || !roles.includes(membership.role)) {
         res
           .status(403)
@@ -120,10 +128,9 @@ export const requireTeamRole = (roles: (OrgRole | string)[]) => {
         return;
       }
       next();
-    } catch {
-      res
-        .status(403)
-        .json({ error: `Forbidden: requires team role ${roles.join(" or ")}` });
+    } catch (err) {
+      // Unexpected DB/infra failures must not look like authorization denials.
+      next(err);
     }
   };
 };

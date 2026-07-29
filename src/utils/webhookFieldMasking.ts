@@ -93,15 +93,34 @@ function setNestedValue(obj: Record<string, unknown>, path: string, value: unkno
 
 /**
  * Checks if a field path matches an allowlist/denylist pattern.
- * Supports exact matches and prefix matching with wildcards.
- * Example: 'vault.*' matches 'vault.id', 'vault.name', etc.
+ * Supports exact matches and two wildcard conventions:
+ *  - Trailing '.*' (e.g. 'vault.*') matches the prefix itself as well as any
+ *    single field beneath it. Preserved from the original behaviour.
+ *  - Per-segment '*' or numeric indices (e.g. 'milestones.*.evidenceUrl' or
+ *    'milestones.0.evidenceUrl') match individual indexed array elements so
+ *    that allowlist/denylist policies can target sub-fields of array items.
+ *    Patterns split into the same number of segments as the field path.
  */
 function fieldMatchesPattern(field: string, pattern: string): boolean {
   if (pattern.endsWith('.*')) {
     const prefix = pattern.slice(0, -2)
     return field === prefix || field.startsWith(prefix + '.')
   }
-  return field === pattern
+
+  const fieldParts = field.split('.')
+  const patternParts = pattern.split('.')
+  if (patternParts.length !== fieldParts.length) {
+    return false
+  }
+  return patternParts.every((part, i) => {
+    // '*' is a wildcard segment that matches any path segment (e.g. for
+    // indexed arrays: 'milestones.*.evidenceUrl' matches every element's
+    // evidenceUrl field). Numeric segment values are matched literally so
+    // that 'milestones.0.evidenceUrl' only matches the first element's
+    // evidenceUrl field, not every indexed element's.
+    if (part === '*') return true
+    return part === fieldParts[i]
+  })
 }
 
 /**
@@ -121,6 +140,13 @@ function shouldIncludeField(field: string, policy: FieldPolicy): boolean {
 
 /**
  * Recursively collects all field paths from an object.
+ *
+ * Array-valued fields are descended into with an *indexed* path convention:
+ * `milestones` becomes `milestones`, `milestones.0`, `milestones.0.title`,
+ * `milestones.1`, `milestones.1.title`, ... Each indexed element's leaf
+ * properties are emitted so that allowlist/denylist patterns using
+ * `milestones.*.evidenceUrl` (or the equivalent indexed pattern) can match
+ * the array's sub-fields.
  */
 function collectFieldPaths(obj: unknown, prefix = ''): string[] {
   const paths: string[] = []
@@ -130,7 +156,14 @@ function collectFieldPaths(obj: unknown, prefix = ''): string[] {
   }
 
   if (Array.isArray(obj)) {
-    // For arrays, we include the array field but don't recurse into indexed items for filtering
+    obj.forEach((item, index) => {
+      const itemPath = prefix ? `${prefix}.${index}` : String(index)
+      paths.push(itemPath)
+
+      if (item !== null && typeof item === 'object') {
+        paths.push(...collectFieldPaths(item, itemPath))
+      }
+    })
     return paths
   }
 
@@ -139,7 +172,7 @@ function collectFieldPaths(obj: unknown, prefix = ''): string[] {
     paths.push(fullPath)
 
     const value = (obj as Record<string, unknown>)[key]
-    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    if (value !== null && typeof value === 'object') {
       paths.push(...collectFieldPaths(value, fullPath))
     }
   }
@@ -148,27 +181,86 @@ function collectFieldPaths(obj: unknown, prefix = ''): string[] {
 }
 
 /**
+ * Recursively walks a value, applying the field policy at each path level.
+ *
+ * - DENYLIST mode gates every level: if a deny pattern matches the current
+ *   path (including trailing-wildcard matches like `milestones.*`), the
+ *   entire subtree is excluded. This is what stops `milestones` from being
+ *   pre-populated with the original array and then having sub-field denies
+ *   "shadowed" by the over-broad leaf-set behaviour in the original code.
+ *
+ * - ALLOWLIST mode only gates on primitive leaves. Listing `nested.allowed`
+ *   must still flow through the unlisted `nested` parent to reach the leaf,
+ *   so the parent itself is not gated in allowlist mode.
+ *
+ * Arrays descend with an indexed path convention (`a.0.b`, `a.1.b`, …) and
+ * are reconstructed as real arrays with placeholders so consumers see the
+ * same index layout and array length as the input — critical for downstream
+ * signature verification and JSON shape expectations in webhook delivery.
+ */
+function applyPolicyToChild(value: unknown, path: string, policy: FieldPolicy): unknown {
+  if (policy.mode === 'denylist' && path !== '' && !shouldIncludeField(path, policy)) {
+    return undefined
+  }
+
+  if (Array.isArray(value)) {
+    const arr: unknown[] = []
+    for (let i = 0; i < value.length; i++) {
+      const idxPath = `${path}.${i}`
+      const el = value[i]
+      const sub = applyPolicyToChild(el, idxPath, policy)
+      if (sub === undefined) {
+        // Preserve the array length and shape so downstream consumers see
+        // the same indexing they sent on the wire.
+        if (Array.isArray(el)) arr.push([])
+        else if (el !== null && typeof el === 'object') arr.push({})
+        else arr.push(undefined)
+      } else {
+        arr.push(sub)
+      }
+    }
+    return arr
+  }
+
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    for (const key of Object.keys(obj)) {
+      const childPath = path ? `${path}.${key}` : key
+      const sub = applyPolicyToChild(obj[key], childPath, policy)
+      if (sub === undefined) continue
+      // Drop empty intermediate objects so we don't emit `{ a: {} }`.
+      if (typeof sub === 'object' && sub !== null && !Array.isArray(sub) && Object.keys(sub).length === 0) continue
+      out[key] = sub
+    }
+    return out
+  }
+
+  // Primitive. Allowlist gates by exact path here.
+  if (policy.mode === 'allowlist' && path !== '' && !shouldIncludeField(path, policy)) {
+    return undefined
+  }
+  return value
+}
+
+/**
  * Filters an object based on allowlist/denylist field policy.
+ *
+ * Implementation delegates to {@link applyPolicyToChild} which descends into
+ * arrays with indexed paths so that wildcard / numeric patterns targeting
+ * sub-fields of array items actually strip those sub-fields rather than
+ * letting the entire unfiltered array pass through.
  */
 function filterByFieldPolicy(payload: Record<string, unknown>, policy: FieldPolicy): Record<string, unknown> {
   if (policy.mode === 'default') {
     return payload
   }
 
-  const allPaths = collectFieldPaths(payload)
-  const result: Record<string, unknown> = {}
-
-  for (const path of allPaths) {
-    if (shouldIncludeField(path, policy)) {
-      const value = getNestedValue(payload, path)
-      // Only set leaf values (non-object or arrays)
-      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-        setNestedValue(result, path, value)
-      }
-    }
+  const result = applyPolicyToChild(payload, '', policy)
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    return result as Record<string, unknown>
   }
-
-  return result
+  return {}
 }
 
 /**

@@ -24,7 +24,7 @@ describe('AbuseMonitor Heuristics', () => {
     expect(isAbusive).toBe(true)
   })
 
-  it('should not leak plain-text PII in logs', () => {
+  it('should not leak plain-text PII in logs and use full 64-character actorHash', () => {
     const consoleSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
     const pii = 'user@example.com'
     
@@ -33,6 +33,9 @@ describe('AbuseMonitor Heuristics', () => {
     const logOutput = consoleSpy.mock.calls[0][0]
     expect(logOutput).not.toContain(pii)
     expect(logOutput).toContain('actorHash')
+    
+    const parsed = JSON.parse(logOutput)
+    expect(parsed.actorHash).toHaveLength(64)
     
     consoleSpy.mockRestore()
   })
@@ -228,23 +231,25 @@ describe('security/abuse-monitor structured events (pino integration)', () => {
   })
 
   it('logVaultDriftAnomaly emits structured vault_missing_onchain event', () => {
-    const spy = jest.spyOn(console, 'log').mockImplementation(() => {})
+    const spy = jest.spyOn(logger, 'warn').mockImplementation(() => {})
 
     logVaultDriftAnomaly('vault_missing_onchain', {
       vaultId: 'vault-123',
       persistedStatus: 'active',
     })
 
-    const logCall = spy.mock.calls[0][0] as string
-    expect(logCall).toContain('vault.vault_missing_onchain')
-    expect(logCall).toContain('vault-123')
-    expect(logCall).toContain('active')
+    expect(spy).toHaveBeenCalledTimes(1)
+    const payload = spy.mock.calls[0][0]
+    expect(payload.event).toBe('vault.vault_missing_onchain')
+    expect(payload.ip).toBe('')
+    expect(payload.vaultId).toBe('vault-123')
+    expect(payload.persistedStatus).toBe('active')
 
     spy.mockRestore()
   })
 
   it('logVaultDriftAnomaly emits structured vault_state_drift event', () => {
-    const spy = jest.spyOn(console, 'log').mockImplementation(() => {})
+    const spy = jest.spyOn(logger, 'warn').mockImplementation(() => {})
 
     logVaultDriftAnomaly('vault_state_drift', {
       vaultId: 'vault-456',
@@ -253,27 +258,30 @@ describe('security/abuse-monitor structured events (pino integration)', () => {
       onChain: { status: 'completed', amount: '2000' },
     })
 
-    const logCall = spy.mock.calls[0][0] as string
-    expect(logCall).toContain('vault.vault_state_drift')
-    expect(logCall).toContain('vault-456')
-    expect(logCall).toContain('status')
-    expect(logCall).toContain('amount')
+    expect(spy).toHaveBeenCalledTimes(1)
+    const payload = spy.mock.calls[0][0]
+    expect(payload.event).toBe('vault.vault_state_drift')
+    expect(payload.ip).toBe('')
+    expect(payload.vaultId).toBe('vault-456')
+    expect(payload.driftedFields).toEqual(['status', 'amount'])
 
     spy.mockRestore()
   })
 
   it('logVaultDriftAnomaly emits structured vault_reconciliation_error event', () => {
-    const spy = jest.spyOn(console, 'log').mockImplementation(() => {})
+    const spy = jest.spyOn(logger, 'warn').mockImplementation(() => {})
 
     logVaultDriftAnomaly('vault_reconciliation_error', {
       vaultId: 'vault-789',
       error: 'RPC timeout',
     })
 
-    const logCall = spy.mock.calls[0][0] as string
-    expect(logCall).toContain('vault.vault_reconciliation_error')
-    expect(logCall).toContain('vault-789')
-    expect(logCall).toContain('RPC timeout')
+    expect(spy).toHaveBeenCalledTimes(1)
+    const payload = spy.mock.calls[0][0]
+    expect(payload.event).toBe('vault.vault_reconciliation_error')
+    expect(payload.ip).toBe('')
+    expect(payload.vaultId).toBe('vault-789')
+    expect(payload.error).toBe('RPC timeout')
 
     spy.mockRestore()
   })

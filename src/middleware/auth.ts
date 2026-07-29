@@ -28,8 +28,24 @@ export function csrfProtection(
 
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith("Bearer ")) {
-    next();
-    return;
+    const token = authHeader.slice(7).trim();
+    // Only treat bearer tokens as CSRF-safe when they are verifiable JWTs.
+    // This avoids trusting unsigned or mock "user:<id>" bearer tokens used by
+    // legacy/dev routers (see requireUserAuth) which are not resistant to CSRF.
+    try {
+      try {
+        verifyAccessToken(token)
+        next()
+        return
+      } catch (_) {
+        // fallback to legacy secret
+        jwt.verify(token, getJwtSecret())
+        next()
+        return
+      }
+    } catch {
+      // Token was not verifiable -> fall through to normal CSRF checks
+    }
   }
 
   const origin = req.headers.origin as string | undefined;
@@ -141,14 +157,35 @@ export async function signToken(
   const jti = randomUUID();
   const fullPayload = { ...payload, jti };
 
-  // Calculate expiration date
-  // Default matches 1h (1 hour)
-  const durationMs = 60 * 60 * 1000;
-  const expiresAt = new Date(Date.now() + durationMs);
+  // Derive the session expiry from the same `expiresIn` value passed to jwt.sign.
+  const parseExpiresInToMs = (val: string | number): number => {
+    if (typeof val === 'number') return val * 1000
+    // Accept formats like '30s', '15m', '1h', '2d' or a numeric string of seconds
+    const m = /^([0-9]+)(s|m|h|d)$/.exec(val)
+    if (m) {
+      const n = Number(m[1])
+      switch (m[2]) {
+        case 's':
+          return n * 1000
+        case 'm':
+          return n * 60 * 1000
+        case 'h':
+          return n * 60 * 60 * 1000
+        case 'd':
+          return n * 24 * 60 * 60 * 1000
+      }
+    }
+    if (/^[0-9]+$/.test(String(val))) return Number(val) * 1000
+    // Fallback to 1 hour if we cannot parse
+    return 60 * 60 * 1000
+  }
 
-  await recordSession(payload.userId, jti, expiresAt);
+  const durationMs = parseExpiresInToMs(expiresIn)
+  const expiresAt = new Date(Date.now() + durationMs)
 
-  return jwt.sign(fullPayload, getJwtSecret(), { expiresIn } as jwt.SignOptions);
+  await recordSession(payload.userId, jti, expiresAt)
+
+  return jwt.sign(fullPayload, getJwtSecret(), { expiresIn } as jwt.SignOptions)
 }
 
 export interface AuthenticatedRequest extends Request {

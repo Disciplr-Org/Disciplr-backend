@@ -8,17 +8,28 @@ export interface TimelineItem {
 
 export class VaultService {
   static async createVault(data: CreateVaultDTO): Promise<Vault> {
+    // Column names match the actual schema from migrations:
+    //   initial_baseline: id, creator, amount, start_date, end_date,
+    //                     success_destination, failure_destination, status, created_at
+    //   fix_vault_schema:  adds verifier, updated_at; renames start/end_timestamp → start/end_date
     const query = `
       INSERT INTO vaults (
-        contract_id, creator_address, amount, milestone_hash,
-        verifier_address, success_destination, failure_destination, deadline
+        id, creator, amount, start_date, end_date,
+        verifier, success_destination, failure_destination, status
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING *;
     `;
     const values = [
-      data.contractId, data.creatorAddress, data.amount, data.milestoneHash,
-      data.verifierAddress, data.successDestination, data.failureDestination, data.deadline
+      data.id,
+      data.creator,
+      data.amount,
+      data.startDate,
+      data.endDate,
+      data.verifier ?? null,
+      data.successDestination,
+      data.failureDestination,
+      data.status ?? 'draft',
     ];
     try {
       const result = await pool.query(query, values);
@@ -35,14 +46,17 @@ export class VaultService {
   }
 
   static async updateVaultStatus(id: string, status: VaultStatus | string): Promise<void> {
-    await pool.query('UPDATE vaults SET status = $1 WHERE id = $2', [status, id]);
+    await pool.query(
+      'UPDATE vaults SET status = $1, updated_at = NOW() WHERE id = $2',
+      [status, id],
+    );
   }
 
-  static async getVaultsByUser(address: string): Promise<Vault[]> {
+  static async getVaultsByUser(creator: string): Promise<Vault[]> {
     try {
       const result = await pool.query(
-        'SELECT * FROM vaults WHERE creator_address = $1',
-        [address]
+        'SELECT * FROM vaults WHERE creator = $1',
+        [creator],
       );
       return result.rows;
     } catch {

@@ -1,5 +1,5 @@
 import { orgReadRateLimiter, orgWriteRateLimiter } from '../middleware/rateLimiter.js'
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireOrgAccess } from '../middleware/orgAuth.js'
 import { queryParser } from '../middleware/queryParser.js'
@@ -107,7 +107,7 @@ orgVaultsRouter.get(
       }));
 
       if (req.filters) {
-        result = applyFilters(result, req.filters);
+        result = applyFilters(result, req.filters, ['status']);
       }
 
       if (req.sort) {
@@ -335,7 +335,7 @@ export async function runSavedSearch(
 }
 
 export function hashResultSet(ids: string[]): string {
-  return createHash("sha256").update(JSON.stringify(ids)).digest("hex");
+  return createHash("sha256").update(JSON.stringify([...ids].sort())).digest("hex");
 }
 
 // ─── POST /api/orgs/:orgId/vault-searches ─────────────────────────────────────
@@ -347,9 +347,10 @@ orgVaultsRouter.post(
   orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const { orgId } = req.params;
-    const userId = getAuthenticatedUserId(req);
+    const userId = req.user?.userId;
     if (!userId) {
-      next(AppError.unauthorized("Authenticated user missing userId"));
+      res.status(401).json({ error: "Authenticated user missing userId" });
+      return;
       return;
     }
     const {

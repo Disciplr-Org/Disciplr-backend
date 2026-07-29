@@ -1,6 +1,7 @@
 import { Knex } from 'knex'
 import { ParsedEvent } from '../types/horizonSync.js'
 import { createHash } from 'node:crypto'
+import { AsyncMutex } from '../utils/asyncMutex.js'
 
 const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9_-]{1,255}$/
 
@@ -65,6 +66,10 @@ type PendingIdempotencyRequest = {
 // In-memory store for idempotent responses (replaces DB for now)
 const idempotencyStore = new Map<string, StoreEntry>()
 const pendingIdempotencyRequests = new Map<string, PendingIdempotencyRequest>()
+/** Guards the check-then-set on pendingIdempotencyRequests to prevent two
+ *  concurrent callers from both missing an in-flight entry and creating
+ *  duplicate promise slots for the same key. */
+const pendingMutex = new AsyncMutex()
 let idempotencyTtlMs = Number(process.env.IDEMPOTENCY_TTL_MS ?? 60 * 60 * 1000)
 
 /**
@@ -105,14 +110,32 @@ export async function getIdempotentResponse<T>(
   const internalKey = buildInternalKey(key, owner)
   pruneExpiredEntries()
 
-  const pending = pendingIdempotencyRequests.get(internalKey)
-  if (pending) {
-    if (pending.hash !== hash) throw new IdempotencyConflictError()
-    return pending.promise as Promise<T>
+  // Check the completed-response store first (no mutex needed — writes to
+  // idempotencyStore only happen in saveIdempotentResponse, which also holds
+  // the mutex, so a stale read here is safe: we'll re-check under the lock).
+  const completedEntry = idempotencyStore.get(internalKey)
+  if (completedEntry) {
+    if (completedEntry.hash !== hash) throw new IdempotencyConflictError()
+    return completedEntry.response as T
   }
 
-  const entry = idempotencyStore.get(internalKey)
-  if (!entry) {
+  // Guard the check-then-set on pendingIdempotencyRequests so concurrent
+  // callers cannot both miss an in-flight entry and create duplicate slots.
+  return pendingMutex.runExclusive<T | null>(() => {
+    const pending = pendingIdempotencyRequests.get(internalKey)
+    if (pending) {
+      if (pending.hash !== hash) throw new IdempotencyConflictError()
+      return pending.promise as Promise<T>
+    }
+
+    // Re-check the store under the lock in case saveIdempotentResponse
+    // completed between the optimistic read above and acquiring the mutex.
+    const entry = idempotencyStore.get(internalKey)
+    if (entry) {
+      if (entry.hash !== hash) throw new IdempotencyConflictError()
+      return entry.response as T
+    }
+
     let resolve!: (value: unknown) => void
     let reject!: (reason?: unknown) => void
     const promise = new Promise<unknown>((res, rej) => {
@@ -129,10 +152,7 @@ export async function getIdempotentResponse<T>(
       orgId: owner?.orgId ?? null,
     })
     return null
-  }
-
-  if (entry.hash !== hash) throw new IdempotencyConflictError()
-  return entry.response as T
+  })
 }
 
 export async function saveIdempotentResponse(

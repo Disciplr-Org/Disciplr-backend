@@ -96,7 +96,7 @@ export function setEventThroughput(eventsPerSec: number): void {
 
 const router = express.Router();
 
-router.get('/metrics', async (_req: Request, res: Response) => {
+router.get('/', async (_req: Request, res: Response) => {
   // Update gauges on each scrape
   // Job system metrics – we need an instance; assume a singleton is attached to app locals
   const jobSystem: BackgroundJobSystem | undefined = (res.app?.locals?.jobSystem as BackgroundJobSystem) ?? undefined;

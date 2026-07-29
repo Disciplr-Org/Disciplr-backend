@@ -169,7 +169,7 @@ async function pollForValue<T>(
 
 async function tryAcquireLock(rClient: Redis, lockKey: string, lockValue: string): Promise<boolean> {
   try {
-    const result = await rClient.set(lockKey, lockValue, 'NX', 'PX', LOCK_TTL_MS);
+    const result = await (rClient as any).set(lockKey, lockValue, 'NX', 'PX', LOCK_TTL_MS);
     return result === 'OK';
   } catch {
     return false;

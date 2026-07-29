@@ -209,14 +209,6 @@ getApprovedVerifiersCount(milestoneId: string): Promise<number>
 
 Returns the count of approved votes (used for threshold checking).
 
-#### getAllMilestoneVotes
-
-```typescript
-getAllMilestoneVotes(milestoneId: string): Promise<MilestoneApproval[]>
-```
-
-Returns all votes for a milestone in chronological order.
-
 #### hasVerifierVoted
 
 ```typescript
@@ -227,17 +219,6 @@ hasVerifierVoted(
 ```
 
 Checks if a specific verifier has already voted on a milestone. Used for duplicate vote prevention.
-
-#### hasMilestoneMetThreshold
-
-```typescript
-hasMilestoneMetThreshold(
-  milestoneId: string,
-  approvalThreshold: number
-): Promise<boolean>
-```
-
-Determines if a milestone has received enough approvals to meet its threshold.
 
 #### getMilestoneApprovalProgress
 
@@ -322,7 +303,7 @@ const approval = await recordMilestoneApproval(
 )
 
 // Check if threshold met
-const isComplete = await hasMilestoneMetThreshold(milestone.id, 1) // true
+const isComplete = (await getMilestoneApprovalProgress(milestone.id, 1)).isComplete // true
 ```
 
 ### 2. 2-of-3 Approval Threshold
@@ -443,7 +424,7 @@ idx_milestone_approvals_unique              -- Enforce single vote per verifier
 
 ### Query Efficiency
 
-- `hasMilestoneMetThreshold()`: O(1) - single COUNT query with index
+- `getMilestoneApprovalProgress()`: O(n) over approvals for the milestone
 - `getMilestoneApprovals()`: O(n) where n = number of votes (typically small)
 - `hasVerifierVoted()`: O(1) - indexed lookup
 - Threshold checking uses indexed scans, not table scans
