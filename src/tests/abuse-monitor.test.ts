@@ -239,10 +239,11 @@ describe('security/abuse-monitor structured events (pino integration)', () => {
     })
 
     expect(spy).toHaveBeenCalledTimes(1)
-    const payloadStr = JSON.stringify(spy.mock.calls[0][0])
-    expect(payloadStr).toContain('vault.vault_missing_onchain')
-    expect(payloadStr).toContain('vault-123')
-    expect(payloadStr).toContain('active')
+    const payload = spy.mock.calls[0][0]
+    expect(payload.event).toBe('vault.vault_missing_onchain')
+    expect(payload.ip).toBe('')
+    expect(payload.vaultId).toBe('vault-123')
+    expect(payload.persistedStatus).toBe('active')
 
     spy.mockRestore()
   })
@@ -258,11 +259,11 @@ describe('security/abuse-monitor structured events (pino integration)', () => {
     })
 
     expect(spy).toHaveBeenCalledTimes(1)
-    const payloadStr = JSON.stringify(spy.mock.calls[0][0])
-    expect(payloadStr).toContain('vault.vault_state_drift')
-    expect(payloadStr).toContain('vault-456')
-    expect(payloadStr).toContain('status')
-    expect(payloadStr).toContain('amount')
+    const payload = spy.mock.calls[0][0]
+    expect(payload.event).toBe('vault.vault_state_drift')
+    expect(payload.ip).toBe('')
+    expect(payload.vaultId).toBe('vault-456')
+    expect(payload.driftedFields).toEqual(['status', 'amount'])
 
     spy.mockRestore()
   })
@@ -276,10 +277,11 @@ describe('security/abuse-monitor structured events (pino integration)', () => {
     })
 
     expect(spy).toHaveBeenCalledTimes(1)
-    const payloadStr = JSON.stringify(spy.mock.calls[0][0])
-    expect(payloadStr).toContain('vault.vault_reconciliation_error')
-    expect(payloadStr).toContain('vault-789')
-    expect(payloadStr).toContain('RPC timeout')
+    const payload = spy.mock.calls[0][0]
+    expect(payload.event).toBe('vault.vault_reconciliation_error')
+    expect(payload.ip).toBe('')
+    expect(payload.vaultId).toBe('vault-789')
+    expect(payload.error).toBe('RPC timeout')
 
     spy.mockRestore()
   })
