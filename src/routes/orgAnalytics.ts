@@ -6,6 +6,7 @@ import { getOrgRiskAnalytics, getOverallAnalytics } from '../services/analytics.
 import { vaults } from './vaults.js'
 import { db } from '../db/knex.js'
 import { getOrgReports } from '../services/analyticsReports.js'
+import { getCohortRetention } from '../services/cohortRetention.js'
 
 export const orgAnalyticsRouter = Router()
 
@@ -16,7 +17,6 @@ const paginateArray = <T>(arr: T[], pagination: { page: number; pageSize: number
 
 const resolveS3Config = (): null => null
 const getExportSignedUrl = async (_config: null, _s3Key: string): Promise<string> => { throw new Error('S3 not configured') }
-const getCohortRetention = async (_db: unknown, _range?: number): Promise<unknown[]> => []
 
 const requireOrgRole = (roles: string[]) => (req: Request, res: Response, next: NextFunction) => {
   requireOrgAccess(...(roles as ['owner' | 'admin']))(req, res, next)

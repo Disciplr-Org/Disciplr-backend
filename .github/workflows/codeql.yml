@@ -10,6 +10,13 @@ on:
 
 jobs:
   dependency-review:
+    # actions/dependency-review-action diffs dependency changes between a
+    # base ref and a head ref, which only exist in a pull_request context.
+    # On a push/schedule trigger there is nothing to diff against, and the
+    # action hard-fails with "Both a base ref and head ref must be
+    # provided" rather than passing trivially — so skip it outside of PRs
+    # instead of failing every push to main.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read

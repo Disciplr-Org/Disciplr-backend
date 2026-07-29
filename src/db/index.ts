@@ -47,11 +47,11 @@ const knexConfig = {
 
 export const db = knex(knexConfig)
 
-const sslEnabled = getEnv().NODE_ENV === 'production' || process.env.DATABASE_SSL === 'true'
+const sslEnabled = nodeEnv === 'production' || process.env.DATABASE_SSL === 'true'
 const rejectUnauthorized = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false'
 
 export const pool = new Pool({
-  connectionString: getEnv().DATABASE_URL,
+  connectionString: databaseUrl,
   ssl: sslEnabled
     ? rejectUnauthorized
       ? { rejectUnauthorized: true }

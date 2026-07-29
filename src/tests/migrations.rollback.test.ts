@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from '@jest/globals'
 import knex, { type Knex } from 'knex'
 import path from 'node:path'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 
 /**
  * Knex Migration Down-Rollback Round-Trip Tests
@@ -367,9 +368,9 @@ describe('Migrations Rollback & Integrity', () => {
 
     expect(files.length).toBeGreaterThan(0)
 
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore - require is natively available in Jest's CJS runner
-    const esmRequire = require
+    // Jest runs this suite as native ESM (ts-jest useESM), so there is no
+    // ambient `require` — build one from import.meta.url instead.
+    const esmRequire = createRequire(import.meta.url)
 
     const missing: string[] = []
     for (const file of files) {

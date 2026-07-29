@@ -12,6 +12,12 @@ import { getOrSet, invalidate } from '../lib/cache.js'
 import { getOrgAnalyticsBatched } from './analyticsBatchLoader.js'
 import type { OrgVaultAnalytics } from './analyticsBatchLoader.js'
 
+// Re-exported so callers can import every analytics helper from this single
+// service module rather than reaching into the individual implementation
+// files directly.
+export { getOrgAnalyticsBatched }
+export { getCohortRetention } from './cohortRetention.js'
+
 export interface OrgRiskAnalyticsVault {
   id?: string
   orgId?: string
