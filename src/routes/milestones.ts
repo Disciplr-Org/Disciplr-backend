@@ -22,7 +22,7 @@ import {
   getVerifierProfile,
 } from '../services/verifiers.js'
 import {
-  milestoneSchema,
+  parseMilestoneInput,
   flattenZodErrors,
 } from '../services/vaultValidation.js'
 
@@ -48,7 +48,7 @@ milestonesRouter.post('/', authenticate, requireUser, async (req: Request, res: 
   }
 
   // Validate milestone fields using the same schema as vault creation.
-  const parsed = milestoneSchema.safeParse(req.body)
+  const parsed = parseMilestoneInput(req.body)
   if (!parsed.success) {
     return next(AppError.badRequest('Invalid milestone payload', flattenZodErrors(parsed.error)))
   }
