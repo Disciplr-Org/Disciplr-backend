@@ -2,12 +2,12 @@ import { Router, type Request, type Response } from 'express'
 import jwt from 'jsonwebtoken'
 import { validateApiKey } from '../services/apiKeys.js'
 import { createAuditLog } from '../lib/audit-logs.js'
+import { getJwtSecret } from '../lib/auth-utils.js'
 import { authRateLimiter } from '../middleware/rateLimiter.js'
+import { getEnv } from '../config/index.js'
 import type { ApiScope } from '../types/auth.js'
 
 export const oauthRouter = Router()
-
-const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production'
 const TOKEN_TTL_SECONDS = Number(process.env.OAUTH_TOKEN_TTL_SECONDS ?? 3600)
 
 /** Non-blocking audit log helper — failures are logged but never propagate. */
@@ -107,7 +107,7 @@ oauthRouter.post('/token', authRateLimiter, async (req: Request, res: Response):
     exp: now + TOKEN_TTL_SECONDS,
   }
 
-  const accessToken = jwt.sign(payload, JWT_SECRET)
+  const accessToken = jwt.sign(payload, getEnv().JWT_SECRET)
 
   auditLog({
     actor_user_id: result.context.userId ?? canonicalClientId,

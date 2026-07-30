@@ -164,31 +164,39 @@ export async function getFlag(
   orgId: string | null,
   context: FeatureFlagContext = {},
 ): Promise<boolean> {
-  // Org-specific and fallback-to-global lookups share one cache key per
-  // (name, orgId, context), since an org either has an override or falls
-  // through to the global evaluation - never both in the same call.
-  const cacheKey = getCacheKey(name, orgId, orgId ? context : undefined)
-
-  try {
-    return await getOrSet<boolean>(cacheKey, FLAG_CACHE_TTL_SECONDS, async () => {
-      if (orgId) {
-        try {
-          const row = await db('feature_flags').where({ name, org_id: orgId }).first() as FeatureFlagRow | undefined
-          if (row) {
-            return coerceBoolean(row.enabled)
-          }
-        } catch (error) {
-          console.error(`Error fetching org-specific flag ${name} for ${orgId}:`, error)
-        }
+  if (orgId) {
+    const cacheKey = getCacheKey(name, orgId, context)
+    const orgVal = await getOrSet<boolean | null>(cacheKey, FLAG_CACHE_TTL_SECONDS, async () => {
+      try {
+        const row = await db('feature_flags').where({ name, org_id: orgId }).first() as FeatureFlagRow | undefined
+        return row ? coerceBoolean(row.enabled) : null
+      } catch (error) {
+        console.error(`Error fetching org-specific flag ${name} for org ${orgId}:`, error)
+        return null
       }
+    })
+    if (orgVal !== null) return orgVal
+  }
 
+  const effectiveOrgId = orgId ?? 'global'
+  const globalCacheKey = getCacheKey(name, orgId, orgId ? context : undefined)
+  return getOrSet<boolean>(globalCacheKey, FLAG_CACHE_TTL_SECONDS, async () => {
+    if (orgId) {
+      try {
+        const row = await db('feature_flags').where({ name, org_id: orgId }).first() as FeatureFlagRow | undefined
+        if (row) return coerceBoolean(row.enabled)
+      } catch (error) {
+        console.error(`Error fetching org-specific flag ${name} for ${orgId}:`, error)
+      }
+    }
+    try {
       const globalRow = await db('feature_flags').where({ name, org_id: null }).first() as FeatureFlagRow | undefined
       return evaluateTargetedFlag(globalRow, name, orgId, context)
-    })
-  } catch (error) {
-    console.error(`Error fetching flag ${name}:`, error)
-    return false
-  }
+    } catch (error) {
+      console.error(`Error fetching global flag ${name}:`, error)
+      return false
+    }
+  })
 }
 
 /**

@@ -86,7 +86,10 @@ export function formatLeadTime(leadTimeMs: number): string {
     return '1 day'
   }
 
-  return `${Math.round(days)} days`
+  // Use floor for a conservative "at least N days" reading rather than rounding,
+  // which can make e.g. 35 h (1.46 d) display as "1 days" or 60 h (2.5 d) as "3 days".
+  const wholeDays = Math.floor(days)
+  return wholeDays === 1 ? '1 day' : `${wholeDays} days`
 }
 
 /**

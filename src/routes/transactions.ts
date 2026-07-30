@@ -16,7 +16,7 @@ transactionsRouter.get(
   }),
   async (req: Request, res: Response) => {
     try {
-      const userId = req.user.userId
+      const userId = req.user!.userId
       let query = db('transactions').where('user_id', userId)
 
       // Apply filters
@@ -59,10 +59,6 @@ transactionsRouter.get(
         // Default sort: newest first
         query = query.orderBy('stellar_timestamp', 'desc')
       }
-
-      // Get total count for pagination
-      const totalCount = await query.clone().count('* as total').first()
-      const total = parseInt(String(totalCount?.total || '0'))
 
       // Apply pagination (Cursor-based)
       const limit = Math.min(100, parseInt(String(req.cursorPagination?.limit || '20')))
@@ -151,7 +147,7 @@ transactionsRouter.get(
 // GET /api/transactions/:id - Get specific transaction
 transactionsRouter.get('/:id', authenticate, async (req: Request, res: Response) => {
   try {
-    const userId = req.user.userId
+    const userId = req.user!.userId
     const transactionId = req.params.id
 
     const transaction = await db('transactions')
@@ -195,7 +191,7 @@ transactionsRouter.get(
   }),
   async (req: Request, res: Response) => {
     try {
-      const userId = req.user.userId
+      const userId = req.user!.userId
       const vaultId = req.params.vaultId
 
       // Verify user owns the vault or has access via organization

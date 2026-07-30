@@ -114,20 +114,17 @@ verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request
             trx,
           )
 
-          await createAuditLog(
-            {
-              actor_user_id: verifierUserId,
-              action: 'verification.decision.recorded',
-              target_type: 'verification',
-              target_id: cleanTargetId,
-              metadata: {
-                result,
-                disputed: !!disputed,
-                evidence_hash: cleanEvidenceHash,
-              },
+          await createAuditLog({
+            actor_user_id: verifierUserId,
+            action: 'verification.decision.recorded',
+            target_type: 'verification',
+            target_id: cleanTargetId,
+            metadata: {
+              result,
+              disputed: !!disputed,
+              evidence_hash: cleanEvidenceHash,
             },
-            trx,
-          )
+          })
 
           return verification
         }),
@@ -274,20 +271,17 @@ verificationsRouter.post('/bulk', authenticate, requireVerifier, async (req: Req
               trx,
             )
 
-            await createAuditLog(
-              {
-                actor_user_id: verifierUserId,
-                action: 'verification.decision.recorded',
-                target_type: 'verification',
-                target_id: cleanTargetId,
-                metadata: {
-                  result,
-                  disputed: !!disputed,
-                  evidence_hash: cleanEvidenceHash,
-                },
+            await             createAuditLog({
+              actor_user_id: verifierUserId,
+              action: 'verification.decision.recorded',
+              target_type: 'verification',
+              target_id: cleanTargetId,
+              metadata: {
+                result,
+                disputed: !!disputed,
+                evidence_hash: cleanEvidenceHash,
               },
-              trx,
-            )
+            })
 
             return verification
           }),
@@ -323,9 +317,30 @@ verificationsRouter.post('/bulk', authenticate, requireVerifier, async (req: Req
           message: error.message,
         }
       } else {
+        const status: number | undefined = error?.status ?? error?.statusCode
+        let code = 'INTERNAL_ERROR'
+        if (status === 400) {
+          code = error?.code && typeof error.code === 'string' ? error.code : 'BAD_REQUEST'
+        } else if (status === 401) {
+          code = error?.code && typeof error.code === 'string' ? error.code : 'UNAUTHORIZED'
+        } else if (status === 403) {
+          code = error?.code && typeof error.code === 'string' ? error.code : 'FORBIDDEN'
+        } else if (status === 404) {
+          code = error?.code && typeof error.code === 'string' ? error.code : 'NOT_FOUND'
+        } else if (status === 409) {
+          code = error?.code && typeof error.code === 'string' ? error.code : 'CONFLICT'
+        } else if (status === 413) {
+          code = error?.code && typeof error.code === 'string' ? error.code : 'PAYLOAD_TOO_LARGE'
+        } else if (status === 422) {
+          code = error?.code && typeof error.code === 'string' ? error.code : 'UNPROCESSABLE'
+        } else if (status === 429) {
+          code = error?.code && typeof error.code === 'string' ? error.code : 'RATE_LIMITED'
+        } else if (status !== undefined && status >= 500 && status < 600) {
+          code = error?.code && typeof error.code === 'string' ? error.code : 'INTERNAL_ERROR'
+        }
         itemResult.error = {
-          code: 'INTERNAL_ERROR',
-          message: 'failed to record verification decision',
+          code,
+          message: error?.message ?? 'failed to record verification decision',
         }
       }
     }

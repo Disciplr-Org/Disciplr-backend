@@ -38,6 +38,14 @@ function buildQuery(table: string) {
     return null
   }
   q.insert = (data: any) => {
+    const dup = store.find(r =>
+      r.milestone_id === data.milestone_id && r.verifier_user_id === data.verifier_user_id
+    )
+    if (dup) {
+      const err: any = new Error('duplicate key value violates unique constraint "idx_milestone_approvals_unique"')
+      err.code = '23505'
+      throw err
+    }
     const row = { ...makeRow(data.milestone_id, data.verifier_user_id, data.approval_status), ...data }
     store.push(row)
     q._inserted = [row]

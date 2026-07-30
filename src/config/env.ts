@@ -175,6 +175,9 @@ export const envSchema = z
     JOB_QUEUE_POLL_INTERVAL_MS: positiveInt(250),
     JOB_HISTORY_LIMIT: positiveInt(50),
     ENABLE_JOB_SCHEDULER: z.string().optional(),
+    MILESTONE_REMINDERS_INTERVAL_MS: positiveInt(15 * 60_000),
+    MILESTONE_REMINDERS_DIGEST_INTERVAL_MS: positiveInt(15 * 60_000),
+    MILESTONE_REMINDERS_DEFERRED_INTERVAL_MS: positiveInt(5 * 60_000),
     NOTIFICATION_PROVIDER: z.enum(["email", "console"]).default("console"),
 
     // ── SMTP / Email provider ────────────────────────────────────
@@ -219,6 +222,40 @@ export const envSchema = z
     HORIZON_LAG_THRESHOLD: nonNegativeInt(10),
     HORIZON_SHUTDOWN_TIMEOUT_MS: positiveInt(30_000),
 
+    // ── Vault transitions ────────────────────────────────────
+    /**
+     * Clock-skew tolerance (ms) applied when validating the 'failed'
+     * transition in getTransitionError. A vault whose endTimestamp is in
+     * the future by at most this many milliseconds is still accepted as
+     * expired to account for drift between scheduler/client clocks and the
+     * server wall clock.
+     *
+     * Default: 10 000 ms (10 s). Override via VAULT_TRANSITION_SKEW_MS.
+     */
+    VAULT_TRANSITION_SKEW_MS: positiveInt(10_000),
+
+    // ── Trust proxy ─────────────────────────────────────────
+    // Controls Express's "trust proxy" setting.
+    //
+    // Accepted values (passed verbatim to app.set('trust proxy', ...)):
+    //   - "false"  (default) – trust proxy disabled; req.ip is the direct
+    //     TCP peer.  Use this when the server is exposed directly to the
+    //     internet with no reverse proxy in front of it.
+    //   - "true"   – trust any forwarded header (leftmost IP wins).  Only
+    //     safe inside a fully-controlled network where only your proxy can
+    //     reach the app.
+    //   - "loopback" | "linklocal" | "uniquelocal" – trust only proxies
+    //     whose IP falls in the named subnet.
+    //   - A number (e.g. "1") – trust the given hop count of leftmost IPs.
+    //   - A comma-separated list of CIDR ranges / IP addresses, e.g.
+    //     "10.0.0.0/8,172.16.0.0/12".
+    //
+    // Security note: setting this too broadly allows clients to spoof their
+    // IP address via x-forwarded-for, which would corrupt IP-based auditing
+    // and rate-limiting.  Prefer the most restrictive value that matches your
+    // deployment topology (e.g. "loopback" or a specific CIDR).
+    TRUST_PROXY: z.string().default("false"),
+
     // ── Webhooks ────────────────────────────────────────────
     WEBHOOK_INBOUND_SECRET: z.string().optional(),
     WEBHOOK_INBOUND_SKEW_MS: positiveInt(300_000),
@@ -245,6 +282,11 @@ export const envSchema = z
     HTTP_KEEPALIVE_TIMEOUT_MS: positiveInt(45_000),
     HTTP_HEADERS_TIMEOUT_MS: positiveInt(61_000),
     HTTP_REQUEST_TIMEOUT_MS: positiveInt(120_000),
+
+    // ── Graceful shutdown ──────────────────────────────────
+    // Maximum time (ms) to wait for in-flight HTTP requests to
+    // complete before force-destroying sockets during shutdown.
+    SHUTDOWN_DRAIN_MS: positiveInt(30_000),
 
     // ── OpenTelemetry / Tracing ───────────────────────────────────
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional(),
@@ -387,7 +429,7 @@ export function initEnv(
             level: "warn",
             event: "config.insecure_default",
             service: "disciplr-backend",
-            variable: key,
+            field: key,
             message: w.message,
             timestamp: new Date().toISOString(),
           }),
@@ -421,7 +463,7 @@ export function initEnv(
         level: "warn",
         event: "config.partial_soroban_configuration",
         service: "disciplr-backend",
-        variable: "SOROBAN_*",
+        field: "SOROBAN_*",
         message: w.message,
         timestamp: new Date().toISOString(),
       }),

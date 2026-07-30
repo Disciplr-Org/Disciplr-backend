@@ -219,7 +219,7 @@ export function logVaultDriftAnomaly(
   event: VaultDriftEventType,
   data: Record<string, unknown>,
 ): void {
-  logSecurityEvent(`vault.${event}`, data)
+  logSecurityEvent(`vault.${event}`, '', null, data)
 }
 
 function getIpState(ip: string, now: number): IpState {
@@ -369,17 +369,9 @@ function maybeCleanupIdleIpStates(now: number): void {
 }
 
 function getClientIp(req: Request): string {
-  const forwardedFor = req.headers['x-forwarded-for']
-
-  if (typeof forwardedFor === 'string' && forwardedFor.length > 0) {
-    return forwardedFor.split(',')[0].trim()
-  }
-
-  if (Array.isArray(forwardedFor) && forwardedFor.length > 0) {
-    return forwardedFor[0].split(',')[0].trim()
-  }
-
-  return req.socket.remoteAddress ?? 'unknown'
+  // Rely on Express's trust proxy configuration instead of directly reading
+  // x-forwarded-for to prevent spoofing by direct clients.
+  return req.ip ?? 'unknown'
 }
 
 function isFailedLoginAttempt(path: string, status: number): boolean {

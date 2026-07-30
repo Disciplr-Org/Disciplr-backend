@@ -10,6 +10,7 @@
 import { Writable } from 'stream'
 import pino from 'pino'
 import { describe, it, expect } from '@jest/globals'
+import { getOrGenerateCorrelationId } from '../middleware/logger.js'
 
 // ---------------------------------------------------------------------------
 // Helper — build a Pino logger that writes to an in-memory buffer
@@ -255,5 +256,69 @@ describe('Pino redact — realistic OAuth token request scenario', () => {
 
     // Header also redacted
     expect((line.req as any).headers.authorization).toBe(PINO_REDACTED)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// getOrGenerateCorrelationId — issue #1066
+// ---------------------------------------------------------------------------
+
+/**
+ * UUID v4 regex — matches the canonical 8-4-4-4-12 hyphenated format produced
+ * by node:crypto randomUUID().
+ */
+const UUID_V4_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+describe('getOrGenerateCorrelationId', () => {
+  it('returns x-correlation-id when present', () => {
+    const req = { headers: { 'x-correlation-id': 'my-trace-id' } }
+    expect(getOrGenerateCorrelationId(req)).toBe('my-trace-id')
+  })
+
+  it('falls back to x-request-id when x-correlation-id is absent', () => {
+    const req = { headers: { 'x-request-id': 'req-456' } }
+    expect(getOrGenerateCorrelationId(req)).toBe('req-456')
+  })
+
+  it('prefers x-correlation-id over x-request-id when both are present', () => {
+    const req = {
+      headers: {
+        'x-correlation-id': 'corr-123',
+        'x-request-id': 'req-456',
+      },
+    }
+    expect(getOrGenerateCorrelationId(req)).toBe('corr-123')
+  })
+
+  it('generates a UUID v4 fallback when no header is present', () => {
+    const req = { headers: {} }
+    const id = getOrGenerateCorrelationId(req)
+    expect(id).toMatch(UUID_V4_RE)
+  })
+
+  it('generates unique IDs on every call — no Math.random() collision risk', () => {
+    const req = { headers: {} }
+    // Generate a batch and assert all are unique — randomUUID() guarantees this
+    // whereas Math.random() within the same millisecond could produce duplicates.
+    const ids = Array.from({ length: 100 }, () => getOrGenerateCorrelationId(req))
+    const unique = new Set(ids)
+    expect(unique.size).toBe(100)
+  })
+
+  it('fallback does not contain Math.random() artefacts (no Date.now prefix)', () => {
+    const req = { headers: {} }
+    const id = getOrGenerateCorrelationId(req)
+    // The old format was `${Date.now()}-<random>` which starts with digits and a dash.
+    // A UUID v4 starts with 8 lowercase hex chars, not a unix timestamp.
+    expect(id).not.toMatch(/^\d{13}-/)
+  })
+
+  it('fallback does not use deprecated .substr() — ID is well-formed UUID', () => {
+    // If .substr() were still used the value would be a short alphanumeric suffix,
+    // not a full UUID. This acts as a regression guard.
+    const req = { headers: {} }
+    const id = getOrGenerateCorrelationId(req)
+    expect(id.length).toBe(36) // UUID v4 is always 36 characters
   })
 })

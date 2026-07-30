@@ -7,9 +7,10 @@ import { createJobsRouter } from './routes/jobs.js'
 import { BackgroundJobSystem } from './jobs/system.js'
 import { authRouter } from './routes/auth.js'
 import { analyticsRouter } from './routes/analytics.js'
-import { healthRateLimiter, vaultsRateLimiter } from './middleware/rateLimiter.js'
+import { authRateLimiter, healthRateLimiter, vaultsRateLimiter } from './middleware/rateLimiter.js'
 import { createExportRouter } from './routes/exports.js'
-import { configureExportJobRepository, createKnexExportJobRepository } from './services/exportQueue.js'
+import { configureExportJobRepository, configureDlqRepository, createKnexExportJobRepository, createKnexDlqRepository } from './services/exportQueue.js'
+import { configureOrgQuotaRepository, createKnexOrgQuotaRepository } from './services/exportQuota.js'
 import { db } from './db/index.js'
 import { transactionsRouter } from './routes/transactions.js'
 import { privacyRouter, privacyAbuseMonitor } from './routes/privacy.js'
@@ -27,7 +28,7 @@ import { authenticate } from './middleware/auth.js'
 import { requireOrgAccess } from './middleware/orgAuth.js'
 import { notificationsRouter } from './routes/notifications.js'
 import { notificationPreferencesRouter } from './routes/notificationPreferences.js'
-import { webhooksRouter } from './routes/webhooks.js'
+import { webhookRouter } from './routes/webhooks.js'
 import { graphqlRouter } from './routes/graphql.js'
 import { createNotificationService, NotificationService } from './services/notifications/factory.js'
 import { withRequestPrisma } from './middleware/withRequestPrisma.js'
@@ -36,6 +37,7 @@ import {
   securityRateLimitMiddleware,
 } from "./security/abuse-monitor.js";
 import inFlightMiddleware from "./middleware/inFlightRequests.js";
+import { mountVersionedRoute } from './middleware/versioning.js'
 
 type BootstrapOptions = {
   notificationService?: NotificationService;
@@ -50,8 +52,10 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
         process.env.NOTIFICATION_PROVIDER ??
         "console",
     );
-  const jobSystem = new BackgroundJobSystem(notificationService);
-  configureExportJobRepository(createKnexExportJobRepository(db));
+  const jobSystem = new BackgroundJobSystem(notificationService, undefined, privacyAbuseMonitor);
+  configureExportJobRepository(createKnexExportJobRepository(db))
+  configureDlqRepository(createKnexDlqRepository(db))
+  configureOrgQuotaRepository(createKnexOrgQuotaRepository(db))
 
   app.use(securityMetricsMiddleware);
   app.use(securityRateLimitMiddleware);
@@ -59,34 +63,32 @@ export function bootstrapApp(options: BootstrapOptions = {}) {
   app.use(inFlightMiddleware);
   app.use(withRequestPrisma);
 
-  app.use('/api/health', healthRateLimiter, createHealthRouter(jobSystem, privacyAbuseMonitor))
-  app.use('/api/jobs', createJobsRouter(jobSystem))
-  app.use('/api/vaults', vaultsRateLimiter, vaultsRouter)
-  app.use('/api/vaults/:vaultId/milestones', milestonesRouter)
-  app.use('/api/auth', authRouter)
-  app.use('/api/exports', createExportRouter(jobSystem))
-  app.use('/api/transactions', transactionsRouter)
-  app.use('/api/analytics', analyticsRouter)
-  app.use('/api/privacy', privacyRouter)
-  app.use('/api/organizations', orgVaultsRouter)
-  app.use('/api/organizations', orgAnalyticsRouter)
-  app.use('/api/orgs', orgAnalyticsRouter)
-  app.use('/api/organizations', orgMembersRouter)
-  app.use('/api/orgs', orgAnalyticsRouter)
-  app.use('/api/orgs', orgMembersRouter)
-  app.use('/api/orgs', notificationPreferencesRouter)
-  app.use('/api/organizations/:orgId/graphql', graphqlRouter)
-  app.use('/api/admin', adminRouter)
-  app.use('/api/admin/verifiers', adminVerifiersRouter)
-  app.use('/api/admin/webhooks', adminWebhooksRouter)
-  app.use('/api/admin/vaults', adminVaultReplayRouter)
-  app.use('/api/verifications', verificationsRouter)
-  app.get('/api/orgs/:orgId/api-keys/usage', authenticate, requireOrgAccess('owner', 'admin'), getApiKeyUsageHandler)
-  app.use('/api/api-keys', apiKeysRouter)
-  app.use('/api/oauth', oauthRouter)
-  app.use('/api/notifications', notificationsRouter)
-  app.use('/api/users/me/notification-preferences', notificationPreferencesRouter)
-  app.use('/api/webhooks', webhooksRouter)
+  // ── Versioned routes ──────────────────────────────────────────────────────
+  // Each route is mounted at both /api/v1/<resource> (canonical, no headers)
+  // and /api/<resource> (legacy, with RFC 8594 Deprecation/Sunset/Link headers).
+  mountVersionedRoute(app, '/api/health', '/api/v1/health', healthRateLimiter, createHealthRouter(jobSystem, privacyAbuseMonitor))
+  mountVersionedRoute(app, '/api/jobs', '/api/v1/jobs', createJobsRouter(jobSystem))
+  mountVersionedRoute(app, '/api/vaults', '/api/v1/vaults', vaultsRateLimiter, vaultsRouter)
+  mountVersionedRoute(app, '/api/vaults/:vaultId/milestones', '/api/v1/vaults/:vaultId/milestones', milestonesRouter)
+  mountVersionedRoute(app, '/api/auth', '/api/v1/auth', authRouter)
+  mountVersionedRoute(app, '/api/exports', '/api/v1/exports', createExportRouter(jobSystem))
+  mountVersionedRoute(app, '/api/transactions', '/api/v1/transactions', transactionsRouter)
+  mountVersionedRoute(app, '/api/analytics', '/api/v1/analytics', analyticsRouter)
+  mountVersionedRoute(app, '/api/privacy', '/api/v1/privacy', privacyRouter)
+  mountVersionedRoute(app, '/api/organizations', '/api/v1/organizations', orgVaultsRouter)
+  mountVersionedRoute(app, '/api/organizations', '/api/v1/organizations', orgAnalyticsRouter)
+  mountVersionedRoute(app, '/api/orgs', '/api/v1/orgs', orgAnalyticsRouter)
+  mountVersionedRoute(app, '/api/organizations', '/api/v1/organizations', orgMembersRouter)
+  mountVersionedRoute(app, '/api/orgs', '/api/v1/orgs', orgMembersRouter)
+  mountVersionedRoute(app, '/api/organizations/:orgId/graphql', '/api/v1/organizations/:orgId/graphql', graphqlRouter)
+  mountVersionedRoute(app, '/api/admin', '/api/v1/admin', adminRouter)
+  mountVersionedRoute(app, '/api/admin/verifiers', '/api/v1/admin/verifiers', adminVerifiersRouter)
+  mountVersionedRoute(app, '/api/admin/webhooks', '/api/v1/admin/webhooks', adminWebhooksRouter)
+  mountVersionedRoute(app, '/api/verifications', '/api/v1/verifications', verificationsRouter)
+  mountVersionedRoute(app, '/api/api-keys', '/api/v1/api-keys', apiKeysRouter)
+  mountVersionedRoute(app, '/api/notifications', '/api/v1/notifications', notificationsRouter)
+  mountVersionedRoute(app, '/api/users/me/notification-preferences', '/api/v1/users/me/notification-preferences', notificationPreferencesRouter)
+  mountVersionedRoute(app, '/api/webhooks', '/api/v1/webhooks', webhookRouter)
 
   // Catch-all 404 and uniform error shape – must be registered after all routes.
   app.use(notFound);

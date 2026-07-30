@@ -13,10 +13,11 @@ import { createHandler } from 'graphql-http/lib/use/express'
 import depthLimit from 'graphql-depth-limit'
 import DataLoader from 'dataloader'
 import { requireOrgAccess } from '../middleware/orgAuth.js'
-import { getVaultById, listVaults } from '../services/vaultStore.js'
+import { getVaultById, listVaultsByOrg } from '../services/vaultStore.js'
 import { getAnalyticsByPeriod } from '../services/analytics.service.js'
 import { listVerifications, VerificationRecord } from '../services/verifiers.js'
 import { authenticate } from '../middleware/auth.js'
+import { encodeCursor } from '../utils/pagination.js'
 
 export const GRAPHQL_MAX_DEPTH = 5
 
@@ -39,12 +40,16 @@ function assertOrgScope(context: GqlContext, resourceOrgId: string | null | unde
 // Batch-fetch verifications by targetId (org-scoped: only load IDs from within the org).
 const createLoaders = (orgVaultIds: Set<string>) => ({
   verificationsLoader: new DataLoader<string, VerificationRecord[]>(async (targetIds) => {
-    const allVerifications = await listVerifications()
+    // Scope the DB fetch to only the targetIds requested in this batch that
+    // also belong to the current org — avoids a full-table scan.
+    const scopedIds = targetIds.filter((id) => orgVaultIds.has(id))
+    const verifications = scopedIds.length > 0
+      ? await listVerifications(scopedIds)
+      : []
     const grouped = new Map<string, VerificationRecord[]>()
     targetIds.forEach(id => grouped.set(id, []))
-    for (const v of allVerifications) {
-      // Only surface verifications whose targetId is a vault/milestone in this org
-      if (grouped.has(v.targetId) && orgVaultIds.has(v.targetId)) {
+    for (const v of verifications) {
+      if (grouped.has(v.targetId)) {
         grouped.get(v.targetId)!.push(v)
       }
     }
@@ -127,6 +132,30 @@ const VaultType = new GraphQLObjectType({
   }),
 })
 
+const VaultEdgeType = new GraphQLObjectType({
+  name: 'VaultEdge',
+  fields: {
+    node: { type: VaultType },
+    cursor: { type: GraphQLString },
+  },
+})
+
+const PageInfoType = new GraphQLObjectType({
+  name: 'PageInfo',
+  fields: {
+    hasNextPage: { type: GraphQLBoolean },
+    endCursor: { type: GraphQLString },
+  },
+})
+
+const VaultConnectionType = new GraphQLObjectType({
+  name: 'VaultConnection',
+  fields: {
+    edges: { type: new GraphQLList(VaultEdgeType) },
+    pageInfo: { type: PageInfoType },
+  },
+})
+
 // --- Queries ---
 
 const RootQuery = new GraphQLObjectType({
@@ -143,14 +172,27 @@ const RootQuery = new GraphQLObjectType({
       },
     },
     vaults: {
-      type: new GraphQLList(VaultType),
+      type: VaultConnectionType,
       args: {
-        filter: { type: GraphQLString },
         cursor: { type: GraphQLString },
+        limit: { type: GraphQLInt },
       },
-      resolve: async (_root, _args, context: GqlContext) => {
-        const all = await listVaults()
-        return all.filter(v => v.orgId === context.orgId)
+      resolve: async (_root, args, context: GqlContext) => {
+        const page = await listVaultsByOrg(
+          context.orgId,
+          args.limit ?? 20,
+          args.cursor ?? undefined,
+        )
+        return {
+          edges: page.vaults.map((v) => ({
+            node: v,
+            cursor: encodeCursor(new Date(v.createdAt), v.id),
+          })),
+          pageInfo: {
+            hasNextPage: page.hasNextPage,
+            endCursor: page.nextCursor,
+          },
+        }
       },
     },
   },
@@ -177,11 +219,21 @@ graphqlRouter.use(
         })
       }
 
-      // Pre-fetch org vaults to seed DataLoader scope (once per request)
-      const allVaults = await listVaults()
-      const orgVaultIds = new Set(
-        allVaults.filter(v => v.orgId === orgId).map(v => v.id),
-      )
+      // Fetch the org's vault IDs (and their milestone IDs) to seed DataLoader
+      // scope — org-scoped, so no full-table scan. We collect all pages to
+      // ensure the verificationsLoader is correctly scoped even for large orgs.
+      const orgVaultIds = new Set<string>()
+      let pageCursor: string | undefined
+      do {
+        const page = await listVaultsByOrg(orgId, 100, pageCursor)
+        for (const v of page.vaults) {
+          orgVaultIds.add(v.id)
+          // Also register milestone IDs so the DataLoader can surface
+          // verifications whose targetId is a milestone in this org.
+          for (const m of v.milestones) orgVaultIds.add(m.id)
+        }
+        pageCursor = page.nextCursor ?? undefined
+      } while (pageCursor)
 
       return {
         user: raw?.user,

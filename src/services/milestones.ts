@@ -234,11 +234,13 @@ export const getMilestonesByVaultIdWithThreshold = (
 
 /**
  * Validate that a milestone requires M-of-N approval and hasn't been approved yet by this verifier.
+ * Rejects suspended/deactivated verifiers from casting new votes while preserving historical votes.
  * Returns validation result with details.
  */
 export const validateMilestoneMultiVerifier = (
   id: string,
   validatorUserId: string,
+  verifierStatus?: string,
 ): {
   success: boolean
   milestone?: MilestoneWithThreshold
@@ -250,15 +252,14 @@ export const validateMilestoneMultiVerifier = (
     return { success: false, error: 'Milestone not found', canApprove: false }
   }
 
-  // Note: This function is used by some milestone approval flows in-memory.
-  // Block suspended/deactivated verifiers from casting new votes.
-  // The real DB-backed approve route should enforce lifecycle status as well.
-  //
-  // Implementation detail: this in-memory validator currently cannot query verifier status.
-  // If this code path is used with DB-backed verifiers, ensure it passes a resolver or
-  // replace this with a DB-backed validator.
-
-
+  if (verifierStatus === 'suspended' || verifierStatus === 'deactivated') {
+    return {
+      success: false,
+      error: 'Suspended/deactivated verifier cannot cast milestone approvals',
+      milestone,
+      canApprove: false,
+    }
+  }
 
   // For thresholds > 1, multiple verifiers should be able to approve
   if (milestone.approvalThreshold === 1 && milestone.verifierId && milestone.verifierId !== validatorUserId) {

@@ -7,6 +7,8 @@ export interface AuthenticatedUser {
 export enum ApiScope {
   ReadAnalytics = 'read:analytics',
   ReadVaults = 'read:vaults',
+  WriteAnalytics = 'write:analytics',
+  WriteVaults = 'write:vaults',
 }
 
 export interface ApiKeyAuthContext {

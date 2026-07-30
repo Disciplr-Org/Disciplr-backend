@@ -1,6 +1,7 @@
 import type { Server } from "node:http";
 import { BackgroundJobSystem } from "../jobs/system.js";
 import { ETLWorker } from "../services/etlWorker.js";
+import { flushPendingUpdates } from "../services/apiKeys.js";
 import {
   getInFlightCount,
   setDraining,
@@ -12,7 +13,11 @@ export interface ShutdownOptions {
   server: Server;
   jobSystem: BackgroundJobSystem;
   etlWorker: ETLWorker;
-  closeDb: () => void;
+  closeDb: () => void | Promise<void>;
+  // Injectable so tests can exercise the full success/failure path without
+  // terminating the test runner process itself. Defaults to the real
+  // process.exit for production use.
+  exit?: (code: number) => void;
 }
 
 /**
@@ -39,7 +44,7 @@ export interface ShutdownOptions {
  * to allow the drain phase to complete before sockets are naturally destroyed.
  */
 export function createShutdownHandler(options: ShutdownOptions) {
-  const { server, jobSystem, etlWorker, closeDb } = options;
+  const { server, jobSystem, etlWorker, closeDb, exit = process.exit.bind(process) } = options;
   let shuttingDown = false;
   // Track open sockets so we can force-close them if the drain deadline expires
   const sockets = new Set<any>();
@@ -64,7 +69,7 @@ export function createShutdownHandler(options: ShutdownOptions) {
       // 1.5 Enter HTTP drain mode: stop accepting new requests at middleware level
       try {
         const env = getEnv();
-        const drainMs = env.SHUTDOWN_DRAIN_MS ?? 30_000;
+        const drainMs = env.SHUTDOWN_DRAIN_MS;
         console.log(
           `[Shutdown] Entering HTTP drain mode (waiting up to ${drainMs}ms for in-flight requests)`,
         );
@@ -117,15 +122,19 @@ export function createShutdownHandler(options: ShutdownOptions) {
       });
       console.log("[Shutdown] HTTP server closed");
 
-      // 4. Close Database
+      // 4. Flush buffered API key usage stats
+      console.log("[Shutdown] Flushing API key usage stats...");
+      await flushPendingUpdates();
+
+      // 5. Close Database
       console.log("[Shutdown] Closing database connection...");
-      closeDb();
+      await closeDb();
 
       console.log("[Shutdown] Graceful shutdown completed successfully");
-      process.exit(0);
+      exit(0);
     } catch (error) {
       console.error("[Shutdown] Failed during graceful shutdown:", error);
-      process.exit(1);
+      exit(1);
     }
   };
 }

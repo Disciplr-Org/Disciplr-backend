@@ -1,24 +1,47 @@
-import {
-  orgReadRateLimiter,
-  orgWriteRateLimiter,
-} from "../middleware/rateLimiter.js";
-import { Router, Request, Response, NextFunction } from "express";
-import { authenticate, getAuthenticatedUserId } from "../middleware/auth.js";
-import { requireOrgAccess } from "../middleware/orgAuth.js";
-import { AppError } from "../middleware/errorHandler.js";
-import { queryParser } from "../middleware/queryParser.js";
-import {
-  applyFilters,
-  applySort,
-  paginateArray,
-  encodeCursor,
-  decodeCursor,
-} from "../utils/pagination.js";
-import db from "../db/index.js";
-import type { Knex } from "knex";
-import { createHash } from "node:crypto";
+import { orgReadRateLimiter, orgWriteRateLimiter } from '../middleware/rateLimiter.js'
+import { Router, Request, Response, NextFunction } from 'express'
+import { authenticate } from '../middleware/auth.js'
+import { requireOrgAccess } from '../middleware/orgAuth.js'
+import { queryParser } from '../middleware/queryParser.js'
+import { applyFilters, applySort, paginateArray, encodeCursor, decodeCursor } from '../utils/pagination.js'
+import { listVaults } from '../services/vaultStore.js'
+import db from '../db/index.js'
+import type { Knex } from 'knex'
+import { createHash } from 'node:crypto'
 
-export const orgVaultsRouter = Router();
+export const orgVaultsRouter = Router()
+
+// ─── tsvector column detection cache ─────────────────────────────────────────
+// Whether the vaults.search_vector column exists is effectively static for the
+// lifetime of a running process (it only changes when a migration runs, which
+// requires a restart). We cache the result as a single shared Promise so that:
+//   1. The DB is queried at most once, even under concurrent first requests.
+//   2. All callers await the same in-flight promise instead of racing.
+let _hasFtsColumnCache: Promise<boolean> | null = null;
+
+function hasFtsColumn(): Promise<boolean> {
+  if (_hasFtsColumnCache === null) {
+    _hasFtsColumnCache = db("information_schema.columns")
+      .where({
+        table_schema: "public",
+        table_name: "vaults",
+        column_name: "search_vector",
+      })
+      .first()
+      .then(Boolean)
+      .catch((err) => {
+        // On error, reset so the next request retries rather than caching a failure.
+        _hasFtsColumnCache = null;
+        return Promise.reject(err);
+      });
+  }
+  return _hasFtsColumnCache;
+}
+
+/** Exposed for tests that need to reset the cache between runs. */
+export function _resetFtsColumnCache(): void {
+  _hasFtsColumnCache = null;
+}
 
 // ─── Existing vault list ──────────────────────────────────────────────────────
 
@@ -32,7 +55,26 @@ orgVaultsRouter.get(
     allowedFilterFields: ["status", "creator"],
   }),
   async (req: Request, res: Response) => {
-    const { orgId } = req.params;
+    const { orgId } = req.params
+    const dbVaults = await db('vaults')
+      .where({ organization_id: orgId })
+      .whereNull('deleted_at')
+      .select('*')
+    
+    // Map DB fields to the expected Vault shape
+    let result = dbVaults.map(v => ({
+      id: v.id,
+      creator: v.creator,
+      amount: v.amount,
+      status: v.status,
+      startTimestamp: v.start_date,
+      endTimestamp: v.end_date,
+      successDestination: v.success_destination,
+      failureDestination: v.failure_destination,
+      verifier: v.verifier,
+      createdAt: v.created_at,
+      orgId: v.organization_id
+    }))
 
     try {
       const rows = await db("vaults")
@@ -65,7 +107,7 @@ orgVaultsRouter.get(
       }));
 
       if (req.filters) {
-        result = applyFilters(result, req.filters);
+        result = applyFilters(result, req.filters, ['status']);
       }
 
       if (req.sort) {
@@ -254,16 +296,9 @@ export async function runSavedSearch(
 
   if (queryDef.q) {
     const q = queryDef.q;
-    const hasFtsColumn = await db("information_schema.columns")
-      .where({
-        table_schema: "public",
-        table_name: "vaults",
-        column_name: "search_vector",
-      })
-      .first()
-      .then(Boolean);
+    const ftsAvailable = await hasFtsColumn();
 
-    if (hasFtsColumn) {
+    if (ftsAvailable) {
       query = query.whereRaw(`search_vector @@ to_tsquery('simple', ?)`, [
         q
           .split(/\s+/)
@@ -300,7 +335,7 @@ export async function runSavedSearch(
 }
 
 export function hashResultSet(ids: string[]): string {
-  return createHash("sha256").update(JSON.stringify(ids)).digest("hex");
+  return createHash("sha256").update(JSON.stringify([...ids].sort())).digest("hex");
 }
 
 // ─── POST /api/orgs/:orgId/vault-searches ─────────────────────────────────────
@@ -312,9 +347,10 @@ orgVaultsRouter.post(
   orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const { orgId } = req.params;
-    const userId = getAuthenticatedUserId(req);
+    const userId = req.user?.userId;
     if (!userId) {
-      next(AppError.unauthorized("Authenticated user missing userId"));
+      res.status(401).json({ error: "Authenticated user missing userId" });
+      return;
       return;
     }
     const {
@@ -549,17 +585,11 @@ orgVaultsRouter.get(
 
       // ── Full-text search ─────────────────────────────────────────────────
       if (q) {
-        // Check whether the tsvector column exists (migration may not have run yet)
-        const hasFtsColumn = await db("information_schema.columns")
-          .where({
-            table_schema: "public",
-            table_name: "vaults",
-            column_name: "search_vector",
-          })
-          .first()
-          .then(Boolean);
+        // Check whether the tsvector column exists (migration may not have run yet).
+        // Result is cached for the lifetime of the process — see hasFtsColumn().
+        const ftsAvailable = await hasFtsColumn();
 
-        if (hasFtsColumn) {
+        if (ftsAvailable) {
           // GIN index path — injection-safe: q is bound via knex parameterisation
           query = query.whereRaw(`search_vector @@ to_tsquery('simple', ?)`, [
             q

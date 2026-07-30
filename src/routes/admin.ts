@@ -48,6 +48,7 @@ import { runReindexBatches, EMBEDDING_REINDEX_JOB_NAME } from '../services/evide
 import { MilestoneRepository } from '../repositories/milestoneRepository.js'
 import { BackfillCursorStore } from '../services/backfillCursorStore.js'
 import { TransactionETLService } from '../services/transactionETL.js'
+import { resolveETLConfig } from '../services/etlWorker.js'
 
 export const adminRouter = Router()
 
@@ -64,10 +65,19 @@ const ValidOverrideReasonCodes = [
 
 type OverrideReasonCode = (typeof ValidOverrideReasonCodes)[number]
 
-import { DbIdempotencyStore } from '../services/idempotency.js'
+import { resetIdempotencyStore } from '../services/idempotency.js'
 
 // Track processed overrides for idempotency
-const processedOverrides = new DbIdempotencyStore(db)
+const idempotencyStore = new Map<string, unknown>()
+
+const processedOverrides = {
+  async getStoredResponse(key: string, _context: any): Promise<unknown> {
+    return idempotencyStore.get(key) ?? null
+  },
+  async storeResponse(key: string, data: unknown, _context: any): Promise<void> {
+    idempotencyStore.set(key, data)
+  },
+}
 
 // Test helper - clear processed overrides for test isolation
 export const clearProcessedOverrides = async (): Promise<void> => {
@@ -83,7 +93,7 @@ const isValidReasonCode = (reason: unknown): reason is OverrideReasonCode =>
   typeof reason === 'string' && ValidOverrideReasonCodes.includes(reason as OverrideReasonCode)
 
 // Sanitize reason text to prevent PII/secrets leakage
-const sanitizeReasonText = (reason: string): string => {
+export const sanitizeReasonText = (reason: string): string => {
   // Remove potential secrets/PII patterns
   return reason
     .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g, '[REDACTED_EMAIL]')
@@ -96,7 +106,7 @@ const sanitizeReasonText = (reason: string): string => {
 
 const toIsoString = (value: Date | string | null | undefined): string | null => {
   if (!value) return null
-  return new Date(value).toISOString()
+  return new Date(value as string | Date).toISOString()
 }
 
 const parseContractAddresses = (): string[] =>
@@ -106,7 +116,7 @@ const parseContractAddresses = (): string[] =>
     .filter((address) => address.length > 0)
 
 const isValidLedger = (value: unknown): value is number =>
-  Number.isInteger(value) && Number.isSafeInteger(value) && value >= 0
+  typeof value === 'number' && Number.isInteger(value) && Number.isSafeInteger(value) && value >= 0
 
 const isValidPagingToken = (value: unknown): value is string | null | undefined =>
   value === undefined || value === null || (typeof value === 'string' && value.trim().length > 0 && value.length <= 256)
@@ -426,8 +436,10 @@ adminRouter.get(
   }),
   async (req, res) => {
     try {
-      const limit = getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined
-      const offset = getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined
+      const rawLimit = getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined
+      const rawOffset = getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined
+      const limit = rawLimit !== undefined && Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(100, Math.floor(rawLimit)) : undefined
+      const offset = rawOffset !== undefined && Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : undefined
 
       const logs = await listAuditLogs({
         organization_id: (req.filters as any)?.organization_id,
@@ -652,7 +664,8 @@ adminRouter.post('/overrides/vaults/:id/cancel', requireStepUp(), async (req, re
 
 adminRouter.get('/transaction-etl/drift-report', async (req, res) => {
   try {
-    const etl = new TransactionETLService({ horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org', batchSize: Number(req.query.batchSize) || 50 })
+    const config = resolveETLConfig()
+    const etl = new TransactionETLService({ ...config, batchSize: Number(req.query.batchSize) || 50 })
     const report = await etl.reconcileVaults()
     res.status(200).json(report)
   } catch (error) {
@@ -664,7 +677,8 @@ adminRouter.get('/transaction-etl/drift-report', async (req, res) => {
 adminRouter.post('/vaults/:id/auto-repair', requireStepUp(), async (req, res) => {
   try {
     const { id } = req.params
-    const etl = new TransactionETLService({ horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org', batchSize: 50 })
+    const config = resolveETLConfig()
+    const etl = new TransactionETLService({ ...config, batchSize: 50 })
     
     const result = await etl.autoRepairVault(id, req.user!.userId)
     
@@ -687,12 +701,14 @@ adminRouter.post('/vaults/:id/auto-repair', requireStepUp(), async (req, res) =>
 // User Management Endpoints
 adminRouter.get('/users', async (req, res) => {
   try {
+    const rawLimit = getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined
+    const rawOffset = getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined
     const filters = {
       role: getStringQuery(req.query.role) as UserRole | undefined,
       status: getStringQuery(req.query.status) as UserStatus | undefined,
       search: getStringQuery(req.query.search),
-      limit: getStringQuery(req.query.limit) ? Number(getStringQuery(req.query.limit)) : undefined,
-      offset: getStringQuery(req.query.offset) ? Number(getStringQuery(req.query.offset)) : undefined,
+      limit: rawLimit !== undefined && Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(100, Math.floor(rawLimit)) : undefined,
+      offset: rawOffset !== undefined && Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : undefined,
       includeDeleted: req.query.includeDeleted === 'true',
     }
 
@@ -778,7 +794,7 @@ adminRouter.delete(
     let result: DeleteResult | null
 
     if (hard) {
-      result = await userService.hardDeleteUser(req.params.id)
+      result = await userService.hardDeleteUser(req.params.id, req.user!.userId)
     } else {
       result = await userService.softDeleteUser(req.params.id)
     }
@@ -794,22 +810,26 @@ adminRouter.delete(
       })
     }
 
-    const auditLog = await createAuditLog({
-      actor_user_id: req.user!.userId,
-      action: hard ? 'user.hard_delete' : 'user.soft_delete',
-      target_type: 'user',
-      target_id: req.params.id,
-      metadata: {
-        deletion_type: result.deletionType,
-        deleted_at: result.deletedAt,
-        target_email: targetUser.email
-      },
-    })
+    let auditLog
+
+    if (!hard) {
+      auditLog = await createAuditLog({
+        actor_user_id: req.user!.userId,
+        action: 'user.soft_delete',
+        target_type: 'user',
+        target_id: req.params.id,
+        metadata: {
+          deletion_type: result.deletionType,
+          deleted_at: result.deletedAt,
+          target_email: targetUser.email
+        },
+      })
+    }
 
     res.status(200).json({
       message: hard ? 'User permanently deleted' : 'User soft-deleted',
       result,
-      auditLogId: auditLog.id
+      ...(auditLog ? { auditLogId: auditLog.id } : {})
     })
   } catch (error) {
     res.status(500).json({ error: 'Internal server error' })
