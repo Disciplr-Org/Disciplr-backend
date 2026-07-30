@@ -1,2 +1,5 @@
 /target/
 Cargo.lock
+# cargo-fuzz artifacts (crashes, coverage) — only corpus seeds are tracked
+accountability_vault/fuzz/artifacts/
+accountability_vault/fuzz/coverage/

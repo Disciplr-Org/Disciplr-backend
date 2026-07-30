@@ -234,11 +234,13 @@ export const getMilestonesByVaultIdWithThreshold = (
 
 /**
  * Validate that a milestone requires M-of-N approval and hasn't been approved yet by this verifier.
+ * Rejects suspended/deactivated verifiers from casting new votes while preserving historical votes.
  * Returns validation result with details.
  */
 export const validateMilestoneMultiVerifier = (
   id: string,
   validatorUserId: string,
+  verifierStatus?: string,
 ): {
   success: boolean
   milestone?: MilestoneWithThreshold
@@ -248,6 +250,15 @@ export const validateMilestoneMultiVerifier = (
   const milestone = getMilestoneByIdWithThreshold(id)
   if (!milestone) {
     return { success: false, error: 'Milestone not found', canApprove: false }
+  }
+
+  if (verifierStatus === 'suspended' || verifierStatus === 'deactivated') {
+    return {
+      success: false,
+      error: 'Suspended/deactivated verifier cannot cast milestone approvals',
+      milestone,
+      canApprove: false,
+    }
   }
 
   // For thresholds > 1, multiple verifiers should be able to approve
@@ -275,13 +286,40 @@ export const validateMilestoneMultiVerifier = (
 /**
  * Check if all milestones in a vault meet their approval thresholds.
  */
-export const allMilestonesMetThreshold = (vaultId: string, approvalCounts: Record<string, number>): boolean => {
+/**
+ * Check if every milestone in a vault has met its approval threshold,
+ * taking into account veto-by-rejection semantics.
+ *
+ * A milestone is settled (not-vetoed + threshold met) when:
+ *   approved >= threshold  AND  maxPossibleApprovals >= threshold
+ *
+ * where maxPossibleApprovals = approved + (totalVerifiers - totalVoted).
+ * If totalVerifiers is absent for a milestone, any rejection is treated as a veto.
+ */
+export const allMilestonesMetThreshold = (
+  vaultId: string,
+  approvalCounts: Record<string, number>,
+  rejectionCounts: Record<string, number> = {},
+  totalVerifierCounts: Record<string, number> = {},
+): boolean => {
   const vaultMilestones = getMilestonesByVaultId(vaultId)
   if (vaultMilestones.length === 0) return false
 
   return vaultMilestones.every((m) => {
     const threshold = (m as any).approvalThreshold || 1
-    const approvals = approvalCounts[m.id] || 0
-    return approvals >= threshold
+    const approved = approvalCounts[m.id] || 0
+    const rejected = rejectionCounts[m.id] || 0
+    const n = totalVerifierCounts[m.id]
+
+    if (n !== undefined && n > 0) {
+      const totalVoted = approved + rejected
+      const remaining = Math.max(n - totalVoted, 0)
+      const maxPossible = approved + remaining
+      if (maxPossible < threshold) return false // veto: can never reach threshold
+    } else {
+      if (rejected > 0) return false // legacy: any rejection vetoes
+    }
+
+    return approved >= threshold
   })
 }

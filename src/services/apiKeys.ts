@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import argon2 from 'argon2'
 import type { Pool } from 'pg'
-import type { ApiKeyAuthContext, ApiKeyRecord } from '../types/auth.js'
+import { ApiScope, type ApiKeyAuthContext, type ApiKeyRecord } from '../types/auth.js'
 import { utcNow } from '../utils/timestamps.js'
 import { getPgPool } from '../db/pool.js'
 
@@ -8,7 +9,7 @@ interface CreateApiKeyInput {
   userId?: string
   orgId?: string
   label: string
-  scopes: string[]
+  scopes: ApiScope[]
 }
 
 interface RotateApiKeyInput {
@@ -29,11 +30,15 @@ interface ApiKeyRow {
   scopes: string[] | string | null
   created_at: string | Date
   revoked_at: string | Date | null
+  last_used_at?: string | Date | null
+  request_count?: number | null
+  last_ip?: string | null
 }
 
 interface ApiKeyRepository {
   create(record: ApiKeyRecord): Promise<void>
   listForUser(userId: string): Promise<ApiKeyRecord[]>
+  listForOrg(orgId: string): Promise<ApiKeyRecord[]>
   getById(id: string): Promise<ApiKeyRecord | null>
   update(record: ApiKeyRecord): Promise<ApiKeyRecord>
   findByIdForUser(id: string, userId: string): Promise<ApiKeyRecord | null>
@@ -46,6 +51,14 @@ const HASH_PREFIX_LENGTH = 12
 const memoryApiKeys = new Map<string, ApiKeyRecord>()
 
 const hashSecret = (secret: string): string => createHash('sha256').update(secret).digest('hex')
+
+// Argon2id parameters tuned per docs/api-keys.md (memory in KiB)
+const ARGON2_OPTIONS = {
+  type: argon2.argon2id,
+  memoryCost: 1 << 16, // 65536 KiB = 64 MiB
+  timeCost: 3,
+  parallelism: 1,
+}
 
 const getHashPrefix = (hash: string): string => hash.slice(0, HASH_PREFIX_LENGTH)
 
@@ -60,11 +73,13 @@ const parseApiKey = (apiKey: string): { apiKeyId: string; secret: string } | nul
   return { apiKeyId: match[1], secret: match[2] }
 }
 
-const normalizeScopes = (scopes: string[]): string[] => {
-  return Array.from(new Set(scopes.map((scope) => scope.trim()).filter(Boolean))).sort()
+const validApiScopes = new Set(Object.values(ApiScope))
+
+const normalizeScopes = (scopes: string[]): ApiScope[] => {
+  return Array.from(new Set(scopes.map((scope) => scope.trim()).filter(Boolean))).filter((scope): scope is string => validApiScopes.has(scope as unknown as ApiScope)).sort() as ApiScope[]
 }
 
-const normalizeScopeColumn = (scopes: string[] | string | null): string[] => {
+const normalizeScopeColumn = (scopes: string[] | string | null): ApiScope[] => {
   if (Array.isArray(scopes)) {
     return normalizeScopes(scopes)
   }
@@ -94,7 +109,7 @@ const redactApiKeyForLogs = (apiKey: string | undefined): string => {
   return `${API_KEY_PREFIX}_${parsed.apiKeyId}.***`
 }
 
-const asIsoString = (value: string | Date | null): string | null => {
+const asIsoString = (value: string | Date | null | undefined): string | null => {
   if (!value) {
     return null
   }
@@ -111,11 +126,17 @@ const toRecord = (row: ApiKeyRow): ApiKeyRecord => ({
   scopes: normalizeScopeColumn(row.scopes),
   createdAt: asIsoString(row.created_at)!,
   revokedAt: asIsoString(row.revoked_at),
+  lastUsedAt: asIsoString(row.last_used_at),
+  requestCount: row.request_count ?? 0,
+  lastIp: row.last_ip ?? null,
 })
 
 const cloneRecord = (record: ApiKeyRecord): ApiKeyRecord => ({
   ...record,
   scopes: [...record.scopes],
+  lastUsedAt: record.lastUsedAt,
+  requestCount: record.requestCount,
+  lastIp: record.lastIp,
 })
 
 const createMemoryRepository = (): ApiKeyRepository => ({
@@ -125,6 +146,12 @@ const createMemoryRepository = (): ApiKeyRepository => ({
   async listForUser(userId) {
     return Array.from(memoryApiKeys.values())
       .filter((record) => record.userId === userId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map(cloneRecord)
+  },
+  async listForOrg(orgId) {
+    return Array.from(memoryApiKeys.values())
+      .filter((record) => record.orgId === orgId)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       .map(cloneRecord)
   },
@@ -156,8 +183,8 @@ const createMemoryRepository = (): ApiKeyRepository => ({
 const createPgRepository = (pool: Pool): ApiKeyRepository => ({
   async create(record) {
     await pool.query(
-      `INSERT INTO api_keys (id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at)
-       VALUES ($1, $2, $3, $4, $5, $6::text[], $7::timestamptz, $8::timestamptz)`,
+      `INSERT INTO api_keys (id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip)
+       VALUES ($1, $2, $3, $4, $5, $6::text[], $7::timestamptz, $8::timestamptz, $9::timestamptz, $10, $11)`,
       [
         record.id,
         record.userId,
@@ -167,12 +194,15 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
         record.scopes,
         record.createdAt,
         record.revokedAt,
+        record.lastUsedAt ?? null,
+        record.requestCount ?? 0,
+        record.lastIp ?? null,
       ],
     )
   },
   async listForUser(userId) {
     const result = await pool.query<ApiKeyRow>(
-      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip
        FROM api_keys
        WHERE user_id = $1
        ORDER BY created_at DESC`,
@@ -181,9 +211,20 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
 
     return result.rows.map(toRecord)
   },
+  async listForOrg(orgId) {
+    const result = await pool.query<ApiKeyRow>(
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip
+       FROM api_keys
+       WHERE org_id = $1
+       ORDER BY created_at DESC`,
+      [orgId],
+    )
+
+    return result.rows.map(toRecord)
+  },
   async getById(id) {
     const result = await pool.query<ApiKeyRow>(
-      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip
        FROM api_keys
        WHERE id = $1
        LIMIT 1`,
@@ -201,9 +242,12 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
            label = $5,
            scopes = $6::text[],
            created_at = $7::timestamptz,
-           revoked_at = $8::timestamptz
+           revoked_at = $8::timestamptz,
+           last_used_at = $9::timestamptz,
+           request_count = $10,
+           last_ip = $11
        WHERE id = $1
-       RETURNING id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at`,
+       RETURNING id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip`,
       [
         record.id,
         record.userId,
@@ -213,6 +257,9 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
         record.scopes,
         record.createdAt,
         record.revokedAt,
+        record.lastUsedAt ?? null,
+        record.requestCount ?? 0,
+        record.lastIp ?? null,
       ],
     )
 
@@ -220,7 +267,7 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
   },
   async findByIdForUser(id, userId) {
     const result = await pool.query<ApiKeyRow>(
-      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip
        FROM api_keys
        WHERE id = $1 AND user_id = $2
        LIMIT 1`,
@@ -231,7 +278,7 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
   },
   async findByHashPrefix(prefix) {
     const result = await pool.query<ApiKeyRow>(
-      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip
        FROM api_keys
        WHERE left(key_hash, $1) = $2`,
       [HASH_PREFIX_LENGTH, prefix],
@@ -255,16 +302,22 @@ const getRepository = (): ApiKeyRepository => {
   return pool ? createPgRepository(pool) : createMemoryRepository()
 }
 
-const createApiKeyRecord = (input: CreateApiKeyInput, secret: string): ApiKeyRecord => ({
-  id: randomUUID(),
-  userId: input.userId ?? null,
-  orgId: input.orgId ?? null,
-  keyHash: hashSecret(secret),
-  label: input.label.trim(),
-  scopes: normalizeScopes(input.scopes),
-  createdAt: utcNow(),
-  revokedAt: null,
-})
+const createApiKeyRecord = async (input: CreateApiKeyInput, secret: string): Promise<ApiKeyRecord> => {
+  const fingerprint = hashSecret(secret)
+  const argonHash = await argon2.hash(secret, ARGON2_OPTIONS)
+
+  return {
+    id: randomUUID(),
+    userId: input.userId ?? null,
+    orgId: input.orgId ?? null,
+    // Store as: <sha256hex>$argon2id$<argon2hash> so existing left(key_hash,12) prefix index remains useful
+    keyHash: `${fingerprint}$argon2id$${argonHash}`,
+    label: input.label.trim(),
+    scopes: normalizeScopes(input.scopes),
+    createdAt: utcNow(),
+    revokedAt: null,
+  }
+}
 
 const findMatchingRecord = async (apiKey: string): Promise<{ record: ApiKeyRecord; secret: string } | null> => {
   const parsed = parseApiKey(apiKey)
@@ -275,28 +328,61 @@ const findMatchingRecord = async (apiKey: string): Promise<{ record: ApiKeyRecor
   const secretHash = hashSecret(parsed.secret)
   const hashPrefix = getHashPrefix(secretHash)
   const candidates = await getRepository().findByHashPrefix(hashPrefix)
-  const matchingCandidate = candidates.find((candidate) => {
-    if (candidate.id !== parsed.apiKeyId) {
-      return false
+
+  for (const candidate of candidates) {
+    if (candidate.id !== parsed.apiKeyId) continue
+
+    const stored = candidate.keyHash
+
+    // New format: <fingerprint>$argon2id$<argonHash>
+    if (stored.includes('$argon2id$')) {
+      const parts = stored.split('$argon2id$')
+      const fingerprintPart = parts[0]
+      const argonPart = parts.slice(1).join('$argon2id$')
+
+      const fpA = Buffer.from(fingerprintPart, 'hex')
+      const fpB = Buffer.from(secretHash, 'hex')
+      const fingerprintMatches =
+        fpA.length === fpB.length && timingSafeEqual(fpA, fpB)
+
+      if (fingerprintMatches) {
+        try {
+          const ok = await argon2.verify(argonPart, parsed.secret)
+          if (ok) return { record: candidate, secret: parsed.secret }
+        } catch (_e) {
+          // verify failure -> continue
+        }
+      }
+      continue
     }
 
-    const left = Buffer.from(candidate.keyHash, 'utf8')
-    const right = Buffer.from(secretHash, 'utf8')
-    return left.length === right.length && timingSafeEqual(left, right)
-  })
+    // Legacy store: plain sha256 fingerprint
+    const legacyA = Buffer.from(stored, 'hex')
+    const legacyB = Buffer.from(secretHash, 'hex')
+    const legacyMatch = legacyA.length === legacyB.length && timingSafeEqual(legacyA, legacyB)
+    if (legacyMatch) {
+      // Rolling re-hash: create argon2 and persist combined format
+      const argonHash = await argon2.hash(parsed.secret, ARGON2_OPTIONS)
+      candidate.keyHash = `${secretHash}$argon2id$${argonHash}`
+      // best-effort update; do not fail validation if update fails
+      try {
+        await getRepository().update(candidate)
+      } catch (_err) {
+        // ignore
+      }
 
-  if (!matchingCandidate) {
-    return null
+      return { record: candidate, secret: parsed.secret }
+    }
   }
 
-  return { record: matchingCandidate, secret: parsed.secret }
+  return null
 }
 
 export const createApiKey = async (
   input: CreateApiKeyInput,
 ): Promise<{ apiKey: string; record: ApiKeyRecord }> => {
   const secret = randomBytes(32).toString('hex')
-  const record = createApiKeyRecord(input, secret)
+  const record = await createApiKeyRecord(input, secret)
   await getRepository().create(record)
 
   return {
@@ -307,6 +393,10 @@ export const createApiKey = async (
 
 export const listApiKeysForUser = async (userId: string): Promise<ApiKeyRecord[]> => {
   return getRepository().listForUser(userId)
+}
+
+export const listApiKeysForOrg = async (orgId: string): Promise<ApiKeyRecord[]> => {
+  return getRepository().listForOrg(orgId)
 }
 
 export const revokeApiKey = async (apiKeyId: string, userId: string): Promise<ApiKeyRecord | null> => {
@@ -332,7 +422,9 @@ export const rotateApiKey = async (
   }
 
   const nextSecret = randomBytes(32).toString('hex')
-  record.keyHash = hashSecret(nextSecret)
+  const fingerprint = hashSecret(nextSecret)
+  const argonHash = await argon2.hash(nextSecret, ARGON2_OPTIONS)
+  record.keyHash = `${fingerprint}$argon2id$${argonHash}`
   record.createdAt = utcNow()
   record.revokedAt = null
 
@@ -344,9 +436,100 @@ export const rotateApiKey = async (
   }
 }
 
+const pendingUpdates = new Map<string, { lastUsedAt: string; lastIp: string; count: number }>()
+let flushTimeout: NodeJS.Timeout | null = null
+
+export const recordApiKeyUsage = (apiKeyId: string, ip: string) => {
+  const now = utcNow()
+  const existing = pendingUpdates.get(apiKeyId)
+  if (existing) {
+    existing.lastUsedAt = now
+    existing.lastIp = ip
+    existing.count += 1
+  } else {
+    pendingUpdates.set(apiKeyId, { lastUsedAt: now, lastIp: ip, count: 1 })
+  }
+
+  if (!flushTimeout) {
+    flushTimeout = setTimeout(() => {
+      void flushPendingUpdates()
+    }, 5000)
+    if (flushTimeout.unref) {
+      flushTimeout.unref()
+    }
+  }
+}
+
+export const flushPendingUpdates = async (): Promise<void> => {
+  if (flushTimeout) {
+    clearTimeout(flushTimeout)
+    flushTimeout = null
+  }
+
+  if (pendingUpdates.size === 0) {
+    return
+  }
+
+  const updates = Array.from(pendingUpdates.entries())
+  pendingUpdates.clear()
+
+  const repo = getRepository()
+  if (repositoryOverride) {
+    for (const [id, data] of updates) {
+      try {
+        const record = await repo.getById(id)
+        if (record) {
+          record.lastUsedAt = data.lastUsedAt
+          record.lastIp = data.lastIp
+          record.requestCount = (record.requestCount ?? 0) + data.count
+          await repo.update(record)
+        }
+      } catch (err) {
+        // ignore
+      }
+    }
+    return
+  }
+
+  const pool = getPgPool()
+  if (pool) {
+    try {
+      await Promise.all(
+        updates.map(async ([id, data]) => {
+          await pool.query(
+            `UPDATE api_keys 
+             SET last_used_at = $1::timestamptz,
+                 request_count = request_count + $2,
+                 last_ip = $3
+             WHERE id = $4`,
+            [data.lastUsedAt, data.count, data.lastIp, id]
+          )
+        })
+      )
+    } catch (err) {
+      console.error('Failed to flush API key usage updates to PG:', err)
+    }
+  } else {
+    for (const [id, data] of updates) {
+      try {
+        const record = await repo.getById(id)
+        if (record) {
+          record.lastUsedAt = data.lastUsedAt
+          record.lastIp = data.lastIp
+          record.requestCount = (record.requestCount ?? 0) + data.count
+          await repo.update(record)
+        }
+      } catch (err) {
+        // ignore
+      }
+    }
+  }
+}
+
 export const validateApiKey = async (
   apiKey: string,
-  requiredScopes: string[] = [],
+  requiredScopes: ApiScope[] = [],
+  clientIp?: string,
 ): Promise<ApiKeyValidationResult> => {
   const parsed = parseApiKey(apiKey)
   if (!parsed) {
@@ -369,6 +552,8 @@ export const validateApiKey = async (
   if (missingScope) {
     return { valid: false, reason: 'forbidden' }
   }
+
+  recordApiKeyUsage(record.id, clientIp || 'unknown')
 
   return {
     valid: true,

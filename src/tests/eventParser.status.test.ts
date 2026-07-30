@@ -18,18 +18,24 @@ import type { VaultEventPayload } from '../types/horizonSync.js'
  * longer falls through to `default` for valid input.
  */
 describe('eventParser vault status events', () => {
+  const validVaultIds = [
+    '550e8400-e29b-41d4-a716-446655440001',
+    '550e8400-e29b-41d4-a716-446655440002',
+    '550e8400-e29b-41d4-a716-446655440003'
+  ]
+
   const statusFixtures = [
-    { fixture: mockVaultCompletedEvent, status: 'completed' as const },
-    { fixture: mockVaultFailedEvent, status: 'failed' as const },
-    { fixture: mockVaultCancelledEvent, status: 'cancelled' as const }
+    { fixture: mockVaultCompletedEvent, status: 'completed' as const, vaultId: validVaultIds[0] },
+    { fixture: mockVaultFailedEvent, status: 'failed' as const, vaultId: validVaultIds[1] },
+    { fixture: mockVaultCancelledEvent, status: 'cancelled' as const, vaultId: validVaultIds[2] }
   ]
 
   it.each(statusFixtures)(
     'parses a valid $status vault status event',
-    ({ fixture, status }) => {
+    ({ fixture, status, vaultId }) => {
       const rawEvent = createRawHorizonEvent(
         fixture.eventType,
-        fixture.payload as Record<string, unknown>,
+        { ...(fixture.payload as unknown as Record<string, unknown>), vaultId },
         { id: `${fixture.transactionHash}-${fixture.eventIndex}`, txHash: fixture.transactionHash, ledger: fixture.ledgerNumber }
       )
 
@@ -40,14 +46,14 @@ describe('eventParser vault status events', () => {
 
       expect(result.event.eventType).toBe(fixture.eventType)
       const payload = result.event.payload as VaultEventPayload
-      expect(payload.vaultId).toBe((fixture.payload as VaultEventPayload).vaultId)
+      expect(payload.vaultId).toBe(vaultId)
       expect(payload.status).toBe(status)
     }
   )
 
   it('derives the status from the event type when the payload omits it', () => {
     const rawEvent = createRawHorizonEvent('vault_completed', {
-      vaultId: 'vault-no-status'
+      vaultId: '550e8400-e29b-41d4-a716-446655440004'
     })
 
     const result = parseHorizonEvent(rawEvent)
@@ -56,19 +62,18 @@ describe('eventParser vault status events', () => {
     if (!result.success) return
     const payload = result.event.payload as VaultEventPayload
     expect(payload.status).toBe('completed')
-    expect(payload.vaultId).toBe('vault-no-status')
+    expect(payload.vaultId).toBe('550e8400-e29b-41d4-a716-446655440004')
   })
 
   it('rejects a status event with an invalid status value', () => {
     const rawEvent = createRawHorizonEvent('vault_completed', {
-      vaultId: 'vault-bad-status',
+      vaultId: '550e8400-e29b-41d4-a716-446655440005',
       status: 'not_a_real_status'
     })
 
     const result = parseHorizonEvent(rawEvent)
 
     expect(result.success).toBe(false)
-    if (result.success) return
-    expect(result.error).toContain('Failed to parse payload')
+    expect(result).toMatchObject({ error: expect.stringContaining('Failed to parse payload') })
   })
 })

@@ -1,7 +1,8 @@
 import type { RequestHandler } from 'express'
 import { validateApiKey } from '../services/apiKeys.js'
+import type { ApiScope } from '../types/auth.js'
 
-export const authenticateApiKey = (requiredScopes: string[] = []): RequestHandler => {
+export const authenticateApiKey = (requiredScopes: ApiScope[] = []): RequestHandler => {
   return async (req, res, next) => {
     const apiKey = req.header('x-api-key')
 
@@ -10,7 +11,12 @@ export const authenticateApiKey = (requiredScopes: string[] = []): RequestHandle
       return
     }
 
-    const validation = await validateApiKey(apiKey, requiredScopes)
+    // Use only req.ip, which Express resolves from the trusted proxy chain
+    // (controlled by the TRUST_PROXY setting in app.ts).  Never fall back to
+    // reading x-forwarded-for directly — a direct client can forge that header
+    // and corrupt IP-based auditing / abuse-detection keyed on clientIp.
+    const clientIp = req.ip ?? 'unknown'
+    const validation = await validateApiKey(apiKey, requiredScopes, clientIp)
     if (!validation.valid) {
       if (validation.reason === 'forbidden') {
         res.status(403).json({ error: 'API key does not have the required scopes.' })
@@ -23,6 +29,26 @@ export const authenticateApiKey = (requiredScopes: string[] = []): RequestHandle
     }
 
     req.apiKeyAuth = validation.context
+    next()
+  }
+}
+
+// Require at least one of the provided scopes when an API key is used.
+export const requireScopes = (...required: ApiScope[]): RequestHandler => {
+  return (req, res, next) => {
+    const context = req.apiKeyAuth
+    if (!context) {
+      // No API key in use; allow other auth mechanisms (JWT) to control access
+      next()
+      return
+    }
+
+    const hasOne = required.some((scope) => context.scopes.includes(scope))
+    if (!hasOne) {
+      res.status(403).json({ error: 'API key does not have the required scopes.' })
+      return
+    }
+
     next()
   }
 }

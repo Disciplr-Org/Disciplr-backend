@@ -11,9 +11,14 @@ import {
   cancelVault,
   checkExpiredVaults,
   completeVault,
+  disputeVault,
   failVault,
+  resolveDispute,
+  setTestVaults,
+  resetTestVaults,
 } from "../services/vaultTransitions.js";
 import { setVaults, type Vault } from "../routes/vaults.js";
+import { UserRole } from "../types/user.js";
 
 type VaultAction =
   | "activate"
@@ -93,7 +98,7 @@ const buildScenario = fc
 
 describe("Vault transition invariants", () => {
   beforeEach(() => {
-    setVaults([]);
+    resetTestVaults();
     resetMilestonesTable();
   });
 
@@ -101,7 +106,7 @@ describe("Vault transition invariants", () => {
     "does not allow terminal vault status %s to transition further",
     (terminalStatus) => {
       const vault = makeVault({ status: terminalStatus });
-      setVaults([vault]);
+      setTestVaults([vault]);
 
       expect(activateVault(vault.id).success).toBe(false);
       expect(completeVault(vault.id).success).toBe(false);
@@ -113,7 +118,7 @@ describe("Vault transition invariants", () => {
 
   it("requires all milestones to be verified before completing an active vault", () => {
     const vault = makeVault({ status: "active" });
-    setVaults([vault]);
+    setTestVaults([vault]);
     createMilestone(vault.id, "step one", "verifier-1");
 
     const result = completeVault(vault.id);
@@ -126,7 +131,7 @@ describe("Vault transition invariants", () => {
       status: "active",
       endTimestamp: new Date(Date.now() + 60000).toISOString(),
     });
-    setVaults([futureVault]);
+    setTestVaults([futureVault]);
     expect(failVault(futureVault.id).success).toBe(false);
     expect(futureVault.status).toBe("active");
 
@@ -134,9 +139,32 @@ describe("Vault transition invariants", () => {
       status: "active",
       endTimestamp: new Date(Date.now() - 60000).toISOString(),
     });
-    setVaults([expiredVault]);
+    setTestVaults([expiredVault]);
     expect(failVault(expiredVault.id).success).toBe(true);
     expect(expiredVault.status).toBe("failed");
+  });
+
+  it("allows failing a vault whose endTimestamp is within the default clock-skew window (10 s)", () => {
+    // endTimestamp is 5 s in the future — beyond 0 but inside the 10 s skew
+    // tolerance — simulating a scheduler on a slightly-ahead clock.
+    const skewedVault = makeVault({
+      status: "active",
+      endTimestamp: new Date(Date.now() + 5000).toISOString(),
+    });
+    setTestVaults([skewedVault]);
+    expect(failVault(skewedVault.id).success).toBe(true);
+    expect(skewedVault.status).toBe("failed");
+  });
+
+  it("rejects failing a vault whose endTimestamp is beyond the clock-skew window", () => {
+    // endTimestamp is 60 s in the future — well outside the 10 s skew window.
+    const notYetVault = makeVault({
+      status: "active",
+      endTimestamp: new Date(Date.now() + 60000).toISOString(),
+    });
+    setTestVaults([notYetVault]);
+    expect(failVault(notYetVault.id).success).toBe(false);
+    expect(notYetVault.status).toBe("active");
   });
 
   it("automatically fails active vaults whose deadline has passed during expiration checks", () => {
@@ -144,7 +172,7 @@ describe("Vault transition invariants", () => {
       status: "active",
       endTimestamp: new Date(Date.now() - 1000).toISOString(),
     });
-    setVaults([vault]);
+    setTestVaults([vault]);
 
     const failedIds = checkExpiredVaults();
     expect(failedIds).toContain(vault.id);
@@ -154,7 +182,7 @@ describe("Vault transition invariants", () => {
   it("preserves terminal-state invariants through randomized vault action sequences", () => {
     fc.assert(
       fc.property(buildScenario, (scenario) => {
-        setVaults([]);
+        resetTestVaults();
         resetMilestonesTable();
 
         const vault = makeVault({
@@ -163,7 +191,7 @@ describe("Vault transition invariants", () => {
             Date.now() + scenario.deadlineOffsetMs,
           ).toISOString(),
         });
-        setVaults([vault]);
+        setTestVaults([vault]);
 
         const milestones = Array.from(
           { length: scenario.milestoneCount },
@@ -239,8 +267,12 @@ describe("Vault transition invariants", () => {
               continue;
             }
 
+            // Mirror the skew-tolerant check in getTransitionError: the
+            // transition is allowed when endTimestamp has passed OR is within
+            // the default 10 s clock-skew window (VAULT_TRANSITION_SKEW_MS).
+            const DEFAULT_SKEW_MS = 10_000;
             const deadlinePassed =
-              new Date(vault.endTimestamp).getTime() <= Date.now();
+              new Date(vault.endTimestamp).getTime() - Date.now() <= DEFAULT_SKEW_MS;
             expect(result.success).toBe(deadlinePassed);
             if (deadlinePassed) expect(vault.status).toBe("failed");
             else expect(vault.status).toBe("active");
@@ -257,5 +289,86 @@ describe("Vault transition invariants", () => {
       }),
       { numRuns: 100 },
     );
+  });
+});
+
+describe("disputeVault / resolveDispute", () => {
+  beforeEach(() => {
+    setVaults([]);
+    resetMilestonesTable();
+  });
+
+  it("rejects a non-admin requester regardless of the requesterId supplied", () => {
+    const vault = makeVault({ status: "active" });
+    setVaults([vault]);
+
+    const result = disputeVault(vault.id, "user-1", UserRole.USER);
+    expect(result.success).toBe(false);
+    expect(vault.status).toBe("active");
+  });
+
+  it("rejects a requester whose id happens to equal the vault creator's id but whose role is not admin", () => {
+    const vault = makeVault({ status: "active", creator: "same-id" });
+    setVaults([vault]);
+
+    // Regression guard for the original bug: authorization must come from a verified
+    // role, not from comparing requesterId to a second caller-supplied id.
+    const result = disputeVault(vault.id, "same-id", UserRole.USER);
+    expect(result.success).toBe(false);
+    expect(vault.status).toBe("active");
+  });
+
+  it("allows an admin to place an active vault into disputed", () => {
+    const vault = makeVault({ status: "active" });
+    setVaults([vault]);
+
+    const result = disputeVault(vault.id, "admin-1", UserRole.ADMIN);
+    expect(result.success).toBe(true);
+    expect(vault.status).toBe("disputed");
+  });
+
+  it("refuses to dispute a vault not in a disputable status", () => {
+    const vault = makeVault({ status: "draft" });
+    setVaults([vault]);
+
+    const result = disputeVault(vault.id, "admin-1", UserRole.ADMIN);
+    expect(result.success).toBe(false);
+    expect(vault.status).toBe("draft");
+  });
+
+  it("returns an error for an unknown vault id", () => {
+    const result = disputeVault("does-not-exist", "admin-1", UserRole.ADMIN);
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("Vault not found");
+  });
+
+  it("rejects a non-admin from resolving a disputed vault", () => {
+    const vault = makeVault({ status: "disputed" });
+    setVaults([vault]);
+
+    const result = resolveDispute(vault.id, "user-1", UserRole.USER, "active");
+    expect(result.success).toBe(false);
+    expect(vault.status).toBe("disputed");
+  });
+
+  it.each(["active", "completed", "failed"] as const)(
+    "allows an admin to resolve a disputed vault to %s",
+    (target) => {
+      const vault = makeVault({ status: "disputed" });
+      setVaults([vault]);
+
+      const result = resolveDispute(vault.id, "admin-1", UserRole.ADMIN, target);
+      expect(result.success).toBe(true);
+      expect(vault.status).toBe(target);
+    },
+  );
+
+  it("refuses to resolve a vault that is not currently disputed", () => {
+    const vault = makeVault({ status: "active" });
+    setVaults([vault]);
+
+    const result = resolveDispute(vault.id, "admin-1", UserRole.ADMIN, "active");
+    expect(result.success).toBe(false);
+    expect(vault.status).toBe("active");
   });
 });

@@ -113,7 +113,23 @@ if (payload.vaultId) {
 
 `status: 'not_configured'` signals that real on-chain submission requires all five `SOROBAN_*` env vars to be set (future work).
 
-### 6. Dry-Run Mode
+### 6. Contract Guardrails — `contracts/accountability_vault`
+
+The Soroban contract tests pin the on-chain deadline and authorization edges that the backend flow depends on:
+
+| Scenario | Expected state / error |
+|----------|------------------------|
+| Slash before the deadline | `slash_on_miss` returns `DeadlineNotReached`; vault remains `Active` with stake intact |
+| Slash exactly at the deadline | `slash_on_miss` returns `DeadlineNotReached`; slashing opens only after `end_timestamp` |
+| Slash after a missed deadline | vault transitions `Active → Failed`, `staked` becomes `0`, and funds move to `failure_destination` |
+| Double slash | second `slash_on_miss` returns `NotActive`; `Failed` remains terminal |
+| Check-in after slash | `check_in` returns `NotActive`; failed vaults cannot be revived by late verification |
+| Random caller check-in | returns `Unauthorized` whether the oracle is unset or a different oracle is configured |
+| Verifier with oracle configured | verifier check-in still marks the milestone verified; oracle configuration is additive |
+
+These assertions align with `docs/vault-state-machine.md` (`failed` is terminal) and `docs/contract_errors.md` (`DeadlineNotReached`, `NotActive`, and `Unauthorized`).
+
+### 7. Dry-Run Mode
 
 Set `DRY_RUN=true` to observe the detection and idempotency logic without touching the job queue:
 
@@ -147,6 +163,14 @@ startExpirationChecker(intervalMs?: number, jobSystem?: BackgroundJobSystem): vo
 node --experimental-vm-modules node_modules/jest/bin/jest.js \
   --config jest.config.cjs \
   src/tests/deadlineSlash.test.ts
+```
+
+Contract coverage for the same state transitions lives in:
+
+```bash
+cd contracts/accountability_vault
+cargo test
+./scripts/check_snapshots.sh
 ```
 
 ---

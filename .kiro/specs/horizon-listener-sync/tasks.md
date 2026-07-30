@@ -257,7 +257,7 @@ This implementation plan breaks down the Horizon Listener → Database Sync feat
     - Process events
     - Assert audit log includes event_type, transaction_hash, ledger_number, processing_duration_ms
 
-- [ ] 6. Checkpoint - Ensure event processor tests pass
+- [x] 6. Checkpoint - Ensure event processor tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 - [x] 7. Implement Horizon listener service
@@ -410,7 +410,7 @@ This implementation plan breaks down the Horizon Listener → Database Sync feat
     - Add RETRY_BACKOFF_MS with default value
     - _Requirements: 14.1_
 
-- [ ] 14. Final checkpoint - Ensure all tests pass
+- [x] 14. Final checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 - [x] 15. Stellar SDK Upgrade Regression Suite
