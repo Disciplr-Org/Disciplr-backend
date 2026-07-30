@@ -41,44 +41,43 @@ interface BreakerRow {
 }
 
 /**
+ * Sentinel value stored as the secret when decryption fails, signalling that
+ * the subscriber needs operator attention (e.g. key rotation recovery).
+ */
+const DECRYPTION_FAILED_SENTINEL = '[DECRYPTION_FAILED]'
+
+/**
  * Decrypts a stored secret column for in-memory use.
  *
  * Signing secrets are encrypted at rest (AES-256-GCM). During the rollout
  * window a column may still hold a legacy plaintext value written before this
  * feature existed; such values are passed through unchanged and will be
  * re-encrypted on their next write. Anything that *looks* encrypted is
- * decrypted strictly — a failure throws rather than leaking ciphertext as if it
- * were the secret.
+ * decrypted strictly — a {@link DecryptionError} is caught per-row and the
+ * sentinel value is returned so a single corrupted row never takes down the
+ * entire batch.
  */
-function decryptSecretColumn(value: string | null): string | null {
+function decryptSecretColumn(value: string | null, subscriberId: string, column: 'secret' | 'previous_secret' = 'secret'): string | null {
   if (value === null) return null
-  return isEncrypted(value) ? decryptField(value) : value
+  if (!isEncrypted(value)) return value
+  try {
+    return decryptField(value)
+  } catch (err) {
+    if (err instanceof DecryptionError) {
+      console.error(
+        `[WebhookSubscriberRepo] ${column} decryption failed for subscriber ${subscriberId}, using sentinel value`,
+        err,
+      )
+      return DECRYPTION_FAILED_SENTINEL
+    }
+    throw err
+  }
 }
 
 function toSubscriber(row: SubscriberRow): WebhookSubscriber {
-  let secret: string
-  try {
-    secret = decryptSecretColumn(row.secret)!
-  } catch (err) {
-    if (err instanceof DecryptionError) {
-      console.error(`[WebhookSubscriberRepo] Decryption failed for subscriber ${row.id}, using sentinel value`, err)
-      secret = '[DECRYPTION_FAILED]'
-    } else {
-      throw err
-    }
-  }
-
-  let previousSecret: string | null
-  try {
-    previousSecret = decryptSecretColumn(row.previous_secret)
-  } catch (err) {
-    if (err instanceof DecryptionError) {
-      console.error(`[WebhookSubscriberRepo] previous_secret decryption failed for subscriber ${row.id}, setting null`, err)
-      previousSecret = null
-    } else {
-      throw err
-    }
-  }
+  const secret = decryptSecretColumn(row.secret, row.id) ?? DECRYPTION_FAILED_SENTINEL
+  const decryptedPrev = decryptSecretColumn(row.previous_secret, row.id, 'previous_secret')
+  const previousSecret = decryptedPrev === DECRYPTION_FAILED_SENTINEL ? null : decryptedPrev
 
   return {
     id: row.id,
