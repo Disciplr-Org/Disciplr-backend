@@ -19,6 +19,10 @@ import {
   getSubscriberDeliveryStats,
   parseWindowMs,
 } from '../services/webhooks.js'
+import {
+  DEFAULT_REPLAY_BATCH_SIZE,
+  MAX_REPLAY_BATCH_SIZE,
+} from '../services/outboxRelay.js'
 import { isPaused, pauseDelivery, resumeDelivery } from '../services/pauseStore.js'
 import { isValidFieldPolicy, FieldPolicy } from '../utils/webhookFieldMasking.js'
 
@@ -553,14 +557,33 @@ adminVaultReplayRouter.use(strictRateLimiter)
 adminVaultReplayRouter.post('/:id/replay-events', async (req: Request, res: Response) => {
   try {
     const vaultId = req.params.id
-    const { subscriber_id } = req.body ?? {}
+    const {
+      subscriber_id,
+      limit: rawLimit,
+      offset: rawOffset,
+    } = req.body ?? {}
 
-    if (subscriber_id && typeof subscriber_id !== 'string') {
+    if (subscriber_id !== undefined && typeof subscriber_id !== 'string') {
       res.status(400).json({ error: 'subscriber_id must be a string' })
       return
     }
 
-    const replayedCount = await replayForVault(vaultId, subscriber_id)
+    // Parse and validate pagination params
+    const limit = rawLimit !== undefined
+      ? (Number.isInteger(rawLimit) && rawLimit >= 1 ? rawLimit : DEFAULT_REPLAY_BATCH_SIZE)
+      : DEFAULT_REPLAY_BATCH_SIZE
+    const offset = rawOffset !== undefined
+      ? (Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0)
+      : 0
+
+    if (limit > MAX_REPLAY_BATCH_SIZE) {
+      res.status(400).json({
+        error: `limit must not exceed ${MAX_REPLAY_BATCH_SIZE}`,
+      })
+      return
+    }
+
+    const result = await replayForVault(vaultId, subscriber_id, limit, offset)
 
     createAuditLog({
       actor_user_id: req.user!.userId,
@@ -569,11 +592,20 @@ adminVaultReplayRouter.post('/:id/replay-events', async (req: Request, res: Resp
       target_id: vaultId,
       metadata: {
         subscriberId: subscriber_id,
-        replayedCount,
+        count: result.count,
+        hasMore: result.hasMore,
+        limit,
+        offset,
       },
     })
 
-    res.status(200).json({ replayed: true, count: replayedCount })
+    res.status(200).json({
+      replayed: true,
+      count: result.count,
+      has_more: result.hasMore,
+      limit,
+      offset,
+    })
   } catch (error) {
     console.error('Error replaying vault outbox events:', error)
     res.status(500).json({ error: 'Failed to replay vault events' })
