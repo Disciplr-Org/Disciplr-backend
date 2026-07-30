@@ -175,6 +175,11 @@ export const milestoneSchema = z.object({
   amount: amountStringSchema,
 })
 
+/** Single entry point for standalone milestone creation validation. */
+export function parseMilestoneInput(input: unknown) {
+  return milestoneSchema.safeParse(input)
+}
+
 // ─── Root vault schema ───────────────────────────────────────────────────────
 
 export const createVaultSchema = z
