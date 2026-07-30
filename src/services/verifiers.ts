@@ -133,7 +133,7 @@ export const updateVerifierProfile = async (
       : 'verifier.updated'
 
     if (!action) {
-      throw new Error(`Missing verifier audit action for ${before.status} -> ${after.status}`)
+      throw new MissingVerifierAuditActionError(before.status, after.status)
     }
 
     const auditLog = await createVerifierAuditLog({
@@ -324,6 +324,13 @@ export class InvalidVerifierStatusTransitionError extends Error {
   constructor(public readonly from: VerifierStatus, public readonly to: VerifierStatus) {
     super(`Invalid verifier status transition: ${from} -> ${to}`)
     this.name = 'InvalidVerifierStatusTransitionError'
+  }
+}
+
+export class MissingVerifierAuditActionError extends Error {
+  constructor(public readonly from: VerifierStatus, public readonly to: VerifierStatus) {
+    super(`Missing verifier audit action for ${from} -> ${to}`)
+    this.name = 'MissingVerifierAuditActionError'
   }
 }
 

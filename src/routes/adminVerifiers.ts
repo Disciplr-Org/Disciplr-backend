@@ -10,6 +10,7 @@ import {
   getVerifierStats,
   listVerifierProfiles,
   InvalidVerifierStatusTransitionError,
+  MissingVerifierAuditActionError,
   transitionVerifier,
   updateVerifierProfile,
 } from '../services/verifiers.js'
@@ -129,6 +130,10 @@ adminVerifiersRouter.patch('/:userId', async (req: Request, res: Response) => {
       res.status(409).json({ error: error.message })
       return
     }
+    if (error instanceof MissingVerifierAuditActionError) {
+      res.status(500).json({ error: error.message })
+      return
+    }
     res.status(500).json({ error: 'internal server error' })
     return
   }
@@ -196,6 +201,10 @@ adminVerifiersRouter.post('/:userId/reinstate', async (req: Request, res: Respon
       res.status(409).json({ error: error.message })
       return
     }
+    if (error instanceof MissingVerifierAuditActionError) {
+      res.status(500).json({ error: error.message })
+      return
+    }
 
     res.status(500).json({ error: 'internal server error' })
   }
@@ -243,6 +252,10 @@ const transitionStatus = async (req: Request, res: Response, userId: string, sta
   } catch (error) {
     if (error instanceof InvalidVerifierStatusTransitionError) {
       res.status(409).json({ error: error.message })
+      return
+    }
+    if (error instanceof MissingVerifierAuditActionError) {
+      res.status(500).json({ error: error.message })
       return
     }
 
