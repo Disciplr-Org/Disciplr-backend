@@ -174,7 +174,7 @@ adminRouter.post('/confirm/prepare', async (req: Request, res: Response) => {
     return
   }
 
-  const entry = issueConfirmationToken(req.user!.userId, action, scope ?? undefined)
+  const entry = await issueConfirmationToken(req.user!.userId, action, scope ?? undefined)
 
   await createAuditLog({
     actor_user_id: req.user!.userId,
@@ -208,7 +208,7 @@ adminRouter.post('/confirm/prepare', async (req: Request, res: Response) => {
  */
 adminRouter.post('/confirm/approve/:tokenId', async (req: Request, res: Response) => {
   const { tokenId } = req.params
-  const result = approveConfirmationToken(tokenId, req.user!.userId)
+  const result = await approveConfirmationToken(tokenId, req.user!.userId)
 
   if (!result.ok) {
     const status = result.reason === 'token_not_found' ? 404 : 409
