@@ -59,6 +59,8 @@ const {
   addSubscriber,
   dispatchWebhookEvent,
   KNOWN_EVENT_TYPES,
+  signPayload,
+  verifySignature,
 } = await import('../services/webhooks.js')
 
 const TEST_ORG = 'test-org-id'
@@ -73,6 +75,21 @@ const makePayload = (eventType = 'vault_created') => ({
 
 beforeEach(() => {
   mockSubscribers.length = 0
+})
+
+describe('webhook signing secret validation', () => {
+  it('rejects empty and weak secrets before computing an HMAC', () => {
+    expect(() => signPayload('', '{}')).toThrow(/non-empty string/)
+    expect(() => signPayload('too-short', '{}')).toThrow(/at least 16 characters/)
+  })
+
+  it('fails verification for an invalid secret instead of accepting a forged digest', () => {
+    const signature = signPayload('a-valid-secret-key', '{}')
+
+    expect(verifySignature('', '{}', signature)).toBe(false)
+    expect(verifySignature('too-short', '{}', signature)).toBe(false)
+    expect(verifySignature('a-valid-secret-key', '{}', signature)).toBe(true)
+  })
 })
 
 // ── Event type validation in addSubscriber ─────────────────────────────────────
