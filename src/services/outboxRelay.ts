@@ -90,20 +90,81 @@ export async function relayOutboxBatch(batchSize = 50): Promise<number> {
 }
 
 /**
- * Replays all recorded outbox events for a single vault to an optional target subscriber.
- * Preserves the original event ordering (by created_at or id asc) and does not modify the outbox state.
- * Returns the number of events replayed.
+ * Default maximum events to replay per call.
  */
-export async function replayForVault(vaultId: string, subscriberId?: string): Promise<number> {
+export const DEFAULT_REPLAY_BATCH_SIZE = 200
+
+/**
+ * Maximum events allowed per single replay request.
+ */
+export const MAX_REPLAY_BATCH_SIZE = 500
+
+/**
+ * Result returned by {@link replayForVault}.
+ */
+export interface ReplayForVaultResult {
+  /** Number of events successfully dispatched in this batch. */
+  count: number
+  /** Whether there are more outbox events available for this vault beyond this page. */
+  hasMore: boolean
+}
+
+/**
+ * Replays outbox events for a single vault to an optional target subscriber.
+ *
+ * This function fetches events in bounded batches (controlled by `limit`) to
+ * prevent a single replay request from holding the HTTP connection open for an
+ * unbounded duration on high-activity vaults.  Uses the same bounded,
+ * concurrency-aware dispatch path (`dispatchWebhookEvent`) as the regular
+ * outbox relay (`relayOutboxBatch`).
+ *
+ * Each event is dispatched independently so a single failing delivery does not
+ * block the remaining events in the batch.
+ *
+ * Preserves the original event ordering (by created_at asc) and does NOT
+ * modify the outbox state.
+ *
+ * @param vaultId    - The vault whose outbox events should be replayed.
+ * @param subscriberId - Optional – when provided, only replay events to this subscriber.
+ * @param limit      - Maximum number of events to fetch and dispatch (default 200, max 500).
+ * @param offset     - Number of events to skip for pagination (default 0).
+ */
+export async function replayForVault(
+  vaultId: string,
+  subscriberId?: string,
+  limit: number = DEFAULT_REPLAY_BATCH_SIZE,
+  offset: number = 0,
+): Promise<ReplayForVaultResult> {
+  // Clamp to max and ensure positive
+  const safeLimit = Math.min(Math.max(1, limit), MAX_REPLAY_BATCH_SIZE)
+  const safeOffset = Math.max(0, offset)
+
+  // Fetch one extra row to determine if there are more pages
   const rows = await db('vault_outbox')
     .whereRaw("payload->'data'->>'vaultId' = ?", [vaultId])
     .orderBy('created_at', 'asc')
+    .limit(safeLimit + 1)
+    .offset(safeOffset)
 
-  for (const row of rows) {
-    const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload
-    await dispatchWebhookEvent(payload, subscriberId)
+  const hasMore = rows.length > safeLimit
+  const batch = hasMore ? rows.slice(0, safeLimit) : rows
+
+  let dispatchedCount = 0
+
+  for (const row of batch) {
+    try {
+      const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload
+      await dispatchWebhookEvent(payload, subscriberId)
+      dispatchedCount++
+    } catch (err: any) {
+      // Log but continue — one failure should not abort the entire replay
+      console.error(
+        `[OutboxRelay] replayForVault: failed to dispatch outbox row ${row.id}:`,
+        err?.message ?? 'Unknown error',
+      )
+    }
   }
 
-  return rows.length
+  return { count: dispatchedCount, hasMore }
 }
 
