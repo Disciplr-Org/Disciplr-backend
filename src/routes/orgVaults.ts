@@ -335,7 +335,7 @@ export async function runSavedSearch(
 }
 
 export function hashResultSet(ids: string[]): string {
-  return createHash("sha256").update(JSON.stringify([...ids].sort())).digest("hex");
+  return createHash("sha256").update(JSON.stringify(ids)).digest("hex");
 }
 
 // ─── POST /api/orgs/:orgId/vault-searches ─────────────────────────────────────
