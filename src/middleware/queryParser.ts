@@ -11,9 +11,36 @@ export interface QueryParserOptions {
   allowedFilterFields?: string[]
 }
 
+const PROTECTED_QUERY_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+const RESERVED_QUERY_KEYS = new Set(['page', 'pageSize', 'cursor', 'limit', 'sortBy', 'sortOrder'])
+
+function validateQueryParams(req: Request, options: QueryParserOptions) {
+  const allowedFilterFields = options.allowedFilterFields ?? []
+  const allowedSortFields = options.allowedSortFields ?? []
+  const allowedKeys = new Set([...RESERVED_QUERY_KEYS, ...allowedFilterFields, ...allowedSortFields])
+
+  for (const key of Object.keys(req.query)) {
+    const normalizedKey = key.toLowerCase()
+
+    if (PROTECTED_QUERY_KEYS.has(normalizedKey)) {
+      throw new Error('Invalid query parameters')
+    }
+
+    if (key.includes('__') || key.includes(':')) {
+      throw new Error('Invalid query parameters')
+    }
+
+    if (!allowedKeys.has(key)) {
+      throw new Error('Invalid query parameters')
+    }
+  }
+}
+
 export function queryParser(options: QueryParserOptions = {}) {
   return (req: Request, res: Response, next: NextFunction) => {
     try {
+      validateQueryParams(req, options)
+
       // Parse pagination
       req.pagination = parsePaginationParams(req)
       req.cursorPagination = parseCursorPaginationParams(req)

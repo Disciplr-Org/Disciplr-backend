@@ -1,26 +1,57 @@
-import { vaults, type Vault } from '../routes/vaults.js';
-import { allMilestonesVerified } from './milestones.js';
+import { allMilestonesVerified } from './milestones.js'
 import { type Knex } from 'knex';
+import { UserRole } from '../types/user.js';
+import { getEnv } from '../config/index.js'
 
 type TerminalStatus = 'completed' | 'failed' | 'cancelled';
+
+// In-memory vault array for test compatibility (used by legacy transition functions)
+let memoryVaults: any[] = [];
+export const setTestVaults = (newVaults: any[]) => { memoryVaults = newVaults };
+
+export interface Vault {
+  id: string
+  creator: string
+  amount: string
+  status: 'draft' | 'active' | 'completed' | 'failed' | 'cancelled' | 'disputed'
+  startTimestamp: string
+  endTimestamp: string
+  successDestination: string
+  failureDestination: string
+  verifier?: string
+  createdAt: string
+  endDate?: string  // Alias for endTimestamp (used in some tests)
+  lateCheckInWindowSecs?: number
+}
 
 export interface TransitionResult {
   success: boolean;
   error?: string;
 }
 
-const ALLOWED_TRANSITIONS: Record<string, string[]> = {
+export const ALLOWED_TRANSITIONS: Record<string, string[]> = {
   draft: ['active', 'cancelled'],
-  active: ['completed', 'failed', 'cancelled'],
+  active: ['completed', 'failed', 'cancelled', 'disputed'],
+  disputed: ['active', 'completed', 'failed'],
   completed: [],
   failed: [],
   cancelled: [],
 };
 
+// Utility function for exhaustive type checking
+function assertNever(x: never): never {
+  throw new Error(`Unexpected value: ${x}`);
+}
+
+
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled']);
 
 const findVault = (vaultId: string): Vault | undefined =>
-  vaults.find((v) => v.id === vaultId);
+  memoryVaults.find((v) => v.id === vaultId);
+
+export const resetTestVaults = (): void => {
+  memoryVaults = [];
+};
 
 export const isValidTransition = (
   currentStatus: string,
@@ -50,21 +81,33 @@ export const getTransitionError = (
         return 'Cannot complete vault: not all milestones are verified';
       }
       return null;
-    case 'failed':
-      const now = new Date();
-      const end = new Date(vault.endTimestamp);
-      if (end > now) {
+    case 'failed': {
+      const now = Date.now();
+      const endMs = new Date(vault.endTimestamp).getTime();
+      let skewMs = 10_000; // fallback if env is not yet initialized
+      try {
+        skewMs = getEnv().VAULT_TRANSITION_SKEW_MS;
+      } catch {
+        // env not initialized in tests; use the fallback default
+      }
+      // Allow the transition when endTimestamp has already passed OR is within
+      // the clock-skew window (end - now <= skewMs).  This prevents a vault
+      // whose deadline was reached on a slightly-ahead scheduler from being
+      // incorrectly rejected by a server whose clock is a few seconds behind.
+      if (endMs - now > skewMs) {
         return 'Cannot fail vault: endTimestamp has not passed yet';
       }
       return null;
+    }
     case 'cancelled':
       if (!requesterId || requesterId !== vault.creator) {
         return 'Cannot cancel vault: only the creator can cancel';
       }
       return null;
     default:
-      return `Unknown target status: ${targetStatus}`;
-  }
+      // Ensure exhaustive handling of TerminalStatus
+      return assertNever(targetStatus as never);
+    };
 };
 
 export const completeVault = (vaultId: string): TransitionResult => {
@@ -97,7 +140,7 @@ export const cancelVault = (vaultId: string, requesterId: string): TransitionRes
 export const checkExpiredVaults = (): string[] => {
   const now = new Date();
   const failed: string[] = [];
-  for (const vault of vaults) {
+  for (const vault of memoryVaults) {
     if (vault.status !== 'active') continue;
     const end = new Date(vault.endTimestamp);
     if (end <= now) {
@@ -160,5 +203,64 @@ export const activateVault = (vaultId: string): TransitionResult => {
     return { success: false, error: `Cannot activate: status is '${vault.status}', expected 'draft'` };
   }
   vault.status = 'active';
+  return { success: true };
+};
+
+/**
+ * Places an `active` vault into `disputed`, blocking slash and claim until resolved.
+ * Only callable by an admin/guardian.
+ *
+ * Authorization is derived from `requesterRole`, which callers must populate from a
+ * verified source (e.g. `req.user.role` set by the `authenticate` middleware from a
+ * signed JWT) — never from a client-supplied value. This function does not accept a
+ * caller-supplied "admin id" to compare against, since that pattern is trivially
+ * bypassed if a caller ever sources both ids from the same untrusted input.
+ */
+export const disputeVault = (
+  vaultId: string,
+  requesterId: string,
+  requesterRole: UserRole,
+): TransitionResult => {
+  if (requesterRole !== UserRole.ADMIN) {
+    return { success: false, error: 'Only an admin can place a vault into disputed state' };
+  }
+  const vault = findVault(vaultId);
+  if (!vault) return { success: false, error: 'Vault not found' };
+  const allowed = ALLOWED_TRANSITIONS[vault.status];
+  if (!allowed?.includes('disputed')) {
+    return { success: false, error: `Cannot dispute vault in status '${vault.status}'` };
+  }
+  vault.status = 'disputed';
+  return { success: true };
+};
+
+type DisputeResolution = 'active' | 'completed' | 'failed';
+
+/**
+ * Resolves a `disputed` vault back to `active`, or directly to `completed` / `failed`.
+ * Only callable by an admin/guardian.
+ *
+ * See `disputeVault` above: authorization comes from a verified `requesterRole`,
+ * not a caller-supplied "admin id".
+ */
+export const resolveDispute = (
+  vaultId: string,
+  requesterId: string,
+  requesterRole: UserRole,
+  target: DisputeResolution,
+): TransitionResult => {
+  if (requesterRole !== UserRole.ADMIN) {
+    return { success: false, error: 'Only an admin can resolve a disputed vault' };
+  }
+  const vault = findVault(vaultId);
+  if (!vault) return { success: false, error: 'Vault not found' };
+  if (vault.status !== 'disputed') {
+    return { success: false, error: `Vault is not in disputed state (current: '${vault.status}')` };
+  }
+  const allowed = ALLOWED_TRANSITIONS['disputed'];
+  if (!allowed?.includes(target)) {
+    return { success: false, error: `Invalid dispute resolution target: '${target}'` };
+  }
+  vault.status = target;
   return { success: true };
 };

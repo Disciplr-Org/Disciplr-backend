@@ -1,0 +1,20 @@
+# Gitleaks configuration for Disciplr backend CI secret scanning.
+# See docs/security-ci.md for allowlist rationale and local validation steps.
+
+title = "Disciplr gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known-safe fixtures, docs examples, env templates, and test files"
+paths = [
+  '''\.env\.example$''',
+  '''^docs/audit-logs\.md$''',
+  '''^docs/audit-logs-validation\.md$''',
+  '''^docs/idempotency\.md$''',
+  '''^docs/horizon-events\.md$''',
+  '''^src/tests/''',
+  '''^tests/''',
+  '''\.test\.ts$''',
+]

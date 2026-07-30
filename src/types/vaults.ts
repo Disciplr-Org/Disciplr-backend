@@ -1,3 +1,5 @@
+import { VaultStatus } from './vault.js'
+
 export interface MilestoneInput {
   title: string
   description?: string
@@ -18,11 +20,15 @@ export interface CreateVaultInput {
   creator?: string
   /** Grace window in seconds after a milestone dueDate during which check-in is still accepted. Bounded by vault endDate. */
   lateCheckInWindowSecs?: number
+  orgId?: string
   onChain?: {
     mode?: 'build' | 'submit'
     contractId?: string
     networkPassphrase?: string
     sourceAccount?: string
+    /** SEP-41 token contract address. SAC (Stellar Asset Contract) by default;
+     *  pass a Wasm-based token address to test generic SEP-41 compliance. */
+    token?: string
   }
 }
 
@@ -47,11 +53,78 @@ export interface PersistedVault {
   successDestination: string
   failureDestination: string
   creator: string | null
-  status: 'draft' | 'active' | 'completed' | 'failed' | 'cancelled'
+  status: VaultStatus
   createdAt: string
   milestones: PersistedMilestone[]
   /** Grace window in seconds after a milestone dueDate during which check-in is still accepted. Bounded by vault endDate. */
   lateCheckInWindowSecs: number
+  orgId?: string
+}
+
+export interface StakeInput {
+  vaultId: string
+  amount: string
+  user: string
+  onChain?: {
+    mode?: 'build' | 'submit'
+    contractId?: string
+    networkPassphrase?: string
+    sourceAccount?: string
+  }
+}
+
+export interface StakeResponse {
+  mode: 'build' | 'submit'
+  payload: {
+    contractId: string
+    networkPassphrase: string
+    sourceAccount: string
+    method: 'stake'
+    args: Record<string, unknown>
+  }
+  submission: {
+    attempted: boolean
+    status: 'not_requested' | 'not_configured' | 'success' | 'error'
+    txHash?: string
+    error?: string
+  }
+}
+
+export interface StakeWithMemoInput {
+  vaultId: string
+  amount: string
+  user: string
+  memo?: string
+  onChain?: {
+    mode?: 'build' | 'submit'
+    contractId?: string
+    networkPassphrase?: string
+    sourceAccount?: string
+  }
+}
+
+export interface StakeWithMemoResponse {
+  mode: 'build' | 'submit'
+  payload: {
+    contractId: string
+    networkPassphrase: string
+    sourceAccount: string
+    method: 'stake_with_memo'
+    args: Record<string, unknown>
+  }
+  submission: {
+    attempted: boolean
+    status: 'not_requested' | 'not_configured' | 'success' | 'error'
+    txHash?: string
+    error?: string
+  }
+}
+
+export class MemoTooLongError extends Error {
+  constructor(bytes: number, max: number) {
+    super(`Memo exceeds maximum length: ${bytes} bytes > ${max} bytes`)
+    this.name = 'MemoTooLongError'
+  }
 }
 
 export interface VaultCreateResponse {

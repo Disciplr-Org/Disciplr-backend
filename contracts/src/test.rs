@@ -967,5 +967,140 @@ fn test_gas_benchmarks_slash_on_miss_10_milestones() {
     assert!(slash_mem < 250_000);
 }
 
+// ── VaultStatus::Disputed tests ──────────────────────────────────────────────
+
+/// Helper: stake a fresh vault so it is `Active`.
+fn setup_active(milestone_due_offsets: &[u64], amounts: &[i128]) -> Setup {
+    let s = setup(milestone_due_offsets, amounts);
+    s.contract.stake(&s.creator);
+    s
+}
+
+#[test]
+fn test_admin_dispute_enters_disputed_state() {
+    let s = setup_active(&[100], &[500]);
+    // The `verifier` doubles as guardian in the single-verifier Setup helper.
+    s.contract.admin_dispute(&s.verifier);
+
+    let vault = s.contract.get_vault();
+    assert_eq!(vault.status, VaultStatus::Disputed);
+}
+
+#[test]
+#[should_panic]
+fn test_admin_dispute_from_non_guardian_fails() {
+    let s = setup_active(&[100], &[500]);
+    let impostor = Address::generate(&s.env);
+    s.contract.admin_dispute(&impostor);
+}
+
+#[test]
+#[should_panic]
+fn test_admin_dispute_on_draft_fails() {
+    // Vault is still Draft (not staked).
+    let s = setup(&[100], &[500]);
+    s.contract.admin_dispute(&s.verifier);
+}
+
+#[test]
+#[should_panic]
+fn test_slash_blocked_when_disputed() {
+    let s = setup_active(&[100], &[500]);
+    s.contract.admin_dispute(&s.verifier);
+    // Advance past deadline; slash must be blocked by VaultDisputed.
+    s.env.ledger().set_timestamp(2_000);
+    s.contract.slash_on_miss();
+}
+
+#[test]
+#[should_panic]
+fn test_claim_blocked_when_disputed() {
+    let s = setup_active(&[100], &[500]);
+    // Verify the milestone so claim would otherwise succeed.
+    s.contract.check_in(&s.verifier, &0);
+    s.contract.admin_dispute(&s.verifier);
+    // Claim must be blocked by VaultDisputed.
+    s.contract.claim(&s.creator);
+}
+
+#[test]
+fn test_admin_resolve_to_active() {
+    let s = setup_active(&[100], &[500]);
+    s.contract.admin_dispute(&s.verifier);
+
+    let vault_mid = s.contract.get_vault();
+    assert_eq!(vault_mid.status, VaultStatus::Disputed);
+
+    s.contract.admin_resolve(&s.verifier, &VaultStatus::Active);
+    let vault = s.contract.get_vault();
+    assert_eq!(vault.status, VaultStatus::Active);
+}
+
+#[test]
+fn test_admin_resolve_to_completed() {
+    let s = setup_active(&[100], &[500]);
+    s.contract.admin_dispute(&s.verifier);
+    s.contract.admin_resolve(&s.verifier, &VaultStatus::Completed);
+    let vault = s.contract.get_vault();
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+#[test]
+fn test_admin_resolve_to_failed() {
+    let s = setup_active(&[100], &[500]);
+    s.contract.admin_dispute(&s.verifier);
+    s.contract.admin_resolve(&s.verifier, &VaultStatus::Failed);
+    let vault = s.contract.get_vault();
+    assert_eq!(vault.status, VaultStatus::Failed);
+}
+
+#[test]
+#[should_panic]
+fn test_admin_resolve_from_non_guardian_fails() {
+    let s = setup_active(&[100], &[500]);
+    s.contract.admin_dispute(&s.verifier);
+    let impostor = Address::generate(&s.env);
+    s.contract.admin_resolve(&impostor, &VaultStatus::Active);
+}
+
+#[test]
+#[should_panic]
+fn test_admin_resolve_on_non_disputed_vault_fails() {
+    let s = setup_active(&[100], &[500]);
+    // Vault is Active, not Disputed — resolve must fail.
+    s.contract.admin_resolve(&s.verifier, &VaultStatus::Active);
+}
+
+#[test]
+fn test_after_resolve_to_active_slash_succeeds() {
+    let s = setup_active(&[100], &[500]);
+    s.contract.admin_dispute(&s.verifier);
+    s.contract.admin_resolve(&s.verifier, &VaultStatus::Active);
+
+    s.env.ledger().set_timestamp(2_000);
+    s.contract.slash_on_miss();
+
+    let vault = s.contract.get_vault();
+    assert_eq!(vault.status, VaultStatus::Failed);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    assert_eq!(token_client.balance(&s.failure), 500);
+}
+
+#[test]
+fn test_after_resolve_to_active_claim_succeeds() {
+    let s = setup_active(&[100], &[500]);
+    s.contract.check_in(&s.verifier, &0);
+    s.contract.admin_dispute(&s.verifier);
+    s.contract.admin_resolve(&s.verifier, &VaultStatus::Active);
+
+    s.contract.claim(&s.creator);
+    let vault = s.contract.get_vault();
+    assert_eq!(vault.status, VaultStatus::Completed);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    assert_eq!(token_client.balance(&s.success), 500);
+}
+
 
 

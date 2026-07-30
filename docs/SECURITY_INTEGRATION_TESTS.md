@@ -65,6 +65,11 @@ For the API-wide Helmet header contract and rationale, see `docs/helmet.md` and 
 - Role-based access control (USER, VERIFIER, ADMIN)
 - Resource-level permissions
 - Admin override capabilities
+- Verifier endpoint header isolation: `src/tests/verifications.rbac.test.ts`
+  proves that `/api/verifications` trusts the verified JWT role only, ignores
+  spoofed role headers such as `x-user-role` and `x-requested-role`, returns
+  401 before authorization for missing/expired JWTs, and enforces the verifier
+  role matrix (`POST` for VERIFIER/ADMIN, `GET` for ADMIN only).
 
 ### Input Validation
 - Stellar address format validation

@@ -1,6 +1,7 @@
 import db from '../db/index.js'
 import { UserRole, UserStatus, User } from '../types/user.js'
-import { prisma } from '../lib/prisma.js'
+import { getPrisma } from '../lib/prismaScope.js'
+import { createAuditLog } from '../lib/audit-logs.js'
 
 export interface UserFilters {
   role?: UserRole
@@ -30,7 +31,8 @@ export interface DeleteResult {
 
 export class UserService {
   async listUsers(filters: UserFilters = {}): Promise<PaginatedUsers> {
-    const { role, status, search, limit = 20, offset = 0, includeDeleted = false } = filters
+    const { role, status, search, offset = 0, includeDeleted = false } = filters
+    const limit = Math.min(100, filters.limit ?? 20)
 
     let query = db('users')
 
@@ -165,7 +167,7 @@ export class UserService {
         updatedAt: deletedAt
       })
 
-    await prisma.refreshToken.updateMany({
+    await getPrisma().refreshToken.updateMany({
       where: { userId: id },
       data: { revokedAt: deletedAt }
     })
@@ -178,26 +180,35 @@ export class UserService {
     }
   }
 
-  async hardDeleteUser(id: string): Promise<DeleteResult | null> {
+  async hardDeleteUser(id: string, actorUserId?: string): Promise<DeleteResult | null> {
     const user = await this.getUserById(id, true)
     if (!user) {
       return null
     }
 
-    await prisma.refreshToken.deleteMany({
-      where: { userId: id }
+    await getPrisma().$transaction(async (tx: any) => {
+      await tx.refreshToken.deleteMany({
+        where: { userId: id }
+      })
+
+      await tx.vault.deleteMany({
+        where: { creatorId: id }
+      })
+
+      const deleted = await tx.$executeRaw`DELETE FROM "users" WHERE id = ${id}`
+      if (Number(deleted) === 0) {
+        throw new Error('User not found during deletion')
+      }
     })
 
-    await prisma.vault.deleteMany({
-      where: { creatorId: id }
-    })
-
-    const deleted = await db('users')
-      .where('id', id)
-      .del()
-
-    if (deleted === 0) {
-      return null
+    if (actorUserId) {
+      await createAuditLog({
+        actor_user_id: actorUserId,
+        action: 'user.hard_delete',
+        target_type: 'user',
+        target_id: id,
+        metadata: { deleted_user_email: user.email }
+      })
     }
 
     return {

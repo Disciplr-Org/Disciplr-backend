@@ -1,0 +1,85 @@
+# contracts/deny.toml — cargo-deny policy for the Soroban contracts workspace.
+# Run: cargo deny --manifest-path contracts/Cargo.toml check
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+# ---------------------------------------------------------------------------
+# Advisories — fail on any unpatched vulnerability or unmaintained crate.
+# ---------------------------------------------------------------------------
+[advisories]
+# Minimum CVSS severity that triggers a denial; "none" means all advisories.
+severity-threshold = "none"
+# Reject crates with known security vulnerabilities.
+vulnerability = "deny"
+# Warn on unmaintained crates; change to "deny" to harden further.
+unmaintained = "warn"
+# Deny crates that have been yanked from crates.io.
+yanked = "deny"
+# Ignore advisories only when a published fix does not yet exist and you have
+# documented the acceptance.  Format: [{ id = "RUSTSEC-YYYY-NNNN", reason = "…" }]
+ignore = []
+
+# ---------------------------------------------------------------------------
+# Licenses — allow only OSI-approved permissive / weak-copyleft licenses.
+# GPL-family and non-commercial licenses are prohibited.
+# ---------------------------------------------------------------------------
+[licenses]
+# Require every crate to have a recognised SPDX expression.
+unlicensed = "deny"
+# Allow the listed license identifiers.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "Zlib",
+]
+# Deny copyleft / proprietary licenses explicitly.
+deny = [
+    "GPL-2.0",
+    "GPL-3.0",
+    "LGPL-2.0",
+    "LGPL-2.1",
+    "LGPL-3.0",
+    "AGPL-3.0",
+    "EUPL-1.1",
+    "EUPL-1.2",
+    "BUSL-1.1",
+]
+# Treat "AND" / "OR" license expressions according to the standard.
+copyleft = "deny"
+allow-osi-fsf-free = "neither"
+default = "deny"
+confidence-threshold = 0.8
+
+# ---------------------------------------------------------------------------
+# Bans — prevent duplicate crate versions and known-unsafe crates.
+# ---------------------------------------------------------------------------
+[bans]
+# Deny multiple versions of the same crate to keep the dependency tree clean.
+multiple-versions = "deny"
+# Deny crates with known security or correctness issues.
+deny = [
+    # Unsound / deprecated cryptography helpers.
+    { name = "openssl" },
+    # Avoid the older, unsound `time` 0.1 crate (RUSTSEC-2020-0071).
+    { name = "time", version = "<0.3" },
+]
+# Wildcard dependencies force a network fetch on every build.
+wildcards = "deny"
+highlight = "all"
+
+# ---------------------------------------------------------------------------
+# Sources — only allow crates from crates.io; no private registries or git
+# sources unless explicitly listed.
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

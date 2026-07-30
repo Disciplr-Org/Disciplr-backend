@@ -2,21 +2,21 @@ import { Router, Request, Response } from 'express'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray, encodeCursor, decodeCursor } from '../utils/pagination.js'
 import db from '../db/index.js'
-import { requireUserAuth } from '../middleware/userAuth.js'
+import { authenticate } from '../middleware/auth.js'
 
 export const transactionsRouter = Router()
 
 // GET /api/transactions - Get user's transaction history
 transactionsRouter.get(
   '/',
-  requireUserAuth,
+  authenticate,
   queryParser({
     allowedSortFields: ['created_at', 'stellar_timestamp', 'amount', 'type', 'stellar_ledger'],
     allowedFilterFields: ['type', 'vault_id', 'date_from', 'date_to', 'amount_min', 'amount_max'],
   }),
   async (req: Request, res: Response) => {
     try {
-      const userId = req.authUser!.userId
+      const userId = req.user!.userId
       let query = db('transactions').where('user_id', userId)
 
       // Apply filters
@@ -59,10 +59,6 @@ transactionsRouter.get(
         // Default sort: newest first
         query = query.orderBy('stellar_timestamp', 'desc')
       }
-
-      // Get total count for pagination
-      const totalCount = await query.clone().count('* as total').first()
-      const total = parseInt(String(totalCount?.total || '0'))
 
       // Apply pagination (Cursor-based)
       const limit = Math.min(100, parseInt(String(req.cursorPagination?.limit || '20')))
@@ -149,9 +145,9 @@ transactionsRouter.get(
 )
 
 // GET /api/transactions/:id - Get specific transaction
-transactionsRouter.get('/:id', requireUserAuth, async (req: Request, res: Response) => {
+transactionsRouter.get('/:id', authenticate, async (req: Request, res: Response) => {
   try {
-    const userId = req.authUser!.userId
+    const userId = req.user!.userId
     const transactionId = req.params.id
 
     const transaction = await db('transactions')
@@ -188,20 +184,25 @@ transactionsRouter.get('/:id', requireUserAuth, async (req: Request, res: Respon
 // GET /api/transactions/vault/:vaultId - Get transactions for a specific vault
 transactionsRouter.get(
   '/vault/:vaultId',
-  requireUserAuth,
+  authenticate,
   queryParser({
     allowedSortFields: ['created_at', 'stellar_timestamp', 'amount', 'type'],
     allowedFilterFields: ['type', 'date_from', 'date_to', 'amount_min', 'amount_max'],
   }),
   async (req: Request, res: Response) => {
     try {
-      const userId = req.authUser!.userId
+      const userId = req.user!.userId
       const vaultId = req.params.vaultId
 
-      // Verify user owns the vault
+      // Verify user owns the vault or has access via organization
       const vault = await db('vaults')
-        .where('id', vaultId)
-        .where('user_id', userId)
+        .leftJoin('memberships', 'vaults.organization_id', 'memberships.organization_id')
+        .where('vaults.id', vaultId)
+        .where(function() {
+          this.where('vaults.creator', userId)
+              .orWhere('memberships.user_id', userId)
+        })
+        .select('vaults.*')
         .first()
 
       if (!vault) {
@@ -210,7 +211,6 @@ transactionsRouter.get(
       }
 
       let query = db('transactions')
-        .where('user_id', userId)
         .where('vault_id', vaultId)
 
       // Apply filters (same as main endpoint)

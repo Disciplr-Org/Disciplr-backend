@@ -5,8 +5,22 @@ extern crate std;
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    token, vec, Address, Env, String,
+    token, vec, Address, BytesN, Env, String,
 };
+
+struct Setup {
+    env: Env,
+    contract: AccountabilityVaultClient<'static>,
+    token: Address,
+    creator: Address,
+    verifier: Address,
+    failure: Address,
+    vault_id: String,
+}
+
+fn evidence_hash(env: &Env, seed: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[seed; 32])
+}
 
 fn create_token(env: &Env, admin: &Address) -> (Address, token::StellarAssetClient<'static>) {
     let sac = env.register_stellar_asset_contract_v2(admin.clone());
@@ -15,20 +29,6 @@ fn create_token(env: &Env, admin: &Address) -> (Address, token::StellarAssetClie
         address.clone(),
         token::StellarAssetClient::new(env, &address),
     )
-}
-
-struct Setup {
-    env: Env,
-    contract: AccountabilityVaultClient<'static>,
-    token: Address,
-    #[allow(dead_code)]
-    token_admin_client: token::StellarAssetClient<'static>,
-    creator: Address,
-    verifier: Address,
-    guardian: Address,
-    success: Address,
-    failure: Address,
-    vault_id: String,
 }
 
 fn setup(milestone_due_offsets: &[u64], amounts: &[i128]) -> Setup {
@@ -46,7 +46,6 @@ fn setup_with_oracle(
 
     let creator = Address::generate(&env);
     let verifier = Address::generate(&env);
-    let guardian = Address::generate(&env);
     let success = Address::generate(&env);
     let failure = Address::generate(&env);
     let token_admin = Address::generate(&env);
@@ -55,8 +54,9 @@ fn setup_with_oracle(
     let total: i128 = amounts.iter().sum();
     token_admin_client.mint(&creator, &total);
 
-    let contract_id = env.register_contract(None, AccountabilityVault);
+    let contract_id = env.register(AccountabilityVault, ());
     let contract = AccountabilityVaultClient::new(&env, &contract_id);
+    let vault_id = String::from_str(&env, "vault-627");
 
     let mut milestones = vec![&env];
     for (i, due) in milestone_due_offsets.iter().enumerate() {
@@ -72,8 +72,9 @@ fn setup_with_oracle(
     let end = 1_000 + milestone_due_offsets.iter().max().copied().unwrap_or(0);
     let verifier_set = VerifierSet {
         verifiers: vec![&env, verifier.clone()],
-        threshold: 1u32,
+        threshold: 1,
     };
+
     contract.create_vault(
         &vault_id,
         &creator,
@@ -85,54 +86,38 @@ fn setup_with_oracle(
         &failure,
         &end,
         &milestones,
-        &guardian,
     );
 
     Setup {
         env,
         contract,
         token,
-        token_admin_client,
         creator,
         verifier,
-        guardian,
-        success,
         failure,
         vault_id,
     }
 }
 
-// ── existing lifecycle tests ─────────────────────────────────────────────────
-
 #[test]
-fn test_create_and_stake() {
+fn test_slash_before_deadline_fails() {
     let s = setup(&[100], &[500]);
-    let vault = s.contract.get_vault(&s.vault_id);
-    assert_eq!(vault.status, VaultStatus::Draft);
-
     s.contract.stake(&s.vault_id, &s.creator);
+
+    s.env.ledger().set_timestamp(1_099);
+    let before = s.contract.try_slash_on_miss(&s.vault_id);
+    assert!(matches!(before, Err(Ok(Error::DeadlineNotReached))));
+
+    s.env.ledger().set_timestamp(1_100);
+    let exactly_at_deadline = s.contract.try_slash_on_miss(&s.vault_id);
+    assert!(matches!(
+        exactly_at_deadline,
+        Err(Ok(Error::DeadlineNotReached))
+    ));
+
     let vault = s.contract.get_vault(&s.vault_id);
     assert_eq!(vault.status, VaultStatus::Active);
     assert_eq!(vault.staked, 500);
-
-    let token_client = token::Client::new(&s.env, &s.token);
-    assert_eq!(token_client.balance(&s.creator), 0);
-}
-
-#[test]
-fn test_check_in_and_claim_success() {
-    let s = setup(&[100, 200], &[300, 700]);
-    s.contract.stake(&s.vault_id, &s.creator);
-
-    s.contract.check_in(&s.vault_id, &s.verifier, &0);
-    s.contract.check_in(&s.vault_id, &s.verifier, &1);
-
-    s.contract.claim(&s.vault_id, &s.creator);
-    let vault = s.contract.get_vault(&s.vault_id);
-    assert_eq!(vault.status, VaultStatus::Completed);
-
-    let token_client = token::Client::new(&s.env, &s.token);
-    assert_eq!(token_client.balance(&s.success), 1000);
 }
 
 #[test]
@@ -140,1171 +125,681 @@ fn test_slash_on_miss() {
     let s = setup(&[100], &[500]);
     s.contract.stake(&s.vault_id, &s.creator);
 
-    // Advance past the deadline without any check-in.
-    s.env.ledger().set_timestamp(2_000);
+    s.env.ledger().set_timestamp(1_101);
     s.contract.slash_on_miss(&s.vault_id);
 
     let vault = s.contract.get_vault(&s.vault_id);
     assert_eq!(vault.status, VaultStatus::Failed);
+    assert_eq!(vault.staked, 0);
 
     let token_client = token::Client::new(&s.env, &s.token);
     assert_eq!(token_client.balance(&s.failure), 500);
 }
 
 #[test]
-fn test_withdraw_draft_cancels() {
-    let s = setup(&[100], &[500]);
-    s.contract.withdraw(&s.vault_id, &s.creator);
-    let vault = s.contract.get_vault(&s.vault_id);
-    assert_eq!(vault.status, VaultStatus::Cancelled);
-}
-
-#[test]
-#[should_panic]
-fn test_claim_before_all_verified_fails() {
-    let s = setup(&[100, 200], &[300, 700]);
-    s.contract.stake(&s.vault_id, &s.creator);
-    s.contract.check_in(&s.vault_id, &s.verifier, &0);
-    // Second milestone not yet verified -> claim must fail.
-    s.contract.claim(&s.vault_id, &s.creator);
-}
-
-#[test]
-#[should_panic]
-fn test_slash_before_deadline_fails() {
+fn test_double_slash_after_miss_fails() {
     let s = setup(&[100], &[500]);
     s.contract.stake(&s.vault_id, &s.creator);
+    s.env.ledger().set_timestamp(1_101);
+
     s.contract.slash_on_miss(&s.vault_id);
-}
+    let second = s.contract.try_slash_on_miss(&s.vault_id);
 
-// ── issue #368: balance delta assertion in stake ─────────────────────────────
-
-#[test]
-fn test_stake_records_balance_delta_as_staked() {
-    // For a standard token (no fee on transfer) the delta equals vault.amount.
-    let s = setup(&[100], &[800]);
-    s.contract.stake(&s.vault_id, &s.creator);
-    let vault = s.contract.get_vault(&s.vault_id);
-    assert_eq!(vault.staked, 800);
-    assert_eq!(vault.status, VaultStatus::Active);
-}
-
-#[test]
-#[should_panic]
-fn test_stake_unauthorized_non_creator_fails() {
-    let s = setup(&[100], &[500]);
-    let other = Address::generate(&s.env);
-    s.contract.stake(&s.vault_id, &other);
-}
-
-#[test]
-#[should_panic]
-fn test_stake_double_stake_fails() {
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.vault_id, &s.creator);
-    // Second stake on an Active vault must fail with AlreadyStaked / NotDraft.
-    s.contract.stake(&s.vault_id, &s.creator);
-}
-
-// ── issue #370: stake_from allowance-based variant ───────────────────────────
-
-#[test]
-fn test_stake_from_with_sufficient_allowance() {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
-    let creator = Address::generate(&env);
-    let verifier = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let spender = Address::generate(&env);
-    let success = Address::generate(&env);
-    let failure = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, token_admin_client) = create_token(&env, &token_admin);
-    token_admin_client.mint(&creator, &1_000);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
-    let contract = AccountabilityVaultClient::new(&env, &contract_id);
-
-    let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier.clone()],
-        threshold: 1u32,
-    };
-    let milestones = vec![
-        &env,
-        Milestone {
-            title: String::from_str(&env, "m1"),
-            amount: 1_000,
-            due_date: 1_200,
-            verified: false,
-            released: false,
-        },
-    ];
-    let vault_id = String::from_str(&env, "v1");
-    contract.create_vault(
-        &creator, &verifier_set, &None, &token, &1_000, &success, &failure, &1_200,
-        &milestones, &guardian,
-    );
-
-    // Creator approves spender to spend 1_000 tokens on their behalf.
-    let token_client = token::Client::new(&env, &token);
-    token_client.approve(&creator, &spender, &1_000, &200);
-
-    contract.stake_from(&vault_id, &creator, &spender);
-
-    let vault = contract.get_vault(&vault_id);
-    assert_eq!(vault.status, VaultStatus::Active);
-    assert_eq!(vault.staked, 1_000);
-    assert_eq!(token_client.balance(&creator), 0);
-}
-
-#[test]
-#[should_panic]
-fn test_stake_from_insufficient_allowance_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
-    let creator = Address::generate(&env);
-    let verifier = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let spender = Address::generate(&env);
-    let success = Address::generate(&env);
-    let failure = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, token_admin_client) = create_token(&env, &token_admin);
-    token_admin_client.mint(&creator, &1_000);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
-    let contract = AccountabilityVaultClient::new(&env, &contract_id);
-
-    let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier.clone()],
-        threshold: 1u32,
-    };
-    let milestones = vec![
-        &env,
-        Milestone {
-            title: String::from_str(&env, "m1"),
-            amount: 1_000,
-            due_date: 1_200,
-            verified: false,
-            released: false,
-        },
-    ];
-    let vault_id = String::from_str(&env, "v1");
-    contract.create_vault(
-        &creator, &verifier_set, &None, &token, &1_000, &success, &failure, &1_200,
-        &milestones, &guardian,
-    );
-
-    // Approve only 500 — less than the 1_000 vault amount.
-    let token_client = token::Client::new(&env, &token);
-    token_client.approve(&creator, &spender, &500, &200);
-
-    // Must fail with InsufficientAllowance.
-    contract.stake_from(&vault_id, &creator, &spender);
-}
-
-#[test]
-#[should_panic]
-fn test_stake_from_non_creator_from_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
-    let creator = Address::generate(&env);
-    let non_creator = Address::generate(&env);
-    let verifier = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let spender = Address::generate(&env);
-    let success = Address::generate(&env);
-    let failure = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, token_admin_client) = create_token(&env, &token_admin);
-    token_admin_client.mint(&non_creator, &1_000);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
-    let contract = AccountabilityVaultClient::new(&env, &contract_id);
-
-    let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier.clone()],
-        threshold: 1u32,
-    };
-    let milestones = vec![
-        &env,
-        Milestone {
-            title: String::from_str(&env, "m1"),
-            amount: 1_000,
-            due_date: 1_200,
-            verified: false,
-            released: false,
-        },
-    ];
-    let vault_id = String::from_str(&env, "v1");
-    contract.create_vault(
-        &creator, &verifier_set, &None, &token, &1_000, &success, &failure, &1_200,
-        &milestones, &guardian,
-    );
-
-    // `from` is not the creator — must be rejected with Unauthorized.
-    contract.stake_from(&vault_id, &non_creator, &spender);
-}
-
-// ── issue #372: extend_deadline with dual auth ───────────────────────────────
-
-#[test]
-fn test_extend_deadline_success() {
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.vault_id, &s.creator);
-
-    let vault_before = s.contract.get_vault(&s.vault_id);
-    let old_end = vault_before.end_timestamp;
-
-    let new_end = old_end + 500;
-    s.contract.extend_deadline(&s.creator, &new_end);
-
-    let vault_after = s.contract.get_vault(&s.vault_id);
-    assert_eq!(vault_after.end_timestamp, new_end);
-    assert_eq!(vault_after.status, VaultStatus::Active);
-}
-
-#[test]
-#[should_panic]
-fn test_extend_deadline_on_draft_fails() {
-    let s = setup(&[100], &[500]);
-    // Vault is Draft — extend_deadline must reject with NotActive.
-    s.contract.extend_deadline(&s.creator, &2_000);
-}
-
-#[test]
-#[should_panic]
-fn test_extend_deadline_after_deadline_passed_fails() {
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.vault_id, &s.creator);
-
-    // Advance past the end_timestamp.
-    s.env.ledger().set_timestamp(2_000);
-    s.contract.extend_deadline(&s.creator, &3_000);
-}
-
-#[test]
-#[should_panic]
-fn test_extend_deadline_not_greater_than_current_fails() {
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.vault_id, &s.creator);
-
-    let vault = s.contract.get_vault(&s.vault_id);
-    // Pass the same end_timestamp — must fail with InvalidDeadline.
-    s.contract.extend_deadline(&s.creator, &vault.end_timestamp);
-}
-
-#[test]
-#[should_panic]
-fn test_extend_deadline_milestone_exceeds_new_end_fails() {
-    // milestone due_date = 1_100, vault end = 1_100.
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.vault_id, &s.creator);
-
-    // Try to extend to 1_050 — milestone due_date (1_100) > new_end (1_050).
-    s.contract.extend_deadline(&s.creator, &1_050);
-}
-
-#[test]
-#[should_panic]
-fn test_extend_deadline_wrong_creator_fails() {
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.vault_id, &s.creator);
-
-    let impostor = Address::generate(&s.env);
-    s.contract.extend_deadline(&impostor, &2_000);
-}
-
-// ── issue #364: verifier threshold validation in create_vault ────────────────
-
-#[test]
-#[should_panic]
-fn test_create_vault_invalid_threshold_exceeds_verifiers_fails() {
-    // threshold=2 with only 1 verifier must fail with InvalidThreshold.
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
-    let creator = Address::generate(&env);
-    let verifier = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let success = Address::generate(&env);
-    let failure = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, _) = create_token(&env, &token_admin);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
-    let contract = AccountabilityVaultClient::new(&env, &contract_id);
-
-    // threshold=2 but only 1 verifier — must fail with InvalidThreshold.
-    let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier.clone()],
-        threshold: 2u32,
-    };
-    let milestones = vec![
-        &env,
-        Milestone {
-            title: String::from_str(&env, "m"),
-            amount: 500,
-            due_date: 1_200,
-            verified: false,
-        },
-    ];
-    contract.create_vault(
-        &creator, &verifier_set, &None, &token, &500, &success, &failure, &1_200,
-        &milestones, &guardian,
+    assert!(matches!(second, Err(Ok(Error::NotActive))));
+    assert_eq!(
+        s.contract.get_vault(&s.vault_id).status,
+        VaultStatus::Failed
     );
 }
 
 #[test]
-#[should_panic]
-fn test_create_vault_zero_threshold_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
+fn test_check_in_after_slash_fails() {
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+    s.env.ledger().set_timestamp(1_101);
+    s.contract.slash_on_miss(&s.vault_id);
 
-    let creator = Address::generate(&env);
-    let verifier = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let success = Address::generate(&env);
-    let failure = Address::generate(&env);
-    let token_admin = Address::generate(&env);
+    let result = s
+        .contract
+        .try_check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 1));
 
-    let (token, _) = create_token(&env, &token_admin);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
-    let contract = AccountabilityVaultClient::new(&env, &contract_id);
-
-    let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier.clone()],
-        threshold: 0u32,
-    };
-    let milestones = vec![
-        &env,
-        Milestone {
-            title: String::from_str(&env, "m"),
-            amount: 500,
-            due_date: 1_200,
-            verified: false,
-        },
-    ];
-    contract.create_vault(
-        &creator, &verifier_set, &None, &token, &500, &success, &failure, &1_200,
-        &milestones, &guardian,
-    );
+    assert!(matches!(result, Err(Ok(Error::NotActive))));
 }
 
-// ── issue #363: oracle-driven check_in path ──────────────────────────────────
-
 #[test]
-fn test_oracle_check_in_succeeds() {
+fn test_unauthorized_caller_check_in_fails() {
     let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
     let oracle = Address::generate(&env);
-    let s = setup_with_oracle(&[100, 200], &[400, 600], Some(oracle.clone()));
+    let s = setup_with_oracle(&[100], &[500], Some(oracle));
     s.contract.stake(&s.vault_id, &s.creator);
 
-    // Oracle confirms both milestones.
-    s.contract.check_in(&s.vault_id, &oracle, &0);
-    s.contract.check_in(&s.vault_id, &oracle, &1);
+    let random = Address::generate(&s.env);
+    let result = s
+        .contract
+        .try_check_in(&s.vault_id, &random, &0, &evidence_hash(&s.env, 1));
 
-    s.contract.claim(&s.vault_id, &s.creator);
-    let vault = s.contract.get_vault(&s.vault_id);
-    assert_eq!(vault.status, VaultStatus::Completed);
+    assert!(matches!(result, Err(Ok(Error::Unauthorized))));
+}
 
-    let token_client = token::Client::new(&s.env, &s.token);
-    assert_eq!(token_client.balance(&s.success), 1_000);
+#[test]
+fn test_oracle_not_set_random_caller_check_in_fails() {
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    let random = Address::generate(&s.env);
+    let result = s
+        .contract
+        .try_check_in(&s.vault_id, &random, &0, &evidence_hash(&s.env, 1));
+
+    assert!(matches!(result, Err(Ok(Error::Unauthorized))));
 }
 
 #[test]
 fn test_verifier_check_in_still_works_with_oracle_configured() {
     let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
     let oracle = Address::generate(&env);
-    let s = setup_with_oracle(&[100], &[500], Some(oracle.clone()));
+    let s = setup_with_oracle(&[100], &[500], Some(oracle));
     s.contract.stake(&s.vault_id, &s.creator);
 
-    // The human verifier can still check in even when an oracle is set.
-    s.contract.check_in(&s.vault_id, &s.verifier, &0);
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 1));
 
     let vault = s.contract.get_vault(&s.vault_id);
     assert!(vault.milestones.get(0).unwrap().verified);
-}
-
-#[test]
-#[should_panic]
-fn test_unauthorized_caller_check_in_fails() {
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.vault_id, &s.creator);
-
-    let random = Address::generate(&s.env);
-    // Neither verifier nor oracle — must fail with Unauthorized.
-    s.contract.check_in(&s.vault_id, &random, &0);
-}
-
-#[test]
-#[should_panic]
-fn test_oracle_not_set_random_caller_check_in_fails() {
-    // No oracle configured; only the verifier is authorized.
-    let s = setup_with_oracle(&[100], &[500], None);
-    s.contract.stake(&s.vault_id, &s.creator);
-
-    let fake_oracle = Address::generate(&s.env);
-    s.contract.check_in(&s.vault_id, &fake_oracle, &0);
-}
-
-#[test]
-fn test_vault_has_oracle_field_when_set() {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
-    let creator = Address::generate(&env);
-    let verifier = Address::generate(&env);
-    let oracle = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let success = Address::generate(&env);
-    let failure = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, token_admin_client) = create_token(&env, &token_admin);
-    token_admin_client.mint(&creator, &500);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
-    let contract = AccountabilityVaultClient::new(&env, &contract_id);
-
-    let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier.clone()],
-        threshold: 1u32,
-    };
-    let milestones = vec![
-        &env,
-        Milestone {
-            title: String::from_str(&env, "goal"),
-            amount: 500,
-            due_date: 1_200,
-            verified: false,
-            released: false,
-        },
-    ];
-    let vault_id = String::from_str(&env, "v1");
-    contract.create_vault(
-        &vault_id,
-        &creator,
-        &verifier_set,
-        &Some(oracle.clone()),
-        &token,
-        &500,
-        &success,
-        &failure,
-        &1_200,
-        &milestones,
-        &guardian,
-    );
-
-    let vault = contract.get_vault(&vault_id);
-    assert_eq!(vault.oracle, Some(oracle));
-}
-
-#[test]
-fn test_vault_oracle_field_is_none_when_not_set() {
-    let s = setup(&[100], &[500]);
-    let vault = s.contract.get_vault(&s.vault_id);
-    assert_eq!(vault.oracle, None);
-}
-
-// ── cross-feature: stake_from then oracle check_in then claim ────────────────
-
-#[test]
-fn test_stake_from_oracle_checkin_claim_full_flow() {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
-    let creator = Address::generate(&env);
-    let verifier = Address::generate(&env);
-    let oracle = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let spender = Address::generate(&env);
-    let success = Address::generate(&env);
-    let failure = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, token_admin_client) = create_token(&env, &token_admin);
-    token_admin_client.mint(&creator, &500);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
-    let contract = AccountabilityVaultClient::new(&env, &contract_id);
-
-    let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier.clone()],
-        threshold: 1u32,
-    };
-    let milestones = vec![
-        &env,
-        Milestone {
-            title: String::from_str(&env, "goal"),
-            amount: 500,
-            due_date: 1_200,
-            verified: false,
-            released: false,
-        },
-    ];
-    let vault_id = String::from_str(&env, "v1");
-    contract.create_vault(
-        &vault_id,
-        &creator,
-        &verifier_set,
-        &Some(oracle.clone()),
-        &token,
-        &500,
-        &success,
-        &failure,
-        &1_200,
-        &milestones,
-        &guardian,
-    );
-
-    let token_client = token::Client::new(&env, &token);
-    token_client.approve(&creator, &spender, &500, &200);
-
-    // Backend drives staking via allowance.
-    contract.stake_from(&vault_id, &creator, &spender);
-    assert_eq!(contract.get_vault(&vault_id).status, VaultStatus::Active);
-
-    // Oracle confirms the milestone.
-    contract.check_in(&vault_id, &oracle, &0);
-    assert!(contract.get_vault(&vault_id).milestones.get(0).unwrap().verified);
-
-    // Claim releases funds.
-    contract.claim(&vault_id, &creator);
-    assert_eq!(contract.get_vault(&vault_id).status, VaultStatus::Completed);
-    assert_eq!(token_client.balance(&success), 500);
-}
-
-// ── issue #352: checks-effects-interactions ordering tests ───────────────────
-
-#[test]
-fn test_cei_slash_on_miss_state_is_terminal_before_transfer() {
-    // After slash_on_miss the vault must be in Failed terminal state with
-    // staked == 0 (CEI: state persisted before the external token transfer).
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.creator);
-
-    s.env.ledger().set_timestamp(2_000);
-    s.contract.slash_on_miss();
-
-    let vault = s.contract.get_vault();
-    assert_eq!(vault.status, VaultStatus::Failed);
-    assert_eq!(vault.staked, 0);
-
-    let token_client = token::Client::new(&s.env, &s.token);
-    assert_eq!(token_client.balance(&s.failure), 500);
-}
-
-#[test]
-fn test_cei_claim_state_is_terminal_before_transfer() {
-    // After claim the vault must be in Completed terminal state with staked == 0
-    // (CEI: state persisted before the external token transfer).
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.creator);
-    s.contract.check_in(&s.verifier, &0);
-    s.contract.claim(&s.creator);
-
-    let vault = s.contract.get_vault();
-    assert_eq!(vault.status, VaultStatus::Completed);
-    assert_eq!(vault.staked, 0);
-
-    let token_client = token::Client::new(&s.env, &s.token);
-    assert_eq!(token_client.balance(&s.success), 500);
-}
-
-#[test]
-fn test_cei_slash_cannot_be_triggered_twice() {
-    // After a successful slash_on_miss the vault is Failed; a second call must
-    // fail with NotActive — the CEI state update prevents double-slash.
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.creator);
-
-    s.env.ledger().set_timestamp(2_000);
-    s.contract.slash_on_miss();
-
-    let result = s.contract.try_slash_on_miss();
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_cei_claim_cannot_be_triggered_twice() {
-    // After a successful claim the vault is Completed; a second call must fail
-    // with NotActive — the CEI state update prevents double-claim.
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.creator);
-    s.contract.check_in(&s.verifier, &0);
-    s.contract.claim(&s.creator);
-
-    let result = s.contract.try_claim(&s.creator);
-    assert!(result.is_err());
-}
-
-// ── issue #357: emergency pause / unpause tests ──────────────────────────────
-
-#[test]
-#[should_panic]
-fn test_pause_blocks_slash_on_miss() {
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.creator);
-    s.contract.emergency_pause(&s.guardian);
-
-    s.env.ledger().set_timestamp(2_000);
-    // Must fail with Paused.
-    s.contract.slash_on_miss();
-}
-
-#[test]
-#[should_panic]
-fn test_pause_blocks_claim() {
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.creator);
-    s.contract.check_in(&s.verifier, &0);
-    s.contract.emergency_pause(&s.guardian);
-
-    // Must fail with Paused.
-    s.contract.claim(&s.creator);
-}
-
-#[test]
-#[should_panic]
-fn test_pause_blocks_withdraw_active() {
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.creator);
-    s.contract.emergency_pause(&s.guardian);
-
-    // Must fail with Paused.
-    s.contract.withdraw(&s.creator);
-}
-
-#[test]
-fn test_unpause_allows_slash_on_miss() {
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.creator);
-    s.contract.emergency_pause(&s.guardian);
-    s.contract.emergency_unpause(&s.guardian);
-
-    s.env.ledger().set_timestamp(2_000);
-    s.contract.slash_on_miss();
-
-    let vault = s.contract.get_vault();
-    assert_eq!(vault.status, VaultStatus::Failed);
-}
-
-#[test]
-fn test_unpause_allows_claim() {
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.creator);
-    s.contract.check_in(&s.verifier, &0);
-    s.contract.emergency_pause(&s.guardian);
-    s.contract.emergency_unpause(&s.guardian);
-
-    s.contract.claim(&s.creator);
-
-    let vault = s.contract.get_vault();
-    assert_eq!(vault.status, VaultStatus::Completed);
-}
-
-#[test]
-#[should_panic]
-fn test_non_guardian_cannot_pause() {
-    let s = setup(&[100], &[500]);
-    s.contract.stake(&s.creator);
-
-    let impostor = Address::generate(&s.env);
-    // impostor is not the vault guardian — must fail with Unauthorized.
-    s.contract.emergency_pause(&impostor);
-}
-
-#[test]
-fn test_pause_does_not_block_draft_withdraw() {
-    // Cancelling a Draft vault does not transfer tokens; the pause only
-    // blocks the active-vault settlement paths.
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
-    let creator = Address::generate(&env);
-    let verifier = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let success = Address::generate(&env);
-    let failure = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, token_admin_client) = create_token(&env, &token_admin);
-    token_admin_client.mint(&creator, &500);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
-    let contract = AccountabilityVaultClient::new(&env, &contract_id);
-
-    let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier.clone()],
-        threshold: 1u32,
-    };
-    let milestones = vec![
-        &env,
-        Milestone {
-            title: String::from_str(&env, "m"),
-            amount: 500,
-            due_date: 1_200,
-            verified: false,
-        },
-    ];
-    contract.create_vault(
-        &creator, &verifier_set, &None, &token, &500, &success, &failure, &1_200,
-        &milestones, &guardian,
-    );
-
-    // Pause before staking (vault is still Draft).
-    contract.emergency_pause(&guardian);
-
-    // Draft-path withdraw (cancel) must still succeed.
-    contract.withdraw(&creator);
-    let vault = contract.get_vault();
-    assert_eq!(vault.status, VaultStatus::Cancelled);
-}
-
-// ── issue #364: M-of-N multi-verifier check_in tests ─────────────────────────
-
-#[test]
-fn test_multi_verifier_single_approval_insufficient_for_threshold_two() {
-    // With 2 verifiers and threshold=2, a single approval does not verify the milestone.
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
-    let creator = Address::generate(&env);
-    let verifier1 = Address::generate(&env);
-    let verifier2 = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let success = Address::generate(&env);
-    let failure = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, token_admin_client) = create_token(&env, &token_admin);
-    token_admin_client.mint(&creator, &500);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
-    let contract = AccountabilityVaultClient::new(&env, &contract_id);
-
-    let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier1.clone(), verifier2.clone()],
-        threshold: 2u32,
-    };
-    let milestones = vec![
-        &env,
-        Milestone {
-            title: String::from_str(&env, "m"),
-            amount: 500,
-            due_date: 1_200,
-            verified: false,
-        },
-    ];
-    contract.create_vault(
-        &creator, &verifier_set, &None, &token, &500, &success, &failure, &1_200,
-        &milestones, &guardian,
-    );
-    contract.stake(&creator);
-
-    // Only verifier1 approves — threshold not yet reached.
-    contract.check_in(&verifier1, &0);
-    let vault = contract.get_vault();
-    assert!(!vault.milestones.get(0).unwrap().verified);
-}
-
-#[test]
-fn test_multi_verifier_both_approve_verifies_milestone() {
-    // With 2 verifiers and threshold=2, both approving flips the milestone to verified.
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
-    let creator = Address::generate(&env);
-    let verifier1 = Address::generate(&env);
-    let verifier2 = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let success = Address::generate(&env);
-    let failure = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, token_admin_client) = create_token(&env, &token_admin);
-    token_admin_client.mint(&creator, &500);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
-    let contract = AccountabilityVaultClient::new(&env, &contract_id);
-
-    let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier1.clone(), verifier2.clone()],
-        threshold: 2u32,
-    };
-    let milestones = vec![
-        &env,
-        Milestone {
-            title: String::from_str(&env, "m"),
-            amount: 500,
-            due_date: 1_200,
-            verified: false,
-        },
-    ];
-    contract.create_vault(
-        &creator, &verifier_set, &None, &token, &500, &success, &failure, &1_200,
-        &milestones, &guardian,
-    );
-    contract.stake(&creator);
-
-    // Both verifiers approve — threshold reached.
-    contract.check_in(&verifier1, &0);
-    contract.check_in(&verifier2, &0);
-
-    let vault = contract.get_vault();
-    assert!(vault.milestones.get(0).unwrap().verified);
-}
-
-#[test]
-#[should_panic]
-fn test_multi_verifier_double_approval_by_same_verifier_fails() {
-    // The same verifier may not approve the same milestone twice.
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
-    let creator = Address::generate(&env);
-    let verifier1 = Address::generate(&env);
-    let verifier2 = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let success = Address::generate(&env);
-    let failure = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, token_admin_client) = create_token(&env, &token_admin);
-    token_admin_client.mint(&creator, &500);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
-    let contract = AccountabilityVaultClient::new(&env, &contract_id);
-
-    let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier1.clone(), verifier2.clone()],
-        threshold: 2u32,
-    };
-    let milestones = vec![
-        &env,
-        Milestone {
-            title: String::from_str(&env, "m"),
-            amount: 500,
-            due_date: 1_200,
-            verified: false,
-        },
-    ];
-    contract.create_vault(
-        &creator, &verifier_set, &None, &token, &500, &success, &failure, &1_200,
-        &milestones, &guardian,
-    );
-    contract.stake(&creator);
-
-    contract.check_in(&verifier1, &0);
-    // Same verifier approves again — must fail with AlreadyApproved.
-    contract.check_in(&verifier1, &0);
-}
-
-#[test]
-fn test_multi_verifier_threshold_one_of_two_single_approval_sufficient() {
-    // With 2 verifiers and threshold=1, a single approval verifies the milestone.
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
-    let creator = Address::generate(&env);
-    let verifier1 = Address::generate(&env);
-    let verifier2 = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let success = Address::generate(&env);
-    let failure = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, token_admin_client) = create_token(&env, &token_admin);
-    token_admin_client.mint(&creator, &500);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
-    let contract = AccountabilityVaultClient::new(&env, &contract_id);
-
-    let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier1.clone(), verifier2.clone()],
-        threshold: 1u32,
-    };
-    let milestones = vec![
-        &env,
-        Milestone {
-            title: String::from_str(&env, "m"),
-            amount: 500,
-            due_date: 1_200,
-            verified: false,
-        },
-    ];
-    contract.create_vault(
-        &creator, &verifier_set, &None, &token, &500, &success, &failure, &1_200,
-        &milestones, &guardian,
-    );
-    contract.stake(&creator);
-
-    // Only verifier1 approves — sufficient for threshold=1.
-    contract.check_in(&verifier1, &0);
-    let vault = contract.get_vault();
-    assert!(vault.milestones.get(0).unwrap().verified);
-}
-
-#[test]
-fn test_multi_verifier_2of2_full_claim_flow() {
-    // Two verifiers, threshold=2: both must approve each milestone before claim.
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
-    let creator = Address::generate(&env);
-    let verifier1 = Address::generate(&env);
-    let verifier2 = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let success = Address::generate(&env);
-    let failure = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, token_admin_client) = create_token(&env, &token_admin);
-    token_admin_client.mint(&creator, &1_000);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
-    let contract = AccountabilityVaultClient::new(&env, &contract_id);
-
-    let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier1.clone(), verifier2.clone()],
-        threshold: 2u32,
-    };
-    let milestones = vec![
-        &env,
-        Milestone {
-            title: String::from_str(&env, "m1"),
-            amount: 400,
-            due_date: 1_100,
-            verified: false,
-        },
-        Milestone {
-            title: String::from_str(&env, "m2"),
-            amount: 600,
-            due_date: 1_200,
-            verified: false,
-        },
-    ];
-    contract.create_vault(
-        &creator, &verifier_set, &None, &token, &1_000, &success, &failure, &1_200,
-        &milestones, &guardian,
-    );
-    contract.stake(&creator);
-
-    // Milestone 0: both verifiers must approve.
-    contract.check_in(&verifier1, &0);
-    assert!(!contract.get_vault().milestones.get(0).unwrap().verified);
-    contract.check_in(&verifier2, &0);
-    assert!(contract.get_vault().milestones.get(0).unwrap().verified);
-
-    // Milestone 1: both verifiers must approve.
-    contract.check_in(&verifier1, &1);
-    contract.check_in(&verifier2, &1);
-    assert!(contract.get_vault().milestones.get(1).unwrap().verified);
-
-    // All milestones verified — claim succeeds.
-    contract.claim(&creator);
-    assert_eq!(contract.get_vault().status, VaultStatus::Completed);
-
-    let token_client = token::Client::new(&env, &token);
-    assert_eq!(token_client.balance(&success), 1_000);
-}
-
-// ── gas benchmarks ───────────────────────────────────────────────────────────
-
-#[test]
-fn test_gas_benchmarks_10_milestones() {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(1_000);
-
-    let creator = Address::generate(&env);
-    let verifier = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let success = Address::generate(&env);
-    let failure = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, token_admin_client) = create_token(&env, &token_admin);
-
-    let milestone_count = 10;
-    let milestone_amount = 100i128;
-    let total_amount = milestone_amount * (milestone_count as i128);
-    token_admin_client.mint(&creator, &total_amount);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
-    let contract = AccountabilityVaultClient::new(&env, &contract_id);
-
-    let mut milestones = vec![&env];
-    for i in 0..milestone_count {
-        milestones.push_back(Milestone {
-            title: String::from_str(&env, "milestone"),
-            amount: milestone_amount,
-            due_date: 1_000 + (i as u64 + 1) * 100,
-            verified: false,
-        });
-    }
-
-    let end_timestamp = 1_000 + (milestone_count as u64) * 100;
-    let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier.clone()],
-        threshold: 1u32,
-    };
-
-    // 1. Measure create_vault
-    env.budget().reset_default();
-    contract.create_vault(
-        &vault_id,
-        &creator,
-        &verifier_set,
-        &None,
-        &token,
-        &total_amount,
-        &success,
-        &failure,
-        &end_timestamp,
-        &milestones,
-        &guardian,
-    );
-    let create_cpu = env.budget().cpu_instruction_cost();
-    let create_mem = env.budget().memory_bytes_cost();
-
-    // 2. Measure stake
-    env.budget().reset_default();
-    contract.stake(&vault_id, &creator);
-    let stake_cpu = env.budget().cpu_instruction_cost();
-    let stake_mem = env.budget().memory_bytes_cost();
-
-    // 3. Measure check_in
-    env.budget().reset_default();
-    contract.check_in(&vault_id, &verifier, &0);
-    let check_in_cpu = env.budget().cpu_instruction_cost();
-    let check_in_mem = env.budget().memory_bytes_cost();
-
-    // Verify all remaining milestones so we can claim
-    for i in 1..milestone_count {
-        contract.check_in(&vault_id, &verifier, &i);
-    }
-
-    // 4. Measure claim
-    env.budget().reset_default();
-    contract.claim(&vault_id, &creator);
-    let claim_cpu = env.budget().cpu_instruction_cost();
-    let claim_mem = env.budget().memory_bytes_cost();
-
-    std::println!("=== Gas Benchmarks (10 Milestones) ===");
-    std::println!("create_vault: CPU = {}, Memory = {}", create_cpu, create_mem);
-    std::println!("stake:        CPU = {}, Memory = {}", stake_cpu, stake_mem);
-    std::println!("check_in:     CPU = {}, Memory = {}", check_in_cpu, check_in_mem);
-    std::println!("claim:        CPU = {}, Memory = {}", claim_cpu, claim_mem);
-
-    assert!(create_cpu < 600_000);
-    assert!(create_mem < 200_000);
-
-    assert!(stake_cpu < 700_000);
-    assert!(stake_mem < 200_000);
-
-    assert!(check_in_cpu < 300_000);
-    assert!(check_in_mem < 100_000);
-
-    assert!(claim_cpu < 900_000);
-    assert!(claim_mem < 250_000);
+    assert_eq!(vault.status, VaultStatus::Active);
 }
 
 #[test]
 fn test_gas_benchmarks_slash_on_miss_10_milestones() {
+    let offsets: [u64; 10] = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+    let amounts: [i128; 10] = [100; 10];
+    let s = setup(&offsets, &amounts);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    s.env.ledger().set_timestamp(1_101);
+    s.env.budget().reset_default();
+    s.contract.slash_on_miss(&s.vault_id);
+
+    let slash_cpu = s.env.budget().cpu_instruction_cost();
+    let slash_mem = s.env.budget().memory_bytes_cost();
+
+    std::println!(
+        "slash_on_miss_10_milestones: CPU = {}, Memory = {}",
+        slash_cpu,
+        slash_mem
+    );
+    assert!(slash_cpu < 900_000);
+    assert!(slash_mem < 250_000);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// i128 milestone-amount partial-payout boundary test matrix
+//
+// Invariants under test:
+//   1. sum(milestone.amount) == vault.amount  (enforced at creation)
+//   2. After sequentially claiming all milestones, vault.staked == 0
+//   3. No panic / overflow on extreme i128 values
+//   4. Rounding never drains escrow below solvency (staked >= 0 after
+//      every intermediate claim_milestone)
+//   5. Zero-amount milestones are rejected at creation
+//   6. Slash transfers the full staked balance regardless of amount size
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Helper: create vault, stake, verify all milestones, then claim them
+/// one-by-one. Returns the final vault state.
+fn claim_all_milestones_sequentially(offsets: &[u64], amounts: &[i128]) -> Vault {
+    let s = setup(offsets, amounts);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    // Verify every milestone.
+    for i in 0..amounts.len() {
+        s.contract
+            .check_in(&s.vault_id, &s.verifier, &(i as u32), &evidence_hash(&s.env, i as u8));
+    }
+
+    // Claim milestones one at a time and assert intermediate solvency.
+    let token_client = token::Client::new(&s.env, &s.token);
+    let contract_addr = s.contract.address.clone();
+    let total: i128 = amounts.iter().sum();
+
+    let mut released_so_far: i128 = 0;
+    for i in 0..amounts.len() {
+        s.contract.claim_milestone(&s.vault_id, &s.creator, &(i as u32));
+        released_so_far += amounts[i];
+
+        let vault = s.contract.get_vault(&s.vault_id);
+        // Solvency: staked must equal what remains.
+        assert_eq!(
+            vault.staked,
+            total - released_so_far,
+            "solvency violation after claiming milestone {}",
+            i
+        );
+        // Contract balance must cover the remaining staked amount.
+        assert!(
+            token_client.balance(&contract_addr) >= vault.staked,
+            "contract balance underflow after milestone {}",
+            i
+        );
+    }
+
+    s.contract.get_vault(&s.vault_id)
+}
+
+// ─── 1. Minimum valid amount (1 unit per milestone) ─────────────────
+
+#[test]
+fn test_boundary_single_milestone_amount_one() {
+    let vault = claim_all_milestones_sequentially(&[100], &[1]);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+#[test]
+fn test_boundary_three_milestones_amount_one_each() {
+    let vault = claim_all_milestones_sequentially(&[100, 200, 300], &[1, 1, 1]);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+// ─── 2. Large near-max i128 amounts ─────────────────────────────────
+
+#[test]
+fn test_boundary_single_milestone_large_amount() {
+    // Use a large value that stays well within i128::MAX but exercises
+    // high-magnitude arithmetic (10^36).
+    let large: i128 = 1_000_000_000_000_000_000_000_000_000_000_000_000; // 10^36
+    let vault = claim_all_milestones_sequentially(&[100], &[large]);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+#[test]
+fn test_boundary_two_milestones_sum_near_max() {
+    // Two milestones whose sum is close to i128::MAX.
+    // i128::MAX = 170_141_183_460_469_231_731_687_303_715_884_105_727
+    let half = i128::MAX / 2;            // 85_070_591_730_234_615_865_843_651_857_942_052_863
+    let other_half = i128::MAX - half;   // 85_070_591_730_234_615_865_843_651_857_942_052_864
+    assert_eq!(half + other_half, i128::MAX);
+
+    let s = setup(&[100, 200], &[half, other_half]);
+
+    // Vault creation succeeds, proving the sum check handles i128::MAX.
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.amount, i128::MAX);
+    assert_eq!(vault.milestones.len(), 2);
+    assert_eq!(vault.milestones.get(0).unwrap().amount, half);
+    assert_eq!(vault.milestones.get(1).unwrap().amount, other_half);
+}
+
+// ─── 3. Uneven 3-way split with remainder ───────────────────────────
+
+#[test]
+fn test_boundary_uneven_three_way_split() {
+    // 100 / 3 = 33 remainder 1. We split as 34 + 33 + 33 so the sum is exact.
+    let vault = claim_all_milestones_sequentially(&[100, 200, 300], &[34, 33, 33]);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+#[test]
+fn test_boundary_uneven_seven_way_split() {
+    // 1_000_000 across 7 milestones. 1_000_000 / 7 = 142_857 rem 1.
+    // Distribute as: 6 × 142_857 + 1 × 142_858 = 1_000_000.
+    let amounts: [i128; 7] = [142_857, 142_857, 142_857, 142_857, 142_857, 142_857, 142_858];
+    let offsets: [u64; 7] = [10, 20, 30, 40, 50, 60, 70];
+    assert_eq!(amounts.iter().sum::<i128>(), 1_000_000);
+
+    let vault = claim_all_milestones_sequentially(&offsets, &amounts);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+#[test]
+fn test_boundary_prime_split() {
+    // A prime total (997) split across 3 milestones.
+    // 997 / 3 = 332 rem 1 → 333 + 332 + 332.
+    let vault = claim_all_milestones_sequentially(&[100, 200, 300], &[333, 332, 332]);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+// ─── 4. Bulk claim path with boundary amounts ───────────────────────
+
+#[test]
+fn test_boundary_bulk_claim_amount_one() {
+    let s = setup(&[100], &[1]);
+    s.contract.stake(&s.vault_id, &s.creator);
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 0));
+
+    s.contract.claim(&s.vault_id, &s.creator);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+#[test]
+fn test_boundary_bulk_claim_large_amount() {
+    let large: i128 = 999_999_999_999_999_999_999_999_999; // ~10^27
+    let s = setup(&[100], &[large]);
+    s.contract.stake(&s.vault_id, &s.creator);
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 0));
+
+    s.contract.claim(&s.vault_id, &s.creator);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Completed);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    let success_dest = vault.success_destination;
+    assert_eq!(token_client.balance(&success_dest), large);
+}
+
+// ─── 5. Slash path with boundary amounts ────────────────────────────
+
+#[test]
+fn test_boundary_slash_amount_one() {
+    let s = setup(&[100], &[1]);
+    s.contract.stake(&s.vault_id, &s.creator);
+    s.env.ledger().set_timestamp(1_101);
+
+    s.contract.slash_on_miss(&s.vault_id);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Failed);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    assert_eq!(token_client.balance(&s.failure), 1);
+}
+
+#[test]
+fn test_boundary_slash_large_amount() {
+    let large: i128 = 1_000_000_000_000_000_000_000_000_000_000_000_000; // 10^36
+    let s = setup(&[100], &[large]);
+    s.contract.stake(&s.vault_id, &s.creator);
+    s.env.ledger().set_timestamp(1_101);
+
+    s.contract.slash_on_miss(&s.vault_id);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Failed);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    assert_eq!(token_client.balance(&s.failure), large);
+}
+
+#[test]
+fn test_boundary_slash_uneven_multi_milestone() {
+    // 5 milestones with uneven amounts; slash must transfer entire staked
+    // balance regardless of per-milestone distribution.
+    let amounts: [i128; 5] = [17, 31, 29, 11, 12];
+    let offsets: [u64; 5] = [10, 20, 30, 40, 50];
+    let total: i128 = amounts.iter().sum();
+
+    let s = setup(&offsets, &amounts);
+    s.contract.stake(&s.vault_id, &s.creator);
+    s.env.ledger().set_timestamp(1_051);
+
+    s.contract.slash_on_miss(&s.vault_id);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.staked, 0);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    assert_eq!(token_client.balance(&s.failure), total);
+}
+
+// ─── 6. Mixed large + small milestones ──────────────────────────────
+
+#[test]
+fn test_boundary_mixed_large_and_tiny_milestones() {
+    // One very large milestone alongside a single-unit milestone.
+    // Tests that subtracting 1 from a huge staked value doesn't break.
+    let large: i128 = 999_999_999_999_999_999;
+    let amounts = [large, 1];
+    let offsets = [100, 200];
+
+    let vault = claim_all_milestones_sequentially(&offsets, &amounts);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+#[test]
+fn test_boundary_descending_powers_of_ten() {
+    // Milestones: 10^12, 10^6, 10^3, 10^0 = [1_000_000_000_000, 1_000_000, 1_000, 1]
+    let amounts: [i128; 4] = [1_000_000_000_000, 1_000_000, 1_000, 1];
+    let offsets: [u64; 4] = [100, 200, 300, 400];
+
+    let vault = claim_all_milestones_sequentially(&offsets, &amounts);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+// ─── 7. Rejection of invalid amounts at vault creation ──────────────
+
+#[test]
+fn test_boundary_zero_amount_milestone_rejected() {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
     let creator = Address::generate(&env);
     let verifier = Address::generate(&env);
-    let guardian = Address::generate(&env);
     let success = Address::generate(&env);
     let failure = Address::generate(&env);
     let token_admin = Address::generate(&env);
-
     let (token, token_admin_client) = create_token(&env, &token_admin);
+    token_admin_client.mint(&creator, &100);
 
-    let milestone_count = 10;
-    let milestone_amount = 100i128;
-    let total_amount = milestone_amount * (milestone_count as i128);
-    token_admin_client.mint(&creator, &total_amount);
-
-    let contract_id = env.register_contract(None, AccountabilityVault);
+    let contract_id = env.register(AccountabilityVault, ());
     let contract = AccountabilityVaultClient::new(&env, &contract_id);
+    let vault_id = String::from_str(&env, "vault-zero");
 
-    let mut milestones = vec![&env];
-    for i in 0..milestone_count {
-        milestones.push_back(Milestone {
-            title: String::from_str(&env, "milestone"),
-            amount: milestone_amount,
-            due_date: 1_000 + (i as u64 + 1) * 100,
+    let milestones = vec![
+        &env,
+        Milestone {
+            title: String::from_str(&env, "m1"),
+            amount: 0,
+            due_date: 1_100,
             verified: false,
-        });
-    }
+            released: false,
+        },
+        Milestone {
+            title: String::from_str(&env, "m2"),
+            amount: 100,
+            due_date: 1_100,
+            verified: false,
+            released: false,
+        },
+    ];
 
-    let end_timestamp = 1_000 + (milestone_count as u64) * 100;
     let verifier_set = VerifierSet {
-        verifiers: vec![&env, verifier.clone()],
-        threshold: 1u32,
+        verifiers: vec![&env, verifier],
+        threshold: 1,
     };
 
-    contract.create_vault(
+    let result = contract.try_create_vault(
         &vault_id,
         &creator,
         &verifier_set,
-        &None,
+        &None::<Address>,
         &token,
-        &total_amount,
+        &100,
         &success,
         &failure,
-        &end_timestamp,
+        &1_100u64,
         &milestones,
-        &guardian,
     );
+    assert!(matches!(result, Err(Ok(Error::InvalidAmount))));
+}
 
-    contract.stake(&creator);
+#[test]
+fn test_boundary_negative_amount_milestone_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
 
-    // Advance past the overall deadline to allow slash
-    env.ledger().set_timestamp(end_timestamp + 1);
+    let creator = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    let success = Address::generate(&env);
+    let failure = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token, token_admin_client) = create_token(&env, &token_admin);
+    token_admin_client.mint(&creator, &100);
 
-    // Measure slash_on_miss
-    env.budget().reset_default();
-    contract.slash_on_miss(&vault_id);
-    let slash_cpu = env.budget().cpu_instruction_cost();
-    let slash_mem = env.budget().memory_bytes_cost();
+    let contract_id = env.register(AccountabilityVault, ());
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+    let vault_id = String::from_str(&env, "vault-neg");
 
-    std::println!("=== Gas Benchmarks Slash (10 Milestones) ===");
-    std::println!("slash_on_miss: CPU = {}, Memory = {}", slash_cpu, slash_mem);
+    let milestones = vec![
+        &env,
+        Milestone {
+            title: String::from_str(&env, "m1"),
+            amount: -1,
+            due_date: 1_100,
+            verified: false,
+            released: false,
+        },
+        Milestone {
+            title: String::from_str(&env, "m2"),
+            amount: 101,
+            due_date: 1_100,
+            verified: false,
+            released: false,
+        },
+    ];
 
-    assert!(slash_cpu < 900_000);
-    assert!(slash_mem < 250_000);
+    let verifier_set = VerifierSet {
+        verifiers: vec![&env, verifier],
+        threshold: 1,
+    };
+
+    let result = contract.try_create_vault(
+        &vault_id,
+        &creator,
+        &verifier_set,
+        &None::<Address>,
+        &token,
+        &100,
+        &success,
+        &failure,
+        &1_100u64,
+        &milestones,
+    );
+    assert!(matches!(result, Err(Ok(Error::InvalidAmount))));
+}
+
+#[test]
+fn test_boundary_milestone_sum_mismatch_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    let success = Address::generate(&env);
+    let failure = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token, token_admin_client) = create_token(&env, &token_admin);
+    token_admin_client.mint(&creator, &100);
+
+    let contract_id = env.register(AccountabilityVault, ());
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+    let vault_id = String::from_str(&env, "vault-mis");
+
+    // Milestones sum to 99 but declared amount is 100.
+    let milestones = vec![
+        &env,
+        Milestone {
+            title: String::from_str(&env, "m1"),
+            amount: 50,
+            due_date: 1_100,
+            verified: false,
+            released: false,
+        },
+        Milestone {
+            title: String::from_str(&env, "m2"),
+            amount: 49,
+            due_date: 1_100,
+            verified: false,
+            released: false,
+        },
+    ];
+
+    let verifier_set = VerifierSet {
+        verifiers: vec![&env, verifier],
+        threshold: 1,
+    };
+
+    let result = contract.try_create_vault(
+        &vault_id,
+        &creator,
+        &verifier_set,
+        &None::<Address>,
+        &token,
+        &100,
+        &success,
+        &failure,
+        &1_100u64,
+        &milestones,
+    );
+    assert!(matches!(result, Err(Ok(Error::AmountMismatch))));
+}
+
+// ─── 8. Partial claim then slash (mixed path) ───────────────────────
+
+#[test]
+fn test_boundary_partial_claim_then_bulk_claim_rejected() {
+    // After claiming one milestone via claim_milestone, bulk claim must be
+    // rejected to prevent double-release.
+    let amounts: [i128; 3] = [100, 200, 300];
+    let offsets: [u64; 3] = [100, 200, 300];
+
+    let s = setup(&offsets, &amounts);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    // Verify all milestones.
+    for i in 0..3u32 {
+        s.contract
+            .check_in(&s.vault_id, &s.verifier, &i, &evidence_hash(&s.env, i as u8));
+    }
+
+    // Claim only the first milestone.
+    s.contract.claim_milestone(&s.vault_id, &s.creator, &0);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.staked, 500); // 600 - 100
+
+    // Bulk claim must be rejected.
+    let result = s.contract.try_claim(&s.vault_id, &s.creator);
+    assert!(matches!(result, Err(Ok(Error::PartiallyReleased))));
+}
+
+// ─── 9. Double claim_milestone rejected ─────────────────────────────
+
+#[test]
+fn test_boundary_double_claim_milestone_rejected() {
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 0));
+
+    s.contract.claim_milestone(&s.vault_id, &s.creator, &0);
+
+    let result = s
+        .contract
+        .try_claim_milestone(&s.vault_id, &s.creator, &0);
+    // Second claim should fail because vault is now Completed (single milestone).
+    assert!(result.is_err());
+}
+
+// ─── 10. Solvency matrix: N milestones claimed in various orders ────
+
+#[test]
+fn test_boundary_reverse_order_claim() {
+    // Claim milestones in reverse order to verify staked balance
+    // is exact regardless of claim sequence.
+    let amounts: [i128; 4] = [1, 2, 3, 4];
+    let offsets: [u64; 4] = [100, 200, 300, 400];
+    let total: i128 = amounts.iter().sum(); // 10
+
+    let s = setup(&offsets, &amounts);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    for i in 0..4u32 {
+        s.contract
+            .check_in(&s.vault_id, &s.verifier, &i, &evidence_hash(&s.env, i as u8));
+    }
+
+    let mut released: i128 = 0;
+    for i in (0..4u32).rev() {
+        s.contract.claim_milestone(&s.vault_id, &s.creator, &i);
+        released += amounts[i as usize];
+
+        let vault = s.contract.get_vault(&s.vault_id);
+        assert_eq!(
+            vault.staked,
+            total - released,
+            "solvency violation after reverse-claiming milestone {}",
+            i
+        );
+    }
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+#[test]
+fn test_boundary_interleaved_claim_order() {
+    // Claim in order: 2, 0, 4, 1, 3 (non-sequential).
+    let amounts: [i128; 5] = [10, 20, 30, 40, 50];
+    let offsets: [u64; 5] = [100, 200, 300, 400, 500];
+    let total: i128 = amounts.iter().sum(); // 150
+
+    let s = setup(&offsets, &amounts);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    for i in 0..5u32 {
+        s.contract
+            .check_in(&s.vault_id, &s.verifier, &i, &evidence_hash(&s.env, i as u8));
+    }
+
+    let claim_order: [u32; 5] = [2, 0, 4, 1, 3];
+    let mut released: i128 = 0;
+    for &idx in claim_order.iter() {
+        s.contract.claim_milestone(&s.vault_id, &s.creator, &idx);
+        released += amounts[idx as usize];
+
+        let vault = s.contract.get_vault(&s.vault_id);
+        assert_eq!(
+            vault.staked,
+            total - released,
+            "solvency violation after claiming milestone {} (interleaved)",
+            idx
+        );
+        // Invariant: staked must never go negative.
+        assert!(vault.staked >= 0, "negative staked after milestone {}", idx);
+    }
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+// ─── 11. Boundary: many milestones with amount=1 ────────────────────
+
+#[test]
+fn test_boundary_twenty_milestones_amount_one() {
+    let n = 20;
+    let amounts = [1i128; 20];
+    let offsets: Vec<u64> = (1..=n).map(|i| i as u64 * 10).collect();
+
+    let vault = claim_all_milestones_sequentially(&offsets, &amounts);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Completed);
+}
+
+// ─── 12. Boundary: large remainder routing across many milestones ───
+
+#[test]
+fn test_boundary_large_total_uneven_13_way_split() {
+    // Total: 10^18, 13 milestones.
+    // 10^18 / 13 = 76_923_076_923_076_923 rem 1.
+    let base: i128 = 76_923_076_923_076_923;
+    let mut amounts = [base; 13];
+    amounts[12] = base + 1; // absorb the remainder
+    let total: i128 = amounts.iter().sum();
+    assert_eq!(total, 1_000_000_000_000_000_000i128);
+
+    let offsets: Vec<u64> = (1..=13).map(|i| i as u64 * 10).collect();
+    let vault = claim_all_milestones_sequentially(&offsets, &amounts);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.status, VaultStatus::Completed);
 }

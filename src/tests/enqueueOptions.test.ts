@@ -1,4 +1,5 @@
 
+import './initTestEnv.js'
 import { describe, it, expect, afterAll } from '@jest/globals'
 import express, { type Request, type Response, type NextFunction } from 'express'
 import request from 'supertest'
@@ -6,19 +7,25 @@ import { generateAccessToken } from '../lib/auth-utils.js'
 import { UserRole } from '../types/user.js'
 import { createJobsRouter } from '../routes/jobs.js'
 import { BackgroundJobSystem } from '../jobs/system.js'
+import { parseEnqueueOptions } from '../jobs/enqueueOptions.js'
+import { JOB_TYPES } from '../jobs/types.js'
+
+import { setAuditLogWriterForTests } from '../lib/audit-logs.js'
+
+process.env.ENABLE_JOB_SCHEDULER = 'false'
+setAuditLogWriterForTests(async (entry: any) => ({
+  id: 'test-audit-id',
+  created_at: new Date().toISOString(),
+  ...entry,
+}))
 
 const noopLimiter = (_req: Request, _res: Response, next: NextFunction) => next()
 
 const jobSystem = new BackgroundJobSystem()
-jobSystem.start()
 
 const testApp = express()
 testApp.use(express.json())
 testApp.use('/api/jobs', createJobsRouter(jobSystem, { enqueueLimiter: noopLimiter }))
-
-afterAll(async () => {
-  await jobSystem.stop()
-})
 
 const adminToken = generateAccessToken({ userId: 'admin-enqueue-options-test', role: UserRole.ADMIN })
 
@@ -46,6 +53,51 @@ describe('Jobs API Zod Validation - POST /api/jobs/enqueue', () => {
         maxAttempts: 5,
       },
     })
+  })
+
+  it('successfully enqueues every supported job type in JOB_TYPES', async () => {
+    const validPayloads: Record<string, object> = {
+      'notification.send': { recipient: 'user@example.com', subject: 'Subject', body: 'Body' },
+      'deadline.check': { triggerSource: 'manual' },
+      'milestone.reminders': { leadTimesMs: [86400000], limit: 10 },
+      'milestone.reminders.digest': { leadTimesMs: [86400000], limit: 10 },
+      'milestone.reminders.deferred': { batchSize: 50 },
+      'oracle.call': { oracle: 'stellar-oracle', symbol: 'XLM' },
+      'analytics.recompute': { scope: 'global' },
+      'analytics.report.generate': { orgIds: ['org-1'] },
+      'export.generate': { exportJobId: 'exp-123' },
+      'vault.reconcile': { vaultIds: ['vault-1'], batchSize: 20 },
+      'sessions.cleanup': { batchSize: 100 },
+      'retention.purge': { organizationId: 'org-1', batchSize: 50 },
+      'outbox.relay': { batchSize: 10 },
+      'embeddings.reindex': { batchSize: 25, maxBatchesPerRun: 5 },
+      'saved-search.evaluate': { searchId: 'search-1', batchSize: 10 },
+    }
+
+    for (const jobType of JOB_TYPES) {
+      const payload = validPayloads[jobType]
+      expect(payload).toBeDefined()
+
+      const res = await request(testApp)
+        .post('/api/jobs/enqueue')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          type: jobType,
+          payload,
+        })
+
+      if (res.status !== 202) {
+        console.error(`Failed to enqueue jobType ${jobType}:`, res.status, res.body)
+      }
+
+      expect(res.status).toBe(202)
+      expect(res.body).toMatchObject({
+        queued: true,
+        job: {
+          type: jobType,
+        },
+      })
+    }
   })
 
   it('returns 400 and VALIDATION_ERROR details for invalid payload shape', async () => {
@@ -153,4 +205,15 @@ describe('Jobs API Zod Validation - POST /api/jobs/enqueue', () => {
 
     expect(resAbove.body.success).toBe(false)
     expect(resAbove.body.error.code).toBe('VALIDATION_ERROR')
+  })
+
+  it('returns null for invalid enqueue option values', () => {
+    expect(parseEnqueueOptions({ delayMs: -1 })).toBeNull()
+    expect(parseEnqueueOptions({ delayMs: NaN })).toBeNull()
+    expect(parseEnqueueOptions({ maxAttempts: 0 })).toBeNull()
+    expect(parseEnqueueOptions({ maxAttempts: 11 })).toBeNull()
+    expect(parseEnqueueOptions({ maxAttempts: 3.5 })).toBeNull()
+    expect(parseEnqueueOptions({ delayMs: 1000, maxAttempts: 5 })).toEqual({ delayMs: 1000, maxAttempts: 5 })
+  })
+})
  

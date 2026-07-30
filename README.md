@@ -80,6 +80,10 @@ Admin-only access requirements for audit query endpoints:
 
 All timestamps are stored, transmitted, and returned in UTC (ISO 8601 with `Z` suffix). Input timestamps must include a timezone designator. See [Timezone Contract](docs/TIMEZONE_CONTRACT.md) for the full specification.
 
+## Configuration
+
+For a complete reference of all supported environment variables, their types, defaults, and security considerations, see [Configuration Reference](docs/configuration.md).
+
 ## Tech stack
 
 ## Background job system
@@ -145,12 +149,22 @@ The backend can optionally submit vault creation transactions directly to Stella
 #### Startup Validation
 These environment variables are validated at startup. If any variable is configured with an invalid format (e.g. invalid contract ID, secret key, or RPC URL), the application will abort startup to prevent runtime errors. If they are only partially configured, a clear warning is emitted and submit mode is automatically disabled.
 
+### Notification provider
+
+- `NOTIFICATION_PROVIDER` (default: `console`) — choose between `console` and `email` providers.
+
+The `email` provider includes bounded retries with exponential backoff for transient failures and basic bounce classification. Permanent bounces are recorded in an in-memory bounce store and will be treated as non-retryable by the job queue to avoid repeated attempts. In production replace the provider's send implementation with your SMTP or API-based client (e.g., nodemailer, SendGrid).
+
 ### Example: create a vault
 
 - Node.js + TypeScript
 - Express
 - Helmet + CORS
 - PostgreSQL migrations via Knex
+
+## Operations and recovery
+
+- See [docs/runbooks/disaster-recovery.md](docs/runbooks/disaster-recovery.md) for the backup, restore, and disaster-recovery procedure with RPO/RTO targets.
 
 ## Local setup
 
@@ -287,7 +301,7 @@ The `SorobanClient` provides the following methods to drive the full vault lifec
 |---|---|---|
 | `submitVaultCreation` | `vaultId`, `amount`, `verifier`, `successDestination`, `failureDestination`, `milestones` | Creates a new accountability vault |
 | `submitStake` | `vaultId`, `amount` | Stakes tokens into an existing vault |
-| `submitCheckIn` | `vaultId`, `milestoneId` | Records completion of a milestone |
+| `submitCheckIn` | `vaultId`, `milestoneId`, `evidenceHash` | Records completion of a milestone with a 32-byte evidence hash |
 | `submitSlash` | `vaultId`, `milestoneId` | Slashes funds for missed milestone |
 | `submitClaim` | `vaultId` | Claims released funds from completed vault |
 | `submitWithdraw` | `vaultId` | Withdraws remaining funds |

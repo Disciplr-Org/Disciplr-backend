@@ -13,12 +13,16 @@ Verifier status values:
 
 Allowed transitions:
 
-| From | To |
-| --- | --- |
-| `pending` | `approved`, `deactivated` |
-| `approved` | `suspended`, `deactivated` |
-| `suspended` | `approved`, `deactivated` |
-| `deactivated` | `pending` |
+| From | To | Endpoint |
+| --- | --- | --- |
+| `pending` | `approved`, `deactivated` | `/approve`, `/deactivate` |
+| `approved` | `suspended`, `deactivated` | `/suspend`, `/deactivate` |
+| `suspended` | `approved`, `deactivated` | `/reinstate` (→ approved if previously approved), `/deactivate` |
+| `deactivated` | `pending` | `/reactivate` |
+
+The `/reinstate` endpoint detects the verifier's prior active state:
+- If the verifier has an `approvedAt` timestamp, restoration targets `approved`.
+- Otherwise it targets `pending`.
 
 Invalid transitions return `409 Conflict`. No-op updates do not create audit log entries.
 
@@ -33,6 +37,7 @@ All endpoints require an admin token.
 - `DELETE /api/admin/verifiers/:userId`: legacy hard delete, audited as `verifier.deleted`.
 - `POST /api/admin/verifiers/:userId/approve`: transition to `approved`.
 - `POST /api/admin/verifiers/:userId/suspend`: transition to `suspended`.
+- `POST /api/admin/verifiers/:userId/reinstate`: restore to prior active state. If the verifier was previously approved (has `approvedAt`), restores to `approved`; otherwise restores to `pending`.
 - `POST /api/admin/verifiers/:userId/deactivate`: transition to `deactivated`.
 - `POST /api/admin/verifiers/:userId/reactivate`: transition from `deactivated` to `pending`.
 
@@ -64,7 +69,22 @@ Example:
 }
 ```
 
-State-change actions use specific names: `verifier.approved`, `verifier.suspended`, `verifier.deactivated`, and `verifier.reactivated`. Non-status profile edits use `verifier.updated`.
+State-change actions use specific names: `verifier.approved`, `verifier.suspended`, `verifier.deactivated`, and `verifier.reactivated`. The `/reinstate` endpoint produces `verifier.approved` when restoring to `approved`, or falls through to the standard `statusAction` mapping. Non-status profile edits use `verifier.updated`.
+
+## Verification Decision Transaction Guarantee
+
+`POST /api/verifications` writes two rows atomically:
+
+1. The verification record (`verifications` table via `recordVerification`).
+2. The audit log entry (`audit_logs` table via `createAuditLog`).
+
+Both writes are wrapped in a single **Knex transaction** (`db.transaction`). If either write fails the entire transaction is rolled back, so it is impossible to have a verification row without a corresponding audit trail, or vice-versa.
+
+`createEvidenceReference` (Prisma `$queryRaw`) runs **after** the Knex transaction commits because Prisma uses a separate connection pool and cannot join a Knex transaction. It is safe to call after commit because it is idempotent (`ON CONFLICT (verification_id) DO UPDATE`).
+
+The transaction call is wrapped in `retryWithBackoff` with a serialization-error predicate so transient PostgreSQL serialization failures (`could not serialize`, `deadlock`) are automatically retried with exponential back-off.
+
+Both `recordVerification` and `createAuditLog` accept an optional `trx?: Knex.Transaction` parameter; when provided they use the transaction client instead of the global pool.
 
 ## Anti-Spoofing Rule
 

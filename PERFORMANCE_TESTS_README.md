@@ -46,26 +46,26 @@ npm test -- src/tests/helpers/performanceHelpers.test.ts
 
 ### Successful Test Run
 ```
-✓ Vaults list (no pagination): 245ms
-✓ Vaults list (with pagination): 198ms
-✓ Vaults list (with sorting): 267ms
-✓ Vaults list (with filtering): 223ms
-✓ Vaults list (combined operations): 289ms
+OK Vaults list (no pagination): 245ms
+OK Vaults list (with pagination): 198ms
+OK Vaults list (with sorting): 267ms
+OK Vaults list (with filtering): 223ms
+OK Vaults list (combined operations): 289ms
 
-✓ Transactions list (first page): 312ms
-✓ Transactions list (cursor pagination): 298ms
-✓ Transactions list (with filter): 334ms
-✓ Transactions list (date range filter): 356ms
-✓ Transactions list (by vault): 287ms
-✓ Transactions deep pagination (10 pages): 2145ms
+OK Transactions list (first page): 312ms
+OK Transactions list (cursor pagination): 298ms
+OK Transactions list (with filter): 334ms
+OK Transactions list (date range filter): 356ms
+OK Transactions list (by vault): 287ms
+OK Transactions deep pagination (10 pages): 2145ms
 
-✓ Analytics summary: 45ms
-✓ Analytics overview: 38ms
-✓ Analytics vaults: 42ms
-✓ Analytics vault-specific: 41ms
-✓ Analytics milestone trends: 156ms
-✓ Analytics behavior: 134ms
-✓ Analytics milestone trends (weekly): 178ms
+OK Analytics summary: 45ms
+OK Analytics overview: 38ms
+OK Analytics vaults: 42ms
+OK Analytics vault-specific: 41ms
+OK Analytics milestone trends: 156ms
+OK Analytics behavior: 134ms
+OK Analytics milestone trends (weekly): 178ms
 ```
 
 ### Failed Test (Threshold Violation)
@@ -110,13 +110,13 @@ Response time 3456ms exceeded threshold 2000ms
 
 If tests are consistently failing or passing with too much margin:
 
-1. **Edit test files** in `src/tests/performance/`
+1. **Edit the shared budget table** in `src/tests/helpers/performanceHelpers.ts`
 2. **Adjust thresholds**:
    ```typescript
-   const thresholds: PerformanceThresholds = {
-     maxResponseTime: 1500, // Adjust this value
-     maxQueryCount: 8       // Adjust this value
-   }
+   const thresholds = getPerformanceBudget('transactions.combinedSortFilter', {
+     maxResponseTime: 950,
+     maxQueryCount: 5,
+   })
    ```
 3. **Document changes** in `docs/performance-testing.md`
 
@@ -155,8 +155,8 @@ LIMIT 20;
 ```
 
 Look for:
-- ✅ `Index Scan` or `Index Only Scan`
-- ❌ `Seq Scan` (indicates missing index)
+- OK: `Index Scan`, `Index Only Scan`, or `Bitmap Index Scan`
+- Investigate: `Seq Scan` on high-cardinality list queries
 
 ## CI Integration
 
