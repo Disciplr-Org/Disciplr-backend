@@ -45,15 +45,36 @@ export type VerifierMutationResult = {
   auditLog: AuditLog | null
 }
 
-const transitionMatrix: Record<VerifierStatus, VerifierStatus[]> = {
-  pending: ['pending', 'approved', 'deactivated'],
-  approved: ['approved', 'suspended', 'deactivated'],
-  suspended: ['suspended', 'approved', 'deactivated'],
-  deactivated: ['deactivated', 'pending', 'approved'],
+/**
+ * Single source of truth for verifier status transitions and their audit actions.
+ * Self-transitions (from === to) are always allowed for idempotency but have no audit action.
+ */
+interface TransitionRule {
+  target: VerifierStatus
+  action: string
+}
+
+const transitionRules: Record<VerifierStatus, TransitionRule[]> = {
+  pending: [
+    { target: 'approved', action: 'verifier.approved' },
+    { target: 'deactivated', action: 'verifier.deactivated' },
+  ],
+  approved: [
+    { target: 'suspended', action: 'verifier.suspended' },
+    { target: 'deactivated', action: 'verifier.deactivated' },
+  ],
+  suspended: [
+    { target: 'approved', action: 'verifier.approved' },
+    { target: 'deactivated', action: 'verifier.deactivated' },
+  ],
+  deactivated: [
+    { target: 'pending', action: 'verifier.reactivated' },
+    { target: 'approved', action: 'verifier.approved' },
+  ],
 }
 
 export const canTransition = (from: VerifierStatus, to: VerifierStatus): boolean =>
-  transitionMatrix[from]?.includes(to) === true
+  from === to || transitionRules[from]?.some(r => r.target === to) === true
 
 export const createVerifierProfile = async (
   userId: string,
@@ -367,13 +388,14 @@ function createVerifierAuditLog(input: {
   })
 }
 
-function statusAction(from: VerifierStatus | null, to: VerifierStatus): string | null {
+/**
+ * Look up the audit action for a verifier status transition.
+ * Derived from the same transitionRules map as canTransition,
+ * so the two can never diverge. Returns null for self-transitions.
+ */
+function statusAction(from: VerifierStatus, to: VerifierStatus): string | null {
   if (from === to) return null
-  if (to === 'approved') return 'verifier.approved'
-  if (to === 'suspended') return 'verifier.suspended'
-  if (to === 'deactivated') return 'verifier.deactivated'
-  if (from === 'deactivated' && to === 'pending') return 'verifier.reactivated'
-  return null
+  return transitionRules[from]?.find(r => r.target === to)?.action ?? null
 }
 
 function mapStatusToUpdates(status: VerifierStatus): Record<string, unknown> {

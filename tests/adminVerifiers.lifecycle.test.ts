@@ -19,6 +19,13 @@ const InvalidVerifierStatusTransitionError = class extends Error {
   }
 }
 
+const MissingVerifierAuditActionError = class extends Error {
+  constructor(public readonly from: string, public readonly to: string) {
+    super(`Missing verifier audit action for ${from} -> ${to}`)
+    this.name = 'MissingVerifierAuditActionError'
+  }
+}
+
 jest.unstable_mockModule('../src/middleware/auth.js', () => ({
   authenticate(req: any, _res: any, next: any) {
     req.user = { userId: 'admin-user', role: 'ADMIN' }
@@ -42,6 +49,7 @@ jest.unstable_mockModule('../src/services/verifiers.js', () => ({
   deleteVerifierProfile: mockDeleteVerifierProfile,
   listVerifierProfiles: mockListVerifierProfiles,
   InvalidVerifierStatusTransitionError,
+  MissingVerifierAuditActionError,
 }))
 
 jest.unstable_mockModule('../src/services/vaultValidation.js', () => ({
