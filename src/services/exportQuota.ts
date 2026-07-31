@@ -31,14 +31,24 @@ const utcDateString = (d = new Date()): string => d.toISOString().slice(0, 10)
 
 const createInMemoryOrgQuotaRepository = (): OrgQuotaRepository => {
   const store = new Map<string, OrgQuotaEntry>()
-  const mutex = new AsyncMutex()
+  const mutexes = new Map<string, AsyncMutex>()
   const key = (orgId: string, date: string, metric: string) => `${orgId}:${date}:${metric}`
+
+  const getMutex = (k: string) => {
+    let mutex = mutexes.get(k)
+    if (!mutex) {
+      mutex = new AsyncMutex()
+      mutexes.set(k, mutex)
+    }
+    return mutex
+  }
 
   return {
     async increment(orgId, date, metric, dailyLimit) {
+      const k = key(orgId, date, metric)
+      const mutex = getMutex(k)
       // Atomically read, check, and increment under mutex
       return mutex.runExclusive(() => {
-        const k = key(orgId, date, metric)
         const existing = store.get(k)
         const entry: OrgQuotaEntry = {
           orgId,
@@ -49,6 +59,7 @@ const createInMemoryOrgQuotaRepository = (): OrgQuotaRepository => {
           updatedAt: new Date().toISOString(),
         }
         store.set(k, entry)
+        
         return { ...entry }
       })
     },
@@ -58,6 +69,7 @@ const createInMemoryOrgQuotaRepository = (): OrgQuotaRepository => {
     },
     async reset() {
       store.clear()
+      mutexes.clear()
     },
   }
 }

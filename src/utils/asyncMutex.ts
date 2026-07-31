@@ -14,14 +14,29 @@ export class AsyncMutex {
   private locked = false
   private readonly waitQueue: ((value?: unknown) => void)[] = []
 
-  /**
-   * Acquire the lock, run `fn` exclusively, then release the lock.
-   * Returns the value produced by `fn`, or re-throws if `fn` throws.
-   */
-  async runExclusive<T>(fn: () => Promise<T> | T): Promise<T> {
+  async runExclusive<T>(fn: () => Promise<T> | T, timeoutMs: number = 15000): Promise<T> {
     // Wait until unlocked
     while (this.locked) {
-      await new Promise<void>((resolve) => this.waitQueue.push(resolve as () => void))
+      await new Promise<void>((resolve, reject) => {
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+        const resolveWrapper = () => {
+          if (timeoutId) clearTimeout(timeoutId);
+          resolve();
+        };
+
+        this.waitQueue.push(resolveWrapper);
+
+        if (timeoutMs > 0) {
+          timeoutId = setTimeout(() => {
+            const index = this.waitQueue.indexOf(resolveWrapper);
+            if (index !== -1) {
+              this.waitQueue.splice(index, 1);
+            }
+            reject(new Error(`AsyncMutex wait timeout after ${timeoutMs}ms`));
+          }, timeoutMs);
+        }
+      })
     }
     this.locked = true
 
