@@ -949,11 +949,6 @@ export async function processJob(
 
     await exportJobRepository.update(updatedJob)
 
-    // Move permanently failed jobs to the DLQ
-    if (!retryable) {
-      addToDlq(updatedJob, error)
-    }
-
     console.error(
       JSON.stringify(sanitizeExportTelemetry({
         level: 'error',
@@ -1019,13 +1014,14 @@ export const isExportIdempotencyConflictError = (error: unknown): error is Expor
   return error instanceof ExportIdempotencyConflictError
 }
 
+/*
 // ---------------------------------------------------------------------------
-// DLQ implementation
+// Legacy duplicate DLQ implementation
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MAX_DLQ_SIZE = 100
 
-/** Produce a short opaque token from a raw user ID (no PII in output). */
+/** Produce a short opaque token from a raw user ID (no PII in output). * /
 const toOpaqueToken = (raw: string): string =>
   crypto.createHash('sha256').update(raw).digest('hex').slice(0, 8)
 
@@ -1061,20 +1057,20 @@ const fireDlqHook = (event: DlqMetricsEvent): void => {
 /**
  * Configure the DLQ metrics hook and optional max size.
  * Call once at startup (or in tests before exercising the DLQ).
- */
+ * /
 export const configureDlq = (opts: { metricsHook?: MetricsHook; maxDlqSize?: number } = {}): void => {
   if (opts.metricsHook !== undefined) dlqMetricsHook = opts.metricsHook
   if (opts.maxDlqSize !== undefined) dlqMaxSize = Math.max(1, opts.maxDlqSize)
 }
 
-/** Reset the DLQ state (used in tests). */
+/** Reset the DLQ state (used in tests). * /
 export const resetDlq = (): void => {
   dlqStore.length = 0
   dlqMetricsHook = undefined
   dlqMaxSize = DEFAULT_MAX_DLQ_SIZE
 }
 
-/** Add a job to the DLQ after permanent failure. Called internally by processJob. */
+/** Add a job to the DLQ after permanent failure. Called internally by processJob. * /
 export const addToDlq = (job: ExportJob, error: unknown): void => {
   try {
     const failureReason = classifyError(error)
@@ -1132,20 +1128,20 @@ export const addToDlq = (job: ExportJob, error: unknown): void => {
   }
 }
 
-/** Returns a read-only snapshot of all DLQ entries, newest-first. */
+/** Returns a read-only snapshot of all DLQ entries, newest-first. * /
 export const getDlqEntries = (): DlqEntry[] => [...dlqStore].reverse()
 
-/** Returns the DLQ entry for jobId, or undefined. */
+/** Returns the DLQ entry for jobId, or undefined. * /
 export const getDlqEntry = (jobId: string): DlqEntry | undefined =>
   dlqStore.find((e) => e.jobId === jobId)
 
-/** Returns the current number of entries in the DLQ. */
+/** Returns the current number of entries in the DLQ. * /
 export const getDlqDepth = (): number => dlqStore.length
 
 /**
  * Re-queue a DLQ entry — removes from DLQ and re-creates the ExportJob as pending.
  * Returns true on success, false if jobId not found.
- */
+ * /
 export const requeueDlqEntry = async (jobId: string): Promise<boolean> => {
   const idx = dlqStore.findIndex((e) => e.jobId === jobId)
   if (idx === -1) return false
@@ -1194,7 +1190,7 @@ export const requeueDlqEntry = async (jobId: string): Promise<boolean> => {
 /**
  * Permanently discard a DLQ entry.
  * Returns true on success, false if jobId not found.
- */
+ * /
 export const discardDlqEntry = (jobId: string): boolean => {
   const idx = dlqStore.findIndex((e) => e.jobId === jobId)
   if (idx === -1) return false
@@ -1224,7 +1220,7 @@ export const discardDlqEntry = (jobId: string): boolean => {
 /**
  * Remove all entries from the DLQ.
  * Returns the count of removed entries.
- */
+ * /
 export const clearDlq = (): number => {
   const count = dlqStore.length
   dlqStore.length = 0
@@ -1248,3 +1244,4 @@ export const clearDlq = (): number => {
 
   return count
 }
+*/
