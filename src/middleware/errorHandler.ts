@@ -25,6 +25,8 @@ export const ErrorCode = {
   RATE_LIMITED: 'RATE_LIMITED',
   // 500
   INTERNAL_ERROR: 'INTERNAL_ERROR',
+  // 502
+  CONTRACT_ERROR_UNKNOWN: 'CONTRACT_ERROR_UNKNOWN',
   // 504
   SOROBAN_TIMEOUT: 'SOROBAN_TIMEOUT',
 } as const
@@ -32,27 +34,34 @@ export const ErrorCode = {
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode]
 
 // ─── Soroban Contract Error Catalog ──────────────────────────────────────────
-export const SorobanErrorCatalog: Record<number, { code: ErrorCode; message: string; status: number }> = {
-  1: { code: ErrorCode.CONFLICT, message: 'Already initialized', status: 409 },
-  2: { code: ErrorCode.NOT_FOUND, message: 'Not initialized', status: 404 },
-  3: { code: ErrorCode.VALIDATION_ERROR, message: 'Invalid amount', status: 400 },
-  4: { code: ErrorCode.VALIDATION_ERROR, message: 'Invalid deadline', status: 400 },
-  5: { code: ErrorCode.VALIDATION_ERROR, message: 'No milestones', status: 400 },
-  6: { code: ErrorCode.CONFLICT, message: 'Not draft status', status: 409 },
-  7: { code: ErrorCode.CONFLICT, message: 'Not active status', status: 409 },
-  8: { code: ErrorCode.UNAUTHORIZED, message: 'Unauthorized', status: 401 },
-  23: { code: ErrorCode.UNAUTHORIZED, message: 'Only creator can perform this action', status: 401 },
-  24: { code: ErrorCode.UNAUTHORIZED, message: 'Only verifier can perform this action', status: 401 },
-  25: { code: ErrorCode.UNAUTHORIZED, message: 'Only creator or verifier can perform this action', status: 401 },
-  9: { code: ErrorCode.CONFLICT, message: 'Already staked', status: 409 },
-  10: { code: ErrorCode.VALIDATION_ERROR, message: 'Milestone index out of range', status: 400 },
-  11: { code: ErrorCode.CONFLICT, message: 'Milestone already verified', status: 409 },
-  12: { code: ErrorCode.CONFLICT, message: 'Deadline passed', status: 409 },
-  13: { code: ErrorCode.CONFLICT, message: 'Deadline not reached', status: 409 },
-  14: { code: ErrorCode.CONFLICT, message: 'Milestones incomplete', status: 409 },
-  15: { code: ErrorCode.CONFLICT, message: 'Nothing to withdraw', status: 409 },
-  16: { code: ErrorCode.VALIDATION_ERROR, message: 'Amount mismatch', status: 400 },
-  28: { code: ErrorCode.VALIDATION_ERROR, message: 'Deadline is in the past', status: 400 },
+export interface SorobanErrorMapping {
+  code: ErrorCode
+  message: string
+  status: number
+  retryable: boolean
+}
+
+export const SorobanErrorCatalog: Record<number, SorobanErrorMapping> = {
+  1: { code: ErrorCode.CONFLICT, message: 'Already initialized', status: 409, retryable: false },
+  2: { code: ErrorCode.NOT_FOUND, message: 'Not initialized', status: 404, retryable: false },
+  3: { code: ErrorCode.VALIDATION_ERROR, message: 'Invalid amount', status: 400, retryable: false },
+  4: { code: ErrorCode.VALIDATION_ERROR, message: 'Invalid deadline', status: 400, retryable: false },
+  5: { code: ErrorCode.VALIDATION_ERROR, message: 'No milestones', status: 400, retryable: false },
+  6: { code: ErrorCode.CONFLICT, message: 'Not draft status', status: 409, retryable: false },
+  7: { code: ErrorCode.CONFLICT, message: 'Not active status', status: 409, retryable: false },
+  8: { code: ErrorCode.UNAUTHORIZED, message: 'Unauthorized', status: 401, retryable: false },
+  9: { code: ErrorCode.CONFLICT, message: 'Already staked', status: 409, retryable: false },
+  10: { code: ErrorCode.VALIDATION_ERROR, message: 'Milestone index out of range', status: 400, retryable: false },
+  11: { code: ErrorCode.CONFLICT, message: 'Milestone already verified', status: 409, retryable: false },
+  12: { code: ErrorCode.CONFLICT, message: 'Deadline passed', status: 409, retryable: false },
+  13: { code: ErrorCode.CONFLICT, message: 'Deadline not reached', status: 409, retryable: false },
+  14: { code: ErrorCode.CONFLICT, message: 'Milestones incomplete', status: 409, retryable: false },
+  15: { code: ErrorCode.CONFLICT, message: 'Nothing to withdraw', status: 409, retryable: false },
+  16: { code: ErrorCode.VALIDATION_ERROR, message: 'Amount mismatch', status: 400, retryable: false },
+  23: { code: ErrorCode.UNAUTHORIZED, message: 'Only creator can perform this action', status: 401, retryable: false },
+  24: { code: ErrorCode.UNAUTHORIZED, message: 'Only verifier can perform this action', status: 401, retryable: false },
+  25: { code: ErrorCode.UNAUTHORIZED, message: 'Only creator or verifier can perform this action', status: 401, retryable: false },
+  28: { code: ErrorCode.VALIDATION_ERROR, message: 'Deadline is in the past', status: 400, retryable: false },
 }
 
 // ─── Uniform error response shape ────────────────────────────────────────────
@@ -62,6 +71,8 @@ export interface ErrorResponse {
     message: string
     /** Present only on validation errors – field-level detail, no PII */
     details?: unknown
+    /** Whether a client may safely retry the failed operation. */
+    retryable?: boolean
     /** Echoed from the request for correlation */
     requestId?: string
   }
@@ -73,13 +84,16 @@ export class AppError extends Error {
   readonly code: ErrorCode
   /** Safe-to-expose detail (no stack traces, no PII) */
   readonly details?: unknown
+  /** Explicit retry guidance for errors originating from a contract. */
+  readonly retryable?: boolean
 
-  constructor(status: number, code: ErrorCode, message: string, details?: unknown) {
+  constructor(status: number, code: ErrorCode, message: string, details?: unknown, retryable?: boolean) {
     super(message)
     this.name = 'AppError'
     this.status = status
     this.code = code
     this.details = details
+    this.retryable = retryable
   }
 
   // ── Convenience factories ──────────────────────────────────────────────────
@@ -127,19 +141,48 @@ export class AppError extends Error {
     return new AppError(415, ErrorCode.UNSUPPORTED_MEDIA_TYPE, message)
   }
 
-  /** Parses an unknown error from Soroban RPC into an AppError if it contains a recognized contract error code */
+  /**
+   * Converts a Soroban contract rejection into a typed, user-safe error.
+   * Unknown contract codes intentionally fail closed instead of returning raw
+   * RPC text to clients.
+   */
   static fromContractError(err: unknown): AppError | null {
-    const message = err instanceof Error ? err.message : String(err)
-    // Matches Soroban Error(Contract, 4) or similar representations
-    const match = message.match(/Error\(Contract,\s*(\d+)\)/i) || message.match(/ContractError\((\d+)\)/i)
-    if (!match) return null
+    const codeInt = extractContractErrorCode(err)
+    if (codeInt === null) return null
 
-    const codeInt = parseInt(match[1], 10)
     const mapping = SorobanErrorCatalog[codeInt]
-    if (!mapping) return null
+    if (!mapping) {
+      return new AppError(
+        502,
+        ErrorCode.CONTRACT_ERROR_UNKNOWN,
+        'Contract operation failed',
+        { contractErrorCode: codeInt },
+        false,
+      )
+    }
 
-    return new AppError(mapping.status, mapping.code, mapping.message, { contractErrorCode: codeInt })
+    return new AppError(mapping.status, mapping.code, mapping.message, { contractErrorCode: codeInt }, mapping.retryable)
   }
+}
+
+/** Extract only explicitly Soroban-shaped numeric codes; generic RPC `code` fields are ignored. */
+function extractContractErrorCode(err: unknown): number | null {
+  const candidates: unknown[] = [err]
+  if (err && typeof err === 'object') {
+    const value = err as Record<string, unknown>
+    candidates.push(value.message, value.error, value.result, value.data)
+    if (typeof value.contractErrorCode === 'number') candidates.push(`ContractError(${value.contractErrorCode})`)
+  }
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue
+    const match = candidate.match(/Error\s*\(\s*Contract\s*,\s*(\d+)\s*\)/i) || candidate.match(/ContractError\s*\(\s*(\d+)\s*\)/i)
+    if (!match) continue
+    const code = Number(match[1])
+    if (Number.isSafeInteger(code)) return code
+  }
+
+  return null
 }
 
 /**
@@ -226,6 +269,7 @@ export const errorHandler = (
         path: req.path,
         requestId,
         message: err.message,
+        ...(err.retryable !== undefined && { retryable: err.retryable }),
         timestamp: new Date().toISOString(),
       }),
     )
@@ -235,6 +279,7 @@ export const errorHandler = (
         code: err.code,
         message: err.message,
         ...(err.details !== undefined && { details: sanitizeDetails(err.details) }),
+        ...(err.retryable !== undefined && { retryable: err.retryable }),
         ...(requestId && { requestId }),
       },
     }
