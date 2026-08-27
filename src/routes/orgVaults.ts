@@ -8,6 +8,7 @@ import { listVaults } from '../services/vaultStore.js'
 import db from '../db/index.js'
 import type { Knex } from 'knex'
 import { createHash } from 'node:crypto'
+import { isValidISO8601, normalizeTimestamp, toUTCDate } from '../utils/timestamps.js'
 
 export const orgVaultsRouter = Router()
 
@@ -67,12 +68,12 @@ orgVaultsRouter.get(
       creator: v.creator,
       amount: v.amount,
       status: v.status,
-      startTimestamp: v.start_date,
-      endTimestamp: v.end_date,
+      startTimestamp: normalizeTimestamp(v.start_date),
+      endTimestamp: normalizeTimestamp(v.end_date),
       successDestination: v.success_destination,
       failureDestination: v.failure_destination,
       verifier: v.verifier,
-      createdAt: v.created_at,
+      createdAt: normalizeTimestamp(v.created_at),
       orgId: v.organization_id
     }))
 
@@ -100,10 +101,10 @@ orgVaultsRouter.get(
         amount: row.amount,
         status: row.status,
         orgId: row.organization_id,
-        startTimestamp: row.start_date,
-        endTimestamp: row.end_date,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
+        startTimestamp: normalizeTimestamp(row.start_date),
+        endTimestamp: normalizeTimestamp(row.end_date),
+        createdAt: normalizeTimestamp(row.created_at),
+        updatedAt: normalizeTimestamp(row.updated_at),
       }));
 
       if (req.filters) {
@@ -236,7 +237,7 @@ export function validateAndSanitizeQueryDefinition(
     if (input[field] !== undefined) {
       if (
         typeof input[field] !== "string" ||
-        isNaN(Date.parse(input[field] as string))
+        !isValidISO8601(input[field])
       ) {
         errors.push(`${field} must be a valid ISO 8601 date string`);
       } else {
@@ -696,11 +697,19 @@ orgVaultsRouter.get(
       let nextCursor: string | undefined;
       if (hasMore && results.length > 0) {
         const last = results[results.length - 1];
-        nextCursor = encodeCursor(new Date(last.created_at), last.id);
+        nextCursor = encodeCursor(toUTCDate(last.created_at), last.id);
       }
 
+      const normalizedResults = results.map((row) => ({
+        ...row,
+        start_date: normalizeTimestamp(row.start_date),
+        end_date: normalizeTimestamp(row.end_date),
+        created_at: normalizeTimestamp(row.created_at),
+        updated_at: normalizeTimestamp(row.updated_at),
+      }));
+
       res.json({
-        data: results,
+        data: normalizedResults,
         pagination: {
           limit,
           cursor: rawCursor,

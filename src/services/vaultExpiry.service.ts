@@ -10,6 +10,7 @@ import {
 } from './digestRenderer.js'
 import { isInQuietHours, getQuietHoursEndUTC } from '../utils/quietHours.js'
 import type { MilestoneReminderItem, DigestPayload } from '../types/notification.js'
+import { normalizeTimestamp, toUTCDate } from '../utils/timestamps.js'
 
 // Configurable lead times in milliseconds (72h, 24h, 1h by default)
 const DEFAULT_LEAD_TIMES_MS = [
@@ -83,7 +84,7 @@ export const sendMilestoneReminders = async (
   for (const vm of vaultMilestones) {
     if (opts.limit && remindersSent >= opts.limit) break
 
-    const dueDate = new Date(vm.due_date)
+    const dueDate = toUTCDate(vm.due_date)
     const dueDateMs = dueDate.getTime()
     const timeUntilDue = dueDateMs - nowMs
 
@@ -107,7 +108,7 @@ export const sendMilestoneReminders = async (
             data: {
               vaultId: vm.vault_id,
               milestoneId: vm.milestone_id,
-              dueDate: vm.due_date,
+              dueDate: normalizeTimestamp(vm.due_date),
               leadTimeMs
             },
             idempotency_key: idempotencyKey,
@@ -164,7 +165,7 @@ export const sendMilestoneDigestReminders = async (
   const seenMilestoneKeys = new Set<string>()
 
   for (const vm of vaultMilestones) {
-    const dueDate = new Date(vm.due_date)
+    const dueDate = toUTCDate(vm.due_date)
     const dueDateMs = dueDate.getTime()
     const timeUntilDue = dueDateMs - nowMs
 
@@ -191,7 +192,7 @@ export const sendMilestoneDigestReminders = async (
           vault_id: vm.vault_id,
           milestone_id: vm.milestone_id,
           milestone_title: vm.milestone_title,
-          due_date: vm.due_date,
+          due_date: normalizeTimestamp(vm.due_date),
           lead_time_ms: leadTimeMs,
           lead_time_text: formatLeadTime(leadTimeMs),
         }
@@ -259,7 +260,7 @@ export const sendMilestoneDigestReminders = async (
             data: {
               vaultId: item.vault_id,
               milestoneId: item.milestone_id,
-              dueDate: item.due_date,
+              dueDate: normalizeTimestamp(item.due_date),
               leadTimeMs: item.lead_time_ms,
               deferredUntil: deliverAfter.toISOString(),
             },
@@ -290,7 +291,7 @@ export const sendMilestoneDigestReminders = async (
           data: {
             vaultId: item.vault_id,
             milestoneId: item.milestone_id,
-            dueDate: item.due_date,
+            dueDate: normalizeTimestamp(item.due_date),
             leadTimeMs: item.lead_time_ms,
             digestKey,
           },

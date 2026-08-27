@@ -2,6 +2,7 @@ import { allMilestonesVerified } from './milestones.js'
 import { type Knex } from 'knex';
 import { UserRole } from '../types/user.js';
 import { getEnv } from '../config/index.js'
+import { toUTCDate } from '../utils/timestamps.js'
 
 type TerminalStatus = 'completed' | 'failed' | 'cancelled';
 
@@ -83,7 +84,7 @@ export const getTransitionError = (
       return null;
     case 'failed': {
       const now = Date.now();
-      const endMs = new Date(vault.endTimestamp).getTime();
+      const endMs = toUTCDate(vault.endTimestamp).getTime();
       let skewMs = 10_000; // fallback if env is not yet initialized
       try {
         skewMs = getEnv().VAULT_TRANSITION_SKEW_MS;
@@ -142,7 +143,7 @@ export const checkExpiredVaults = (): string[] => {
   const failed: string[] = [];
   for (const vault of memoryVaults) {
     if (vault.status !== 'active') continue;
-    const end = new Date(vault.endTimestamp);
+    const end = toUTCDate(vault.endTimestamp);
     if (end <= now) {
       vault.status = 'failed';
       failed.push(vault.id);
