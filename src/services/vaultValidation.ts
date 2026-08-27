@@ -144,10 +144,24 @@ const amountStringSchema = z.preprocess(
       'must be a positive number',
     )
     .refine(
+      (v) => /^\d+(?:\.\d{1,7})?$/.test(v),
+      'must be a decimal amount with at most 7 fractional digits',
+    )
+    .refine(
       (v) => { const n = Number(v); return n >= VAULT_AMOUNT_MIN && n <= VAULT_AMOUNT_MAX },
       `must be between ${VAULT_AMOUNT_MIN} and ${VAULT_AMOUNT_MAX.toLocaleString()}`,
     ),
 )
+
+const AMOUNT_SCALE = 10_000_000n
+const DECIMAL_AMOUNT_RE = /^\d+(?:\.\d{1,7})?$/
+
+/** Convert an already grammar-validated decimal into exact seven-place units. */
+function amountToUnits(value: string): bigint | null {
+  if (!DECIMAL_AMOUNT_RE.test(value)) return null
+  const [whole, fraction = ''] = value.split('.')
+  return BigInt(whole) * AMOUNT_SCALE + BigInt(fraction.padEnd(7, '0'))
+}
 
 // ─── Milestone schema ────────────────────────────────────────────────────────
 
@@ -246,11 +260,13 @@ export const createVaultSchema = z
       })
     }
 
-    // Total milestone amounts must not exceed vault amount
-    const vaultAmount = Number(data.amount)
-    if (Number.isFinite(vaultAmount)) {
-      const total = data.milestones.reduce((acc, m) => acc + Number(m.amount), 0)
-      if (total > vaultAmount) {
+    // Compare scaled decimal units exactly; Number summation can drift at the
+    // seventh decimal place and reject a schedule that exactly fits.
+    const vaultAmountUnits = amountToUnits(data.amount)
+    const milestoneUnits = data.milestones.map((milestone) => amountToUnits(milestone.amount))
+    if (vaultAmountUnits !== null && milestoneUnits.every((units): units is bigint => units !== null)) {
+      const total = milestoneUnits.reduce((acc, units) => acc + units, 0n)
+      if (total > vaultAmountUnits) {
         ctx.addIssue({
           code: 'custom',
           message: 'Total milestone amount cannot exceed vault amount',
