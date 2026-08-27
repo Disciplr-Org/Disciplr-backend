@@ -3,8 +3,8 @@ import { Buffer } from 'node:buffer'
 import { stringify as csvStringify } from 'csv-stringify/sync'
 import type { Knex } from 'knex'
 import type { BackgroundJobSystem } from '../jobs/system.js'
-import { Readable, Transform } from 'node:stream'
-import { createGzip, gzipSync } from 'node:zlib'
+import { Readable } from 'node:stream'
+import { createGzip } from 'node:zlib'
 import { maskPii, sanitizePrivacyPayload, sanitizePrivacyString } from '../utils/privacy.js'
 import { resolveS3Config, uploadToS3, sanitizeS3KeySegment } from '../services/exportS3.js'
 
@@ -735,6 +735,59 @@ function ndjsonGzipReadable(data: ExportData): Readable {
   return source.pipe(createGzip())
 }
 
+const csvCellOptions = {
+  cast: { string: (value: string) => (value && /^[=+\-@\t\r]/.test(value) ? `'${value}` : value) },
+}
+
+/**
+ * Creates a backpressure-aware export stream for formats that can be emitted
+ * record by record. The generator yields one bounded chunk per row, so S3
+ * uploads and disconnected HTTP consumers do not require a second complete
+ * copy of the export in memory.
+ */
+export function createStreamingExportReadable(
+  data: ExportData,
+  format: Exclude<ExportFormat, 'json'>,
+  columns?: Record<keyof ExportData, string[]>,
+): { readable: Readable; filename: string } {
+  const filteredData = filterExportData(data, columns)
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+
+  if (format === 'ndjson') {
+    return {
+      readable: ndjsonGzipReadable(filteredData),
+      filename: `export-${timestamp}.ndjson.gz`,
+    }
+  }
+
+  const generator = async function* () {
+    yield CSV_UTF8_BOM
+    for (const sectionName of EXPORT_SECTION_ORDER) {
+      const rows = filteredData[sectionName]
+      if (!rows || rows.length === 0) continue
+
+      const schema = filterCsvSchema(CSV_SCHEMAS[sectionName], columns?.[sectionName])
+      yield `# ${sectionName.toUpperCase()}\n`
+      for (let index = 0; index < rows.length; index += 1) {
+        const row = rows[index]
+        yield csvStringify([row], {
+          ...csvCellOptions,
+          header: index === 0,
+          columns: schema.columns,
+        })
+      }
+      yield '\n'
+    }
+  }
+
+  return {
+    readable: Readable.from(generator(), {
+      highWaterMark: EXPORT_STREAM_CONFIG.CHUNK_SIZE_BYTES,
+    }),
+    filename: `export-${timestamp}.csv`,
+  }
+}
+
 function filterExportData(
   data: ExportData,
   columns?: Record<keyof ExportData, string[]>,
@@ -886,11 +939,17 @@ export async function processJob(
     const data = vaultsStore
       ? buildExportDataFromVaultStore(job.scope, scopedUserId, vaultsStore)
       : await buildExportDataFromDatabase(job.scope, scopedUserId)
+    const s3Config = resolveS3Config()
     _stage = 'serialization'
-    const { buffer, filename, readable } = serializeExportData(data, job.format, job.columns)
+    const streamed = s3Config && job.format !== 'json'
+      ? createStreamingExportReadable(data, job.format, job.columns)
+      : undefined
+    const serialized = streamed
+      ? { filename: streamed.filename, readable: streamed.readable }
+      : serializeExportData(data, job.format, job.columns)
+    const { buffer, filename, readable } = serialized
     _stage = undefined
 
-    const s3Config = resolveS3Config()
     let s3Key: string | undefined
     if (s3Config) {
       const safeJobId = sanitizeS3KeySegment(job.id)
@@ -901,7 +960,7 @@ export async function processJob(
         : job.format === 'json'
         ? 'application/json; charset=utf-8'
         : 'application/x-ndjson'
-      if (job.format === 'ndjson' && readable) {
+      if (readable) {
         await uploadToS3(s3Config, key, readable, contentType)
       } else if (buffer) {
         await uploadToS3(s3Config, key, buffer, contentType)
