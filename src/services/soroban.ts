@@ -1075,7 +1075,7 @@ export const buildVaultCreationPayload = async (
         submission: { 
           attempted: true, 
           status: 'error', 
-          error: { code: appError.code, message: appError.message, details: appError.details } 
+          error: { code: appError.code, message: appError.message, details: appError.details, retryable: appError.retryable }
         },
       }
     }
