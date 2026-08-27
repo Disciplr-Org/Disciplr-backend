@@ -12,6 +12,7 @@ import { retryWithBackoff, sleep, type RetryConfig } from '../utils/retry.js'
 import { StrKey } from '@stellar/stellar-sdk'
 import { AppError, SorobanTimeoutError } from '../middleware/errorHandler.js'
 import { getTracer } from '../observability/tracing.js'
+import { recordSorobanTransaction } from '../observability/sorobanMetrics.js'
 
 export function normalizeToClassicAddress(address: string): string {
   try {
@@ -362,6 +363,9 @@ async function submitTransaction(
   return tracer.withSpan(
     `soroban.${methodName}`,
     async (span) => {
+      const startedAt = Date.now()
+      let outcome: 'success' | 'failure' = 'failure'
+      try {
       span.setAttribute('soroban.method', methodName)
       span.setAttribute('soroban.contract_id', config.contractId)
 
@@ -454,6 +458,7 @@ async function submitTransaction(
           activePool.recordSuccess(url)
           span.setAttribute('soroban.tx_hash', response.hash)
           span.setStatus({ code: 'OK' } as any)
+          outcome = 'success'
           return { txHash: response.hash }
 
         } catch (err) {
@@ -490,6 +495,9 @@ async function submitTransaction(
       span.recordException(lastError)
       span.setStatus({ code: 'ERROR', message: lastError.message })
       throw lastError
+      } finally {
+        recordSorobanTransaction(methodName, outcome, Date.now() - startedAt)
+      }
     },
   )
 }
