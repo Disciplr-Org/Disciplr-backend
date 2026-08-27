@@ -10,17 +10,14 @@ import { applyFilters, applySort, paginateArray } from '../utils/pagination.js'
 import { updateAnalyticsSummary } from '../services/analytics.service.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import {
-  getIdempotentResponse,
   hashRequestPayload,
-  saveIdempotentResponse,
-  failPendingIdempotentResponse,
-  IdempotencyConflictError,
   validateIdempotencyKey,
   scopeIdempotencyKey,
   type OwnerContext,
 } from '../services/idempotency.js'
 import { buildVaultCreationPayload } from '../services/soroban.js'
 import { createVaultWithMilestones, getVaultById, listVaults, cancelVaultById, updateVaultById, getVaultRevisionById, getVaultETag } from '../services/vaultStore.js'
+import { createVaultIdempotently, VaultCreationIdempotencyConflictError, VaultCreationInProgressError, VaultCreationOwnerError } from '../services/vaultCreationIdempotency.js'
 import { createVaultSchema, flattenZodErrors, isValidStellarAddress, isMemoRequired } from '../services/vaultValidation.js'
 import { StrKey } from '@stellar/stellar-sdk'
 import { AppError } from '../middleware/errorHandler.js'
@@ -125,27 +122,6 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
     orgId: req.apiKeyAuth?.orgId ?? req.user?.enterpriseId ?? null,
   }
 
-  if (scopedIdempotencyKey) {
-    try {
-      const cached = await getIdempotentResponse<VaultCreateResponse>(scopedIdempotencyKey, requestHash, owner)
-      if (cached !== null) {
-        res.status(200).json({ ...cached, idempotency: { key: rawIdempotencyKey, replayed: true } })
-        return
-      }
-    } catch (err) {
-      if (err instanceof IdempotencyConflictError) {
-        res.status(409).json({
-          error: {
-            code: 'IDEMPOTENCY_CONFLICT',
-            message: err.message,
-          },
-        })
-        return
-      }
-      throw err
-    }
-  }
-
   const parseResult = createVaultSchema.safeParse(req.body)
   if (!parseResult.success) {
     res.status(400).json({ details: flattenZodErrors(parseResult.error) })
@@ -183,16 +159,35 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
   }
 
   try {
-    const { vault } = await createVaultWithMilestones(input)
-    const responseBody: VaultCreateResponse = {
-      vault,
-      onChain: await buildVaultCreationPayload(input, vault),
-      idempotency: { key: rawIdempotencyKey, replayed: false },
-    }
-
+    let responseBody: VaultCreateResponse
+    let replayed = false
     if (scopedIdempotencyKey) {
-      await saveIdempotentResponse(scopedIdempotencyKey, requestHash, vault.id, responseBody, owner)
+      const createResult = await createVaultIdempotently(
+        { key: scopedIdempotencyKey, requestHash, owner },
+        async client => {
+          const { vault } = await createVaultWithMilestones(input, client ?? undefined)
+          const response: VaultCreateResponse = {
+            vault,
+            onChain: await buildVaultCreationPayload(input, vault),
+            idempotency: { key: rawIdempotencyKey, replayed: false },
+          }
+          return { vault, response }
+        },
+      )
+      responseBody = {
+        ...createResult.response,
+        idempotency: { key: rawIdempotencyKey, replayed: createResult.replayed },
+      }
+      replayed = createResult.replayed
+    } else {
+      const { vault } = await createVaultWithMilestones(input)
+      responseBody = {
+        vault,
+        onChain: await buildVaultCreationPayload(input, vault),
+        idempotency: { key: rawIdempotencyKey, replayed: false },
+      }
     }
+    const vault = responseBody.vault
 
     createAuditLog({
       actor_user_id: actorUserId,
@@ -203,12 +198,16 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
     })
 
     updateAnalyticsSummary()
-    res.status(201).json(responseBody)
+    res.status(replayed ? 200 : 201).json(responseBody)
   } catch (error) {
-    if (scopedIdempotencyKey) {
-      failPendingIdempotentResponse(scopedIdempotencyKey, requestHash, error, owner)
+    if (error instanceof VaultCreationIdempotencyConflictError || error instanceof VaultCreationOwnerError) {
+      res.status(409).json({ error: { code: error.code, message: error.message } })
+      return
     }
-
+    if (error instanceof VaultCreationInProgressError) {
+      res.status(409).json({ error: { code: error.code, message: error.message, retryable: true } })
+      return
+    }
     console.error('Vault creation failed', error)
     res.status(500).json({ error: 'Failed to create vault.' })
   }
