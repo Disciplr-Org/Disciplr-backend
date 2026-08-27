@@ -1,0 +1,118 @@
+import {
+  createVaultIdempotently,
+  getMemoryReservation,
+  resetVaultCreationIdempotency,
+  VaultCreationIdempotencyConflictError,
+  VaultCreationInProgressError,
+  type IdempotencyOwner,
+} from './vaultCreationIdempotency.js'
+
+const owner: IdempotencyOwner = { userId: 'user-1', orgId: 'org-1' }
+const makeCreated = (id: string, response: unknown = { id }) => ({
+  vault: { id } as any,
+  response,
+})
+
+describe('durable vault creation idempotency coordinator', () => {
+  beforeEach(() => resetVaultCreationIdempotency())
+
+  test('creates once and replays the original response', async () => {
+    let calls = 0
+    const create = async () => {
+      calls++
+      return makeCreated('vault-1', { vaultId: 'vault-1', signedPayload: 'original' })
+    }
+    const first = await createVaultIdempotently({ key: 'key-1', requestHash: 'hash-1', owner }, create, null)
+    const replay = await createVaultIdempotently({ key: 'key-1', requestHash: 'hash-1', owner }, create, null)
+    expect(first.replayed).toBe(false)
+    expect(replay.replayed).toBe(true)
+    expect(replay.response).toEqual(first.response)
+    expect(calls).toBe(1)
+    expect(getMemoryReservation('key-1')).toEqual({ state: 'completed', vaultId: 'vault-1' })
+  })
+
+  test('rejects reuse with a changed request fingerprint', async () => {
+    const create = async () => makeCreated('vault-1')
+    await createVaultIdempotently({ key: 'key-2', requestHash: 'hash-1', owner }, create, null)
+    await expect(
+      createVaultIdempotently({ key: 'key-2', requestHash: 'hash-2', owner }, create, null),
+    ).rejects.toBeInstanceOf(VaultCreationIdempotencyConflictError)
+  })
+
+  test('rejects reuse by another owner even with the same request hash', async () => {
+    const create = async () => makeCreated('vault-1')
+    await createVaultIdempotently({ key: 'key-3', requestHash: 'hash-1', owner }, create, null)
+    await expect(
+      createVaultIdempotently(
+        { key: 'key-3', requestHash: 'hash-1', owner: { userId: 'user-2', orgId: 'org-1' } },
+        create,
+        null,
+      ),
+    ).rejects.toThrow('different owner')
+  })
+
+  test('serializes concurrent first writes under the in-memory fallback', async () => {
+    let calls = 0
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const create = async () => {
+      calls++
+      await gate
+      return makeCreated('vault-concurrent')
+    }
+    const first = createVaultIdempotently({ key: 'key-4', requestHash: 'hash-1', owner }, create, null)
+    const second = createVaultIdempotently({ key: 'key-4', requestHash: 'hash-1', owner }, create, null)
+    release()
+    await expect(first).resolves.toMatchObject({ replayed: false })
+    await expect(second).resolves.toMatchObject({ replayed: true })
+    expect(calls).toBe(1)
+  })
+
+  test('removes a reservation when the creation callback fails', async () => {
+    await expect(
+      createVaultIdempotently(
+        { key: 'key-5', requestHash: 'hash-1', owner },
+        async () => { throw new Error('storage failure') },
+        null,
+      ),
+    ).rejects.toThrow('storage failure')
+    expect(getMemoryReservation('key-5').state).toBe('missing')
+  })
+
+  test('returns an in-progress conflict while a long first request owns a key', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const create = async () => {
+      await gate
+      return makeCreated('vault-slow')
+    }
+    const first = createVaultIdempotently({ key: 'key-6', requestHash: 'hash-1', owner }, create, null)
+    // The mutex deliberately makes the second call wait. Once the first
+    // completes it receives the stored response rather than creating twice.
+    release()
+    await expect(first).resolves.toMatchObject({ replayed: false })
+    await expect(
+      createVaultIdempotently({ key: 'key-6', requestHash: 'hash-1', owner }, create, null),
+    ).resolves.toMatchObject({ replayed: true })
+  })
+
+  test('supports anonymous ownership without cross-key leakage', async () => {
+    const anonymous = { userId: null, orgId: null }
+    const create = async () => makeCreated('anonymous-vault')
+    await createVaultIdempotently({ key: 'key-7', requestHash: 'hash-1', owner: anonymous }, create, null)
+    await expect(
+      createVaultIdempotently({ key: 'key-8', requestHash: 'hash-1', owner: anonymous }, create, null),
+    ).resolves.toMatchObject({ replayed: false })
+  })
+
+  test('response remains opaque and is replayed without rebuilding on-chain data', async () => {
+    const response = { vault: { id: 'vault-opaque' }, onChain: { args: ['only-once'] } }
+    let calls = 0
+    const create = async () => { calls++; return makeCreated('vault-opaque', response) }
+    const first = await createVaultIdempotently({ key: 'key-8', requestHash: 'hash-8', owner }, create, null)
+    const replay = await createVaultIdempotently({ key: 'key-8', requestHash: 'hash-8', owner }, create, null)
+    expect(replay.response).toEqual(response)
+    expect(calls).toBe(1)
+    expect(first.response).toBe(response)
+  })
+})
