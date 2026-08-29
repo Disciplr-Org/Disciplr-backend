@@ -151,7 +151,17 @@ export function calculateStartLedger(
   overlap: number,
 ): number {
   if (!state) return Math.max(1, configuredStart)
-  const floor = Math.max(1, state.confirmedLedger - Math.max(0, overlap) + 1)
+  // overlap bounds how far before the confirmed cursor to re-scan. With
+  // overlap > 0 we resume one ledger below confirmed so the boundary ledger is
+  // re-checked; with overlap === 0 (fresh, no re-scan) we start at confirmed
+  // itself rather than overshooting it by one.
+  const boundedOverlap = Math.max(0, overlap)
+  const floor = Math.max(
+    1,
+    state.confirmedLedger - boundedOverlap + (boundedOverlap > 0 ? 1 : 0),
+  )
+  // A zero scanLedger means nothing has been reconcilled yet — fall back to the
+  // overlap floor instead of treating it as a genuine position.
   return Math.max(1, Math.min(state.scanLedger || floor, floor))
 }
 

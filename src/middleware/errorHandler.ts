@@ -171,6 +171,14 @@ function extractContractErrorCode(err: unknown): number | null {
   if (err && typeof err === 'object') {
     const value = err as Record<string, unknown>
     candidates.push(value.message, value.error, value.result, value.data)
+    // Handle nested shapes such as { result: { error: 'ContractError(4)' } }
+    for (const nested of [value.result, value.data, value.error]) {
+      if (nested && typeof nested === 'object') {
+        const nv = nested as Record<string, unknown>
+        candidates.push(nv.error, nv.message, nv.result)
+        if (typeof nv.contractErrorCode === 'number') candidates.push(`ContractError(${nv.contractErrorCode})`)
+      }
+    }
     if (typeof value.contractErrorCode === 'number') candidates.push(`ContractError(${value.contractErrorCode})`)
   }
 

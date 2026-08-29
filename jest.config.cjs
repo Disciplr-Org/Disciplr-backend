@@ -55,8 +55,6 @@ module.exports = {
     "<rootDir>/src/tests/transactionETL.driftReport.test.ts",
     "<rootDir>/src/tests/vaultStore.concurrency.test.ts",
     "<rootDir>/tests/multiVerifier.test.ts",
-    "<rootDir>/src/routes/exports.quota.test.ts",
-    "<rootDir>/src/routes/exports.test.ts",
     "<rootDir>/src/routes/auth.users.test.ts",
     "<rootDir>/src/routes/vaults.timeline.test.ts",
     // node:test
