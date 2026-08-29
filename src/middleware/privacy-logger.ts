@@ -137,6 +137,8 @@ interface LogLine {
   status: number
   durationMs: number
   ip: string
+  traceId?: string
+  correlationId?: string
   body: Record<string, unknown> | null
   query: Record<string, unknown> | null
   headers: Record<string, unknown>
@@ -161,6 +163,10 @@ export const privacyLogger = (
       const rawIp = req.ip ?? req.socket?.remoteAddress ?? ''
       const rawBody = req.body
       const rawQuery = req.query as Record<string, unknown>
+      
+      const tracedReq = req as any
+      const correlationId = tracedReq.correlationId
+      const traceId = tracedReq.traceContext?.traceId
 
       const line: LogLine = {
         timestamp: new Date().toISOString(),
@@ -168,10 +174,12 @@ export const privacyLogger = (
         event: 'http.request',
         service: 'disciplr-backend',
         method: req.method,
-        url: req.url,
+        url: (req.originalUrl || req.url).split('?')[0],
         status: res.statusCode,
         durationMs: Date.now() - start,
         ip: rawIp ? maskIp(rawIp) : 'unknown',
+        traceId,
+        correlationId,
         body:
           rawBody !== null &&
           rawBody !== undefined &&

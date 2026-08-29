@@ -57,7 +57,11 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
 
   // All jobs endpoints require an authenticated admin
   jobsRouter.use(authenticate)
-   
+
+  // NOTE (#1548): every jobs endpoint — including dead-letter inspection and
+  // replay (`GET/POST /deadletters/...`) — is gated behind this admin check, so
+  // operator replay is an authorized, boundary-enforced action. This guard
+  // already exists in main; no functional change is required here.
   jobsRouter.use(authorize([UserRole.ADMIN]))
 
   // GET /metrics — internal queue metrics (admin only)
