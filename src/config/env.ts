@@ -259,6 +259,13 @@ export const envSchema = z
     // ── Webhooks ────────────────────────────────────────────
     WEBHOOK_INBOUND_SECRET: z.string().optional(),
     WEBHOOK_INBOUND_SKEW_MS: positiveInt(300_000),
+    // Hard upper bound (bytes) for inbound webhook payload bodies. Requests
+    // larger than this are rejected with 413 before JSON parsing or HMAC work.
+    WEBHOOK_INBOUND_MAX_BODY_BYTES: positiveInt(500_000),
+    // Maximum number of distinct (timestamp, nonce) tuples retained for
+    // replay protection. A strict cap guarantees deduplication memory stays
+    // bounded under high churn even if the sweeping interval lags.
+    WEBHOOK_REPLAY_CACHE_SIZE: positiveInt(10_000),
     WEBHOOK_CIRCUIT_BREAKER_THRESHOLD: positiveInt(5),
     WEBHOOK_CIRCUIT_BREAKER_WINDOW_MS: positiveInt(60_000),
     WEBHOOK_CIRCUIT_BREAKER_HALF_OPEN_TIMEOUT_MS: positiveInt(30_000),
