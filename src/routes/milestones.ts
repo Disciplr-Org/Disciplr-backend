@@ -43,7 +43,7 @@ import {
   type OwnerContext,
 } from '../services/idempotency.js'
 
-// ─── Boundary validation helpers ──────────────────────────────────────────────
+// ┌─── Boundary validation helpers ───────────────────────────────────────
 
 const VAULT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const isValidVaultId = (value: string): boolean => VAULT_ID_RE.test(value)
@@ -162,6 +162,7 @@ milestonesRouter.post('/', authenticate, requireUser, requireValidVaultId, async
       throw AppError.conflict('Cannot add milestones to a non-active vault')
     }
 
+    // Validate milestone fields using the same schema as vault creation.
     const parsed = parseMilestoneInput(req.body)
     if (!parsed.success) {
       throw AppError.badRequest('Invalid milestone payload', flattenZodErrors(parsed.error))
@@ -176,6 +177,7 @@ milestonesRouter.post('/', authenticate, requireUser, requireValidVaultId, async
 
     const milestone = createMilestoneWithThreshold(
       vaultId,
+      // Use title + optional description as the canonical description stored on the record.
       description ? `${title}: ${description}` : title,
       approvalThreshold,
       vault.verifier,
@@ -269,6 +271,7 @@ milestonesRouter.post('/:id/validate', authenticate, requireVerifier, requireVal
       throw AppError.validation('evidenceHash must be a valid hex string (32–128 characters)')
     }
 
+    // Use DB-backed vault
     const vault = await getVaultById(vaultId)
     if (!vault) {
       throw AppError.notFound('Vault not found')
@@ -292,6 +295,7 @@ milestonesRouter.post('/:id/validate', authenticate, requireVerifier, requireVal
 
     let vaultCompleted = false
     if (allMilestonesVerified(vaultId) && vault.status === 'active') {
+      // Use DB-backed transition
       const trxResult = await db.transaction(async (trx) => {
         return await transitionVaultStatus(trx, vaultId, 'completed')
       })
@@ -303,6 +307,7 @@ milestonesRouter.post('/:id/validate', authenticate, requireVerifier, requireVal
 })
 
 // POST /api/vaults/:vaultId/milestones/:id/approve
+// Multi-verifier approval endpoint with duplicate-vote prevention
 milestonesRouter.post('/:id/approve', authenticate, requireVerifier, requireValidVaultId, requireValidMilestoneId, async (req: Request, res: Response, next: NextFunction) => {
   const actorUserId = resolveActorUserId(req)
   if (!actorUserId) {
@@ -321,31 +326,39 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, requireVali
       const verifierUserId = actorUserId
       const { approvalStatus } = req.body as { approvalStatus?: string }
 
+      // Validate input
       if (!approvalStatus || !['approved', 'rejected'].includes(approvalStatus)) {
         throw AppError.badRequest('approvalStatus must be "approved" or "rejected"')
       }
 
+      // Check vault exists
       const vault = await getVaultById(vaultId)
       if (!vault) {
         throw AppError.notFound('Vault not found')
       }
 
+      // Check milestone exists and belongs to vault
       const milestone = getMilestoneById(id)
       if (!milestone || milestone.vaultId !== vaultId) {
         throw AppError.notFound('Milestone not found')
       }
 
+      // Reject approvals from non-active verifiers (historical votes remain intact).
+      // Only `approved` verifiers may vote; pending, suspended, and deactivated
+      // verifiers are excluded from the quorum.
       const verifier = await getVerifierProfile(verifierUserId)
       if (verifier && verifier.status !== 'approved') {
         throw AppError.forbidden('Only approved verifiers may cast milestone approvals')
       }
 
+      // Check if verifier has already voted (duplicate vote prevention)
       const hasVoted = await hasVerifierVoted(id, verifierUserId)
 
       if (hasVoted) {
         throw AppError.conflict('Verifier has already voted on this milestone')
       }
 
+      // Reject late votes on already-settled milestones (using cached milestone)
       const approvalThreshold = (milestone as any)?.approvalThreshold || 1
       const totalVerifiers = (milestone as any)?.totalVerifiers as number | undefined
 
@@ -354,10 +367,13 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, requireVali
         throw AppError.conflict('Milestone is already settled')
       }
 
+      // Record the approval
       const approval = await recordMilestoneApproval(id, verifierUserId, approvalStatus as any)
 
+      // Get updated approval progress
       const approvalProgress = await getMilestoneApprovalProgress(id, approvalThreshold, totalVerifiers)
 
+      // Settle milestone state
       let milestoneCompleted = false
       let vaultCompleted = false
 
@@ -367,6 +383,7 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, requireVali
         milestone.verifiedAt = new Date().toISOString()
         milestone.verifiedBy = verifierUserId
 
+        // Build approval/rejection counts for veto-aware vault check
         const vaultMilestones = getMilestonesByVaultId(vaultId)
         const approvalCounts: Record<string, number> = {}
         const rejectionCounts: Record<string, number> = {}
@@ -381,6 +398,7 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, requireVali
         }))
 
         if (allMilestonesMetThreshold(vaultId, approvalCounts, rejectionCounts, totalVerifierCounts) && vault.status === 'active') {
+          // Use DB-backed transition
           const trxResult = await db.transaction(async (trx) => {
             return await transitionVaultStatus(trx, vaultId, 'completed')
           })
@@ -411,15 +429,18 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, requireVali
 })
 
 // GET /api/vaults/:vaultId/milestones/:id/approval-status
+// Get detailed approval status for a milestone (requires authentication)
 milestonesRouter.get('/:id/approval-status', authenticate, requireValidVaultId, requireValidMilestoneId, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { vaultId, id } = req.params
 
+    // Check vault exists
     const vault = await getVaultById(vaultId)
     if (!vault) {
       return next(AppError.notFound('Vault not found'))
     }
 
+    // Check milestone exists
     const milestone = getMilestoneById(id)
     if (!milestone || milestone.vaultId !== vaultId) {
       return next(AppError.notFound('Milestone not found'))
