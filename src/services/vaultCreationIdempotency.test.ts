@@ -4,8 +4,10 @@ import {
   resetVaultCreationIdempotency,
   VaultCreationIdempotencyConflictError,
   VaultCreationInProgressError,
+  VaultCreationMalformedResponseError,
   type IdempotencyOwner,
 } from './vaultCreationIdempotency.js'
+import type { PoolClient } from 'pg'
 
 const owner: IdempotencyOwner = { userId: 'user-1', orgId: 'org-1' }
 const makeCreated = (id: string, response: unknown = { id }) => ({
@@ -114,5 +116,107 @@ describe('durable vault creation idempotency coordinator', () => {
     expect(replay.response).toEqual(response)
     expect(calls).toBe(1)
     expect(first.response).toBe(response)
+  })
+})
+
+// ─── Durable (DB) reservation path with a fake pool ───────────────────────────
+
+/**
+ * Minimal in-process stand-in for pg.Pool / PoolClient so the durable
+ * reservation SQL path can be exercised without a real database.
+ */
+class FakeClient {
+  rowsForSelect: Array<Record<string, unknown>> = []
+  /** Set to 0 to simulate a key that is already reserved (replay path). */
+  insertRowCount = 1
+  queries: string[] = []
+
+  async query(sql: string, params: unknown[] = []): Promise<{ rowCount: number | null; rows: Array<Record<string, unknown>> }> {
+    this.queries.push(sql)
+    const trimmed = sql.trim()
+    if (/^BEGIN/i.test(trimmed) || /^COMMIT/i.test(trimmed) || /^ROLLBACK/i.test(trimmed)) {
+      return { rowCount: null, rows: [] }
+    }
+    if (/INSERT INTO vault_creation_idempotency/i.test(trimmed)) {
+      if (this.insertRowCount === 0) return { rowCount: 0, rows: [] }
+      return { rowCount: 1, rows: [{ idempotency_key: String(params[0]) }] }
+    }
+    if (/SELECT idempotency_key/i.test(trimmed)) {
+      return { rowCount: this.rowsForSelect.length, rows: this.rowsForSelect }
+    }
+    if (/UPDATE vault_creation_idempotency/i.test(trimmed)) {
+      return { rowCount: 1, rows: [] }
+    }
+    throw new Error(`Unexpected SQL in fake client: ${sql}`)
+  }
+
+  release(): void {}
+}
+
+const fakePool = (client: FakeClient): any => ({ connect: async () => client as unknown as PoolClient })
+
+const completedRow = (response: unknown) => ({
+  idempotency_key: 'user-1:key-db',
+  request_hash: 'hash-db',
+  user_id: 'user-1',
+  org_id: 'org-1',
+  state: 'completed',
+  vault_id: 'vault-db-1',
+  response: typeof response === 'string' ? response : JSON.stringify(response),
+  expires_at: new Date(Date.now() + 60_000).toISOString(),
+})
+
+const validStoredResponse = {
+  vault: { id: 'vault-db-1', amount: '1000', status: 'draft' },
+  onChain: {
+    payload: { method: 'create_vault', contractId: 'C' + 'A'.repeat(55), args: {} },
+    submission: { attempted: false, status: 'not_requested' },
+  },
+  idempotency: { key: 'key-db', replayed: false },
+}
+
+describe('durable vault creation idempotency coordinator', () => {
+  test('replays the stored response from the durable path', async () => {
+    const client = new FakeClient()
+    const pool = fakePool(client)
+    let calls = 0
+    const create = async () => {
+      calls++
+      return makeCreated('vault-db-1', validStoredResponse)
+    }
+
+    const first = await createVaultIdempotently({ key: 'user-1:key-db', requestHash: 'hash-db', owner }, create, pool)
+    expect(first.replayed).toBe(false)
+    expect(calls).toBe(1)
+
+    // Second call: the reservation already exists → replay the stored row.
+    client.insertRowCount = 0
+    client.rowsForSelect = [completedRow(validStoredResponse)]
+    const replay = await createVaultIdempotently({ key: 'user-1:key-db', requestHash: 'hash-db', owner }, create, pool)
+    expect(replay.replayed).toBe(true)
+    expect(replay.response).toEqual(validStoredResponse)
+    expect(calls).toBe(1)
+  })
+
+  test('fails closed when the stored response is not valid JSON', async () => {
+    const client = new FakeClient()
+    client.insertRowCount = 0
+    client.rowsForSelect = [completedRow('{not valid json')]
+    const create = async () => makeCreated('vault-db-1', validStoredResponse)
+
+    await expect(
+      createVaultIdempotently({ key: 'user-1:key-db', requestHash: 'hash-db', owner }, create, fakePool(client)),
+    ).rejects.toBeInstanceOf(VaultCreationMalformedResponseError)
+  })
+
+  test('fails closed when the stored response violates the response shape', async () => {
+    const client = new FakeClient()
+    client.insertRowCount = 0
+    client.rowsForSelect = [completedRow({ vault: null })]
+    const create = async () => makeCreated('vault-db-1', validStoredResponse)
+
+    await expect(
+      createVaultIdempotently({ key: 'user-1:key-db', requestHash: 'hash-db', owner }, create, fakePool(client)),
+    ).rejects.toBeInstanceOf(VaultCreationMalformedResponseError)
   })
 })
