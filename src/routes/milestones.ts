@@ -70,8 +70,43 @@ const requireValidMilestoneId = (req: Request, res: Response, next: NextFunction
 const resolveActorUserId = (req: Request): string | null =>
   req.user?.userId ?? (req as any).apiKeyAuth?.userId ?? null
 
-function assertValidMilestoneResponse(value: unknown): void {
-  if (!value || typeof value !== 'object') throw new Error('malformed response')
+const NETWORK_RE = /^(mainnet|testnet|devnet)$/i
+const WALLET_RE = /^0x[a-fA-F0-9]{40}$/i
+
+const requireWalletIdentity = (req: Request, res: Response, next: NextFunction): void => {
+  const wallet = req.header('x-wallet-address')
+  if (!wallet || !WALLET_RE.test(wallet)) {
+    res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Missing or invalid wallet identity (disconnected wallet)' } })
+    return
+  }
+  const network = req.header('x-network-id')
+  if (!network || !NETWORK_RE.test(network)) {
+    res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Missing or invalid network identifier (wrong-network)' } })
+    return
+  }
+  next()
+}
+
+function assertValidMilestoneResponse(value: unknown): asserts value is Record<string, any> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('malformed response: must be a JSON object')
+  }
+  
+  const checkNumbersAndTampering = (target: any, depth = 0) => {
+    if (depth > 10) return; // guard against deep nesting
+    for (const key in target) {
+      const val = target[key];
+      if (typeof val === 'number') {
+        if (!Number.isFinite(val) || Number.isNaN(val)) {
+          throw new Error(`malformed response: invalid numeric value at ${key}`)
+        }
+      } else if (val && typeof val === 'object') {
+        checkNumbersAndTampering(val, depth + 1);
+      }
+    }
+  }
+  
+  checkNumbersAndTampering(value);
 }
 
 export const milestonesRouter = Router({ mergeParams: true })
@@ -138,7 +173,7 @@ async function handleIdempotency<T>(
 }
 
 // POST /api/vaults/:vaultId/milestones
-milestonesRouter.post('/', authenticate, requireUser, requireValidVaultId, async (req: Request, res: Response, next: NextFunction) => {
+milestonesRouter.post('/', authenticate, requireWalletIdentity, requireUser, requireValidVaultId, async (req: Request, res: Response, next: NextFunction) => {
   const actorUserId = resolveActorUserId(req)
   if (!actorUserId) {
     res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
@@ -156,6 +191,14 @@ milestonesRouter.post('/', authenticate, requireUser, requireValidVaultId, async
 
     if (!vault) {
       throw AppError.notFound('Vault not found')
+    }
+    
+    // Explicit authorization check to ensure the caller actually owns this vault
+    const isOwner = (owner.userId && vault.ownerId === owner.userId) || 
+                    (owner.orgId && vault.organizationId === owner.orgId);
+                    
+    if (!isOwner) {
+      throw AppError.forbidden('Unauthorized: you do not own this vault')
     }
 
     if (vault.status !== 'active') {
@@ -200,7 +243,7 @@ milestonesRouter.get('/', authenticate, requireValidVaultId, async (req: Request
 })
 
 // PATCH /api/vaults/:vaultId/milestones/:id/verify
-milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, requireValidVaultId, requireValidMilestoneId, async (req: Request, res: Response, next: NextFunction) => {
+milestonesRouter.patch('/:id/verify', authenticate, requireWalletIdentity, requireVerifier, requireValidVaultId, requireValidMilestoneId, async (req: Request, res: Response, next: NextFunction) => {
   const actorUserId = resolveActorUserId(req)
   if (!actorUserId) {
     res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
@@ -245,7 +288,7 @@ milestonesRouter.patch('/:id/verify', authenticate, requireVerifier, requireVali
 const EVIDENCE_HASH_RE = /^[0-9a-f]{32,128}$/i
 
 // POST /api/vaults/:vaultId/milestones/:id/validate
-milestonesRouter.post('/:id/validate', authenticate, requireVerifier, requireValidVaultId, requireValidMilestoneId, async (req: Request, res: Response, next: NextFunction) => {
+milestonesRouter.post('/:id/validate', authenticate, requireWalletIdentity, requireVerifier, requireValidVaultId, requireValidMilestoneId, async (req: Request, res: Response, next: NextFunction) => {
   const actorUserId = resolveActorUserId(req)
   if (!actorUserId) {
     res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
@@ -308,7 +351,7 @@ milestonesRouter.post('/:id/validate', authenticate, requireVerifier, requireVal
 
 // POST /api/vaults/:vaultId/milestones/:id/approve
 // Multi-verifier approval endpoint with duplicate-vote prevention
-milestonesRouter.post('/:id/approve', authenticate, requireVerifier, requireValidVaultId, requireValidMilestoneId, async (req: Request, res: Response, next: NextFunction) => {
+milestonesRouter.post('/:id/approve', authenticate, requireWalletIdentity, requireVerifier, requireValidVaultId, requireValidMilestoneId, async (req: Request, res: Response, next: NextFunction) => {
   const actorUserId = resolveActorUserId(req)
   if (!actorUserId) {
     res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
