@@ -33,6 +33,30 @@ const parsePositiveInteger = (value: string | undefined, fallback: number): numb
   return Math.floor(parsed)
 }
 
+const REGISTERED_JOB_TYPES: readonly JobType[] = [
+  'notification.send',
+  'deadline.check',
+  'oracle.call',
+  'analytics.recompute',
+  'analytics.report.generate',
+  'export.generate',
+  'sessions.cleanup',
+  'vault.reconcile',
+  'outbox.relay',
+  'embeddings.reindex',
+  'milestone.reminders',
+  'milestone.reminders.digest',
+  'milestone.reminders.deferred',
+  'retention.purge',
+  'saved-search.evaluate',
+]
+
+const assertJobId = (jobId: string): void => {
+  if (typeof jobId !== 'string' || jobId.trim().length === 0) {
+    throw new TypeError('jobId must be a non-empty string')
+  }
+}
+
 /**
  * Generates a deterministic advisory lock key from a job name string.
  * Uses a simple hash to convert the string to two 32-bit integers for PostgreSQL advisory locks.
@@ -169,6 +193,7 @@ export class BackgroundJobSystem {
   private readonly queue: InMemoryJobQueue
   private readonly schedulerRegistry: SchedulerRegistry
   private readonly abuseMonitor?: AbuseMonitor
+  private readonly registeredJobTypes = new Set<JobType>(REGISTERED_JOB_TYPES)
   private started = false
   private shuttingDown = false
 
@@ -201,21 +226,13 @@ export class BackgroundJobSystem {
 
     // Register all job handlers explicitly — never rely on Object.entries
     // which can silently skip handlers if createDefaultJobHandlers misses one.
-    this.queue.registerHandler('notification.send', handlers['notification.send']!)
-    this.queue.registerHandler('deadline.check', handlers['deadline.check']!)
-    this.queue.registerHandler('oracle.call', handlers['oracle.call']!)
-    this.queue.registerHandler('analytics.recompute', handlers['analytics.recompute']!)
-    this.queue.registerHandler('analytics.report.generate', handlers['analytics.report.generate']!)
-    this.queue.registerHandler('export.generate', handlers['export.generate']!)
-    this.queue.registerHandler('sessions.cleanup', handlers['sessions.cleanup']!)
-    this.queue.registerHandler('vault.reconcile', handlers['vault.reconcile']!)
-    this.queue.registerHandler('outbox.relay', handlers['outbox.relay']!)
-    this.queue.registerHandler('embeddings.reindex', handlers['embeddings.reindex']!)
-    this.queue.registerHandler('milestone.reminders', handlers['milestone.reminders']!)
-    this.queue.registerHandler('milestone.reminders.digest', handlers['milestone.reminders.digest']!)
-    this.queue.registerHandler('milestone.reminders.deferred', handlers['milestone.reminders.deferred']!)
-    this.queue.registerHandler('retention.purge', handlers['retention.purge']!)
-    this.queue.registerHandler('saved-search.evaluate', handlers['saved-search.evaluate']!)
+    for (const jobType of REGISTERED_JOB_TYPES) {
+      const handler = handlers[jobType]
+      if (!handler) {
+        throw new Error(`Missing handler for job type: ${jobType}`)
+      }
+      this.queue.registerHandler(jobType, handler)
+    }
   }
 
   start(): void {
@@ -249,14 +266,22 @@ export class BackgroundJobSystem {
     if (this.shuttingDown) {
       throw new Error('Cannot enqueue job: system is shutting down')
     }
+    if (!this.registeredJobTypes.has(type)) {
+      throw new TypeError(`Cannot enqueue unregistered job type: ${type}`)
+    }
     return this.queue.enqueue(type, payload, options)
   }
 
   getDeadLetters() {
-    return this.queue.getDeadLetters()
+    return this.queue.getDeadLetters().map((deadLetter) => ({ ...deadLetter }))
+  }
+
+  getRegisteredJobTypes(): readonly JobType[] {
+    return Array.from(this.registeredJobTypes)
   }
 
   getDeadLetter(jobId: string) {
+    assertJobId(jobId)
     return this.queue.getDeadLetter(jobId)
   }
 
@@ -264,12 +289,17 @@ export class BackgroundJobSystem {
     if (this.shuttingDown) {
       throw new Error('Cannot replay dead-letter job: system is shutting down')
     }
+    assertJobId(jobId)
     return this.queue.replayDeadLetter(jobId)
   }
 
   retryJob(jobId: string, force: boolean = false): QueuedJobReceipt<JobType> {
     if (this.shuttingDown) {
       throw new Error('Cannot retry job: system is shutting down')
+    }
+    assertJobId(jobId)
+    if (typeof force !== 'boolean') {
+      throw new TypeError('retryJob force must be a boolean')
     }
     return this.queue.retryJob(jobId, force)
   }
