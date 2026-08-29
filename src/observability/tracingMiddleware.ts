@@ -38,10 +38,17 @@ export function tracingMiddleware(req: Request, res: Response, next: NextFunctio
   }
 
   // ── Correlation ID ──
-  const correlationId =
-    (req.headers['x-correlation-id'] as string) ||
-    (req.headers['x-request-id'] as string) ||
-    traceCtx.traceId
+  const rawCorrelationId = (req.headers['x-correlation-id'] as string) || (req.headers['x-request-id'] as string)
+  let correlationId = traceCtx.traceId
+  
+  if (rawCorrelationId && typeof rawCorrelationId === 'string') {
+    // Validate correlation ID: only allow reasonable alphanumeric/uuid values, max 100 chars.
+    // Explicitly reject strings matching Stellar wallet addresses (G or M followed by 55 alphanumeric characters)
+    // to prevent adversarial injection of wallet identities into traces.
+    if (!/^[GM][A-Z2-7]{55}$/.test(rawCorrelationId) && /^[a-zA-Z0-9\-_]{1,100}$/.test(rawCorrelationId)) {
+      correlationId = rawCorrelationId
+    }
+  }
 
   // ── Start server span ──
   const span = tracer.startSpan(
@@ -49,7 +56,7 @@ export function tracingMiddleware(req: Request, res: Response, next: NextFunctio
     { traceId: traceCtx.traceId, spanId: traceCtx.spanId },
     {
       'http.method': req.method,
-      'http.url': req.originalUrl,
+      'http.url': (req.originalUrl || req.url).split('?')[0],
       'http.target': req.path,
       'http.host': req.hostname,
       'http.scheme': req.protocol,
