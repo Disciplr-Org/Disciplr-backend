@@ -162,6 +162,20 @@ const asPositiveInteger = (value: number | undefined, fallback: number): number 
   return Math.floor(value)
 }
 
+const asNonNegativeInteger = (value: number | undefined, fallback: number): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return fallback
+  }
+  return Math.floor(value)
+}
+
+const asAttemptCount = (value: number | undefined, fallback = 3): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback
+  }
+  return Math.max(1, Math.floor(value))
+}
+
 export class InMemoryJobQueue {
   private readonly handlers = new Map<JobType, JobHandler>()
   private readonly pendingJobs: Array<InternalQueuedJob<JobType>> = []
@@ -208,8 +222,8 @@ export class InMemoryJobQueue {
     }
 
     const now = Date.now()
-    const delayMs = Math.max(0, Math.floor(options.delayMs ?? 0))
-    const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? 3))
+    const delayMs = asNonNegativeInteger(options.delayMs, 0)
+    const maxAttempts = asAttemptCount(options.maxAttempts)
     const job: InternalQueuedJob<T> = {
       id: randomUUID(),
       type,
@@ -374,11 +388,11 @@ export class InMemoryJobQueue {
       this.activeJobs.delete(jobId)
 
       if (job.attempt >= job.maxAttempts) {
-        this.moveToDeadLetter(
+        const record = this.moveToDeadLetter(
           job,
           `Stuck job reclaimed: lease age ${leaseAgeMs}ms exceeded staleLeaseMs ${staleLeaseMs}ms`,
         )
-        deadLettered.push(this.deadLetterJobs[0])
+        deadLettered.push(record)
       } else {
         this.totals.retried += 1
         job.leasedAt = undefined
@@ -464,11 +478,12 @@ export class InMemoryJobQueue {
     } catch (error) {
       const message = getErrorMessage(error)
 
-      // If the handler marked the error as non-retryable, record failure and skip retry
+      // If the handler marked the error as non-retryable, skip retry and move to dead letter
       if (error && (error as any).nonRetryable) {
-        this.recordFailedJob(job, message)
+        this.moveToDeadLetter(job, message)
       } else if (job.attempt < job.maxAttempts) {
         this.totals.retried += 1
+        job.leasedAt = undefined
         job.runAt = Date.now() + this.getRetryDelayMs(job.attempt)
         this.pendingJobs.push(job)
         this.sortPendingJobs()
@@ -507,7 +522,7 @@ export class InMemoryJobQueue {
     this.trimHistory(this.completedJobs)
   }
 
-  private moveToDeadLetter(job: InternalQueuedJob<JobType>, error: string): void {
+  private moveToDeadLetter(job: InternalQueuedJob<JobType>, error: string): DeadLetterJobRecord {
     this.totals.failed += 1
     this.failedJobs.unshift({
       jobId: job.id,
@@ -518,7 +533,7 @@ export class InMemoryJobQueue {
     })
     this.trimHistory(this.failedJobs)
 
-    this.deadLetterJobs.unshift({
+    const record: DeadLetterJobRecord = {
       jobId: job.id,
       type: job.type,
       failedAt: new Date().toISOString(),
@@ -528,7 +543,10 @@ export class InMemoryJobQueue {
       createdAt: job.createdAt,
       runAt: job.runAt,
       maxAttempts: job.maxAttempts,
-    })
+    }
+
+    this.deadLetterJobs.unshift(record)
+    return record
   }
 
   getDeadLetters(): DeadLetterJobRecord[] {
@@ -558,6 +576,7 @@ export class InMemoryJobQueue {
       }
 
       this.deadLetterJobs.splice(deadLetterIndex, 1)
+      this.totals.retried += 1
 
       const job: InternalQueuedJob<JobType> = {
         id: entry.jobId,
