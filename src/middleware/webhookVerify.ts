@@ -11,6 +11,63 @@ interface CustomWebhookRequest extends Request {
 }
 
 // ---------------------------------------------------------------------------
+// Inbound payload boundary
+//
+// Beyond signature/replay/timestamp verification this middleware enforces a
+// shape invariant (payload must be a JSON object — never a bare value or
+// array) and, when the deployment pins a network, that an inbound delivery
+// carrying a `network`/`network_passphrase`/`networkPassphrase` field agrees
+// with the configured Stellar network. This rejects wrong-network events at
+// the boundary instead of letting them regress local vault state.
+// ---------------------------------------------------------------------------
+
+/**
+ * The Stellar network this deployment expects inbound webhook deliveries to
+ * originate from. Resolved from `WEBHOOK_EXPECTED_NETWORK` if set, otherwise
+ * from `SOROBAN_NETWORK_PASSPHRASE`. `undefined` means "accept any network"
+ * (the invariant is skipped), preserving forward compatibility for
+ * deployments that have not pinned a network.
+ */
+export const getExpectedInboundNetwork = (): string | undefined =>
+  process.env.WEBHOOK_EXPECTED_NETWORK ??
+  process.env.SOROBAN_NETWORK_PASSPHRASE ??
+  undefined
+
+export interface WebhookBodyValidation {
+  ok: boolean
+  error?: string
+}
+
+/**
+ * Validates the parsed inbound webhook body at the boundary.
+ *
+ * 1. The body must be a non-null plain object. JSON arrays and primitives are
+ *    rejected so downstream handlers never have to defend against a payload
+ *    with no object shape.
+ * 2. If a network is declared on the payload AND `expectedNetwork` is set,
+ *    they must match exactly (trimmed, non-empty). A payload that omits the
+ *    network field is still accepted to support legacy signing clients.
+ */
+export const validateWebhookBody = (
+  body: unknown,
+  expectedNetwork?: string,
+): WebhookBodyValidation => {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'Webhook payload must be a JSON object' }
+  }
+
+  if (expectedNetwork) {
+    const payload = body as Record<string, unknown>
+    const network = payload.network ?? payload.network_passphrase ?? payload.networkPassphrase
+    if (typeof network === 'string' && network.trim() !== '' && network.trim() !== expectedNetwork.trim()) {
+      return { ok: false, error: 'Webhook event not from the expected network' }
+    }
+  }
+
+  return { ok: true }
+}
+
+// ---------------------------------------------------------------------------
 // Nonce stores
 //
 // nonceCache:    nonces that have been *successfully* verified. These are the
@@ -128,13 +185,25 @@ export const webhookVerify = async (
 
     // Parse JSON — reject explicitly on malformed input rather than silently
     // substituting {} which would mask bad payloads from downstream handlers.
+    let parsedBody: unknown
     try {
-      req.body = JSON.parse(rawBody)
+      parsedBody = JSON.parse(rawBody)
     } catch {
       pendingNonces.delete(cacheKey)
       res.status(400).json({ error: 'Invalid JSON body' })
       return
     }
+
+    // Enforce the payload shape + network invariants at the boundary. A
+    // malformed body never consumes the nonce, so a corrected retry with the
+    // same nonce is still permitted (mirrors invalid-JSON behavior).
+    const bodyValidation = validateWebhookBody(parsedBody, getExpectedInboundNetwork())
+    if (!bodyValidation.ok) {
+      pendingNonces.delete(cacheKey)
+      res.status(400).json({ error: bodyValidation.error })
+      return
+    }
+    req.body = parsedBody
 
     // Verify HMAC
     const expectedDigest = crypto
