@@ -76,12 +76,27 @@ created -> submitted -> validated -> settled (terminal)
 
 Existing exports (`createMilestone`, `getMilestoneById`, `verifyMilestone`, `validateMilestone`, `allMilestonesVerified`, `addMilestoneEvent`, `listMilestoneEvents`, `resetMilestones`, the multi-verifier threshold API, and `allMilestonesMetThreshold`) keep their signatures and semantics. `addMilestoneEvent` additionally deduplicates identical `(userId, vaultId, name, timestamp)` tuples by returning the already-recorded event — an additive exactly-once guarantee; event ids now embed a monotonic per-vault sequence number (`m_<seq>_...`) instead of a timestamp-derived prefix, so consumers keying on exact id format must match `m_<seq>_<suffix>`.
 
-### Regression contract (tested in `src/tests/milestoneLifecycle.test.ts`)
+### Regression contract
 
+Tested in `src/tests/milestoneLifecycle.test.ts` (service layer), `src/routes/milestones.lifecycle.test.ts` (route integration), `src/routes/milestones.idempotency.test.ts` (idempotency boundary), `tests/multiVerifier.veto.test.ts` (veto math), and `src/tests/milestone.lifecycle.test.ts` (repository invariants).
+
+**Lifecycle state machine**
 - Monotonicity: backwards/self transitions rejected; invalid skips rejected; `settled` terminal.
-- Event ordering: exactly one event per successful transition, monotonic sequence numbers, no events on failure, ledger append-only under filtering.
-- Retry safety: same idempotency key acknowledged without re-application; distinct keys applied; keys scoped per milestone; concurrent duplicates apply exactly once.
+- Atomicity: `verified`/`verifiedAt`/`verifiedBy` advance atomically with `validated`/`settled` transitions.
+- Event ordering: exactly one event per successful transition, monotonic per-vault sequence numbers embedded in event ids (`m_<seq>_<suffix>`), no events on failure, ledger append-only under filtering, `from`/`to` timestamp filters inclusive, unparseable filter timestamps yield an empty result rather than throwing.
+- Retry safety: same idempotency key acknowledged without re-application (including after settlement — the replay check precedes the settled guard); distinct keys applied; keys scoped per milestone; concurrent duplicates apply exactly once.
 - Boundary/permission: `verifyMilestone` idempotent; `validateMilestone` enforces assigned-verifier + replay protection; multi-verifier thresholds and veto semantics preserved.
+
+**Adversarial-input invariants (verifier service, `src/services/verifiers.ts`)**
+- `recordMilestoneApproval` rejects empty/whitespace/non-string `milestoneId` and `verifierUserId` before any write, and rejects any `approvalStatus` other than `approved`/`rejected`.
+- `getMilestoneApprovalProgress` clamps `approvalThreshold` to ≥ 1 (zero, negative, and `NaN` inputs cannot produce a degenerate verdict) and treats non-positive `totalVerifiers` as unknown (legacy mode: any rejection vetoes).
+
+**Route-level authorization contract (`src/routes/milestones.ts`)**
+- `POST /` (create) requires a wallet identity header, a `USER`-or-higher principal, and ownership of the vault (vault `creator`, matching `orgId`, or `ADMIN`); non-active vaults are rejected `409`.
+- `PATCH /:id/verify`, `POST /:id/validate`, and `POST /:id/approve` require a `VERIFIER`/`ADMIN` principal plus wallet identity; `validate` additionally enforces the milestone's assigned verifier; `approve` rejects votes from non-`approved` verifier profiles, duplicate votes, and votes on already-settled milestones.
+- Malformed vault/milestone ids and malformed payloads are rejected `400` at the boundary before any side effect.
+
+**Accessibility note.** The milestone feature in this repository is a server-side JSON API — there is no interactive UI surface in `disciplr-backend` — so the keyboard/focus/screen-reader/responsive/reduced-motion criteria do not apply here. The API-level equivalent is the stable, machine-readable error contract (`error.code`/`error.message` on every failure path) and the consistent success shapes pinned by the route tests above.
 
 ## Milestone Validation
 

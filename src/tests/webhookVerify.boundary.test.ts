@@ -20,6 +20,9 @@ jest.unstable_mockModule('../config/index.js', () => ({
     WEBHOOK_INBOUND_SECRET: 'test-secret',
     WEBHOOK_INBOUND_SKEW_MS: 300000, // 5 minutes
   }),
+  // webhookVerify -> logger -> config: provide the subset logger reads at
+  // module-init time so the mock never has to shadow the whole config module.
+  config: { nodeEnv: 'test', logLevel: 'info' },
 }))
 
 const { webhookVerify, validateWebhookBody, getExpectedInboundNetwork } = await import(

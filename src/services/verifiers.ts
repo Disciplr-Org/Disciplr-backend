@@ -449,6 +449,17 @@ export class DuplicateVerifierVoteError extends Error {
 }
 
 /**
+ * Validate that a value is a non-empty string.
+ * Used as a hostile-input guard for identifiers.
+ */
+const assertNonEmptyString = (value: unknown, name: string): string => {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`${name} must be a non-empty string`)
+  }
+  return value
+}
+
+/**
  * Record a milestone approval vote from a verifier.
  * Throws DuplicateVerifierVoteError if verifier has already voted.
  */
@@ -457,6 +468,14 @@ export const recordMilestoneApproval = async (
   verifierUserId: string,
   approvalStatus: MilestoneApprovalStatus,
 ): Promise<MilestoneApproval> => {
+  // Hostile-input boundary: reject empty/missing identifiers early.
+  assertNonEmptyString(milestoneId, 'milestoneId')
+  assertNonEmptyString(verifierUserId, 'verifierUserId')
+
+  if (approvalStatus !== 'approved' && approvalStatus !== 'rejected') {
+    throw new Error('approvalStatus must be "approved" or "rejected"')
+  }
+
   return db.transaction(async (trx) => {
     const existing = await trx('milestone_approvals')
       .where({
@@ -604,12 +623,20 @@ export const getMilestoneApprovalProgress = async (
   const pending = approvals.pending.length
   const totalVoted = approved + rejected + pending
 
+  // Hostile-input boundary: clamp thresholds to sane ranges so zero, negative,
+  // or non-numeric inputs can never produce a degenerate veto/complete result.
+  const safeThreshold = Math.max(1, Math.floor(Number(approvalThreshold) || 1))
+  const safeTotal =
+    totalVerifiers !== undefined && totalVerifiers > 0
+      ? Math.max(1, Math.floor(Number(totalVerifiers)))
+      : undefined
+
   // Veto math: can we still reach threshold?
   let isRejected: boolean
-  if (totalVerifiers !== undefined && totalVerifiers > 0) {
-    const remaining = totalVerifiers - totalVoted
+  if (safeTotal !== undefined) {
+    const remaining = safeTotal - totalVoted
     const maxPossibleApprovals = approved + Math.max(remaining, 0)
-    isRejected = maxPossibleApprovals < approvalThreshold
+    isRejected = maxPossibleApprovals < safeThreshold
   } else {
     // Legacy: any rejection vetoes
     isRejected = rejected > 0
@@ -621,8 +648,8 @@ export const getMilestoneApprovalProgress = async (
     approved,
     rejected,
     pending,
-    required: approvalThreshold,
-    isComplete: approved >= approvalThreshold && !isRejected,
+    required: safeThreshold,
+    isComplete: approved >= safeThreshold && !isRejected,
     isRejected,
     approvalPercentage,
   }
