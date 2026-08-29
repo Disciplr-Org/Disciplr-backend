@@ -1,4 +1,3 @@
-import { beforeEach, describe, expect, it, jest, mock } from 'bun:test'
 import type { Request, Response, NextFunction } from 'express'
 import {
   checkAndIncrementExportQuota,
@@ -233,39 +232,45 @@ describe('POST /me quota enforcement', () => {
     (env as any).EXPORT_DAILY_QUOTA_LIMIT = original;
   })
 
-  it('uses orgId from request when present', async () => {
+  it('ignores client-supplied orgId — quota is always scoped to req.user.userId', async () => {
+    // SECURITY REGRESSION TEST for #1387
+    // A caller must not be able to exhaust another org's quota or dodge their own
+    // by supplying an arbitrary orgId via query param, header, or request body.
     const { handle } = getHandler('/me', 'post')
     const env = (await import('../config/index.js')).getEnv()
     const original = env.EXPORT_DAILY_QUOTA_LIMIT
     ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = 1
 
-    // First request via org-shared scopes the quota to the orgId
-    const reqWithOrg = {
-      query: { format: 'json', scope: 'vaults' },
-      user: { userId: 'user-a', role: 'USER' },
+    // Attacker request: claims to belong to 'victim-org' via every client-
+    // controlled channel, but authenticates as 'attacker-user'.
+    const attackerReq = {
+      query: { format: 'json', scope: 'vaults', orgId: 'victim-org' },
+      headers: { 'x-organization-id': 'victim-org' },
+      user: { userId: 'attacker-user', role: 'USER' },
+      // Also try setting it directly on the request object (old vulnerable path)
+      orgId: 'victim-org',
       header: () => undefined,
-      orgId: 'shared-org',
     } as unknown as Request
 
+    // First attacker request consumes attacker-user's own quota bucket
     const res1 = mockRes();
-    await handle(reqWithOrg, res1 as unknown as Response)
+    await handle(attackerReq, res1 as unknown as Response)
     expect(res1.statusCode).toBe(202)
 
-    // Second request for same org is blocked
+    // Attacker is now quota-limited (their userId bucket is exhausted)
     const res2 = mockRes()
-    await handle(reqWithOrg, res2 as unknown as Response)
+    await handle(attackerReq, res2 as unknown as Response)
     expect(res2.statusCode).toBe(429)
 
-    // Different user, different org — not blocked
-    const reqOtherOrg = {
+    // Victim org's legitimate user is NOT affected — their userId bucket is untouched
+    const victimReq = {
       query: { format: 'json', scope: 'vaults' },
-      user: { userId: 'user-b', role: 'USER' },
+      user: { userId: 'victim-org-user', role: 'USER' },
       header: () => undefined,
-      orgId: 'other-org',
     } as unknown as Request
 
     const res3 = mockRes();
-    await handle(reqOtherOrg, res3 as unknown as Response)
+    await handle(victimReq, res3 as unknown as Response)
     expect(res3.statusCode).toBe(202)
 
     (env as any).EXPORT_DAILY_QUOTA_LIMIT = original;

@@ -5,6 +5,7 @@ import {
   type EnqueueOptions,
   type JobPayloadByType,
   type JobType,
+  JOB_TYPES,
   isJobType,
   isPayloadForJobType,
   isRecord,
@@ -41,20 +42,7 @@ const enqueueTypedJob = (
   payload: JobPayloadByType[JobType],
   options: EnqueueOptions,
 ) => {
-  switch (type) {
-    case 'notification.send':
-      return jobSystem.enqueue(type, payload, options)
-    case 'deadline.check':
-      return jobSystem.enqueue(type, payload, options)
-    case 'oracle.call':
-      return jobSystem.enqueue(type, payload, options)
-    case 'analytics.recompute':
-      return jobSystem.enqueue(type, payload, options)
-    case 'retention.purge':
-      return jobSystem.enqueue(type, payload, options)
-    default:
-      throw new Error('Unsupported job type')
-  }
+  return jobSystem.enqueue(type as any, payload as any, options)
 }
 
 // Router factory
@@ -215,7 +203,7 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
         if (!isJobType(type)) {
           res.status(400).json({
             error:
-              'Invalid or missing job type. Supported types: notification.send, deadline.check, oracle.call, analytics.recompute, retention.purge',
+              `Invalid or missing job type. Supported types: ${JOB_TYPES.join(', ')}`,
           })
           return
         }
@@ -235,6 +223,32 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
           })
           return
         }
+
+        try {
+          const queuedJob = enqueueTypedJob(jobSystem, type, payload, options)
+          
+          createAuditLog({
+            actor_user_id: req.user!.userId,
+            action: 'job.enqueue',
+            target_type: 'job',
+            target_id: queuedJob.id,
+            metadata: {
+              jobType: type,
+              runAt: queuedJob.runAt,
+              maxAttempts: queuedJob.maxAttempts,
+              delayMs: options.delayMs ?? 0,
+            },
+          })
+
+          res.status(202).json({
+            queued: true,
+            job: queuedJob,
+          })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed to enqueue job'
+          res.status(500).json({ error: message })
+        }
+        return
       }
 
       res.status(400).json({

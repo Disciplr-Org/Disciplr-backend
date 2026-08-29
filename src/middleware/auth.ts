@@ -4,7 +4,7 @@ import jwt from "jsonwebtoken";
 import { randomUUID } from "node:crypto";
 import { recordSession, validateSession } from "../services/session.js";
 import { UserRole } from "../types/user.js";
-import { verifyAccessToken } from "../lib/auth-utils.js";
+import { getJwtSecret, verifyAccessToken } from "../lib/auth-utils.js";
 import { config } from "../config/index.js";
 
 import { JWTPayload } from "../types/auth.js";
@@ -14,10 +14,26 @@ export type Role = "user" | "verifier" | "admin";
 // Use JWTPayload from types/auth.ts as source of truth, adding jti for sessions
 export type JwtPayload = JWTPayload & { jti?: string };
 
-const JWT_SECRET = process.env.JWT_SECRET ?? "change-me-in-production";
-
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+/**
+ * CSRF protection middleware.
+ *
+ * SAFE methods (GET, HEAD, OPTIONS) are always allowed.
+ *
+ * For non-safe methods, this middleware checks the Origin / Referer headers
+ * against the configured CORS allowlist.
+ *
+ * Bearer-token exemption: requests carrying `Authorization: Bearer <token>`
+ * are only exempted from CSRF checks when the token is a *verifiable* JWT
+ * (passes `verifyAccessToken` or `jwt.verify`). Unverifiable tokens —
+ * including the unsigned `user:<id>` strings accepted by `requireUserAuth` —
+ * fall through to normal origin/referer validation. This prevents a CSRF
+ * bypass on any router still using the legacy `requireUserAuth` flow.
+ *
+ * @see requireUserAuth — legacy mock auth that accepts unverified Bearer tokens
+ * @deprecated requireUserAuth is deprecated; migrate routers to `authenticate`
+ */
 export function csrfProtection(
   req: Request,
   res: Response,
@@ -30,8 +46,24 @@ export function csrfProtection(
 
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith("Bearer ")) {
-    next();
-    return;
+    const token = authHeader.slice(7).trim();
+    // Only treat bearer tokens as CSRF-safe when they are verifiable JWTs.
+    // This avoids trusting unsigned or mock "user:<id>" bearer tokens used by
+    // legacy/dev routers (see requireUserAuth) which are not resistant to CSRF.
+    try {
+      try {
+        verifyAccessToken(token)
+        next()
+        return
+      } catch (_) {
+        // fallback to legacy secret
+        jwt.verify(token, getJwtSecret())
+        next()
+        return
+      }
+    } catch {
+      // Token was not verifiable -> fall through to normal CSRF checks
+    }
   }
 
   const origin = req.headers.origin as string | undefined;
@@ -104,7 +136,7 @@ export async function authenticate(
       payload = verifyAccessToken(token) as JwtPayload;
     } catch {
       // Fallback to legacy JWT_SECRET for backward compatibility
-      payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
+      payload = jwt.verify(token, getJwtSecret()) as JwtPayload;
     }
 
     // Reject tokens with iat too far in the future (beyond clock tolerance)
@@ -143,14 +175,35 @@ export async function signToken(
   const jti = randomUUID();
   const fullPayload = { ...payload, jti };
 
-  // Calculate expiration date
-  // Default matches 1h (1 hour)
-  const durationMs = 60 * 60 * 1000;
-  const expiresAt = new Date(Date.now() + durationMs);
+  // Derive the session expiry from the same `expiresIn` value passed to jwt.sign.
+  const parseExpiresInToMs = (val: string | number): number => {
+    if (typeof val === 'number') return val * 1000
+    // Accept formats like '30s', '15m', '1h', '2d' or a numeric string of seconds
+    const m = /^([0-9]+)(s|m|h|d)$/.exec(val)
+    if (m) {
+      const n = Number(m[1])
+      switch (m[2]) {
+        case 's':
+          return n * 1000
+        case 'm':
+          return n * 60 * 1000
+        case 'h':
+          return n * 60 * 60 * 1000
+        case 'd':
+          return n * 24 * 60 * 60 * 1000
+      }
+    }
+    if (/^[0-9]+$/.test(String(val))) return Number(val) * 1000
+    // Fallback to 1 hour if we cannot parse
+    return 60 * 60 * 1000
+  }
 
-  await recordSession(payload.userId, jti, expiresAt);
+  const durationMs = parseExpiresInToMs(expiresIn)
+  const expiresAt = new Date(Date.now() + durationMs)
 
-  return jwt.sign(fullPayload, JWT_SECRET, { expiresIn } as jwt.SignOptions);
+  await recordSession(payload.userId, jti, expiresAt)
+
+  return jwt.sign(fullPayload, getJwtSecret(), { expiresIn } as jwt.SignOptions)
 }
 
 export interface AuthenticatedRequest extends Request {
@@ -225,8 +278,15 @@ export function authorize(allowedRoles: UserRole[]) {
 }
 
 /** Generate a time-limited, HMAC-signed download token */
-const DOWNLOAD_SECRET =
-  process.env.DOWNLOAD_SECRET ?? "change-me-in-production";
+const DOWNLOAD_SECRET = process.env.DOWNLOAD_SECRET;
+
+if (!DOWNLOAD_SECRET) {
+  throw new Error(
+    "DOWNLOAD_SECRET environment variable is required. Set it to a strong, random secret to secure export download tokens."
+  );
+}
+
+const DOWNLOAD_SECRET_TYPED = DOWNLOAD_SECRET as string;
 
 export function signDownloadToken(
   jobId: string,
@@ -236,7 +296,7 @@ export function signDownloadToken(
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
   const payload = `${jobId}:${userId}:${exp}`;
   const sig = crypto
-    .createHmac("sha256", DOWNLOAD_SECRET)
+    .createHmac("sha256", DOWNLOAD_SECRET_TYPED)
     .update(payload)
     .digest("hex");
   return Buffer.from(JSON.stringify({ jobId, userId, exp, sig })).toString(
@@ -255,7 +315,7 @@ export function verifyDownloadToken(
     if (Date.now() / 1000 > exp) return null;
 
     const expected = crypto
-      .createHmac("sha256", DOWNLOAD_SECRET)
+      .createHmac("sha256", DOWNLOAD_SECRET_TYPED)
       .update(`${jobId}:${userId}:${exp}`)
       .digest("hex");
 

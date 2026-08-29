@@ -145,13 +145,12 @@ function getSignedUrlExpiry(referenceUrl: string): Date {
 }
 
 export function validateSignedObjectStorageUrl(referenceUrl: string): Date {
+  validateEvidenceUrlSafety(referenceUrl)
+
   const expiry = getSignedUrlExpiry(referenceUrl)
   if (expiry.getTime() <= Date.now()) {
     throw new EvidenceReferenceValidationError('Signed object-storage URL has already expired')
   }
-
-  // Validate SSRF safety before accepting the URL
-  validateEvidenceUrlSafety(referenceUrl)
 
   return expiry
 }
@@ -344,7 +343,7 @@ export async function findSimilar(
     LIMIT ${limit}
   `
 
-  return results.map((r) => ({
+  return results.map((r: any) => ({
     milestoneId: r.milestone_id,
     evidenceHash: r.evidence_hash,
     referenceUrl: r.reference_url,

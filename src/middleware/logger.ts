@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import pino, { Logger } from 'pino'
 import { config } from '../config/index.js'
 
@@ -104,7 +105,13 @@ export function withCorrelationId(
 }
 
 /**
- * Extract or generate a correlation ID from request headers
+ * Extract or generate a correlation ID from request headers.
+ *
+ * Header priority: x-correlation-id > x-request-id.
+ * Falls back to randomUUID() (crypto-grade, collision-resistant) when neither
+ * header is present. Math.random() was previously used here but is not
+ * collision-resistant and can produce duplicate IDs under high concurrency
+ * within the same millisecond. .substr() was also deprecated.
  */
 export function getOrGenerateCorrelationId(
   req: any,
@@ -112,6 +119,6 @@ export function getOrGenerateCorrelationId(
   return (
     req.headers['x-correlation-id'] ||
     req.headers['x-request-id'] ||
-    `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    randomUUID()
   )
 }

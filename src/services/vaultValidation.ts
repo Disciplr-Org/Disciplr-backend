@@ -1,9 +1,29 @@
 import { z } from 'zod'
 import { utcTimestampSchema } from '../lib/validation.js'
-import { StrKey } from '@stellar/stellar-sdk'
+import { Horizon, StrKey } from '@stellar/stellar-sdk'
 export { flattenZodErrors } from '../lib/validation.js'
 
 const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/
+
+/** Soroban contract addresses (C...) use the same strkey alphabet as G... accounts. */
+const CONTRACT_ADDRESS_RE = /^C[A-Z2-7]{55}$/
+
+/**
+ * Network passphrase this backend is configured to build payloads for.
+ * Mirrors the default in `src/services/soroban.ts`; the route rejects
+ * client-supplied passphrases that differ so a vault payload can never be
+ * built for the wrong network.
+ */
+export const DEFAULT_NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015'
+
+export function getConfiguredNetworkPassphrase(): string {
+  return process.env.SOROBAN_NETWORK_PASSPHRASE ?? DEFAULT_NETWORK_PASSPHRASE
+}
+
+/** Lazy format check for Soroban contract addresses (C..., 56 chars). */
+export function isValidContractAddress(value: string): boolean {
+  return typeof value === 'string' && CONTRACT_ADDRESS_RE.test(value)
+}
 
 // ─── Soroban-aligned constants ───────────────────────────────────────────────
 
@@ -19,39 +39,86 @@ export const VAULT_MILESTONES_MIN = 1
 /** Maximum number of milestones in a vault. This caps request size and enforces operational limits. */
 export const VAULT_MILESTONES_MAX = 20
 
-// Mock exchange addresses requiring a memo.
-// GDHWBXJFCTBJ6ZQPK2E64JAOMHQOEOMWQ43Q5C3J6TEA6SNOFELWBVCY (Valid Classic 1) is the primary mock exchange for testing.
-export const MEMO_REQUIRED_EXCHANGES = new Set([
-  'GDHWBXJFCTBJ6ZQPK2E64JAOMHQOEOMWQ43Q5C3J6TEA6SNOFELWBVCY',
-])
-
 export function getClassicAddress(address: string): string {
-  try {
-    if (StrKey.isValidMed25519PublicKey(address)) {
+  if (address.startsWith('M')) {
+    try {
       const decoded = StrKey.decodeMed25519PublicKey(address)
       return StrKey.encodeEd25519PublicKey(decoded.slice(0, 32))
+    } catch {
+      throw new Error(`Invalid muxed address format`);
     }
-  } catch {
-    // ignore
   }
   return address
 }
 
-export function isUnsafeAddress(address: string): boolean {
+/**
+ * Result of checking whether an address is unsafe or has decode errors.
+ * - isBurnAddress: true if the address is all-zero or all-ones (burn address)
+ * - decodeError: true if the SDK failed to decode for reasons other than validation
+ */
+export interface UnsafeAddressResult {
+  isBurnAddress: boolean
+  decodeError: boolean
+}
+
+/**
+ * Checks if an address is a burn address (all-zero or all-ones bytes).
+ * Returns an object distinguishing between genuine burn addresses and decode failures.
+ */
+export function checkAddressSafety(address: string): UnsafeAddressResult {
+  // First, validate the address format
+  const isValidEd = StrKey.isValidEd25519PublicKey(address)
+  const isValidMed = StrKey.isValidMed25519PublicKey(address)
+  
+  if (!isValidEd && !isValidMed) {
+    // Not a valid format, but this is not a decode error - just invalid
+    return { isBurnAddress: false, decodeError: false }
+  }
+
   try {
     let pubkey: Buffer
-    if (StrKey.isValidEd25519PublicKey(address)) {
+    if (isValidEd) {
       pubkey = StrKey.decodeEd25519PublicKey(address)
-    } else if (StrKey.isValidMed25519PublicKey(address)) {
-      pubkey = StrKey.decodeMed25519PublicKey(address).slice(0, 32)
     } else {
-      return false
+      pubkey = StrKey.decodeMed25519PublicKey(address).slice(0, 32)
     }
+    
     const allZeros = pubkey.every((b) => b === 0x00)
     const allOnes = pubkey.every((b) => b === 0xff)
-    return allZeros || allOnes
+    
+    return {
+      isBurnAddress: allZeros || allOnes,
+      decodeError: false
+    }
+  } catch (error) {
+    // An unexpected decode error occurred despite validation passing
+    return {
+      isBurnAddress: false,
+      decodeError: true
+    }
+  }
+}
+
+/**
+ * Legacy function for backward compatibility.
+ * Returns true if the address is unsafe (burn address OR decode error).
+ * @deprecated Use checkAddressSafety() for more granular error handling
+ */
+export function isUnsafeAddress(address: string): boolean {
+  const result = checkAddressSafety(address)
+  return result.isBurnAddress || result.decodeError
+}
+
+// Checks SEP-29: returns true if the account has set config.memo_required=1
+export async function isMemoRequired(address: string, horizonUrl?: string): Promise<boolean> {
+  const classic = getClassicAddress(address)
+  if (!StrKey.isValidEd25519PublicKey(classic)) return false
+  try {
+    const server = new Horizon.Server(horizonUrl ?? process.env.HORIZON_URL ?? 'https://horizon.stellar.org')
+    const account = await server.loadAccount(classic)
+    return account.data_attr?.['config.memo_required'] === 'MQ=='  // base64("1")
   } catch {
-    return true
+    return false
   }
 }
 
@@ -97,21 +164,55 @@ const amountStringSchema = z.preprocess(
       'must be a positive number',
     )
     .refine(
+      (v) => /^\d+(?:\.\d{1,7})?$/.test(v),
+      'must be a decimal amount with at most 7 fractional digits',
+    )
+    .refine(
       (v) => { const n = Number(v); return n >= VAULT_AMOUNT_MIN && n <= VAULT_AMOUNT_MAX },
       `must be between ${VAULT_AMOUNT_MIN} and ${VAULT_AMOUNT_MAX.toLocaleString()}`,
     ),
 )
 
+const AMOUNT_SCALE = 10_000_000n
+const DECIMAL_AMOUNT_RE = /^\d+(?:\.\d{1,7})?$/
+
+/** Convert an already grammar-validated decimal into exact seven-place units. */
+function amountToUnits(value: string): bigint | null {
+  if (!DECIMAL_AMOUNT_RE.test(value)) return null
+  const [whole, fraction = ''] = value.split('.')
+  return BigInt(whole) * AMOUNT_SCALE + BigInt(fraction.padEnd(7, '0'))
+}
+
 // ─── Milestone schema ────────────────────────────────────────────────────────
 
-const milestoneSchema = z.object({
+/** Maximum length for milestone title. */
+export const MILESTONE_TITLE_MAX = 200
+
+/** Maximum length for milestone description. */
+export const MILESTONE_DESCRIPTION_MAX = 2000
+
+/**
+ * Canonical milestone field schema shared between vault-creation and the
+ * standalone milestone-creation endpoint.  Both code paths must produce
+ * milestones that satisfy the same invariants.
+ */
+export const milestoneSchema = z.object({
   title: z
     .string({ message: 'is required' })
-    .refine((v) => v.trim().length > 0, 'is required'),
-  description: z.string().optional(),
+    .refine((v) => v.trim().length > 0, 'is required')
+    .refine((v) => v.trim().length <= MILESTONE_TITLE_MAX, `must be at most ${MILESTONE_TITLE_MAX} characters`),
+  description: z
+    .string()
+    .max(MILESTONE_DESCRIPTION_MAX, `must be at most ${MILESTONE_DESCRIPTION_MAX} characters`)
+    .optional(),
   dueDate: utcTimestampSchema,
   amount: amountStringSchema,
 })
+
+/** Single entry point for standalone milestone creation validation. */
+export function parseMilestoneInput(input: unknown) {
+  return milestoneSchema.safeParse(input)
+}
 
 // ─── Root vault schema ───────────────────────────────────────────────────────
 
@@ -146,9 +247,24 @@ export const createVaultSchema = z
     onChain: z
       .object({
         mode: z.enum(['build', 'submit']).optional().default('build'),
-        contractId: z.string().optional(),
-        networkPassphrase: z.string().optional(),
-        sourceAccount: z.string().optional(),
+        contractId: z
+          .string()
+          .refine(isValidContractAddress, 'must be a valid Stellar contract address (C...)')
+          .optional(),
+        networkPassphrase: z
+          .string()
+          .refine(
+            (val) => val === getConfiguredNetworkPassphrase(),
+            'does not match the configured network passphrase',
+          )
+          .optional(),
+        sourceAccount: z
+          .string()
+          .refine(
+            (val) => StrKey.isValidEd25519PublicKey(val) || StrKey.isValidMed25519PublicKey(val),
+            'must be a valid Stellar account address (G... or M...)',
+          )
+          .optional(),
       })
       .optional(),
   })
@@ -179,11 +295,13 @@ export const createVaultSchema = z
       })
     }
 
-    // Total milestone amounts must not exceed vault amount
-    const vaultAmount = Number(data.amount)
-    if (Number.isFinite(vaultAmount)) {
-      const total = data.milestones.reduce((acc, m) => acc + Number(m.amount), 0)
-      if (total > vaultAmount) {
+    // Compare scaled decimal units exactly; Number summation can drift at the
+    // seventh decimal place and reject a schedule that exactly fits.
+    const vaultAmountUnits = amountToUnits(data.amount)
+    const milestoneUnits = data.milestones.map((milestone) => amountToUnits(milestone.amount))
+    if (vaultAmountUnits !== null && milestoneUnits.every((units): units is bigint => units !== null)) {
+      const total = milestoneUnits.reduce((acc, units) => acc + units, 0n)
+      if (total > vaultAmountUnits) {
         ctx.addIssue({
           code: 'custom',
           message: 'Total milestone amount cannot exceed vault amount',
@@ -192,42 +310,35 @@ export const createVaultSchema = z
       }
     }
 
-    // Reject unsafe success/failure destination addresses
-    if (isUnsafeAddress(data.destinations.success)) {
+    // Reject unsafe success/failure destination addresses with specific error messages
+    const successSafety = checkAddressSafety(data.destinations.success)
+    if (successSafety.isBurnAddress) {
       ctx.addIssue({
         code: 'custom',
-        message: 'Destination address cannot be a zero, burn, or unsafe address',
+        message: 'Destination address cannot be a zero or burn address (all-zero or all-ones bytes)',
+        path: ['destinations', 'success'],
+      })
+    } else if (successSafety.decodeError) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Failed to decode destination address - unexpected SDK error',
         path: ['destinations', 'success'],
       })
     }
-    if (isUnsafeAddress(data.destinations.failure)) {
+    
+    const failureSafety = checkAddressSafety(data.destinations.failure)
+    if (failureSafety.isBurnAddress) {
       ctx.addIssue({
         code: 'custom',
-        message: 'Destination address cannot be a zero, burn, or unsafe address',
+        message: 'Destination address cannot be a zero or burn address (all-zero or all-ones bytes)',
         path: ['destinations', 'failure'],
       })
-    }
-
-    // Reject exchange destinations lacking a memo
-    const successClassic = getClassicAddress(data.destinations.success)
-    if (MEMO_REQUIRED_EXCHANGES.has(successClassic)) {
-      if (!StrKey.isValidMed25519PublicKey(data.destinations.success)) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Destination is a known exchange that requires a memo. Use a muxed address.',
-          path: ['destinations', 'success'],
-        })
-      }
-    }
-    const failureClassic = getClassicAddress(data.destinations.failure)
-    if (MEMO_REQUIRED_EXCHANGES.has(failureClassic)) {
-      if (!StrKey.isValidMed25519PublicKey(data.destinations.failure)) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Destination is a known exchange that requires a memo. Use a muxed address.',
-          path: ['destinations', 'failure'],
-        })
-      }
+    } else if (failureSafety.decodeError) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Failed to decode destination address - unexpected SDK error',
+        path: ['destinations', 'failure'],
+      })
     }
 
     // Validate embedded muxed address memo ID range
@@ -290,5 +401,43 @@ export async function isValidStellarAddress(address: string): Promise<boolean> {
   } catch (err) {
     // If the import fails for any reason, conservatively treat as invalid.
     return false
+  }
+}
+
+/**
+ * Guards the server-generated vault-creation response before it is sent to a
+ * client (or replayed from an idempotency reservation).
+ *
+ * The replayed response is parsed from a stored JSON row, so a corrupt or
+ * truncated reservation must never be forwarded as if it were a valid vault.
+ * Throws on malformed shapes; callers map the failure to a generic 500 so no
+ * internals leak to the client.
+ */
+export function assertValidVaultCreateResponse(value: unknown): void {
+  if (value === null || typeof value !== 'object') {
+    throw new Error('vault create response must be an object')
+  }
+  const body = value as Record<string, unknown>
+
+  const vault = body.vault
+  if (vault === null || typeof vault !== 'object') {
+    throw new Error('vault create response is missing the vault object')
+  }
+  const vaultId = (vault as Record<string, unknown>).id
+  if (typeof vaultId !== 'string' || vaultId.length === 0) {
+    throw new Error('vault create response is missing a vault id')
+  }
+
+  const onChain = body.onChain
+  if (onChain === null || typeof onChain !== 'object') {
+    throw new Error('vault create response is missing the onChain payload')
+  }
+  const payload = (onChain as Record<string, unknown>).payload
+  if (
+    payload === null ||
+    typeof payload !== 'object' ||
+    (payload as Record<string, unknown>).method !== 'create_vault'
+  ) {
+    throw new Error('vault create response onChain payload is malformed')
   }
 }

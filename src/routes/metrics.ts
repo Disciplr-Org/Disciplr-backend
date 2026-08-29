@@ -5,12 +5,7 @@ import { pool, db } from '../db/index.js';
 import { BackgroundJobSystem } from '../jobs/system.js';
 import { getLatestListenerLag } from '../services/monitor.js';
 import { getBreakerStatesForMetrics } from '../services/webhooks.js';
-
-// Create a Registry which registers the metrics
-const register = new client.Registry();
-
-// Enable collection of default metrics (CPU, memory, event loop, etc.)
-client.collectDefaultMetrics({ register });
+import { register } from '../observability/metricsRegistry.js';
 
 // Define custom gauges
 // Aggregate-only — no tenant/org/user labels to avoid leaking tenant identity
@@ -96,7 +91,7 @@ export function setEventThroughput(eventsPerSec: number): void {
 
 const router = express.Router();
 
-router.get('/metrics', async (_req: Request, res: Response) => {
+router.get('/', async (_req: Request, res: Response) => {
   // Update gauges on each scrape
   // Job system metrics – we need an instance; assume a singleton is attached to app locals
   const jobSystem: BackgroundJobSystem | undefined = (res.app?.locals?.jobSystem as BackgroundJobSystem) ?? undefined;

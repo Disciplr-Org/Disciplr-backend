@@ -22,13 +22,18 @@ import {
   securityMetricsMiddleware,
   securityRateLimitMiddleware,
 } from "./security/abuse-monitor.js";
-import { initializeDatabase, closeDatabase } from "./db/database.js";
-import { etlWorker } from "./services/etlWorker.js";
+import { initializeDatabase } from "./db/database.js";
+import { closePgPool } from "./db/pool.js";
+import { getEtlWorker } from "./services/etlWorker.js";
 import { createShutdownHandler } from "./server/shutdown.js";
 import { createNotificationService } from "./services/notifications/factory.js";
 
 const env = getEnv();
 const PORT = env.PORT;
+
+// Resolved eagerly so a testnet-fallback misconfiguration in production
+// aborts startup instead of surfacing after the server is already listening.
+const etlWorker = getEtlWorker();
 
 // Initialize distributed tracing (no-op when OTEL_EXPORTER_OTLP_ENDPOINT is unset)
 initTracing();
@@ -83,7 +88,7 @@ const shutdownHandler = createShutdownHandler({
   server,
   jobSystem,
   etlWorker,
-  closeDb: closeDatabase,
+  closeDb: closePgPool,
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

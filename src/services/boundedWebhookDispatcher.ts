@@ -38,7 +38,6 @@ let metricsInitialized = false
 
 async function ensureMetrics() {
   if (metricsInitialized) return
-  metricsInitialized = true
 
   try {
     const client = await import('prom-client')
@@ -57,6 +56,9 @@ async function ensureMetrics() {
         registers: [metricsRegistry],
       })
     }
+
+    // Only mark as initialized after all gauge registrations succeed
+    metricsInitialized = true
   } catch (e) {
     // Metrics not available, use no-op gauges
     webhookInFlightGauge = { set: () => {} }

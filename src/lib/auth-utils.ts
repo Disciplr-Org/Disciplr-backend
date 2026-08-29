@@ -12,8 +12,26 @@ const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'fallback-refresh-secre
 const DEFAULT_JWT_ISSUER = 'disciplr';
 const DEFAULT_JWT_AUDIENCE = 'disciplr-api';
 
+const DEFAULT_JWT_SECRET = 'change-me-in-production';
+
 export const JWT_ISSUER = DEFAULT_JWT_ISSUER;
 export const JWT_AUDIENCE = DEFAULT_JWT_AUDIENCE;
+
+/**
+ * Return the shared JWT secret used for signing and verifying OAuth tokens.
+ *
+ * Reads from the validated env (via `getEnv()`) when available, falling back
+ * to `process.env.JWT_SECRET` for pre-init or test contexts.  The hardcoded
+ * default is intentionally insecure — production deployments MUST set
+ * `JWT_SECRET` in their environment.
+ */
+export function getJwtSecret(): string {
+  try {
+    return getEnv().JWT_SECRET;
+  } catch {
+    return process.env.JWT_SECRET ?? DEFAULT_JWT_SECRET;
+  }
+}
 
 function getJwtClaimOptions(env?: Env) {
   let resolvedEnv: Env | undefined;
@@ -134,7 +152,7 @@ export const generateAccessToken = (payload: { userId: string; role: string; jti
     expiresIn: (process.env.JWT_IMPERSONATION_EXPIRES_IN || '15m') as any,
     issuer,
     audience,
-    header: { kid: currentKey.kid },
+    header: { kid: currentKey.kid, alg: 'HS256' },
   });
 };
 
@@ -163,7 +181,7 @@ export const generateRefreshToken = (payload: { userId: string }, env?: Env): st
   }
   return jwt.sign(payload, currentKey.secret, {
     expiresIn: (process.env.JWT_REFRESH_EXPIRES_IN || '7d') as any,
-    header: { kid: currentKey.kid },
+    header: { kid: currentKey.kid, alg: 'HS256' },
   });
 };
 

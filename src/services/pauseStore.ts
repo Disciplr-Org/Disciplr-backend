@@ -1,18 +1,60 @@
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+const GLOBAL_PAUSE_KEY = 'webhook_delivery:global_pause'
 
-const FLAG_FILE =
-  process.env.WEBHOOK_PAUSE_FLAG_FILE ?? join(tmpdir(), 'disciplr_webhook_pause.flag')
+let sharedRedisClient: any | undefined
 
-export const isPaused = (): boolean => existsSync(FLAG_FILE)
+const getRedisClient = (): any | undefined => {
+  if (sharedRedisClient !== undefined) return sharedRedisClient
 
-export const pauseDelivery = (): void =>
-  writeFileSync(FLAG_FILE, new Date().toISOString(), 'utf8')
-
-export const resumeDelivery = (): void => {
-  if (existsSync(FLAG_FILE)) unlinkSync(FLAG_FILE)
+  const redisUrl = process.env.REDIS_URL
+  if (redisUrl) {
+    const Redis = require('ioredis') as any
+    sharedRedisClient = new Redis(redisUrl, {
+      maxRetriesPerRequest: 1,
+      enableOfflineQueue: false,
+    })
+    return sharedRedisClient
+  }
+  return undefined
 }
 
-/** Exposed for tests to resolve the active flag path. */
-export const getPauseFlagFile = (): string => FLAG_FILE
+// In-memory fallback if Redis is not configured (e.g. for testing)
+let fallbackInMemoryFlag = false
+
+export const isPaused = async (): Promise<boolean> => {
+  const client = getRedisClient()
+  if (client) {
+    const val = await client.get(GLOBAL_PAUSE_KEY)
+    return val !== null
+  }
+  return fallbackInMemoryFlag
+}
+
+export const pauseDelivery = async (): Promise<void> => {
+  const client = getRedisClient()
+  if (client) {
+    await client.set(GLOBAL_PAUSE_KEY, new Date().toISOString())
+  } else {
+    fallbackInMemoryFlag = true
+  }
+}
+
+export const resumeDelivery = async (): Promise<void> => {
+  const client = getRedisClient()
+  if (client) {
+    await client.del(GLOBAL_PAUSE_KEY)
+  } else {
+    fallbackInMemoryFlag = false
+  }
+}
+
+/** Exposed for tests to reset the fallback memory flag */
+export const resetFallbackFlag = (): void => {
+  fallbackInMemoryFlag = false
+}
+
+export const closePauseStore = async (): Promise<void> => {
+  if (sharedRedisClient) {
+    await sharedRedisClient.quit()
+    sharedRedisClient = undefined
+  }
+}

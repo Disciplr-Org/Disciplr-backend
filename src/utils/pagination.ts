@@ -13,7 +13,7 @@ const MAX_PAGE_SIZE = 100
 
 function parsePositiveInteger(value: unknown, fieldName: string): number {
   if (value === undefined || value === null || value === '') {
-    return DEFAULT_PAGE_SIZE
+    return fieldName === 'page' ? DEFAULT_PAGE : DEFAULT_PAGE_SIZE
   }
 
   if (Array.isArray(value)) {
@@ -52,7 +52,9 @@ export function decodeCursor(cursor: string): { timestamp: Date; id: string } {
     const decoded = Buffer.from(cursor, 'base64url').toString('utf8')
     const [timestampStr, id] = decoded.split('|')
     if (!timestampStr || !id) throw new Error('Invalid cursor format')
-    return { timestamp: new Date(timestampStr), id }
+    const timestamp = new Date(timestampStr)
+    if (Number.isNaN(timestamp.getTime())) throw new Error('Invalid cursor format')
+    return { timestamp, id }
   } catch (error) {
     throw new Error('Invalid cursor')
   }
@@ -97,10 +99,24 @@ export function parseFilterParams(
   return filters
 }
 
+/**
+ * Filter an in-memory array against a set of key/value pairs.
+ *
+ * @param items             The array to filter.
+ * @param filters           Map of field → value(s) built by parseFilterParams.
+ * @param exactMatchFields  Fields that must match with strict equality (case-
+ *                          sensitive).  All other fields use a case-insensitive
+ *                          substring match.  Pass enum-like fields here (e.g.
+ *                          `['status']`) to prevent `status=a` accidentally
+ *                          matching 'active', 'cancelled', and 'failed'.
+ */
 export function applyFilters<T extends Record<string, any>>(
   items: T[],
-  filters: FilterParams
+  filters: FilterParams,
+  exactMatchFields: string[] = []
 ): T[] {
+  const exactSet = new Set(exactMatchFields)
+
   return items.filter((item) => {
     return Object.entries(filters).every(([key, value]) => {
       if (value === undefined) return true
@@ -109,7 +125,13 @@ export function applyFilters<T extends Record<string, any>>(
       if (itemValue === undefined) return false
 
       if (Array.isArray(value)) {
+        // Multi-value: always exact-inclusion (already strict)
         return value.includes(String(itemValue))
+      }
+
+      if (exactSet.has(key)) {
+        // Enum / status fields: strict equality, no substring folding
+        return String(itemValue) === String(value)
       }
 
       return String(itemValue).toLowerCase().includes(String(value).toLowerCase())

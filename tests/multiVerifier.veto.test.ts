@@ -38,6 +38,14 @@ function buildQuery(table: string) {
     return null
   }
   q.insert = (data: any) => {
+    const dup = store.find(r =>
+      r.milestone_id === data.milestone_id && r.verifier_user_id === data.verifier_user_id
+    )
+    if (dup) {
+      const err: any = new Error('duplicate key value violates unique constraint "idx_milestone_approvals_unique"')
+      err.code = '23505'
+      throw err
+    }
     const row = { ...makeRow(data.milestone_id, data.verifier_user_id, data.approval_status), ...data }
     store.push(row)
     q._inserted = [row]
@@ -302,5 +310,117 @@ describe('Duplicate vote prevention', () => {
     await vote(mid, 'v1', 'rejected')
     await vote(mid, 'v2', 'rejected')
     await expect(vote(mid, 'v1', 'approved')).rejects.toThrow(DuplicateVerifierVoteError)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Hostile-input boundary — recordMilestoneApproval
+// ---------------------------------------------------------------------------
+describe('recordMilestoneApproval — hostile-input boundary', () => {
+  beforeEach(reset)
+
+  it('rejects empty milestoneId', async () => {
+    await expect(
+      recordMilestoneApproval('', 'v1', 'approved'),
+    ).rejects.toThrow(/milestoneId must be a non-empty string/)
+  })
+
+  it('rejects whitespace-only milestoneId', async () => {
+    await expect(
+      recordMilestoneApproval('   ', 'v1', 'approved'),
+    ).rejects.toThrow(/milestoneId must be a non-empty string/)
+  })
+
+  it('rejects non-string milestoneId (number)', async () => {
+    await expect(
+      recordMilestoneApproval(123 as any, 'v1', 'approved'),
+    ).rejects.toThrow(/milestoneId must be a non-empty string/)
+  })
+
+  it('rejects empty verifierUserId', async () => {
+    await expect(
+      recordMilestoneApproval('ms-1', '', 'approved'),
+    ).rejects.toThrow(/verifierUserId must be a non-empty string/)
+  })
+
+  it('rejects whitespace-only verifierUserId', async () => {
+    await expect(
+      recordMilestoneApproval('ms-1', '   ', 'approved'),
+    ).rejects.toThrow(/verifierUserId must be a non-empty string/)
+  })
+
+  it('rejects non-string verifierUserId (null)', async () => {
+    await expect(
+      recordMilestoneApproval('ms-1', null as any, 'approved'),
+    ).rejects.toThrow(/verifierUserId must be a non-empty string/)
+  })
+
+  it('rejects invalid approvalStatus "pending"', async () => {
+    await expect(
+      recordMilestoneApproval('ms-1', 'v1', 'pending' as any),
+    ).rejects.toThrow(/approvalStatus must be "approved" or "rejected"/)
+  })
+
+  it('rejects invalid approvalStatus string', async () => {
+    await expect(
+      recordMilestoneApproval('ms-1', 'v1', 'maybe' as any),
+    ).rejects.toThrow(/approvalStatus must be "approved" or "rejected"/)
+  })
+
+  it('rejects undefined approvalStatus', async () => {
+    await expect(
+      recordMilestoneApproval('ms-1', 'v1', undefined as any),
+    ).rejects.toThrow(/approvalStatus must be "approved" or "rejected"/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Hostile-input boundary — getMilestoneApprovalProgress
+// ---------------------------------------------------------------------------
+describe('getMilestoneApprovalProgress — hostile-input boundary', () => {
+  const mid = 'boundary-ms'
+  beforeEach(reset)
+
+  it('clamps zero threshold to 1', async () => {
+    await vote(mid, 'v1', 'approved')
+    const p = await getMilestoneApprovalProgress(mid, 0)
+    // threshold should be clamped to 1
+    expect(p.required).toBe(1)
+    expect(p.isComplete).toBe(true)
+  })
+
+  it('clamps negative threshold to 1', async () => {
+    await vote(mid, 'v1', 'approved')
+    const p = await getMilestoneApprovalProgress(mid, -5)
+    expect(p.required).toBe(1)
+    expect(p.isComplete).toBe(true)
+  })
+
+  it('clamps non-numeric threshold to 1', async () => {
+    await vote(mid, 'v1', 'approved')
+    const p = await getMilestoneApprovalProgress(mid, NaN as any)
+    expect(p.required).toBe(1)
+    expect(p.isComplete).toBe(true)
+  })
+
+  it('clamps negative totalVerifiers to 1 (treated as unknown)', async () => {
+    // With N provided but negative, the function should treat it as
+    // unknown (legacy mode: any rejection vetoes).
+    await vote(mid, 'v1', 'approved')
+    await vote(mid, 'v2', 'rejected')
+    const p = await getMilestoneApprovalProgress(mid, 2, -3 as any)
+    // safeTotal = undefined (negative → clamped to 1, but 1 > 0 so it's used)
+    // Actually with N=-3, floor(-3) = -3, max(1, -3) = 1, so safeTotal=1
+    // approved=1, rejected=1, totalVoted=2, remaining=1-2=-1, maxPossible=1+0=1
+    // 1 < 2 → isRejected=true
+    expect(p.isRejected).toBe(true)
+  })
+
+  it('clamps zero totalVerifiers to 1', async () => {
+    await vote(mid, 'v1', 'approved')
+    const p = await getMilestoneApprovalProgress(mid, 2, 0)
+    // safeTotal = 0 → 0 > 0 is false → safeTotal = undefined (legacy mode)
+    // With legacy mode and no rejections, isRejected=false
+    expect(p.isRejected).toBe(false)
   })
 })

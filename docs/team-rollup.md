@@ -60,7 +60,7 @@ Requires authentication and `owner` or `admin` organization role (enforced by `r
 
 ## Deduplication
 
-Vaults are assigned to teams via the `memberships` table: a vault's `creator` is matched to a `memberships.user_id` with a non-null `team_id` within the same organization. When a vault creator belongs to multiple teams, each vault is assigned to exactly one team using `ROW_NUMBER()` partitioned by vault ID, ordered by team ID. This prevents double-counting of vault capital or counts across teams.
+Vaults are assigned to teams via the `memberships` table: a vault's `creator` is matched to a `memberships.user_id` with a non-null `team_id` within the same organization. When a vault creator belongs to multiple teams, each vault is assigned to exactly one team using `ROW_NUMBER()` partitioned by vault ID, ordered by `m.created_at DESC` (most recently joined team wins). This prevents double-counting of vault capital or counts across teams.
 
 ## Tenant Isolation
 

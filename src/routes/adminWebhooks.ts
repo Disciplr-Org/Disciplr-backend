@@ -19,6 +19,10 @@ import {
   getSubscriberDeliveryStats,
   parseWindowMs,
 } from '../services/webhooks.js'
+import {
+  DEFAULT_REPLAY_BATCH_SIZE,
+  MAX_REPLAY_BATCH_SIZE,
+} from '../services/outboxRelay.js'
 import { isPaused, pauseDelivery, resumeDelivery } from '../services/pauseStore.js'
 import { isValidFieldPolicy, FieldPolicy } from '../utils/webhookFieldMasking.js'
 
@@ -29,7 +33,8 @@ adminWebhooksRouter.use(requireAdmin)
 
 adminWebhooksRouter.get('/dead-letters', async (req: Request, res: Response) => {
   try {
-    const limit = req.query.limit ? Number(req.query.limit) : 50
+    const rawLimit = req.query.limit ? parseInt(String(req.query.limit), 10) : 50
+    const limit = Math.min(100, Number.isNaN(rawLimit) || rawLimit < 1 ? 50 : rawLimit)
     const offset = req.query.offset ? Number(req.query.offset) : 0
 
     const query = db('webhook_dead_letters').orderBy('failed_at', 'desc')
@@ -64,7 +69,7 @@ adminWebhooksRouter.post('/dead-letters/:id/replay', async (req: Request, res: R
       return
     }
 
-    createAuditLog({
+    await createAuditLog({
       actor_user_id: req.user!.userId,
       action: 'webhook.deadletter.replay',
       target_type: 'webhook_dead_letter',
@@ -72,7 +77,7 @@ adminWebhooksRouter.post('/dead-letters/:id/replay', async (req: Request, res: R
       metadata: {
         subscriberId: result.subscriberId,
       },
-    })
+    }).catch((err) => console.error('Failed to write audit log:', err))
 
     res.status(202).json({ replayed: true })
   } catch (error) {
@@ -235,8 +240,8 @@ adminWebhooksRouter.post(
  *
  * Returns the current delivery-pause state.
  */
-adminWebhooksRouter.get('/pause/status', (_req: Request, res: Response) => {
-  res.status(200).json({ paused: isPaused() })
+adminWebhooksRouter.get('/pause/status', async (_req: Request, res: Response) => {
+  res.status(200).json({ paused: await isPaused() })
 })
 
 /**
@@ -246,8 +251,8 @@ adminWebhooksRouter.get('/pause/status', (_req: Request, res: Response) => {
  * outbox and will be dispatched once the system is resumed.  Idempotent —
  * calling while already paused is a no-op.
  */
-adminWebhooksRouter.post('/pause', (req: Request, res: Response) => {
-  pauseDelivery()
+adminWebhooksRouter.post('/pause', async (req: Request, res: Response) => {
+  await pauseDelivery()
 
   createAuditLog({
     actor_user_id: req.user!.userId,
@@ -267,8 +272,8 @@ adminWebhooksRouter.post('/pause', (req: Request, res: Response) => {
  * backlog on its next tick, respecting existing backoff/breaker state.
  * Idempotent — calling while already resumed is a no-op.
  */
-adminWebhooksRouter.post('/resume', (req: Request, res: Response) => {
-  resumeDelivery()
+adminWebhooksRouter.post('/resume', async (req: Request, res: Response) => {
+  await resumeDelivery()
 
   createAuditLog({
     actor_user_id: req.user!.userId,
@@ -552,14 +557,33 @@ adminVaultReplayRouter.use(strictRateLimiter)
 adminVaultReplayRouter.post('/:id/replay-events', async (req: Request, res: Response) => {
   try {
     const vaultId = req.params.id
-    const { subscriber_id } = req.body ?? {}
+    const {
+      subscriber_id,
+      limit: rawLimit,
+      offset: rawOffset,
+    } = req.body ?? {}
 
-    if (subscriber_id && typeof subscriber_id !== 'string') {
+    if (subscriber_id !== undefined && typeof subscriber_id !== 'string') {
       res.status(400).json({ error: 'subscriber_id must be a string' })
       return
     }
 
-    const replayedCount = await replayForVault(vaultId, subscriber_id)
+    // Parse and validate pagination params
+    const limit = rawLimit !== undefined
+      ? (Number.isInteger(rawLimit) && rawLimit >= 1 ? rawLimit : DEFAULT_REPLAY_BATCH_SIZE)
+      : DEFAULT_REPLAY_BATCH_SIZE
+    const offset = rawOffset !== undefined
+      ? (Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0)
+      : 0
+
+    if (limit > MAX_REPLAY_BATCH_SIZE) {
+      res.status(400).json({
+        error: `limit must not exceed ${MAX_REPLAY_BATCH_SIZE}`,
+      })
+      return
+    }
+
+    const result = await replayForVault(vaultId, subscriber_id, limit, offset)
 
     createAuditLog({
       actor_user_id: req.user!.userId,
@@ -568,11 +592,20 @@ adminVaultReplayRouter.post('/:id/replay-events', async (req: Request, res: Resp
       target_id: vaultId,
       metadata: {
         subscriberId: subscriber_id,
-        replayedCount,
+        count: result.count,
+        hasMore: result.hasMore,
+        limit,
+        offset,
       },
     })
 
-    res.status(200).json({ replayed: true, count: replayedCount })
+    res.status(200).json({
+      replayed: true,
+      count: result.count,
+      has_more: result.hasMore,
+      limit,
+      offset,
+    })
   } catch (error) {
     console.error('Error replaying vault outbox events:', error)
     res.status(500).json({ error: 'Failed to replay vault events' })

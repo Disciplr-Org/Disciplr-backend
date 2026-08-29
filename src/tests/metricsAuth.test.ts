@@ -53,6 +53,28 @@ describe('metricsAuth middleware', () => {
       expect(res.status).not.toHaveBeenCalled()
     })
 
+    it('allows a native IPv6 client inside an IPv6 CIDR range', () => {
+      mockGetEnv.mockReturnValue({ METRICS_ALLOWLIST: '2001:db8:1234::/48' })
+      req.ip = '2001:db8:1234::42'
+
+      metricsAuth(req, res, next)
+
+      expect(next).toHaveBeenCalled()
+      expect(res.status).not.toHaveBeenCalled()
+      expect(_test.matchesCidr(req.ip, '2001:db8:1234::/48')).toBe(true)
+    })
+
+    it('denies a native IPv6 client outside the configured range', () => {
+      mockGetEnv.mockReturnValue({ METRICS_ALLOWLIST: '2001:db8:1234::/48' })
+      req.ip = '2001:db8:5678::42'
+
+      metricsAuth(req, res, next)
+
+      expect(next).not.toHaveBeenCalled()
+      expect(res.status).toHaveBeenCalledWith(401)
+      expect(_test.matchesCidr(req.ip, '2001:db8:1234::/48')).toBe(false)
+    })
+
     it('denies access if IP is not in allowlist and no token configured', () => {
       mockGetEnv.mockReturnValue({ METRICS_ALLOWLIST: '10.0.0.0/8' })
       metricsAuth(req, res, next)

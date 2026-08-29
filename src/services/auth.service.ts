@@ -1,3 +1,4 @@
+import { getEnv } from '../config/env.js'
 import { getPrisma } from '../lib/prismaScope.js'
 import { hashPassword, comparePassword, generateAccessToken, generateRefreshToken, verifyRefreshToken, hashToken } from '../lib/auth-utils.js'
 import { createAuditLog } from '../lib/audit-logs.js'
@@ -82,6 +83,7 @@ export class AuthService {
             tokenFingerprint: tokenHash.slice(0, 12),
         }, userId)
     }
+
     static async register(input: RegisterInput) {
         try {
             await this.ensurePasswordIsAllowed(input.password, { email: input.email })
@@ -141,7 +143,7 @@ export class AuthService {
         const accessExpiresAt = new Date(Date.now() + 15 * 60 * 1000) // 15 minutes
         const tokenHash = hashToken(refreshTokenValue)
 
-        const loggedInUser = await prisma.$transaction(async (tx) => {
+        const loggedInUser = await prisma.$transaction(async (tx: any) => {
             const updatedUser = await tx.user.update({
                 where: { id: user.id },
                 data: { lastLoginAt },
@@ -293,20 +295,15 @@ export class AuthService {
     }
 
     static async registerWebAuthnCredential(userId: string, credentialId: string, publicKey: string) {
-        const existing = await getPrisma().$queryRaw<{ credential_id: string }[]>`
-            SELECT "credential_id" FROM "webauthn_credentials"
-            WHERE "credential_id" = ${credentialId}
-            LIMIT 1
-        `
-
-        if (existing.length > 0) {
-            throw new Error('Credential already registered')
-        }
-
-        await getPrisma().$executeRaw`
+        // The unique credential_id index is the synchronization point. An
+        // existence check followed by INSERT races under concurrent requests.
+        const inserted = await getPrisma().$executeRaw`
             INSERT INTO "webauthn_credentials" ("user_id", "credential_id", "public_key", "counter")
             VALUES (${userId}, ${credentialId}, ${publicKey}, 0)
+            ON CONFLICT ("credential_id") DO NOTHING
         `
+
+        if (inserted === 0) throw new Error('Credential already registered')
 
         return { userId, credentialId, publicKey }
     }
@@ -337,4 +334,3 @@ export class AuthService {
         return { credentialId, counter: newCounter }
     }
 }
-

@@ -1,4 +1,5 @@
 import type { Knex } from 'knex'
+import { AsyncMutex } from '../utils/asyncMutex.js'
 
 export interface OrgQuotaEntry {
   orgId: string
@@ -27,32 +28,6 @@ interface OrgQuotaRepository {
 }
 
 const utcDateString = (d = new Date()): string => d.toISOString().slice(0, 10)
-
-/**
- * Simple async mutex for coordinating in-memory quota increments.
- * Prevents race conditions where concurrent reads can bypass the quota limit.
- */
-class AsyncMutex {
-  private locked = false
-  private waitQueue: (() => void)[] = []
-
-  async runExclusive<T>(fn: () => Promise<T> | T): Promise<T> {
-    // Acquire lock
-    while (this.locked) {
-      await new Promise((resolve) => this.waitQueue.push(resolve))
-    }
-    this.locked = true
-
-    try {
-      return await Promise.resolve(fn())
-    } finally {
-      // Release lock and wake next waiter
-      this.locked = false
-      const next = this.waitQueue.shift()
-      if (next) next()
-    }
-  }
-}
 
 const createInMemoryOrgQuotaRepository = (): OrgQuotaRepository => {
   const store = new Map<string, OrgQuotaEntry>()

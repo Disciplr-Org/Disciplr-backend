@@ -1,3 +1,5 @@
+import { VaultStatus } from './vault.js'
+
 export interface MilestoneInput {
   title: string
   description?: string
@@ -51,7 +53,7 @@ export interface PersistedVault {
   successDestination: string
   failureDestination: string
   creator: string | null
-  status: 'draft' | 'active' | 'completed' | 'failed' | 'cancelled'
+  status: VaultStatus
   createdAt: string
   milestones: PersistedMilestone[]
   /** Grace window in seconds after a milestone dueDate during which check-in is still accepted. Bounded by vault endDate. */
@@ -140,7 +142,7 @@ export interface VaultCreateResponse {
       attempted: boolean
       status: 'not_requested' | 'not_configured' | 'success' | 'error'
       txHash?: string
-      error?: string | { code: string; message: string; details?: unknown }
+      error?: string | { code: string; message: string; details?: unknown; retryable?: boolean }
     }
   }
   idempotency: {
