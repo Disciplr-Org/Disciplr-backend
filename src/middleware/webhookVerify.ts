@@ -86,10 +86,6 @@ export const validateWebhookBody = (
 // needed. The async body-read/HMAC work that follows happens across multiple
 // event-loop turns, which is exactly when the race used to be exploitable.
 // ---------------------------------------------------------------------------
-const nonceCache = new Set<string>()
-const pendingNonces = new Set<string>()
-
-// ---------------------------------------------------------------------------
 // Bounded replay-protection store
 //
 // Deduplication records: `${timestamp}:${nonce}` tuples that are either
@@ -238,6 +234,18 @@ async function ensureWebhookMetrics(): Promise<void> {
   return metricsPromise
 }
 
+export type WebhookVerifyOutcome =
+  | 'no_secret'
+  | 'missing_headers'
+  | 'invalid_timestamp'
+  | 'outside_window'
+  | 'replay'
+  | 'payload_too_large'
+  | 'body_read_error'
+  | 'invalid_json'
+  | 'bad_signature'
+  | 'success'
+
 function emitTelemetry(outcome: WebhookVerifyOutcome, durationMs: number): void {
   // Fire-and-forget; never throws and never surfaces secret material.
   void ensureWebhookMetrics()
@@ -265,126 +273,15 @@ export const webhookVerify = async (
   const startedAt = Date.now()
   const tracer = getTracer()
 
-    if (!secret) {
-      res.status(500).json({ error: 'Webhook verification secret is not configured' })
-      return
-    }
-
-    const signature = req.headers['x-webhook-signature'] as string
-    const timestampHeader = req.headers['x-webhook-timestamp'] as string
-    const nonce = req.headers['x-webhook-nonce'] as string
-
-    if (!signature || !timestampHeader || !nonce) {
-      res.status(401).json({ error: 'Missing required webhook headers' })
-      return
-    }
-
-    const timestamp = parseInt(timestampHeader, 10)
-    if (isNaN(timestamp)) {
-      res.status(401).json({ error: 'Invalid timestamp header' })
-      return
-    }
-
-    const now = Date.now()
-    if (Math.abs(now - timestamp) > skewMs) {
-      res.status(401).json({ error: 'Webhook request outside of allowed time window' })
-      return
-    }
-
-    const cacheKey = `${timestamp}:${nonce}`
-
-    // -----------------------------------------------------------------------
-    // Replay-protection check + reservation (synchronous, single event-loop
-    // turn).  Both checks happen before any await so concurrent requests with
-    // the same nonce are blocked here — not after the expensive body read.
-    // -----------------------------------------------------------------------
-    if (nonceCache.has(cacheKey) || pendingNonces.has(cacheKey)) {
-      res.status(401).json({ error: 'Replayed webhook request' })
-      return
-    }
-
-    // Reserve the nonce slot.  If verification fails we remove it so a
-    // legitimate retry with a new nonce is unaffected (the cacheKey includes
-    // the nonce, so a retry with a different nonce is a different key).
-    pendingNonces.add(cacheKey)
-
-    // Read the raw body
-    let rawBody: string
-    try {
-      rawBody = await new Promise<string>((resolve, reject) => {
-        let body = ''
-        let limitExceeded = false
-        req.on('data', (chunk) => {
-          if (limitExceeded) return
-          body += chunk.toString()
-          if (body.length > 500_000) {
-            limitExceeded = true
-            next(AppError.payloadTooLarge('Payload exceeds 500KB safety limit'))
-            reject(new Error('Payload too large'))
-          }
-        })
-        req.on('end', () => resolve(body))
-        req.on('error', reject)
-      })
-    } catch {
-      pendingNonces.delete(cacheKey)
-      return
-    }
-
-    // Store raw body on req for downstream use
-    req.rawBody = rawBody
-
-    // Parse JSON — reject explicitly on malformed input rather than silently
-    // substituting {} which would mask bad payloads from downstream handlers.
-    let parsedBody: unknown
-    try {
-      parsedBody = JSON.parse(rawBody)
-    } catch {
-      pendingNonces.delete(cacheKey)
-      res.status(400).json({ error: 'Invalid JSON body' })
-      return
-    }
-
-    // Enforce the payload shape + network invariants at the boundary. A
-    // malformed body never consumes the nonce, so a corrected retry with the
-    // same nonce is still permitted (mirrors invalid-JSON behavior).
-    const bodyValidation = validateWebhookBody(parsedBody, getExpectedInboundNetwork())
-    if (!bodyValidation.ok) {
-      pendingNonces.delete(cacheKey)
-      res.status(400).json({ error: bodyValidation.error })
-      return
-    }
-    req.body = parsedBody
-
-    // Verify HMAC
-    const expectedDigest = crypto
-      .createHmac('sha256', secret)
-      .update(`${timestamp}.${nonce}.${rawBody}`)
-      .digest('hex')
-
-    const expectedSignature = `sha256=${expectedDigest}`
-
-    if (
-      signature.length !== expectedSignature.length ||
-      !crypto.timingSafeEqual(global.Buffer.from(signature), global.Buffer.from(expectedSignature))
-    ) {
-      pendingNonces.delete(cacheKey)
-      res.status(401).json({ error: 'Invalid webhook signature' })
-      return
-    }
-
-    // Verification passed — promote from pending to confirmed.
-    pendingNonces.delete(cacheKey)
-    nonceCache.add(cacheKey)
-    next()
-  } catch (err: unknown) {
-    next(err)
-  }
-
   // Wrap the verification in a named span for tracing. Attributes are strictly
   // cardinality-safe and never contain the secret or signature.
   return tracer.withSpan('webhook.inbound_verify', async (span) => {
     span.setAttribute('webhook.inbound', true)
+
+    const record = (outcome: WebhookVerifyOutcome, _status: number) => {
+      emitTelemetry(outcome, Date.now() - startedAt)
+      span.setAttribute('webhook.verify_outcome', outcome)
+    }
 
     // Track a reserved nonce so an unexpected mid-flight error can still
     // release the reservation instead of leaking it until the TTL sweep.
@@ -482,6 +379,18 @@ export const webhookVerify = async (
         return
       }
 
+      // Enforce the payload shape + network invariants at the boundary. A
+      // malformed body or network mismatch releases the reserved nonce so a
+      // corrected request is permitted.
+      const bodyValidation = validateWebhookBody(req.body, getExpectedInboundNetwork())
+      if (!bodyValidation.ok) {
+        pendingNonces.delete(cacheKey)
+        reservedKey = undefined
+        record('invalid_json', 400)
+        res.status(400).json({ error: bodyValidation.error })
+        return
+      }
+
       // Verify HMAC in constant time.
       const expectedDigest = crypto
         .createHmac('sha256', secret)
@@ -504,7 +413,7 @@ export const webhookVerify = async (
       pendingNonces.delete(cacheKey)
       confirmedNonces.add(cacheKey, timestamp)
       reservedKey = undefined
-      emitTelemetry('success', Date.now() - startedAt)
+      record('success', 200)
       span.setStatus({ code: 'OK' })
       next()
     } catch (err) {
