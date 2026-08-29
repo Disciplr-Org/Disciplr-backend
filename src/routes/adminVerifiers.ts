@@ -16,6 +16,15 @@ import {
 import { isValidStellarAddress } from '../services/vaultValidation.js'
 import { AppError } from '../middleware/errorHandler.js'
 
+const MAX_USER_ID_LENGTH = 128
+
+/** Guard against excessively long or whitespace-only userId path params. */
+const sanitizeUserId = (raw: string): string | null => {
+  const trimmed = raw.trim()
+  if (trimmed.length === 0 || trimmed.length > MAX_USER_ID_LENGTH) return null
+  return trimmed
+}
+
 export const adminVerifiersRouter = Router()
 
 adminVerifiersRouter.use(authenticate, requireAdmin)
@@ -30,7 +39,11 @@ adminVerifiersRouter.get('/', async (_req: Request, res: Response) => {
 })
 
 adminVerifiersRouter.get('/:userId', async (req: Request, res: Response) => {
-  const userId = req.params.userId
+  const userId = sanitizeUserId(req.params.userId)
+  if (!userId) {
+    res.status(400).json({ error: 'invalid userId' })
+    return
+  }
   const p = await getVerifierProfile(userId)
   if (!p) {
     res.status(404).json({ error: 'verifier not found' })
@@ -143,7 +156,11 @@ adminVerifiersRouter.patch('/:userId', async (req: Request, res: Response) => {
 })
 
 adminVerifiersRouter.delete('/:userId', async (req: Request, res: Response) => {
-  const userId = req.params.userId
+  const userId = sanitizeUserId(req.params.userId)
+  if (!userId) {
+    res.status(400).json({ error: 'invalid userId' })
+    return
+  }
   const result = await deleteVerifierProfile(userId, { actorUserId: req.user!.userId })
 
   if (!result.deleted) {
@@ -155,11 +172,21 @@ adminVerifiersRouter.delete('/:userId', async (req: Request, res: Response) => {
 })
 
 adminVerifiersRouter.post('/:userId/approve', async (req: Request, res: Response) => {
-  await createOrGetAndTransitionStatus(req, res, req.params.userId, 'approved')
+  const userId = sanitizeUserId(req.params.userId)
+  if (!userId) {
+    res.status(400).json({ error: 'invalid userId' })
+    return
+  }
+  await createOrGetAndTransitionStatus(req, res, userId, 'approved')
 })
 
 adminVerifiersRouter.post('/:userId/suspend', async (req: Request, res: Response) => {
-  await createOrGetAndTransitionStatus(req, res, req.params.userId, 'suspended')
+  const userId = sanitizeUserId(req.params.userId)
+  if (!userId) {
+    res.status(400).json({ error: 'invalid userId' })
+    return
+  }
+  await createOrGetAndTransitionStatus(req, res, userId, 'suspended')
 })
 
 // POST /api/admin/verifiers/:userId/reinstate
@@ -167,17 +194,33 @@ adminVerifiersRouter.post('/:userId/suspend', async (req: Request, res: Response
 // - if they were previously approved, restore to approved
 // - otherwise restore to pending
 adminVerifiersRouter.post('/:userId/reinstate', async (req: Request, res: Response) => {
+  const userId = sanitizeUserId(req.params.userId)
+  if (!userId) {
+    res.status(400).json({ error: 'invalid userId' })
+    return
+  }
+
   try {
-    const verifier = await getVerifierProfile(req.params.userId)
+    const verifier = await getVerifierProfile(userId)
     if (!verifier) {
       res.status(404).json({ error: 'verifier not found' })
       return
     }
 
+    // Early-return if the verifier is already in an active state.
+    if (verifier.status === 'approved' || verifier.status === 'pending') {
+      res.json({
+        profile: verifier,
+        stats: await getVerifierStats(userId),
+        auditLogId: null,
+        changedFields: [],
+      })
+      return
+    }
 
     const nextStatus: VerifierStatus = verifier.approvedAt ? 'approved' : 'pending'
 
-    const updated = await transitionVerifier(req.params.userId, nextStatus, { actorUserId: req.user!.userId })
+    const updated = await transitionVerifier(userId, nextStatus, { actorUserId: req.user!.userId })
 
 
     if (!updated) {
@@ -187,7 +230,7 @@ adminVerifiersRouter.post('/:userId/reinstate', async (req: Request, res: Respon
 
     res.json({
       profile: updated.after,
-      stats: await getVerifierStats(req.params.userId),
+      stats: await getVerifierStats(userId),
       auditLogId: updated.auditLog?.id ?? null,
       changedFields: updated.changedFields,
     })
@@ -202,11 +245,21 @@ adminVerifiersRouter.post('/:userId/reinstate', async (req: Request, res: Respon
 })
 
 adminVerifiersRouter.post('/:userId/deactivate', async (req: Request, res: Response) => {
-  await transitionStatus(req, res, req.params.userId, 'deactivated')
+  const userId = sanitizeUserId(req.params.userId)
+  if (!userId) {
+    res.status(400).json({ error: 'invalid userId' })
+    return
+  }
+  await transitionStatus(req, res, userId, 'deactivated')
 })
 
 adminVerifiersRouter.post('/:userId/reactivate', async (req: Request, res: Response) => {
-  await transitionStatus(req, res, req.params.userId, 'pending')
+  const userId = sanitizeUserId(req.params.userId)
+  if (!userId) {
+    res.status(400).json({ error: 'invalid userId' })
+    return
+  }
+  await transitionStatus(req, res, userId, 'pending')
 })
 
 const isVerifierStatus = (value: unknown): value is VerifierStatus =>
