@@ -151,7 +151,15 @@ export function calculateStartLedger(
   overlap: number,
 ): number {
   if (!state) return Math.max(1, configuredStart)
-  const floor = Math.max(1, state.confirmedLedger - Math.max(0, overlap) + 1)
+  // With a positive overlap we replay `overlap` ledgers ending at the
+  // confirmed cursor (floor = confirmed - overlap + 1). With zero overlap we
+  // still start at the confirmed ledger itself so the confirmed event is
+  // re-observed before scanning forward.
+  const boundedOverlap = Math.max(0, overlap)
+  const floor = Math.max(
+    1,
+    state.confirmedLedger - boundedOverlap + (boundedOverlap > 0 ? 1 : 0),
+  )
   return Math.max(1, Math.min(state.scanLedger || floor, floor))
 }
 
