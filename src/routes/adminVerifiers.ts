@@ -53,11 +53,12 @@ adminVerifiersRouter.get('/:userId', async (req: Request, res: Response) => {
 })
 
 adminVerifiersRouter.post('/', async (req: Request, res: Response, next: NextFunction) => {
-  const { userId, displayName, metadata, status } = req.body as {
+  const { userId, displayName, metadata, status, reason } = req.body as {
     userId?: unknown
     displayName?: unknown
     metadata?: unknown
     status?: unknown
+    reason?: unknown
   }
 
   if (typeof userId !== 'string' || userId.trim().length === 0) {
@@ -88,13 +89,15 @@ adminVerifiersRouter.post('/', async (req: Request, res: Response, next: NextFun
     res.status(400).json({ error: 'invalid status' })
     return
   }
+  
+  const parsedReason = typeof reason === 'string' ? reason.trim() : undefined
 
   try {
     const profile = await createVerifierProfile(userId.trim(), {
       displayName: typeof displayName === 'string' ? displayName.trim() : undefined,
       metadata: isRecord(metadata) ? metadata : undefined,
       status: isVerifierStatus(status) ? status : undefined,
-    }, { actorUserId: req.user!.userId })
+    }, { actorUserId: req.user!.userId, reason: parsedReason })
 
     const stats = await getVerifierStats(profile.after.userId)
     res.status(201).json({ profile: profile.after, stats, auditLogId: profile.auditLog?.id })
@@ -109,10 +112,11 @@ adminVerifiersRouter.post('/', async (req: Request, res: Response, next: NextFun
 
 adminVerifiersRouter.patch('/:userId', async (req: Request, res: Response) => {
   const userId = req.params.userId
-  const { displayName, metadata, status } = req.body as {
+  const { displayName, metadata, status, reason } = req.body as {
     displayName?: unknown
     metadata?: unknown
     status?: unknown
+    reason?: unknown
   }
 
   if (displayName !== undefined && displayName !== null && typeof displayName !== 'string') {
@@ -130,13 +134,15 @@ adminVerifiersRouter.patch('/:userId', async (req: Request, res: Response) => {
     return
   }
 
+  const parsedReason = typeof reason === 'string' ? reason.trim() : undefined
+
   let profile
   try {
     profile = await updateVerifierProfile(userId, {
       displayName: typeof displayName === 'string' ? displayName.trim() : displayName === null ? null : undefined,
       metadata: isRecord(metadata) ? metadata : metadata === null ? null : undefined,
       status: isVerifierStatus(status) ? status : undefined,
-    }, { actorUserId: req.user!.userId })
+    }, { actorUserId: req.user!.userId, reason: parsedReason })
   } catch (error) {
     if (error instanceof InvalidVerifierStatusTransitionError) {
       res.status(409).json({ error: error.message })
@@ -161,7 +167,8 @@ adminVerifiersRouter.delete('/:userId', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'invalid userId' })
     return
   }
-  const result = await deleteVerifierProfile(userId, { actorUserId: req.user!.userId })
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : undefined
+  const result = await deleteVerifierProfile(userId, { actorUserId: req.user!.userId, reason })
 
   if (!result.deleted) {
     res.status(404).json({ error: 'verifier not found' })
@@ -220,7 +227,8 @@ adminVerifiersRouter.post('/:userId/reinstate', async (req: Request, res: Respon
 
     const nextStatus: VerifierStatus = verifier.approvedAt ? 'approved' : 'pending'
 
-    const updated = await transitionVerifier(userId, nextStatus, { actorUserId: req.user!.userId })
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : undefined
+    const updated = await transitionVerifier(userId, nextStatus, { actorUserId: req.user!.userId, reason })
 
 
     if (!updated) {
@@ -281,8 +289,9 @@ const isDuplicateError = (error: unknown): boolean => {
 }
 
 const transitionStatus = async (req: Request, res: Response, userId: string, status: VerifierStatus): Promise<void> => {
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : undefined
   try {
-    const updated = await transitionVerifier(userId, status, { actorUserId: req.user!.userId })
+    const updated = await transitionVerifier(userId, status, { actorUserId: req.user!.userId, reason })
     if (!updated) {
       res.status(404).json({ error: 'verifier not found' })
       return
@@ -304,11 +313,27 @@ const transitionStatus = async (req: Request, res: Response, userId: string, sta
 }
 
 const createOrGetAndTransitionStatus = async (req: Request, res: Response, userId: string, status: VerifierStatus): Promise<void> => {
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : undefined
+  
   try {
-    await createOrGetVerifierProfile(userId, undefined, { actorUserId: req.user!.userId })
-  } catch {
-    res.status(500).json({ error: 'internal server error' })
-    return
+    const existing = await getVerifierProfile(userId)
+    if (!existing) {
+      const profile = await createVerifierProfile(userId, { status }, { actorUserId: req.user!.userId, reason })
+      res.json({
+        profile: profile.after,
+        stats: await getVerifierStats(userId),
+        auditLogId: profile.auditLog?.id ?? null,
+        changedFields: profile.changedFields,
+      })
+      return
+    }
+  } catch (error) {
+    if (isDuplicateError(error)) {
+      // Fallthrough to transition if created concurrently
+    } else {
+      res.status(500).json({ error: 'internal server error' })
+      return
+    }
   }
 
   await transitionStatus(req, res, userId, status)
