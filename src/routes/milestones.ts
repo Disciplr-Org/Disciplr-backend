@@ -191,10 +191,12 @@ milestonesRouter.post('/:id/approve', authenticate, requireVerifier, async (req:
       return next(AppError.notFound('Milestone not found'))
     }
 
-    // Reject approvals from suspended/deactivated verifiers (historical votes remain intact)
+    // Reject approvals from non-active verifiers (historical votes remain intact).
+    // Only `approved` verifiers may vote; pending, suspended, and deactivated
+    // verifiers are excluded from the quorum.
     const verifier = await getVerifierProfile(verifierUserId)
-    if (verifier && (verifier.status === 'suspended' || verifier.status === 'deactivated')) {
-      return next(AppError.forbidden('Suspended/deactivated verifier cannot cast milestone approvals'))
+    if (verifier && verifier.status !== 'approved') {
+      return next(AppError.forbidden('Only approved verifiers may cast milestone approvals'))
     }
 
     // Check if verifier has already voted (duplicate vote prevention)

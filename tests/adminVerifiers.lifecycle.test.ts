@@ -311,6 +311,35 @@ describe('Admin Verifiers Lifecycle - Suspend/Reinstate', () => {
       expect(res.status).toBe(200)
       expect(res.body.profile.status).toBe('approved')
     })
+
+    it('should early-return when verifier is already approved (no transition needed)', async () => {
+      mockGetVerifierProfile.mockResolvedValue(approvedVerifier)
+
+      const res = await request(app)
+        .post('/api/admin/verifiers/verifier-approved/reinstate')
+        .send()
+
+      expect(res.status).toBe(200)
+      expect(res.body.profile.status).toBe('approved')
+      expect(res.body.changedFields).toEqual([])
+      expect(res.body.auditLogId).toBeNull()
+      // Should NOT call transitionVerifier at all
+      expect(mockTransitionVerifier).not.toHaveBeenCalled()
+    })
+
+    it('should early-return when verifier is already pending (no transition needed)', async () => {
+      mockGetVerifierProfile.mockResolvedValue(pendingVerifier)
+
+      const res = await request(app)
+        .post('/api/admin/verifiers/verifier-pending/reinstate')
+        .send()
+
+      expect(res.status).toBe(200)
+      expect(res.body.profile.status).toBe('pending')
+      expect(res.body.changedFields).toEqual([])
+      expect(res.body.auditLogId).toBeNull()
+      expect(mockTransitionVerifier).not.toHaveBeenCalled()
+    })
   })
 
   describe('Edge Cases', () => {
@@ -462,6 +491,73 @@ describe('Admin Verifiers Lifecycle - Suspend/Reinstate', () => {
       expect(res.status).toBe(200)
       expect(res.body.stats).toBeDefined()
       expect(res.body.stats.totalVerifications).toBe(0)
+    })
+  })
+
+  describe('Hostile-input boundary — userId sanitization', () => {
+    it('should reject empty userId on GET /:userId', async () => {
+      const res = await request(app)
+        .get('/api/admin/verifiers/%20')
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toBe('invalid userId')
+    })
+
+    it('should reject excessively long userId on GET /:userId', async () => {
+      const longId = 'x'.repeat(200)
+      const res = await request(app)
+        .get(`/api/admin/verifiers/${longId}`)
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toBe('invalid userId')
+    })
+
+    it('should reject empty userId on DELETE /:userId', async () => {
+      const res = await request(app)
+        .delete('/api/admin/verifiers/%20')
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toBe('invalid userId')
+    })
+
+    it('should reject empty userId on POST /:userId/approve', async () => {
+      const res = await request(app)
+        .post('/api/admin/verifiers/%20/approve')
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toBe('invalid userId')
+    })
+
+    it('should reject empty userId on POST /:userId/suspend', async () => {
+      const res = await request(app)
+        .post('/api/admin/verifiers/%20/suspend')
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toBe('invalid userId')
+    })
+
+    it('should reject empty userId on POST /:userId/reinstate', async () => {
+      const res = await request(app)
+        .post('/api/admin/verifiers/%20/reinstate')
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toBe('invalid userId')
+    })
+
+    it('should reject empty userId on POST /:userId/deactivate', async () => {
+      const res = await request(app)
+        .post('/api/admin/verifiers/%20/deactivate')
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toBe('invalid userId')
+    })
+
+    it('should reject empty userId on POST /:userId/reactivate', async () => {
+      const res = await request(app)
+        .post('/api/admin/verifiers/%20/reactivate')
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toBe('invalid userId')
     })
   })
 })
