@@ -39,6 +39,14 @@ const formatAuthUser = (user: { id: string; role: string; lastLoginAt: Date | nu
   lastLoginAt: user.lastLoginAt?.toISOString() ?? null,
 })
 
+const PRISMA_RECORD_NOT_FOUND = 'P2025'
+
+const isRecordNotFound = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  'code' in error &&
+  (error as { code?: unknown }).code === PRISMA_RECORD_NOT_FOUND
+
 // ------------- Endpoints -------------
 
 authRouter.post('/register', authJson, async (req, res, next) => {
@@ -56,26 +64,25 @@ authRouter.post('/register', authJson, async (req, res, next) => {
 })
 
 authRouter.post('/login', authJson, async (req, res, next) => {
-    // Support mock login if only userId is provided (from audit-logs feature branch)
     if (req.body.userId && !req.body.email && !req.body.password) {
         const result = userIdOnlyLoginSchema.safeParse(req.body)
         if (!result.success) {
             return next(AppError.validation('Validation failed', result.error.format()))
         }
 
-        const user = await prisma.user.findUnique({
-          where: { id: result.data.userId },
-          select: authUserSelect,
-        })
-        if (!user) {
-          return next(AppError.notFound('User not found'))
+        let updatedUser
+        try {
+          updatedUser = await prisma.user.update({
+            where: { id: result.data.userId },
+            data: { lastLoginAt: new Date() },
+            select: authUserSelect,
+          })
+        } catch (error: unknown) {
+          if (isRecordNotFound(error)) {
+            return next(AppError.notFound('User not found'))
+          }
+          throw error
         }
-
-        const updatedUser = await prisma.user.update({
-          where: { id: user.id },
-          data: { lastLoginAt: new Date() },
-          select: authUserSelect,
-        })
 
         const auditLog = await createAuditLog({
           actor_user_id: updatedUser.id,
@@ -96,7 +103,6 @@ authRouter.post('/login', authJson, async (req, res, next) => {
         return;
     }
 
-    // Real login flow
     const result = loginSchema.safeParse(req.body)
     if (!result.success) {
         return next(AppError.validation('Validation failed', result.error.format()))
@@ -129,7 +135,6 @@ authRouter.post(
   authJson,
   authenticate,
   async (req: Request, res: Response) => {
-    // 1. AuthService refresh token logout
     const { refreshToken } = req.body;
     if (refreshToken) {
       try {
@@ -139,7 +144,6 @@ authRouter.post(
       }
     }
 
-    // 2. Database access token session revocation
     const jti = req.user?.jti;
     if (jti) {
       await revokeSession(jti);
@@ -201,33 +205,75 @@ authRouter.post('/users/:id/role', requireJson, authenticate, requireStepUp(), a
     return next(AppError.validation('Validation failed', bodyResult.error.format()))
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: paramsResult.data.id },
-    select: authUserSelect,
+  const targetUserId = paramsResult.data.id
+  const nextRole = bodyResult.data.role
+
+  const outcome = await prisma.$transaction(async (tx) => {
+    const existing = await tx.user.findUnique({
+      where: { id: targetUserId },
+      select: authUserSelect,
+    })
+    if (!existing) {
+      return { kind: 'not_found' as const }
+    }
+
+    if (existing.role === nextRole) {
+      return { kind: 'noop' as const, user: existing }
+    }
+
+    const updateResult = await tx.user.updateMany({
+      where: { id: targetUserId, role: existing.role },
+      data: { role: nextRole },
+    })
+    if (updateResult.count === 0) {
+      return { kind: 'conflict' as const }
+    }
+
+    const updated = await tx.user.findUnique({
+      where: { id: targetUserId },
+      select: authUserSelect,
+    })
+    if (!updated) {
+      return { kind: 'not_found' as const }
+    }
+
+    return { kind: 'updated' as const, previousRole: existing.role, user: updated }
   })
-  if (!user) {
+
+  if (outcome.kind === 'not_found') {
     return next(AppError.notFound('User not found'))
   }
 
-  const updatedUser = await prisma.user.update({
-    where: { id: user.id },
-    data: { role: bodyResult.data.role },
-    select: authUserSelect,
-  })
+  if (outcome.kind === 'conflict') {
+    return next(
+      AppError.badRequest(
+        'Role was modified concurrently; please re-read the current role and retry',
+      ),
+    )
+  }
+
+  if (outcome.kind === 'noop') {
+    res.status(200).json({
+      user: formatAuthUser(outcome.user),
+      auditLogId: null,
+      idempotent: true,
+    })
+    return
+  }
 
   const auditLog = await createAuditLog({
     actor_user_id: req.user.userId,
     action: "auth.role_changed",
     target_type: "user",
-    target_id: user.id,
+    target_id: targetUserId,
     metadata: {
-      previousRole: user.role,
-      newRole: updatedUser.role,
+      previousRole: outcome.previousRole,
+      newRole: outcome.user.role,
     },
   });
 
   res.status(200).json({
-    user: formatAuthUser(updatedUser),
+    user: formatAuthUser(outcome.user),
     auditLogId: auditLog.id,
   });
 });
