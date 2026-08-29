@@ -167,23 +167,29 @@ export class AppError extends Error {
 
 /** Extract only explicitly Soroban-shaped numeric codes; generic RPC `code` fields are ignored. */
 function extractContractErrorCode(err: unknown): number | null {
-  const candidates: unknown[] = [err]
-  if (err && typeof err === 'object') {
-    const value = err as Record<string, unknown>
-    candidates.push(value.message, value.error, value.result, value.data)
-    // Handle nested shapes such as { result: { error: 'ContractError(4)' } }
-    for (const nested of [value.result, value.data, value.error]) {
-      if (nested && typeof nested === 'object') {
-        const nv = nested as Record<string, unknown>
-        candidates.push(nv.error, nv.message, nv.result)
-        if (typeof nv.contractErrorCode === 'number') candidates.push(`ContractError(${nv.contractErrorCode})`)
+  // Collect strings from the error envelope, descending into nested
+  // `result`/`error`/`message`/`data` objects (e.g. `{ result: { error: 'ContractError(4)' } }`)
+  // so RPC-shaped failures are recognized no matter how deeply they are wrapped.
+  const candidates: string[] = []
+  const collect = (value: unknown, depth = 0): void => {
+    if (depth > 4 || value === null || value === undefined) return
+    if (typeof value === 'string') {
+      candidates.push(value)
+      return
+    }
+    if (typeof value === 'object') {
+      const record = value as Record<string, unknown>
+      if (typeof record.contractErrorCode === 'number') {
+        candidates.push(`ContractError(${record.contractErrorCode})`)
+      }
+      for (const key of ['message', 'error', 'result', 'data']) {
+        collect(record[key], depth + 1)
       }
     }
-    if (typeof value.contractErrorCode === 'number') candidates.push(`ContractError(${value.contractErrorCode})`)
   }
+  collect(err)
 
   for (const candidate of candidates) {
-    if (typeof candidate !== 'string') continue
     const match = candidate.match(/Error\s*\(\s*Contract\s*,\s*(\d+)\s*\)/i) || candidate.match(/ContractError\s*\(\s*(\d+)\s*\)/i)
     if (!match) continue
     const code = Number(match[1])
