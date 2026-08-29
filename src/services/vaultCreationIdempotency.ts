@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from 'pg'
 import { getPgPool } from '../db/pool.js'
 import type { PersistedVault } from '../types/vaults.js'
 import { AsyncMutex } from '../utils/asyncMutex.js'
+import { assertValidVaultCreateResponse } from './vaultValidation.js'
 
 export interface IdempotencyOwner {
   userId: string | null
@@ -40,6 +41,21 @@ export class VaultCreationOwnerError extends Error {
   }
 }
 
+/**
+ * Thrown when a stored idempotency reservation holds a response that cannot
+ * be parsed or does not satisfy the vault-create response shape. This is a
+ * server-side data-integrity failure: the stored row is corrupt or was
+ * tampered with, so the request fails closed instead of replaying garbage.
+ */
+export class VaultCreationMalformedResponseError extends Error {
+  readonly code = 'IDEMPOTENCY_MALFORMED_RESPONSE'
+
+  constructor(message = 'Stored idempotency response is malformed') {
+    super(message)
+    this.name = 'VaultCreationMalformedResponseError'
+  }
+}
+
 interface CoordinatorOptions {
   key: string
   requestHash: string
@@ -73,7 +89,18 @@ function assertOwner(existing: IdempotencyOwner, requested: IdempotencyOwner): v
 }
 
 function parseResponse<T>(value: unknown): T {
-  if (typeof value === 'string') return JSON.parse(value) as T
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value) as T
+    } catch {
+      throw new VaultCreationMalformedResponseError()
+    }
+  }
+  try {
+    assertValidVaultCreateResponse(value)
+  } catch {
+    throw new VaultCreationMalformedResponseError()
+  }
   return value as T
 }
 
