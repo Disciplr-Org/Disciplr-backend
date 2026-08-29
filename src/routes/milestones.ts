@@ -1,18 +1,18 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
 
-import { vaults } from './vaults.js'
-
 import { requireUser, requireVerifier } from '../middleware/rbac.js'
 import {
-  createMilestoneWithThreshold,
-  getMilestonesByVaultId,
-  getMilestoneById,
-  verifyMilestone,
-  validateMilestone,
-  allMilestonesVerified,
-  allMilestonesMetThreshold,
-} from '../services/milestones.js'
+  parseMilestoneInput,
+  flattenZodErrors,
+} from '../services/vaultValidation.js'
+
+import { transitionVaultStatus } from '../services/vaultTransitions.js'
+import { getVaultById } from '../services/vaultStore.js'
+import { AppError } from '../middleware/errorHandler.js'
+import { randomUUID } from 'node:crypto'
+import db from '../db/index.js'
+import { MilestoneRepositoryEnhanced } from '../repositories/milestoneRepositoryEnhanced.js'
 import {
   recordMilestoneApproval,
   hasVerifierVoted,
@@ -21,15 +21,9 @@ import {
   DuplicateVerifierVoteError,
   getVerifierProfile,
 } from '../services/verifiers.js'
-import {
-  parseMilestoneInput,
-  flattenZodErrors,
-} from '../services/vaultValidation.js'
+import type { MilestoneStatus } from '../types/milestone.js'
 
-import { completeVault, transitionVaultStatus } from '../services/vaultTransitions.js'
-import { getVaultById } from '../services/vaultStore.js'
-import { AppError } from '../middleware/errorHandler.js'
-import db from '../db/index.js'
+const milestoneRepo = new MilestoneRepositoryEnhanced(db)
 
 import {
   validateIdempotencyKey,
@@ -238,8 +232,18 @@ milestonesRouter.get('/', authenticate, requireValidVaultId, async (req: Request
     return next(AppError.notFound('Vault not found'))
   }
 
-  const milestones = getMilestonesByVaultId(vaultId)
-  res.json({ milestones })
+  const milestones = await milestoneRepo.listByVault(vaultId)
+  res.json({
+    milestones: milestones.map((m) => ({
+      id: m.id,
+      vaultId: m.vault_id,
+      title: m.title,
+      description: m.description,
+      status: m.status,
+      createdAt: m.created_at,
+      updatedAt: m.updated_at,
+    }))
+  })
 })
 
 // PATCH /api/vaults/:vaultId/milestones/:id/verify
@@ -477,25 +481,25 @@ milestonesRouter.get('/:id/approval-status', authenticate, requireValidVaultId, 
   try {
     const { vaultId, id } = req.params
 
-    // Check vault exists
     const vault = await getVaultById(vaultId)
     if (!vault) {
       return next(AppError.notFound('Vault not found'))
     }
 
-    // Check milestone exists
-    const milestone = getMilestoneById(id)
-    if (!milestone || milestone.vaultId !== vaultId) {
+    const milestone = await milestoneRepo.getById(id)
+    if (!milestone || milestone.vault_id !== vaultId) {
       return next(AppError.notFound('Milestone not found'))
     }
 
-    const approvalThreshold = (milestone as any)?.approvalThreshold || 1
+    const approvalThreshold = (milestone.criteria && typeof milestone.criteria === 'object' && 'approvalThreshold' in milestone.criteria)
+      ? (milestone.criteria as any).approvalThreshold
+      : 1
     const approvalProgress = await getMilestoneApprovalProgress(id, approvalThreshold)
 
     res.json({
       milestone: {
         id: milestone.id,
-        vaultId: milestone.vaultId,
+        vaultId: milestone.vault_id,
         description: milestone.description,
         approvalThreshold,
       },
