@@ -3,7 +3,7 @@ import { authenticate } from '../middleware/auth.js'
 import { requireAdmin } from '../middleware/rbac.js'
 import {
   VerifierStatus,
-  createOrGetVerifierProfile,
+  createOrTransitionVerifier,
   createVerifierProfile,
   deleteVerifierProfile,
   getVerifierProfile,
@@ -71,7 +71,7 @@ adminVerifiersRouter.post('/', async (req: Request, res: Response, next: NextFun
     if (userId && typeof userId === 'string' && !(await isValidStellarAddress(userId.trim()))) {
       return next(AppError.validation('invalid Stellar public key', { field: 'userId' }))
     }
-  } catch (err) {
+  } catch {
     return next(AppError.internal('address validation failed'))
   }
 
@@ -316,27 +316,21 @@ const createOrGetAndTransitionStatus = async (req: Request, res: Response, userI
   const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : undefined
   
   try {
-    const existing = await getVerifierProfile(userId)
-    if (!existing) {
-      const profile = await createVerifierProfile(userId, { status }, { actorUserId: req.user!.userId, reason })
-      res.json({
-        profile: profile.after,
-        stats: await getVerifierStats(userId),
-        auditLogId: profile.auditLog?.id ?? null,
-        changedFields: profile.changedFields,
-      })
-      return
-    }
+    const updated = await createOrTransitionVerifier(userId, status, { actorUserId: req.user!.userId, reason })
+    res.json({
+      profile: updated.after,
+      stats: await getVerifierStats(userId),
+      auditLogId: updated.auditLog?.id ?? null,
+      changedFields: updated.changedFields,
+    })
+    return
   } catch (error) {
-    if (isDuplicateError(error)) {
-      // Fallthrough to transition if created concurrently
-    } else {
-      res.status(500).json({ error: 'internal server error' })
+    if (error instanceof InvalidVerifierStatusTransitionError) {
+      res.status(409).json({ error: error.message })
       return
     }
+    res.status(500).json({ error: 'internal server error' })
   }
-
-  await transitionStatus(req, res, userId, status)
 }
 
 const getStringQuery = (value: unknown): string | undefined =>

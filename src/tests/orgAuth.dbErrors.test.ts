@@ -72,7 +72,11 @@ describe('requireOrgRole / requireTeamRole DB error handling', () => {
   })
 
   it('returns 403 when org membership is missing (no-row, not an exception)', async () => {
-    mockFirst.mockResolvedValue(undefined)
+    // requireOrgRole first proves the org exists (first query), then looks up
+    // membership (second query) — the missing row is the membership, not the org.
+    mockFirst
+      .mockResolvedValueOnce({ id: 'org-1' })
+      .mockResolvedValue(undefined)
 
     const res = await request(buildOrgApp()).get('/orgs/org-1/secure')
 
@@ -110,7 +114,11 @@ describe('requireOrgRole / requireTeamRole DB error handling', () => {
   })
 
   it('returns 403 when team membership is missing (no-row, not an exception)', async () => {
-    mockFirst.mockResolvedValue(undefined)
+    // requireTeamRole first proves the team exists (first query), then looks up
+    // membership (second query) — the missing row is the membership, not the team.
+    mockFirst
+      .mockResolvedValueOnce({ id: 'team-1' })
+      .mockResolvedValue(undefined)
 
     const res = await request(buildTeamApp()).get('/teams/team-1/secure')
 
