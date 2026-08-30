@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express'
-import { register as registerLifecycle, get as getLifecycle, transition as transitionLifecycle, deregister as deregisterLifecycle } from '../observability/requestLifecycle.js'
+import { register as registerLifecycle, get as getLifecycle, transition as transitionLifecycle } from '../observability/requestLifecycle.js'
 
 export const REDACTED = '[REDACTED]'
 
@@ -218,11 +218,20 @@ export const privacyLogger = (
       transitionLifecycle(requestId, 'COMPLETED')
     } catch {
       transitionLifecycle(requestId, 'FAILED')
+      // The recovery path must never throw: if serialization failed because
+      // Date.prototype.toISOString (or similar) is broken, the error line
+      // itself must not depend on it, or the error escapes the finish handler.
+      let errorTimestamp: string
+      try {
+        errorTimestamp = new Date().toISOString()
+      } catch {
+        errorTimestamp = 'unknown'
+      }
       console.log(
         JSON.stringify({
           level: 'error',
           event: 'privacy-logger.serialization-failure',
-          timestamp: new Date().toISOString(),
+          timestamp: errorTimestamp,
         }),
       )
     }
