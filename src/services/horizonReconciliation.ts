@@ -3,6 +3,15 @@ import type { Knex } from 'knex'
 /** States that can be observed from an accountability-vault lifecycle event. */
 export type ReconciledVaultStatus = 'active' | 'completed' | 'failed' | 'cancelled'
 
+export const VALID_EVENT_TYPES = [
+  'vault_created',
+  'vault_completed',
+  'vault_failed',
+  'vault_cancelled',
+] as const
+
+export const VALID_STATUSES: ReconciledVaultStatus[] = ['active', 'completed', 'failed', 'cancelled']
+
 /** A normalized event returned by the Horizon adapter. */
 export interface HorizonObservation {
   eventId: string
@@ -52,6 +61,7 @@ export interface ReconciliationReport {
   scannedTo: number | null
   observed: number
   duplicates: number
+  invalid: number
   unconfirmed: number
   applied: number
   alreadyCurrent: number
@@ -70,7 +80,58 @@ interface ReconciliationState {
   lastError: string | null
 }
 
+export class ReconciliationValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ReconciliationValidationError'
+  }
+}
+
 const TERMINAL_STATUSES = new Set<ReconciledVaultStatus>(['completed', 'failed', 'cancelled'])
+
+/**
+ * Validates whether an observation satisfies the boundary invariants.
+ */
+export function isValidObservation(obs: unknown): obs is HorizonObservation {
+  if (!obs || typeof obs !== 'object') return false
+  const o = obs as Partial<HorizonObservation>
+
+  if (!o.eventId || typeof o.eventId !== 'string' || o.eventId.trim().length === 0) return false
+  if (!o.contractAddress || typeof o.contractAddress !== 'string' || o.contractAddress.trim().length === 0) return false
+  if (!o.vaultId || typeof o.vaultId !== 'string' || o.vaultId.trim().length === 0) return false
+  if (!o.transactionHash || typeof o.transactionHash !== 'string' || o.transactionHash.trim().length === 0) return false
+  if (
+    typeof o.ledgerNumber !== 'number' ||
+    !Number.isSafeInteger(o.ledgerNumber) ||
+    o.ledgerNumber < 1
+  ) {
+    return false
+  }
+  if (!o.eventType || !VALID_EVENT_TYPES.includes(o.eventType as any)) return false
+  if (!o.status || !VALID_STATUSES.includes(o.status as any)) return false
+  if (!o.payload || typeof o.payload !== 'object' || Array.isArray(o.payload)) return false
+
+  return true
+}
+
+/**
+ * Validates a scan window parameter bounds.
+ */
+export function validateScanWindow(window: HorizonScanWindow): void {
+  if (!window.contractAddress || typeof window.contractAddress !== 'string' || window.contractAddress.trim().length === 0) {
+    throw new ReconciliationValidationError('contractAddress is required in scan window')
+  }
+  if (typeof window.fromLedger !== 'number' || !Number.isSafeInteger(window.fromLedger) || window.fromLedger < 1) {
+    throw new ReconciliationValidationError('fromLedger must be a safe integer >= 1')
+  }
+  if (
+    window.toLedger !== null &&
+    window.toLedger !== undefined &&
+    (typeof window.toLedger !== 'number' || !Number.isSafeInteger(window.toLedger) || window.toLedger < window.fromLedger)
+  ) {
+    throw new ReconciliationValidationError('toLedger must be a safe integer >= fromLedger')
+  }
+}
 
 /** Return a stable rank for the monotonic state machine. */
 export function statusRank(status: string): number {
@@ -118,6 +179,23 @@ export function deduplicateObservations(observations: HorizonObservation[]): {
     unique.push(observation)
   }
   return { unique, duplicates }
+}
+
+/** Filter valid observations and quarantine adversarial / malformed items. */
+export function filterValidObservations(rawObservations: unknown[]): {
+  valid: HorizonObservation[]
+  invalid: number
+} {
+  const valid: HorizonObservation[] = []
+  let invalid = 0
+  for (const raw of rawObservations) {
+    if (isValidObservation(raw)) {
+      valid.push(raw)
+    } else {
+      invalid++
+    }
+  }
+  return { valid, invalid }
 }
 
 /** Pick the latest event for a vault, while retaining a deterministic tie-break. */
@@ -199,26 +277,37 @@ export class HorizonReconciler {
   }
 
   async reconcileContract(contractAddress: string, configuredStart = 1): Promise<ReconciliationReport> {
-    const state = await this.loadState(contractAddress)
-    const fromLedger = calculateStartLedger(state, configuredStart, this.overlapLedgers)
+    if (!contractAddress || typeof contractAddress !== 'string' || contractAddress.trim().length === 0) {
+      throw new ReconciliationValidationError('contractAddress is required and must be a non-empty string')
+    }
+
+    const safeStart = Number.isSafeInteger(configuredStart) && configuredStart >= 1 ? configuredStart : 1
+    const state = await this.loadState(contractAddress.trim())
+    const fromLedger = calculateStartLedger(state, safeStart, this.overlapLedgers)
     const toLedger = fromLedger + this.scanWindowLedgers - 1
-    const page = await this.source.scan({
-      contractAddress,
+
+    const scanWindow: HorizonScanWindow = {
+      contractAddress: contractAddress.trim(),
       fromLedger,
       toLedger,
       cursor: state?.pagingToken ?? null,
-    })
-    const { unique, duplicates } = deduplicateObservations(page.observations)
+    }
+    validateScanWindow(scanWindow)
+
+    const page = await this.source.scan(scanWindow)
+    const { valid, invalid } = filterValidObservations(page.observations ?? [])
+    const { unique, duplicates } = deduplicateObservations(valid)
     const confirmed = unique.filter(observation =>
       isConfirmed(observation.ledgerNumber, page.latestLedger, this.confirmationDepth),
     )
     const unconfirmed = unique.length - confirmed.length
     const report: ReconciliationReport = {
-      contractAddress,
+      contractAddress: contractAddress.trim(),
       scannedFrom: fromLedger,
       scannedTo: toLedger,
       observed: unique.length,
       duplicates,
+      invalid,
       unconfirmed,
       applied: 0,
       alreadyCurrent: 0,
@@ -229,12 +318,12 @@ export class HorizonReconciler {
     }
 
     try {
-      await this.persistPage(contractAddress, unique, confirmed, page, report)
+      await this.persistPage(contractAddress.trim(), unique, confirmed, page, report)
       report.confirmedLedger = Math.max(
         state?.confirmedLedger ?? 0,
         ...confirmed.map(observation => observation.ledgerNumber),
       )
-      await this.saveState(contractAddress, {
+      await this.saveState(contractAddress.trim(), {
         confirmedLedger: report.confirmedLedger,
         scanLedger: Math.max(state?.scanLedger ?? 0, page.latestLedger),
         pagingToken: page.nextCursor,
@@ -243,7 +332,7 @@ export class HorizonReconciler {
       })
     } catch (error) {
       report.failed = unique.length
-      await this.saveState(contractAddress, {
+      await this.saveState(contractAddress.trim(), {
         confirmedLedger: state?.confirmedLedger ?? 0,
         scanLedger: state?.scanLedger ?? 0,
         pagingToken: state?.pagingToken ?? null,
@@ -364,7 +453,7 @@ export async function reconcileWithRetry(
   configuredStart: number,
   options: Pick<ReconciliationOptions, 'maxAttempts' | 'initialBackoffMs' | 'maxBackoffMs'> = {},
   wait: (milliseconds: number) => Promise<void> = milliseconds =>
-    new Promise(resolve => setTimeout(resolve, milliseconds)),
+  new Promise(resolve => setTimeout(resolve, milliseconds)),
 ): Promise<ReconciliationReport> {
   const maxAttempts = Math.max(1, options.maxAttempts ?? 3)
   const initialBackoffMs = options.initialBackoffMs ?? 250
@@ -381,3 +470,4 @@ export async function reconcileWithRetry(
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError))
 }
+

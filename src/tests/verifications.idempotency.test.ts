@@ -239,6 +239,21 @@ describe('verifications idempotency: first request with key', () => {
     )
   })
 
+  test('writes evidence reference inside the verification transaction', async () => {
+    await request(app)
+      .post('/api/verifications')
+      .set('idempotency-key', 'my-key-1')
+      .send(VALID_BODY)
+      .expect(201)
+
+    expect(mockCreateEvidenceReference).toHaveBeenCalledWith(
+      'ver-1',
+      HASH,
+      REF_URL,
+      mockTrx,
+    )
+  })
+
   test('does not include idempotency in response when no key is provided', async () => {
     const res = await request(app)
       .post('/api/verifications')

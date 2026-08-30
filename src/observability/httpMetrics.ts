@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import client from 'prom-client';
+import { transitionOperation, isTerminal } from './observabilityState.js';
 
 export const httpRequestsTotal = new client.Counter({
   name: 'http_requests_total',
@@ -59,6 +60,9 @@ export const httpMetricsMiddleware = (req: Request, res: Response, next: NextFun
   if (excludedPaths.some(path => req.path.startsWith(path))) {
     return next();
   }
+
+  // Mark metrics as in-progress
+  transitionOperation(req, 'metrics', 'in_progress');
 
   res.on('finish', () => {
     try {

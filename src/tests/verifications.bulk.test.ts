@@ -393,6 +393,19 @@ describe('verifications bulk endpoint', () => {
       })
     })
 
+    test('writes evidence reference inside the item transaction', async () => {
+      const items = [createValidItem({ targetId: 'milestone-1' })]
+      const res = await request(app).post('/api/verifications/bulk').send(items)
+      expect(res.status).toBe(200)
+
+      expect(mockCreateEvidenceReference).toHaveBeenCalledWith(
+        'ver-1',
+        HASH,
+        REF_URL,
+        mockTrx,
+      )
+    })
+
     test('evidenceReference in response uses referenceUrl field (not evidenceReferenceUrl)', async () => {
       const items = [createValidItem({ targetId: 'milestone-1' })]
       const res = await request(app).post('/api/verifications/bulk').send(items)

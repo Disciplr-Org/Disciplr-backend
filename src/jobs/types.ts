@@ -126,6 +126,55 @@ export type JobHandlerRegistry = {
 export interface EnqueueOptions {
   delayMs?: number
   maxAttempts?: number
+  /** Optional idempotency key — prevents duplicate enqueues for the same logical operation. */
+  idempotencyKey?: string
+}
+
+// ── Job State Machine ────────────────────────────────────────────────────────
+
+export const JOB_STATES = [
+  'pending',
+  'running',
+  'completed',
+  'failed',
+  'dead-lettered',
+  'cancelled',
+] as const
+
+export type JobState = (typeof JOB_STATES)[number]
+
+/**
+ * Explicit state-transition table. Each key is the current state; the value
+ * is the set of states it may transition to. Any transition not listed is
+ * invalid and will be rejected atomically.
+ */
+export const VALID_JOB_TRANSITIONS: Record<JobState, readonly JobState[]> = {
+  pending: ['running', 'cancelled'],
+  running: ['completed', 'failed', 'pending'],
+  completed: [],
+  failed: ['pending', 'dead-lettered', 'cancelled'],
+  'dead-lettered': ['pending', 'cancelled'],
+  cancelled: [],
+}
+
+/**
+ * Returns true when the requested transition is allowed by the state machine.
+ */
+export const isValidJobTransition = (from: JobState, to: JobState): boolean => {
+  return VALID_JOB_TRANSITIONS[from].includes(to)
+}
+
+/**
+ * Attempt to record a non-retryable failure. The job moves to `failed` with
+ * the marker so that the retry logic can distinguish permanent from
+ * transient failures.
+ */
+export class NonRetryableError extends Error {
+  readonly nonRetryable = true as const
+  constructor(message: string) {
+    super(message)
+    this.name = 'NonRetryableError'
+  }
 }
 
 export const isRecord = (value: unknown): value is Record<string, unknown> => {

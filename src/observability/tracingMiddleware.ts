@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import { getTracer, parseTraceparent, serializeTraceparent, generateTraceId, generateSpanId, type TraceContext } from './tracing.js'
+import { transitionOperation, isTerminal } from './observabilityState.js'
 
 /**
  * Augmented Express Request carrying trace context.
@@ -49,6 +50,9 @@ export function tracingMiddleware(req: Request, res: Response, next: NextFunctio
       correlationId = rawCorrelationId
     }
   }
+
+  // Mark tracing as in-progress
+  transitionOperation(req, 'tracing', 'in_progress')
 
   // ── Start server span ──
   const span = tracer.startSpan(
@@ -105,6 +109,7 @@ export function tracingMiddleware(req: Request, res: Response, next: NextFunctio
     // Always end the span — even if attribute setting failed.
     // span.end() is idempotent (safe to call multiple times).
     span.end()
+    transitionOperation(req, 'tracing', 'done')
   })
 
   next()

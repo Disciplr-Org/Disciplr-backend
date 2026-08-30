@@ -174,6 +174,10 @@ export const privacyLogger = (
 
   registerLifecycle(requestId, { method: req.method, path: req.originalUrl || req.url })
 
+  // Mark logging as in-progress so downstream finish handlers know
+  // a logging attempt is underway.
+  transitionOperation(req, 'logging', 'in_progress')
+
   res.on('finish', () => {
     // Guard: skip if already in a terminal state (idempotent handler)
     const current = transitionLifecycle(requestId, 'ACTIVE')
