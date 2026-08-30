@@ -1,8 +1,10 @@
 import { Router } from 'express'
+import express from 'express'
 import { z } from 'zod'
 import { authenticate } from '../middleware/auth.js'
 import { requireStepUp } from '../middleware/stepUp.js'
 import { apiKeyRateLimiter } from '../middleware/rateLimiter.js'
+import { requestTelemetry } from '../middleware/telemetry.js'
 import {
   createApiKey,
   listApiKeysForUser,
@@ -17,18 +19,39 @@ import { ApiScope } from '../types/auth.js'
 export const apiKeysRouter = Router()
 
 apiKeysRouter.use(authenticate)
+apiKeysRouter.use(requestTelemetry)
+apiKeysRouter.use(express.json({ limit: 16384 }))
+
+const DEFAULT_LIST_LIMIT = 50
+const MAX_LIST_LIMIT = 100
+const MAX_LABEL_LENGTH = 100
+const MAX_SCOPES_COUNT = 20
+const MAX_SCOPE_LENGTH = 64
 
 const createApiKeySchema = z.object({
-  label: z.string().trim().min(1, 'label is required.'),
-  scopes: z.array(z.string().trim().min(1, 'scope must be a non-empty string.')),
+  label: z.string().trim().min(1, 'label is required.').max(MAX_LABEL_LENGTH, `label must be at most ${MAX_LABEL_LENGTH} characters.`),
+  scopes: z.array(z.string().trim().min(1, 'scope must be a non-empty string.').max(MAX_SCOPE_LENGTH, `scope must be at most ${MAX_SCOPE_LENGTH} characters.`)).max(MAX_SCOPES_COUNT, `scopes must have at most ${MAX_SCOPES_COUNT} items.`),
   orgId: z.string().trim().optional(),
 })
 
+const parsePagination = (query: Record<string, unknown>): { limit: number; offset: number } => {
+  const rawLimit = typeof query.limit === 'string' ? query.limit : undefined
+  const rawOffset = typeof query.offset === 'string' ? query.offset : undefined
+  const limit = rawLimit ? Math.min(Math.max(parseInt(rawLimit, 10) || 0, 1), MAX_LIST_LIMIT) : DEFAULT_LIST_LIMIT
+  const offset = rawOffset ? Math.max(parseInt(rawOffset, 10) || 0, 0) : 0
+  return { limit, offset }
+}
+
 apiKeysRouter.get('/', async (req, res) => {
   const userId = req.user!.userId
-  const apiKeys = (await listApiKeysForUser(userId)).map(({ keyHash: _keyHash, ...publicRecord }) => publicRecord)
-
-  res.json({ apiKeys })
+  const { limit, offset } = parsePagination(req.query)
+  // NOTE: The service currently returns all keys. We bound the response size here.
+  const allKeys = await listApiKeysForUser(userId)
+  const page = allKeys.slice(offset, offset + limit).map(({ keyHash: _keyHash, ...publicRecord }) => publicRecord)
+  res.json({
+    apiKeys: page,
+    pagination: { limit, offset, total: allKeys.length },
+  })
 })
 
 apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
@@ -96,7 +119,7 @@ apiKeysRouter.post('/:id/rotate', apiKeyRateLimiter, async (req, res) => {
   })
 })
 
-apiKeysRouter.post('/:id/revoke', requireStepUp(), async (req, res) => {
+apiKeysRouter.post('/:id/revoke', apiKeyRateLimiter, requireStepUp(), async (req, res) => {
   const userId = req.user!.userId
   const record = await revokeApiKey(req.params.id, userId)
 
