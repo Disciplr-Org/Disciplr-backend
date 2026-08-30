@@ -7,12 +7,16 @@ import { authenticate } from '../middleware/auth.js'
 import { revokeSession, revokeAllUserSessions } from '../services/session.js'
 import { requireStepUp } from '../middleware/stepUp.js'
 import { requireJson } from '../middleware/requireJson.js'
-import { AUTH_JSON_MAX_BYTES } from '../middleware/requestBodyLimits.js'
+import { AUTHJSON_MAX_BYTES } from '../middleware/requestBodyLimits.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { prisma } from '../lib/prisma.js'
 import { UserRole } from '../types/user.js'
+import { requestTelemetry } from '../middleware/telemetry.js'
+import { authRateLimiter } from '../middleware/rateLimiter.js'
 
 export const authRouter = Router();
+authRouter.use(requestTelemetry);
+
 const authJson = requireJson({ maxBytes: AUTH_JSON_MAX_BYTES });
 
 const userIdOnlyLoginSchema = z.object({
@@ -27,37 +31,70 @@ const userIdParamSchema = z.object({
   id: z.string().uuid('id must be a valid UUID'),
 })
 
+const logoutSchema = z.object({
+  refreshToken: z.string().min(1, 'refreshToken must be a non-empty string.').max(4096, 'refreshToken is too long.').optional(),
+})
+
+const webauthnAssertSchema = z.object({
+  nonce: z.string().uuid('nonce must be a valid UUID'),
+  credentialId: z
+    .string()
+    .min(16, 'credentialId is too short.')
+    .max(1024, 'credentialId is too long.')
+    .regex(/^[A-Za-z0-9_-]+$/, 'credentialId contains invalid characters.'),
+  publicKey: z
+    .string()
+    .min(1, 'publicKey is required.')
+    .max(8192, 'publicKey is too long.'),
+})
+
+/**
+ * The userId-only login path is a development/testing helper that impersonates
+ * a user by id without credentials. It must never be reachable in production,
+ * where authentication must always be credential-based.
+ */
+const isMockLoginAllowed = (): boolean => {
+  const nodeEnv = process.env.NODE_ENV ?? 'development'
+  return nodeEnv !== 'production'
+}
+
 const authUserSelect = {
   id: true,
   role: true,
   lastLoginAt: true,
 } as const
 
-const formatAuthUser = (user: { id: string; role: string; lastLoginAt: Date | null }) => ({
+const formatAuthUser = (user: { id: string; role: string; lastLoginAt: Date | null }) =>
+ ({
   id: user.id,
   role: user.role as UserRole,
-  lastLoginAt: user.lastLoginAt?.toISOString() ?? null,
+  lastLoginAt: user.lastLoginAt?.toISString() ?? null,
 })
 
-// ------------- Endpoints -------------
+// -------------------- Endpoints --------------------
 
-authRouter.post('/register', authJson, async (req, res, next) => {
+authRouter.post('/register', authJson, authRateLimiter, async (req, res, next) => {
     const result = registerSchema.safeParse(req.body)
     if (!result.success) {
         return next(AppError.validation('Validation failed', result.error.format()))
     }
 
     try {
-        const user = await AuthService.register(result.data)
+        const user = authService.register(result.data)
         res.status(201).json(user)
-    } catch (error: any) {
-        return next(AppError.badRequest(error.message))
+    } catch (error) {
+        const message = error instanceof Error ? error.message : 'Registration failed'
+        return next(AppError.badRequest(message))
     }
 })
 
-authRouter.post('/login', authJson, async (req, res, next) => {
+authRouter.post('/login', authJson, authRateLimiter, async (req, res, next) => {
     // Support mock login if only userId is provided (from audit-logs feature branch)
     if (req.body.userId && !req.body.email && !req.body.password) {
+        if (!isMockLoginAllowed()) {
+            return next(AppError.forbidden('Mock login is disabled outside development environments'))
+        }
+
         const result = userIdOnlyLoginSchema.safeParse(req.body)
         if (!result.success) {
             return next(AppError.validation('Validation failed', result.error.format()))
@@ -105,12 +142,13 @@ authRouter.post('/login', authJson, async (req, res, next) => {
     try {
         const data = await AuthService.login(result.data)
         res.json(data)
-    } catch (error: any) {
-        return next(AppError.unauthorized(error.message))
+    } catch (error) {
+        const message = error instanceof Error ? error.message : 'Invalid credentials'
+        return next(AppError.unauthorized(message))
     }
 })
 
-authRouter.post('/refresh', authJson, async (req, res, next) => {
+authRouter.post('/refresh', authJson, authRateLimiter, async (req, res, next) => {
     const result = refreshSchema.safeParse(req.body)
     if (!result.success) {
         return next(AppError.validation('Validation failed', result.error.format()))
@@ -119,8 +157,8 @@ authRouter.post('/refresh', authJson, async (req, res, next) => {
     try {
         const data = await AuthService.refresh(result.data.refreshToken)
         res.json(data)
-    } catch (error: any) {
-        return next(AppError.unauthorized(error.message))
+    } catch (error) {
+        return next(AppError.unauthorized(error instanceof Error ? error.message : 'Invalid refresh token'))
     }
 })
 
@@ -128,9 +166,15 @@ authRouter.post(
   "/logout",
   authJson,
   authenticate,
-  async (req: Request, res: Response) => {
-    // 1. AuthService refresh token logout
-    const { refreshToken } = req.body;
+  async (req: Request, res: Response, next: NextFunction) => {
+    // Schema validation keeps hostile/oversized payloads from reaching the
+    // token-hashing path or polluting audit metadata.
+    const bodyResult = logoutSchema.safeParse(req.body ?? {})
+    if (!bodyResult.success) {
+      return next(AppError.validation('Validation failed', bodyResult.error.format()))
+    }
+
+    const { refreshToken } = bodyResult.data;
     if (refreshToken) {
       try {
         await AuthService.logout(refreshToken);
@@ -140,9 +184,9 @@ authRouter.post(
     }
 
     // 2. Database access token session revocation
-    const jti = req.user?.jti;
-    if (jti) {
-      await revokeSession(jti);
+    const jmti = req.user?.jmti;
+    if (jmti) {
+      await revokeSession(jmti);
     }
 
     res.json({ message: "Successfully logged out" });
@@ -171,8 +215,18 @@ authRouter.post('/webauthn/challenge', authenticate, async (req, res, next) => {
 authRouter.post('/webauthn/assert', authenticate, async (req, res, next) => {
   const { nonce, credentialId, publicKey } = req.body as { nonce?: string; credentialId?: string; publicKey?: string }
   if (!req.user?.userId || !nonce || !credentialId || !publicKey) {
-    return next(AppError.badRequest('Missing WebAuthn assertion data'))
+    return next(AppError.badRequest('Missing WebAuthn\" assertion data'))
   }
+
+  // Strict boundary validation: nonce must be a UUID, credential material must
+  // be bounded and well-formed so oversized or malformed assertions are
+  // rejected before they reach the credential store.
+  const bodyResult = webauthnAssertSchema.safeParse(req.body)
+  if (!bodyResult.success) {
+    return next(AppError.validation('Validation failed', bodyResult.error.format()))
+  }
+
+  const { nonce, credentialId, publicKey } = bodyResult.data
 
   const recorded = await AuthService.recordStepUpAssertion(nonce, req.user.userId)
   if (!recorded) {
@@ -194,6 +248,10 @@ authRouter.post('/users/:id/role', requireJson, authenticate, requireStepUp(), a
   const paramsResult = userIdParamSchema.safeParse(req.params)
   if (!paramsResult.success) {
     return next(AppError.validation('Validation failed', paramsResult.error.format()))
+  }
+
+  if (req.user.userId === paramsResult.data.id) {
+    return next(AppError.badRequest('Cannot change your own role'))
   }
 
   const bodyResult = userRoleUpdateSchema.safeParse(req.body)

@@ -3,6 +3,15 @@ import { authenticate } from '../middleware/auth.js'
 
 import { requireUser, requireVerifier } from '../middleware/rbac.js'
 import {
+  createMilestoneWithThreshold,
+  getMilestonesByVaultId,
+  getMilestoneById,
+  verifyMilestone,
+  validateMilestone,
+  allMilestonesVerified,
+  allMilestonesMetThreshold,
+} from '../services/milestones.js'
+import {
   parseMilestoneInput,
   flattenZodErrors,
 } from '../services/vaultValidation.js'
@@ -188,8 +197,8 @@ milestonesRouter.post('/', authenticate, requireWalletIdentity, requireUser, req
     }
     
     // Explicit authorization check to ensure the caller actually owns this vault
-    const isOwner = (owner.userId && vault.ownerId === owner.userId) || 
-                    (owner.orgId && vault.organizationId === owner.orgId);
+    const isOwner = (owner.userId && vault.creator === owner.userId) || 
+                    (owner.orgId && vault.orgId === owner.orgId);
                     
     if (!isOwner) {
       throw AppError.forbidden('Unauthorized: you do not own this vault')

@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express'
+import { register as registerLifecycle, get as getLifecycle, transition as transitionLifecycle } from '../observability/requestLifecycle.js'
 
 export const REDACTED = '[REDACTED]'
 
@@ -150,6 +151,18 @@ interface LogLine {
  * Emits exactly one structured JSON line per request (on response finish)
  * via console.log. All PII is redacted before emission.
  * Never mutates req/res. Always calls next().
+ *
+ * Lifecycle invariants:
+ *   - Registers the request in the lifecycle state machine on entry.
+ *   - Transitions to ACTIVE when the finish handler begins processing.
+ *   - Transitions to COMPLETED after a successful log emission.
+ *   - Transitions to FAILED if serialization or emission fails.
+ *   - Transitions to CANCELLED if the request lifecycle is deregistered
+ *     (e.g. client disconnect before response finishes).
+ *   - The finish handler is guarded against double-invocation: if the request
+ *     is already in a terminal state (COMPLETED/FAILED/CANCELLED), the handler
+ *     is a no-op. This prevents duplicate log lines on retried or interrupted
+ *     requests.
  */
 export const privacyLogger = (
   req: Request,
@@ -157,8 +170,19 @@ export const privacyLogger = (
   next: NextFunction,
 ): void => {
   const start = Date.now()
+  const requestId = (req as any).correlationId ?? (req as any).requestId ?? `${req.method}-${start}-${Math.random().toString(36).slice(2, 8)}`
+
+  registerLifecycle(requestId, { method: req.method, path: req.originalUrl || req.url })
+
+  // Mark logging as in-progress so downstream finish handlers know
+  // a logging attempt is underway.
+  transitionOperation(req, 'logging', 'in_progress')
 
   res.on('finish', () => {
+    // Guard: skip if already in a terminal state (idempotent handler)
+    const current = transitionLifecycle(requestId, 'ACTIVE')
+    if (current !== 'ACTIVE') return
+
     try {
       const rawIp = req.ip ?? req.socket?.remoteAddress ?? ''
       const rawBody = req.body
@@ -195,14 +219,33 @@ export const privacyLogger = (
       }
 
       console.log(JSON.stringify(line))
+      transitionLifecycle(requestId, 'COMPLETED')
     } catch {
+      transitionLifecycle(requestId, 'FAILED')
+      // The recovery path must never throw: if serialization failed because
+      // Date.prototype.toISOString (or similar) is broken, the error line
+      // itself must not depend on it, or the error escapes the finish handler.
+      let errorTimestamp: string
+      try {
+        errorTimestamp = new Date().toISOString()
+      } catch {
+        errorTimestamp = 'unknown'
+      }
       console.log(
         JSON.stringify({
           level: 'error',
           event: 'privacy-logger.serialization-failure',
-          timestamp: new Date().toISOString(),
+          timestamp: errorTimestamp,
         }),
       )
+    }
+  })
+
+  // Clean up lifecycle on client disconnect (if response never finishes)
+  res.on('close', () => {
+    const entry = getLifecycle(requestId)
+    if (entry && entry.state === 'CREATED') {
+      transitionLifecycle(requestId, 'CANCELLED')
     }
   })
 
