@@ -258,9 +258,9 @@ export const webhookVerify = async (
       return
     }
 
-    const signature = req.headers['x-webhook-signature'] as string
-    const timestampHeader = req.headers['x-webhook-timestamp'] as string
-    const nonce = req.headers['x-webhook-nonce'] as string
+    // Track a reserved nonce so an unexpected mid-flight error can still
+    // release the reservation instead of leaking it until the TTL sweep.
+    let reservedKey: string | undefined
 
     if (!signature || !timestampHeader || !nonce) {
       res.status(401).json({ error: 'Missing required webhook headers' })
@@ -304,24 +304,139 @@ export const webhookVerify = async (
     // Read the raw body
     let rawBody: string
     try {
-      rawBody = await new Promise<string>((resolve, reject) => {
-        let body = ''
-        let limitExceeded = false
-        req.on('data', (chunk) => {
-          if (limitExceeded) return
-          body += chunk.toString()
-          if (body.length > 500_000) {
-            limitExceeded = true
-            next(AppError.payloadTooLarge('Payload exceeds 500KB safety limit'))
-            reject(new Error('Payload too large'))
-          }
-        })
-        req.on('end', () => resolve(body))
-        req.on('error', reject)
-      })
-    } catch {
+      // Ensure telemetry exists before the first request records against it.
+      // Guarded internally and resolves quickly after the first call.
+      await ensureWebhookMetrics()
+
+      const env = getEnv()
+      const secret = env.WEBHOOK_INBOUND_SECRET
+      const skewMs = env.WEBHOOK_INBOUND_SKEW_MS
+      const maxBodyBytes = env.WEBHOOK_INBOUND_MAX_BODY_BYTES
+      const replayCacheSize = env.WEBHOOK_REPLAY_CACHE_SIZE
+
+      // Keep store capacities in sync with the environment (idempotent).
+      confirmedNonces.maxSize = replayCacheSize
+      confirmedNonces.skewMs = skewMs
+      pendingNonces.maxSize = replayCacheSize
+      pendingNonces.skewMs = skewMs
+
+      if (!secret) {
+        record('no_secret', 500)
+        res.status(500).json({ error: 'Webhook verification secret is not configured' })
+        return
+      }
+
+      const signature = req.headers['x-webhook-signature'] as string
+      const timestampHeader = req.headers['x-webhook-timestamp'] as string
+      const nonce = req.headers['x-webhook-nonce'] as string
+
+      if (!signature || !timestampHeader || !nonce) {
+        record('missing_headers', 401)
+        res.status(401).json({ error: 'Missing required webhook headers' })
+        return
+      }
+
+      const timestamp = parseInt(timestampHeader, 10)
+      if (isNaN(timestamp)) {
+        record('invalid_timestamp', 401)
+        res.status(401).json({ error: 'Invalid timestamp header' })
+        return
+      }
+
+      const now = Date.now()
+      if (Math.abs(now - timestamp) > skewMs) {
+        record('outside_window', 401)
+        res.status(401).json({ error: 'Webhook request outside of allowed time window' })
+        return
+      }
+
+      const cacheKey = `${timestamp}:${nonce}`
+
+      // Replay-protection check + reservation, synchronous and atomic w.r.t.
+      // other in-flight requests. Blocks concurrent replays before the body
+      // is read and before any await.
+      if (confirmedNonces.has(cacheKey) || pendingNonces.has(cacheKey)) {
+        record('replay', 401)
+        res.status(401).json({ error: 'Replayed webhook request' })
+        return
+      }
+      pendingNonces.add(cacheKey, timestamp)
+      reservedKey = cacheKey
+
+      // Read the raw body with a strict byte budget. Exceeding the budget
+      // rejects with 413 before any JSON parsing or HMAC work.
+      let rawBody: string
+      try {
+        rawBody = await readBody(req, maxBodyBytes)
+      } catch (err) {
+        pendingNonces.delete(cacheKey)
+        reservedKey = undefined
+        if (err instanceof AppError && err.status === 413) {
+          record('payload_too_large', 413)
+          res.status(413).json({ error: err.message })
+          return
+        }
+        record('body_read_error', 500)
+        next(err)
+        return
+      }
+
+      req.rawBody = rawBody
+
+      // Parse JSON — reject explicitly on malformed input rather than silently
+      // substituting {} which would mask bad payloads from downstream handlers.
+      try {
+        req.body = JSON.parse(rawBody)
+      } catch {
+        pendingNonces.delete(cacheKey)
+        reservedKey = undefined
+        record('invalid_json', 400)
+        res.status(400).json({ error: 'Invalid JSON body' })
+        return
+      }
+
+      // Enforce the payload shape + network invariants at the boundary. A
+      // malformed body or network mismatch releases the reserved nonce so a
+      // corrected request is permitted.
+      const bodyValidation = validateWebhookBody(req.body, getExpectedInboundNetwork())
+      if (!bodyValidation.ok) {
+        pendingNonces.delete(cacheKey)
+        reservedKey = undefined
+        record('invalid_json', 400)
+        res.status(400).json({ error: bodyValidation.error })
+        return
+      }
+
+      // Verify HMAC in constant time.
+      const expectedDigest = crypto
+        .createHmac('sha256', secret)
+        .update(`${timestamp}.${nonce}.${rawBody}`)
+        .digest('hex')
+      const expectedSignature = `sha256=${expectedDigest}`
+
+      if (
+        signature.length !== expectedSignature.length ||
+        !crypto.timingSafeEqual(global.Buffer.from(signature), global.Buffer.from(expectedSignature))
+      ) {
+        pendingNonces.delete(cacheKey)
+        reservedKey = undefined
+        record('bad_signature', 401)
+        res.status(401).json({ error: 'Invalid webhook signature' })
+        return
+      }
+
+      // Verification passed — promote from pending to confirmed.
       pendingNonces.delete(cacheKey)
-      return
+      confirmedNonces.add(cacheKey, timestamp)
+      reservedKey = undefined
+      record('success', 200)
+      span.setStatus({ code: 'OK' })
+      next()
+    } catch (err) {
+      if (reservedKey) pendingNonces.delete(reservedKey)
+      span.recordException(err instanceof Error ? err : new Error(String(err)))
+      span.setStatus({ code: 'ERROR', message: 'Webhook verification failed' })
+      next(err)
     }
 
     // Store raw body on req for downstream use

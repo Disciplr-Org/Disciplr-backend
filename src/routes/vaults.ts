@@ -205,18 +205,27 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
     let responseBody: VaultCreateResponse
     let replayed = false
     if (scopedIdempotencyKey) {
-      const createResult = await createVaultIdempotently(
-        { key: scopedIdempotencyKey, requestHash, owner },
-        async client => {
-          const { vault } = await createVaultWithMilestones(input, client ?? undefined)
-          const response: VaultCreateResponse = {
-            vault,
-            onChain: await buildVaultCreationPayload(input, vault),
-            idempotency: { key: rawIdempotencyKey, replayed: false },
+        const createResult = await createVaultIdempotently(
+          { key: scopedIdempotencyKey, requestHash, owner },
+          {
+            createVault: async client => {
+              const { vault } = await createVaultWithMilestones(input, client ?? undefined)
+              return vault
+            },
+            getVault: async (_client, id) => {
+              const vault = await getVaultById(id)
+              if (!vault) throw new Error('Vault not found')
+              return vault
+            },
+            buildResponse: async vault => {
+              return {
+                vault,
+                onChain: await buildVaultCreationPayload(input, vault),
+                idempotency: { key: rawIdempotencyKey, replayed: false },
+              }
+            }
           }
-          return { vault, response }
-        },
-      )
+        )
       responseBody = {
         ...createResult.response,
         idempotency: { key: rawIdempotencyKey, replayed: createResult.replayed },

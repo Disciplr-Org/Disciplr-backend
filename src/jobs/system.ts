@@ -274,6 +274,17 @@ export class BackgroundJobSystem {
     return this.queue.retryJob(jobId, force)
   }
 
+  cancelJob(jobId: string, reason?: string): void {
+    if (this.shuttingDown) {
+      throw new Error('Cannot cancel job: system is shutting down')
+    }
+    this.queue.cancelJob(jobId, reason)
+  }
+
+  getCancelledJobs() {
+    return this.queue.getCancelledJobs()
+  }
+
   getMetrics(): QueueMetrics {
     return this.queue.getMetrics()
   }

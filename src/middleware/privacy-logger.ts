@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express'
+import { transitionOperation, isTerminal } from '../observability/observabilityState.js'
 
 export const REDACTED = '[REDACTED]'
 
@@ -137,6 +138,8 @@ interface LogLine {
   status: number
   durationMs: number
   ip: string
+  traceId?: string
+  correlationId?: string
   body: Record<string, unknown> | null
   query: Record<string, unknown> | null
   headers: Record<string, unknown>
@@ -148,6 +151,10 @@ interface LogLine {
  * Emits exactly one structured JSON line per request (on response finish)
  * via console.log. All PII is redacted before emission.
  * Never mutates req/res. Always calls next().
+ *
+ * Idempotency: uses the shared observability state machine to guarantee
+ * at most one log line per request, even when the `finish` event fires
+ * multiple times (e.g. on retry or pipeline re-entry).
  */
 export const privacyLogger = (
   req: Request,
@@ -156,11 +163,24 @@ export const privacyLogger = (
 ): void => {
   const start = Date.now()
 
+  // Mark logging as in-progress so downstream finish handlers know
+  // a logging attempt is underway.
+  transitionOperation(req, 'logging', 'in_progress')
+
   res.on('finish', () => {
+    // Idempotency guard: if logging already completed or failed, skip.
+    if (isTerminal(req, 'logging')) {
+      return
+    }
+
     try {
       const rawIp = req.ip ?? req.socket?.remoteAddress ?? ''
       const rawBody = req.body
       const rawQuery = req.query as Record<string, unknown>
+      
+      const tracedReq = req as any
+      const correlationId = tracedReq.correlationId
+      const traceId = tracedReq.traceContext?.traceId
 
       const line: LogLine = {
         timestamp: new Date().toISOString(),
@@ -168,10 +188,12 @@ export const privacyLogger = (
         event: 'http.request',
         service: 'disciplr-backend',
         method: req.method,
-        url: req.url,
+        url: (req.originalUrl || req.url).split('?')[0],
         status: res.statusCode,
         durationMs: Date.now() - start,
         ip: rawIp ? maskIp(rawIp) : 'unknown',
+        traceId,
+        correlationId,
         body:
           rawBody !== null &&
           rawBody !== undefined &&
@@ -187,12 +209,26 @@ export const privacyLogger = (
       }
 
       console.log(JSON.stringify(line))
-    } catch {
+      transitionOperation(req, 'logging', 'done')
+    } catch (err: unknown) {
+      try {
+        transitionOperation(req, 'logging', 'failed', err instanceof Error ? err.message : 'serialization failure')
+      } catch {
+        // State transition failure is non-fatal; log must still be emitted.
+      }
+      // Use a safe timestamp that avoids the failing code path.
+      // If Date construction fails, use a static fallback.
+      let fallbackTimestamp = ''
+      try {
+        fallbackTimestamp = new Date().toISOString()
+      } catch {
+        fallbackTimestamp = 'unknown'
+      }
       console.log(
         JSON.stringify({
           level: 'error',
           event: 'privacy-logger.serialization-failure',
-          timestamp: new Date().toISOString(),
+          timestamp: fallbackTimestamp,
         }),
       )
     }
