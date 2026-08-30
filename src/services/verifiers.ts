@@ -83,7 +83,7 @@ export const createVerifierProfile = async (
       before: null,
       after,
       changedFields,
-    })
+    }, trx)
 
     return { before: null, after, changedFields, auditLog }
   })
@@ -143,7 +143,7 @@ export const updateVerifierProfile = async (
       before,
       after,
       changedFields,
-    })
+    }, trx)
 
     return { before, after, changedFields, auditLog }
   })
@@ -175,9 +175,85 @@ export const deleteVerifierProfile = async (
       before,
       after: null,
       changedFields: ['deleted'],
-    })
+    }, trx)
 
     return { deleted: true, before, auditLog }
+  })
+}
+
+export const createOrTransitionVerifier = async (
+  userId: string,
+  status: VerifierStatus,
+  context: VerifierMutationContext,
+): Promise<VerifierMutationResult> => {
+  return db.transaction(async (trx) => {
+    let current = await trx('verifiers').where({ user_id: userId }).first()
+
+    if (!current) {
+      const insertedRows = await trx('verifiers')
+        .insert({
+          user_id: userId,
+          display_name: null,
+          metadata: null,
+          ...mapStatusToUpdates(status),
+        })
+        .onConflict('user_id')
+        .ignore()
+        .returning('*')
+
+      const inserted = insertedRows[0]
+      if (inserted) {
+        const after = mapVerifierRow(inserted)
+        const changedFields = ['user_id', 'status']
+        const auditLog = await createVerifierAuditLog({
+          action: 'verifier.created',
+          context,
+          targetId: after.userId,
+          before: null,
+          after,
+          changedFields,
+        }, trx)
+
+        return { before: null, after, changedFields, auditLog }
+      }
+
+      current = await trx('verifiers').where({ user_id: userId }).first()
+      if (!current) {
+        throw new Error('Verifier profile was not available after concurrent create')
+      }
+    }
+
+    const before = mapVerifierRow(current)
+    if (!canTransition(before.status, status)) {
+      throw new InvalidVerifierStatusTransitionError(before.status, status)
+    }
+
+    if (before.status === status) {
+      return { before, after: before, changedFields: [], auditLog: null }
+    }
+
+    const [updated] = await trx('verifiers')
+      .where({ user_id: userId })
+      .update(mapStatusToUpdates(status))
+      .returning('*')
+
+    const after = mapVerifierRow(updated)
+    const action = statusAction(before.status, after.status)
+
+    if (!action) {
+      throw new Error(`Missing verifier audit action for ${before.status} -> ${after.status}`)
+    }
+
+    const auditLog = await createVerifierAuditLog({
+      action,
+      context,
+      targetId: userId,
+      before,
+      after,
+      changedFields: ['status'],
+    }, trx)
+
+    return { before, after, changedFields: ['status'], auditLog }
   })
 }
 
@@ -194,9 +270,13 @@ export interface ListVerifierProfilesOptions {
 
 export const listVerifierProfiles = async (opts: ListVerifierProfilesOptions = {}): Promise<VerifierProfile[]> => {
   const parsedLimit = Number(opts.limit)
-  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.floor(parsedLimit) : 100
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
+    ? Math.min(Math.floor(parsedLimit), 500)  // Cap at 500 to prevent resource exhaustion
+    : 100
   const parsedOffset = Number(opts.offset)
-  const offset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? Math.floor(parsedOffset) : 0
+  const offset = Number.isFinite(parsedOffset) && parsedOffset >= 0
+    ? Math.floor(parsedOffset)
+    : 0
   const rows = await db('verifiers').select('*').orderBy('created_at', 'desc').limit(limit).offset(offset)
   return rows.map(mapVerifierRow)
 }
@@ -345,7 +425,7 @@ function createVerifierAuditLog(input: {
   before: VerifierProfile | null
   after: VerifierProfile | null
   changedFields: string[]
-}): Promise<AuditLog> {
+}, trx?: Knex.Transaction): Promise<AuditLog> {
   return createAuditLog({
     actor_user_id: input.context.actorUserId,
     action: input.action,
@@ -357,7 +437,7 @@ function createVerifierAuditLog(input: {
       changed_fields: input.changedFields,
       ...(input.context.reason ? { reason: input.context.reason } : {}),
     },
-  })
+  }, trx)
 }
 
 function statusAction(from: VerifierStatus | null, to: VerifierStatus): string | null {
@@ -446,6 +526,17 @@ export class DuplicateVerifierVoteError extends Error {
     super(`Verifier ${verifierUserId} has already voted on milestone ${milestoneId}`)
     this.name = 'DuplicateVerifierVoteError'
   }
+}
+
+/**
+ * Validate that a value is a non-empty string.
+ * Used as a hostile-input guard for identifiers.
+ */
+const assertNonEmptyString = (value: unknown, name: string): string => {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`${name} must be a non-empty string`)
+  }
+  return value
 }
 
 /**
@@ -626,8 +717,8 @@ export const getMilestoneApprovalProgress = async (
 
   // Veto math: can we still reach threshold?
   let isRejected: boolean
-  if (totalVerifiers !== undefined && totalVerifiers > 0) {
-    const remaining = totalVerifiers - totalVoted
+  if (safeTotal !== undefined) {
+    const remaining = safeTotal - totalVoted
     const maxPossibleApprovals = approved + Math.max(remaining, 0)
     isRejected = maxPossibleApprovals < safeThreshold
   } else {

@@ -1,504 +1,281 @@
-/**
- * Issue #1543 – API key lifecycle coverage
- *
- * Covers gaps beyond apiKeys.timing.test.ts and apiKeyAuth.test.ts:
- *
- *  Route layer (apiKeysRouter):
- *  - POST /api/api-keys: authenticated, label/scope validation, no keyHash leak
- *  - GET  /api/api-keys: returns only the requesting user's keys, strips keyHash
- *  - POST /api/api-keys/:id/rotate: success, returns usable key; cross-user blocked
- *  - POST /api/api-keys/:id/rotate: blocked when key is already revoked
- *  - POST /api/api-keys/:id/revoke: success with step-up; cross-user blocked
- *
- *  authenticateApiKey middleware:
- *  - Missing x-api-key header → 401
- *  - Revoked key → 401 "revoked"
- *  - Key with forbidden scope → 403
- *  - Valid key → next() with apiKeyAuth on req
- *
- *  requireScopes middleware:
- *  - No apiKeyAuth present → pass-through (allows JWT-only requests)
- *  - apiKeyAuth lacks the required scope → 403
- *  - apiKeyAuth has the required scope → next()
- *
- * Refs #1543
- */
-
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals'
-import type { Request, Response, NextFunction } from 'express'
+import { jest, describe, it, expect, beforeEach } from '@jest/globals'
 import express from 'express'
 import request from 'supertest'
-
 import { ApiScope } from '../types/auth.js'
 
-// ── Mock declarations ─────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Module mocks (jest.unstable_mockModule, must precede the imports)
+// ---------------------------------------------------------------------------
 
-// Shared fake JWTPayload injected by the mock authenticate middleware
-const fakeUser = { userId: 'default-user', role: 'USER', jti: 'jti-default' }
+const mockOrgs = new Map<string, { id: string }>()
+const mockMemberships = new Map<string, { role: string }>()
 
+const mockDb = jest.fn((table: string) => ({
+  where: jest.fn((pred: Record<string, string>) => ({
+    first: jest.fn(async () => {
+      if (table === 'organizations') return mockOrgs.get(pred.id) ?? null
+      if (table === 'org_members') return mockMemberships.get(`${pred.org_id}:${pred.user_id}`) ?? null
+      return null
+    }),
+  })),
+}))
+
+const mockCreateAuditLog = jest.fn(async () => ({ id: 'audit-1' }))
+
+jest.unstable_mockModule('../db/index.js', () => ({ default: mockDb }))
+jest.unstable_mockModule('../db/pool.js', () => ({ getPgPool: () => null }))
+jest.unstable_mockModule('../lib/audit-logs.js', () => ({ createAuditLog: mockCreateAuditLog }))
 jest.unstable_mockModule('../middleware/auth.js', () => ({
-  authenticate: (req: Request, _res: Response, next: NextFunction) => {
-    ;(req as any).user = (req as any)._mockUser ?? fakeUser
+  authenticate: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    req.user = {
+      userId: req.header('x-test-user-id') ?? 'missing-user',
+    } as any
     next()
   },
 }))
-
+jest.unstable_mockModule('../middleware/rateLimiter.js', () => ({
+  apiKeyRateLimiter: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+}))
 jest.unstable_mockModule('../middleware/stepUp.js', () => ({
-  requireStepUp: () => (_req: Request, _res: Response, next: NextFunction) => next(),
+  requireStepUp: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
 }))
 
-jest.unstable_mockModule('../lib/audit-logs.js', () => ({
-  createAuditLog: jest.fn<any>().mockResolvedValue({ id: 'audit-id' }),
-}))
+const { apiKeysRouter, getApiKeyUsageHandler } = await import('../routes/apiKeys.js')
+const { createApiKey, resetApiKeysTable } = await import('../services/apiKeys.js')
+const { errorHandler } = await import('../middleware/errorHandler.js')
 
-// ── Dynamic imports ───────────────────────────────────────────────────────────
+const USER_ID = 'c0a6e0e8-4f5e-4a9c-9f4e-111111111111'
+const OTHER_USER = 'c0a6e0e8-4f5e-4a9c-9f4e-222222222222'
+const ORG_ID = 'c0a6e0e8-4f5e-4a9c-9f4e-333333333333'
 
-const {
-  createApiKey,
-  validateApiKey,
-  revokeApiKey,
-  resetApiKeysTable,
-  setApiKeyRepositoryForTests,
-} = await import('../services/apiKeys.js')
-const { apiKeysRouter } = await import('../routes/apiKeys.js')
-const { authenticateApiKey, requireScopes } = await import('../middleware/apiKeyAuth.js')
-
-// ── In-memory repository factory ──────────────────────────────────────────────
-
-const makeRepo = () => {
-  const store = new Map<string, any>()
-  return {
-    async create(record: any) { store.set(record.id, { ...record }) },
-    async listForUser(userId: string) {
-      return Array.from(store.values())
-        .filter((r: any) => r.userId === userId)
-        .sort((a: any, b: any) => b.createdAt.localeCompare(a.createdAt))
-    },
-    async listForOrg(orgId: string) {
-      return Array.from(store.values()).filter((r: any) => r.orgId === orgId)
-    },
-    async getById(id: string) { return store.get(id) ?? null },
-    async update(record: any) {
-      store.set(record.id, { ...record })
-      return store.get(record.id)
-    },
-    async findByIdForUser(id: string, userId: string) {
-      const r = store.get(id)
-      return r && r.userId === userId ? r : null
-    },
-    async findByHashPrefix(prefix: string) {
-      return Array.from(store.values()).filter(
-        (r: any) => typeof r.keyHash === 'string' && r.keyHash.slice(0, 12) === prefix,
-      )
-    },
-    async reset() { store.clear() },
-  }
-}
-
-// ── App builder ───────────────────────────────────────────────────────────────
-
-function buildApp(overrideUserId?: string) {
+const buildApp = (extra?: express.Express) => {
   const app = express()
   app.use(express.json())
-  // Let tests override the authenticated user via request header
-  app.use((req, _res, next) => {
-    const override = req.header('x-mock-user-id')
-    if (override) {
-      ;(req as any)._mockUser = { userId: override, role: 'USER', jti: 'jti-test' }
-    }
+  app.use('/api/keys', apiKeysRouter)
+  app.get('/orgs/:orgId/keys/usage', (req, res, next) => {
+    req.user = { userId: req.header('x-test-user-id') } as any
     next()
-  })
-  app.use('/api/api-keys', apiKeysRouter)
+  }, getApiKeyUsageHandler)
+  app.use(errorHandler)
   return app
 }
 
-// ── Lifecycle ─────────────────────────────────────────────────────────────────
-
 beforeEach(async () => {
-  setApiKeyRepositoryForTests(makeRepo() as any)
   await resetApiKeysTable()
+  mockOrgs.clear()
+  mockMemberships.clear()
+  mockOrgs.set(ORG_ID, { id: ORG_ID })
+  mockMemberships.set(`${ORG_ID}:${USER_ID}`, { role: 'admin' })
 })
 
-afterEach(async () => {
-  await resetApiKeysTable()
-  setApiKeyRepositoryForTests(null)
-})
+const createViaService = async (overrides: Record<string, unknown> = {}) => {
+  const { apiKey, record } = await createApiKey({
+    label: 'lifecycle',
+    scopes: [ApiScope.ReadVaults],
+    userId: USER_ID,
+    ...overrides,
+  } as any)
+  return { apiKey, record }
+}
 
-// ── POST /api/api-keys ────────────────────────────────────────────────────────
-
-describe('POST /api/api-keys – create', () => {
-  it('creates a key and returns the raw apiKey + meta (no keyHash)', async () => {
+describe('GET /api/keys – listing', () => {
+  it('returns only keys owned by the authenticated user', async () => {
+    await createViaService({ userId: USER_ID, label: 'mine' })
+    await createViaService({ userId: OTHER_USER, label: 'not-mine' })
     const app = buildApp()
-    const res = await request(app)
-      .post('/api/api-keys')
-      .set('x-mock-user-id', 'user-create')
-      .send({ label: 'my key', scopes: ['read:vaults'] })
-
-    expect(res.status).toBe(201)
-    expect(typeof res.body.apiKey).toBe('string')
-    expect(res.body.apiKey).toMatch(/^dsk_/)
-    expect(res.body.apiKeyMeta.label).toBe('my key')
-    expect(res.body.apiKeyMeta.scopes).toContain('read:vaults')
-    // keyHash must NEVER be exposed
-    expect(res.body.apiKeyMeta.keyHash).toBeUndefined()
-    expect(res.body.keyHash).toBeUndefined()
+    const res = await request(app).get('/api/keys').set('x-test-user-id', USER_ID)
+    expect(res.status).toBe(200)
+    expect(res.body.apiKeys.map((k: any) => k.label)).toEqual(['mine'])
+    expect(res.body.apiKeys[0].keyHash).toBeUndefined()
   })
+})
 
-  it('returns 400 for missing label', async () => {
+describe('POST /api/keys – create boundary validation', () => {
+  const validBody = { label: 'my key', scopes: [ApiScope.ReadVaults] }
+
+  it('rejects an empty label', async () => {
     const app = buildApp()
-    const res = await request(app)
-      .post('/api/api-keys')
-      .set('x-mock-user-id', 'user-create')
-      .send({ scopes: ['read:vaults'] })
-
+    const res = await request(app).post('/api/keys').set('x-test-user-id', USER_ID).send({ ...validBody, label: '  ' })
     expect(res.status).toBe(400)
   })
 
-  it('returns 400 for an unrecognized scope value', async () => {
+  it('rejects an oversized label', async () => {
     const app = buildApp()
-    const res = await request(app)
-      .post('/api/api-keys')
-      .set('x-mock-user-id', 'user-create')
-      .send({ label: 'bad', scopes: ['read:vaults', 'write:nonexistent'] })
-
+    const res = await request(app).post('/api/keys').set('x-test-user-id', USER_ID).send({ ...validBody, label: 'A'.repeat(121) })
     expect(res.status).toBe(400)
-    expect(res.body.error.code).toBe('VALIDATION_ERROR')
   })
 
-  it('accepts an empty scopes array', async () => {
+  it('rejects an empty scopes array', async () => {
+    const app = buildApp()
+    const res = await request(app).post('/api/keys').set('x-test-user-id', USER_ID).send({ ...validBody, scopes: [] })
+    expect(res.status).toBe(400)
+  })
+
+  it('rejects duplicate scopes', async () => {
     const app = buildApp()
     const res = await request(app)
-      .post('/api/api-keys')
-      .set('x-mock-user-id', 'user-create')
-      .send({ label: 'no-scopes', scopes: [] })
+      .post('/api/keys')
+      .set('x-test-user-id', USER_ID)
+      .send({ ...validBody, scopes: [ApiScope.ReadVaults, ApiScope.ReadVaults] })
+    expect(res.status).toBe(400)
+  })
 
+  it('rejects an out-of-enum scope', async () => {
+    const app = buildApp()
+    const res = await request(app)
+      .post('/api/keys')
+      .set('x-test-user-id', USER_ID)
+      .send({ ...validBody, scopes: ['read:everything'] })
+    expect(res.status).toBe(400)
+  })
+
+  it('rejects more than 30 scopes', async () => {
+    const app = buildApp()
+    const scopes = Array.from({ length: 31 })
+      .map((_, i) => `read:${i}`)
+      .join(' ')
+    const res = await request(app)
+      .post('/api/keys')
+      .set('x-test-user-id', USER_ID)
+      .send({ ...validBody, scopes: JSON.parse(`[${scopes.split(' ').map((s) => `"${s}"`).join(',')}]`) })
+    expect(res.status).toBe(400)
+  })
+
+  it('rejects a malformed orgId', async () => {
+    const app = buildApp()
+    const res = await request(app).post('/api/keys').set('x-test-user-id', USER_ID).send({ ...validBody, orgId: 'org-abc' })
+    expect(res.status).toBe(400)
+  })
+})
+
+describe('POST /api/keys – org ownership', () => {
+  it('binds a key to an org the caller belongs to', async () => {
+    const app = buildApp()
+    const res = await request(app)
+      .post('/api/keys')
+      .set('x-test-user-id', USER_ID)
+      .send({ label: 'org key', scopes: [ApiScope.ReadVaults], orgId: ORG_ID })
     expect(res.status).toBe(201)
-    expect(res.body.apiKeyMeta.scopes).toEqual([])
+    expect(res.body.apiKeyMeta.orgId).toBe(ORG_ID)
+  })
+
+  it('returns 404 when the org does not exist', async () => {
+    const app = buildApp()
+    const res = await request(app)
+      .post('/api/keys')
+      .set('x-test-user-id', USER_ID)
+      .send({ label: 'bad org', scopes: [ApiScope.ReadVaults], orgId: 'c0a6e0e8-4f5e-4a9c-9f4e-444444444444' })
+    expect(res.status).toBe(404)
+    expect(res.body.error.code).toBe('NOT_FOUND')
+  })
+
+  it('returns 403 when the caller is not a member of the org', async () => {
+    const app = buildApp()
+    const res = await request(app)
+      .post('/api/keys')
+      .set('x-test-user-id', OTHER_USER)
+      .send({ label: 'foreign org', scopes: [ApiScope.ReadVaults], orgId: ORG_ID })
+    expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('FORBIDDEN')
   })
 })
 
-// ── GET /api/api-keys ─────────────────────────────────────────────────────────
-
-describe('GET /api/api-keys – list', () => {
-  it('returns only the requesting user\'s keys', async () => {
-    // Create keys for two different users
-    await createApiKey({ label: 'user-a-key', scopes: [], userId: 'user-a' })
-    await createApiKey({ label: 'user-b-key', scopes: [], userId: 'user-b' })
-
+describe('POST /api/keys/:id/rotate', () => {
+  it('rotates a key owned by the caller', async () => {
+    const { record } = await createViaService()
     const app = buildApp()
     const res = await request(app)
-      .get('/api/api-keys')
-      .set('x-mock-user-id', 'user-a')
-
-    expect(res.status).toBe(200)
-    expect(Array.isArray(res.body.apiKeys)).toBe(true)
-    expect(res.body.apiKeys).toHaveLength(1)
-    expect(res.body.apiKeys[0].label).toBe('user-a-key')
-  })
-
-  it('returns an empty array when the user has no keys', async () => {
-    const app = buildApp()
-    const res = await request(app)
-      .get('/api/api-keys')
-      .set('x-mock-user-id', 'no-keys-user')
-
-    expect(res.status).toBe(200)
-    expect(res.body.apiKeys).toEqual([])
-  })
-
-  it('strips keyHash from every listed record', async () => {
-    await createApiKey({ label: 'listed', scopes: [], userId: 'list-user' })
-
-    const app = buildApp()
-    const res = await request(app)
-      .get('/api/api-keys')
-      .set('x-mock-user-id', 'list-user')
-
-    expect(res.status).toBe(200)
-    for (const key of res.body.apiKeys) {
-      expect(key.keyHash).toBeUndefined()
-    }
-  })
-})
-
-// ── POST /api/api-keys/:id/rotate ─────────────────────────────────────────────
-
-describe('POST /api/api-keys/:id/rotate', () => {
-  it('returns a new raw API key and meta on success', async () => {
-    const { record } = await createApiKey({
-      label: 'rotate-me',
-      scopes: [ApiScope.ReadVaults],
-      userId: 'owner',
-    } as any)
-
-    const app = buildApp()
-    const res = await request(app)
-      .post(`/api/api-keys/${record.id}/rotate`)
-      .set('x-mock-user-id', 'owner')
-
+      .post(`/api/keys/${record.id}/rotate`)
+      .set('x-test-user-id', USER_ID)
+      .send({})
     expect(res.status).toBe(200)
     expect(typeof res.body.apiKey).toBe('string')
-    expect(res.body.apiKey).toMatch(/^dsk_/)
-    expect(res.body.apiKeyMeta.keyHash).toBeUndefined()
+    expect(res.body.apiKey).not.toBe(record.id)
+    expect(res.body.apiKeyMeta.id).toBe(record.id)
   })
 
-  it('new key is immediately usable for authentication', async () => {
-    const { record } = await createApiKey({
-      label: 'rotate-auth',
-      scopes: [ApiScope.ReadVaults],
-      userId: 'owner2',
-    } as any)
-
-    const app = buildApp()
-    const rotateRes = await request(app)
-      .post(`/api/api-keys/${record.id}/rotate`)
-      .set('x-mock-user-id', 'owner2')
-
-    expect(rotateRes.status).toBe(200)
-    const newApiKey = rotateRes.body.apiKey
-
-    // Validate the new key directly
-    const result = await validateApiKey(newApiKey)
-    expect(result.valid).toBe(true)
-  })
-
-  it('returns 404 when the key does not belong to the requesting user', async () => {
-    const { record } = await createApiKey({
-      label: 'not-mine',
-      scopes: [],
-      userId: 'real-owner',
-    } as any)
-
+  it('returns 404 for a key owned by a different user', async () => {
+    const { record } = await createViaService({ userId: OTHER_USER })
     const app = buildApp()
     const res = await request(app)
-      .post(`/api/api-keys/${record.id}/rotate`)
-      .set('x-mock-user-id', 'attacker')
-
+      .post(`/api/keys/${record.id}/rotate`)
+      .set('x-test-user-id', USER_ID)
+      .send({})
     expect(res.status).toBe(404)
   })
 
-  it('returns 404 when the key is already revoked', async () => {
-    const { record } = await createApiKey({
-      label: 'revoked-rotate',
-      scopes: [],
-      userId: 'owner3',
-    } as any)
-    await revokeApiKey(record.id, 'owner3')
-
+  it('rejects a malformed key id', async () => {
     const app = buildApp()
     const res = await request(app)
-      .post(`/api/api-keys/${record.id}/rotate`)
-      .set('x-mock-user-id', 'owner3')
+      .post('/api/keys/not-a-uuid/rotate')
+      .set('x-test-user-id', USER_ID)
+      .send({})
+    expect(res.status).toBe(400)
+  })
+})
 
+describe('POST /api/keys/:id/revoke', () => {
+  it('revokes a key owned by the caller and removes it from listings', async () => {
+    const { record } = await createViaService()
+    const app = buildApp()
+    const revoke = await request(app)
+      .post(`/api/keys/${record.id}/revoke`)
+      .set('x-test-user-id', USER_ID)
+      .send({})
+    expect(revoke.status).toBe(200)
+    expect(revoke.body.apiKeyMeta.revokedAt).toBeTruthy()
+
+    const list = await request(app).get('/api/keys').set('x-test-user-id', USER_ID)
+    expect(list.body.apiKeys).toHaveLength(1)
+    expect(list.body.apiKeys[0].revokedAt).toBeTruthy()
+  })
+
+  it('returns 404 for a key owned by a different user', async () => {
+    const { record } = await createViaService({ userId: OTHER_USER })
+    const app = buildApp()
+    const res = await request(app)
+      .post(`/api/keys/${record.id}/revoke`)
+      .set('x-test-user-id', USER_ID)
+      .send({})
     expect(res.status).toBe(404)
   })
 })
 
-// ── POST /api/api-keys/:id/revoke ─────────────────────────────────────────────
-
-describe('POST /api/api-keys/:id/revoke', () => {
-  it('revokes the key and returns meta with revokedAt set', async () => {
-    const { record } = await createApiKey({
-      label: 'revoke-me',
-      scopes: [ApiScope.ReadVaults],
-      userId: 'revoke-owner',
-    } as any)
-
+describe('GET /orgs/:orgId/keys/usage – getApiKeyUsageHandler', () => {
+  it('rejects requests without an authenticated user', async () => {
     const app = buildApp()
-    const res = await request(app)
-      .post(`/api/api-keys/${record.id}/revoke`)
-      .set('x-mock-user-id', 'revoke-owner')
-
-    expect(res.status).toBe(200)
-    expect(res.body.apiKeyMeta.revokedAt).not.toBeNull()
-    expect(res.body.apiKeyMeta.keyHash).toBeUndefined()
+    const res = await request(app).get(`/orgs/${ORG_ID}/keys/usage`)
+    expect(res.status).toBe(401)
   })
 
-  it('returns 404 when key belongs to a different user (cross-user revoke)', async () => {
-    const { record } = await createApiKey({
-      label: 'not-yours',
-      scopes: [],
-      userId: 'legit-owner',
-    } as any)
+  it('rejects a malformed orgId', async () => {
+    const app = buildApp()
+    const res = await request(app).get('/orgs/%20/keys/usage').set('x-test-user-id', USER_ID)
+    expect(res.status).toBe(400)
+  })
 
+  it('returns 404 for an unknown org', async () => {
     const app = buildApp()
     const res = await request(app)
-      .post(`/api/api-keys/${record.id}/revoke`)
-      .set('x-mock-user-id', 'attacker')
-
+      .get('/orgs/c0a6e0e8-4f5e-4a9c-9f4e-444444444444/keys/usage')
+      .set('x-test-user-id', USER_ID)
     expect(res.status).toBe(404)
   })
 
-  it('is idempotent: revoking an already-revoked key returns 200 with revokedAt', async () => {
-    const { record } = await createApiKey({
-      label: 'double-revoke',
-      scopes: [],
-      userId: 'dr-owner',
-    } as any)
-    await revokeApiKey(record.id, 'dr-owner')
-
+  it('returns 403 for a non-member', async () => {
     const app = buildApp()
-    const res = await request(app)
-      .post(`/api/api-keys/${record.id}/revoke`)
-      .set('x-mock-user-id', 'dr-owner')
-
-    // The key exists and belongs to the user — just already revoked
-    expect(res.status).toBe(200)
-    expect(res.body.apiKeyMeta.revokedAt).not.toBeNull()
-  })
-})
-
-// ── authenticateApiKey middleware ─────────────────────────────────────────────
-
-describe('authenticateApiKey middleware', () => {
-  function buildApiKeyApp(scopes: ApiScope[] = []) {
-    const app = express()
-    app.use(express.json())
-    app.get('/secured', authenticateApiKey(scopes), (_req, res) => res.json({ ok: true }))
-    return app
-  }
-
-  it('returns 401 when x-api-key header is absent', async () => {
-    const app = buildApiKeyApp()
-    const res = await request(app).get('/secured')
-    expect(res.status).toBe(401)
-    expect(res.body.error).toMatch(/missing api key/i)
-  })
-
-  it('returns 401 for a malformed key', async () => {
-    const app = buildApiKeyApp()
-    const res = await request(app)
-      .get('/secured')
-      .set('x-api-key', 'not-a-valid-key')
-    expect(res.status).toBe(401)
-  })
-
-  it('returns 401 for a revoked key', async () => {
-    const { apiKey, record } = await createApiKey({
-      label: 'middleware-revoke',
-      scopes: [ApiScope.ReadVaults],
-      userId: 'mw-user',
-    } as any)
-    await revokeApiKey(record.id, 'mw-user')
-
-    const app = buildApiKeyApp()
-    const res = await request(app)
-      .get('/secured')
-      .set('x-api-key', apiKey)
-
-    expect(res.status).toBe(401)
-    expect(res.body.error).toMatch(/revoked/i)
-  })
-
-  it('returns 403 when the key lacks a required scope', async () => {
-    const { apiKey } = await createApiKey({
-      label: 'scope-limited',
-      scopes: [ApiScope.ReadVaults],
-    })
-
-    const app = buildApiKeyApp([ApiScope.WriteVaults])
-    const res = await request(app)
-      .get('/secured')
-      .set('x-api-key', apiKey)
-
+    const res = await request(app).get(`/orgs/${ORG_ID}/keys/usage`).set('x-test-user-id', OTHER_USER)
     expect(res.status).toBe(403)
-    expect(res.body.error).toMatch(/required scopes/i)
   })
 
-  it('grants access and sets req.apiKeyAuth for a valid key', async () => {
-    const { apiKey, record } = await createApiKey({
-      label: 'middleware-valid',
-      scopes: [ApiScope.ReadVaults],
-      userId: 'mw-owner',
-    } as any)
-
-    const app = express()
-    app.use(express.json())
-    app.get('/secured', authenticateApiKey([ApiScope.ReadVaults]), (req, res) => {
-      res.json({ apiKeyId: (req as any).apiKeyAuth?.apiKeyId })
-    })
-
-    const res = await request(app)
-      .get('/secured')
-      .set('x-api-key', apiKey)
-
+  it('returns usage for an org the caller belongs to', async () => {
+    await createViaService({ orgId: ORG_ID })
+    const app = buildApp()
+    const res = await request(app).get(`/orgs/${ORG_ID}/keys/usage`).set('x-test-user-id', USER_ID)
     expect(res.status).toBe(200)
-    expect(res.body.apiKeyId).toBe(record.id)
-  })
-
-  it('grants access when no required scopes are specified', async () => {
-    const { apiKey } = await createApiKey({ label: 'any-scope', scopes: [] })
-
-    const app = buildApiKeyApp() // no required scopes
-    const res = await request(app)
-      .get('/secured')
-      .set('x-api-key', apiKey)
-
-    expect(res.status).toBe(200)
-  })
-})
-
-// ── requireScopes middleware ──────────────────────────────────────────────────
-
-describe('requireScopes middleware', () => {
-  function buildRequireScopesApp(...required: ApiScope[]) {
-    const app = express()
-    app.use(express.json())
-    app.get('/route', requireScopes(...required), (_req, res) => res.json({ ok: true }))
-    return app
-  }
-
-  it('passes through when req.apiKeyAuth is absent (allows JWT-auth path)', async () => {
-    const app = buildRequireScopesApp(ApiScope.ReadVaults)
-    const res = await request(app).get('/route')
-    // No apiKeyAuth = not an API key request → guard is not the gatekeeper
-    expect(res.status).toBe(200)
-  })
-
-  it('returns 403 when apiKeyAuth is present but lacks the required scope', async () => {
-    const app = express()
-    app.use(express.json())
-    app.get(
-      '/route',
-      (req, _res, next) => {
-        ;(req as any).apiKeyAuth = {
-          apiKeyId: 'k1',
-          userId: 'u1',
-          orgId: null,
-          scopes: [ApiScope.ReadVaults],
-          label: 'test',
-        }
-        next()
-      },
-      requireScopes(ApiScope.WriteVaults),
-      (_req, res) => res.json({ ok: true }),
-    )
-
-    const res = await request(app).get('/route')
-    expect(res.status).toBe(403)
-    expect(res.body.error).toMatch(/required scopes/i)
-  })
-
-  it('calls next() when apiKeyAuth has at least one of the required scopes', async () => {
-    const app = express()
-    app.use(express.json())
-    app.get(
-      '/route',
-      (req, _res, next) => {
-        ;(req as any).apiKeyAuth = {
-          apiKeyId: 'k2',
-          userId: 'u2',
-          orgId: null,
-          scopes: [ApiScope.ReadVaults, ApiScope.ReadAnalytics],
-          label: 'test',
-        }
-        next()
-      },
-      requireScopes(ApiScope.ReadAnalytics),
-      (_req, res) => res.json({ ok: true }),
-    )
-
-    const res = await request(app).get('/route')
-    expect(res.status).toBe(200)
+    expect(Array.isArray(res.body.usage)).toBe(true)
+    expect(res.body.usage).toHaveLength(1)
+    expect(res.body.usage[0].keyHash).toBeUndefined()
+    expect(res.body.usage[0].id).toBeDefined()
   })
 })

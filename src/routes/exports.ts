@@ -1,4 +1,5 @@
 import { Router, type Response } from 'express'
+import { z } from 'zod'
 import type { BackgroundJobSystem } from '../jobs/system.js'
 import {
   authenticate,
@@ -77,38 +78,53 @@ const negotiateFormat = (req: AuthenticatedRequest, queryFormat?: string): Expor
   return 'json'
 }
 
+const JobIdSchema = z.string().min(1).max(255)
+const TokenSchema = z.string().min(1).max(2048)
+const IdempotencyKeySchema = z.string().min(1).max(255).optional()
+const TargetUserIdSchema = z.string().min(1).max(255).optional()
+
 export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
   const router = Router()
 
   const parseOptions = (req: AuthenticatedRequest): ParseOptionsResult | null => {
-    const format = negotiateFormat(req, req.query.format as string | undefined)
-    const scope = (req.query.scope ?? 'all') as string
-    const columnsParam = req.query.columns as string | undefined
+    const formatStr = typeof req.query.format === 'string' ? req.query.format : undefined
+    const format = negotiateFormat(req, formatStr)
+    const scopeStr = typeof req.query.scope === 'string' ? req.query.scope : 'all'
 
-    const validScopes = ['vaults', 'transactions', 'analytics', 'all']
-    if (!validScopes.includes(scope)) {
+    const ScopeSchema = z.enum(['vaults', 'transactions', 'analytics', 'all'])
+    const scopeParse = ScopeSchema.safeParse(scopeStr)
+    if (!scopeParse.success) {
       return null
     }
+    const scope = scopeParse.data
 
     const result: ParseOptionsResult = {
       format,
-      scope: scope as ExportScope,
+      scope,
     }
 
+    const columnsParam = req.query.columns
     if (columnsParam) {
       try {
-        const parsedColumns: Record<string, string[]> = typeof columnsParam === 'string'
+        const parsedColumns: unknown = typeof columnsParam === 'string'
           ? JSON.parse(columnsParam)
           : columnsParam
+        
+        const ColumnsSchema = z.record(z.array(z.string()))
+        const colsParse = ColumnsSchema.safeParse(parsedColumns)
+        if (!colsParse.success) {
+          return null
+        }
+        
         result.columns = {}
 
-        for (const [section, cols] of Object.entries(parsedColumns)) {
+        for (const [section, cols] of Object.entries(colsParse.data)) {
           const allowed = ALLOWED_COLUMNS[section as keyof typeof ALLOWED_COLUMNS]
           if (!allowed) {
             return null
           }
 
-          if (!Array.isArray(cols) || !cols.every(col => allowed.includes(col))) {
+          if (!cols.every(col => allowed.includes(col))) {
             return null
           }
           result.columns[section as keyof typeof ALLOWED_COLUMNS] = cols
@@ -134,6 +150,12 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
       return
     }
 
+    const idemParse = IdempotencyKeySchema.safeParse(req.header('idempotency-key'))
+    if (!idemParse.success) {
+      res.status(400).json({ error: 'Invalid idempotency-key header' })
+      return
+    }
+
     if (!await enforceExportQuota(req, res)) return
 
     try {
@@ -144,7 +166,7 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
         scope: options.scope,
         format: options.format,
         columns: options.columns as any,
-        idempotencyKey: req.header('idempotency-key') ?? undefined,
+        idempotencyKey: idemParse.data,
       })
 
       res.status(202).json(buildAcceptedResponse(job.id))
@@ -166,10 +188,21 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
       return
     }
 
+    const idemParse = IdempotencyKeySchema.safeParse(req.header('idempotency-key'))
+    if (!idemParse.success) {
+      res.status(400).json({ error: 'Invalid idempotency-key header' })
+      return
+    }
+
+    const targetUserParse = TargetUserIdSchema.safeParse(req.query.targetUserId)
+    if (!targetUserParse.success) {
+      res.status(400).json({ error: 'Invalid targetUserId parameter' })
+      return
+    }
+
     if (!await enforceExportQuota(req, res)) return
 
-    const targetUserId =
-      typeof req.query.targetUserId === 'string' ? req.query.targetUserId : undefined
+    const targetUserId = targetUserParse.data
 
     try {
       const job = await enqueueExportJob(jobSystem, {
@@ -180,7 +213,7 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
         scope: options.scope,
         format: options.format,
         columns: options.columns as any,
-        idempotencyKey: req.header('idempotency-key') ?? undefined,
+        idempotencyKey: idemParse.data,
       })
 
       res.status(202).json(buildAcceptedResponse(job.id))
@@ -196,7 +229,14 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
   })
 
   router.get('/status/:jobId', authenticate, async (req: AuthenticatedRequest, res: Response) => {
-    const job = await getJob(req.params.jobId)
+    const parseResult = JobIdSchema.safeParse(req.params.jobId)
+    if (!parseResult.success) {
+      res.status(400).json({ error: 'Invalid jobId parameter' })
+      return
+    }
+    const jobId = parseResult.data
+
+    const job = await getJob(jobId)
     if (!job) {
       res.status(404).json({ error: 'Job not found' })
       return
@@ -230,7 +270,14 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
   })
 
   router.get('/download/:token', async (req, res: Response) => {
-    const verified = verifyDownloadToken(req.params.token)
+    const parseResult = TokenSchema.safeParse(req.params.token)
+    if (!parseResult.success) {
+      res.status(400).json({ error: 'Invalid token parameter' })
+      return
+    }
+    const token = parseResult.data
+
+    const verified = verifyDownloadToken(token)
     if (!verified) {
       res.status(401).json({ error: 'Invalid or expired download token' })
       return
@@ -268,7 +315,14 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
   })
 
   router.get('/:id/download', authenticate, async (req: AuthenticatedRequest, res: Response) => {
-    const job = await getJob(req.params.id)
+    const parseResult = JobIdSchema.safeParse(req.params.id)
+    if (!parseResult.success) {
+      res.status(400).json({ error: 'Invalid id parameter' })
+      return
+    }
+    const id = parseResult.data
+
+    const job = await getJob(id)
     if (!job || job.status !== 'done') {
       res.status(404).json({ error: 'Export not ready or not found' })
       return

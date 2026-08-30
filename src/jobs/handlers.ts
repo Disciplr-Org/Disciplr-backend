@@ -48,6 +48,16 @@ const logJob = (type: JobType, message: string): void => {
   console.log(`[jobs:${type}] ${message}`)
 }
 
+/**
+ * Default job handler registry for the queue's retry and dead-letter flow.
+ *
+ * Retry/dead-letter contract:
+ * - Handlers must throw on transient failures so the queue can retry them.
+ * - Batch handlers fan out through `enqueueJob` when available so each unit
+ *   has independent retry and dead-letter visibility.
+ * - Handlers must use deterministic artifact keys so operator replays do not
+ *   create duplicate side effects.
+ */
 export const createDefaultJobHandlers = (
   notificationService: NotificationService,
   embeddingReindex: EmbeddingReindexDependencies,
@@ -201,8 +211,18 @@ export const createDefaultJobHandlers = (
   }
 
   jobHandlers['analytics.report.generate'] = async (payload, context) => {
-    const s3Config = resolveS3Config()
     const orgIds = payload.orgIds ?? (await getAllOrgIds())
+    if (enqueueJob && orgIds.length > 1) {
+      for (const orgId of orgIds) {
+        enqueueJob('analytics.report.generate', { ...payload, orgIds: [orgId] })
+      }
+      logJob(
+        'analytics.report.generate',
+        `enqueued=${orgIds.length} attempt=${context.attempt}`,
+      )
+      return
+    }
+    const s3Config = resolveS3Config()
     let generated = 0
     let skipped = 0
     for (const orgId of orgIds) {
@@ -211,7 +231,7 @@ export const createDefaultJobHandlers = (
         continue
       }
       const report = await renderOrgAnalyticsSnapshot(orgId)
-      const key = `analytics/${orgId}/${Date.now()}.json`
+      const key = `analytics/${orgId}/${createHash('sha256').update(`${orgId}:${context.jobId}`).digest('hex')}.json`
       const buffer = Buffer.from(JSON.stringify(report))
       if (s3Config) {
         await uploadToS3(s3Config, key, buffer, 'application/json')

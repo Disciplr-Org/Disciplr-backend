@@ -172,7 +172,7 @@ describe('happy path', () => {
       .query({ orgId: ORG })
       .send({})
     expect(rotateRes.status).toBe(200)
-    expect(mockRotateSubscriberSecret).toHaveBeenCalledWith(sub.id, expect.any(String), ORG)
+    expect(mockRotateSubscriberSecret).toHaveBeenCalledWith(sub.id, ORG, expect.any(String))
   })
 
   it('creates a subscriber', async () => {

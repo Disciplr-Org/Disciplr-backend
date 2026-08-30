@@ -151,7 +151,7 @@ webhookRouter.post(
       }
 
       const secret = randomUUID().replace(/-/g, '')
-      const updated = await rotateSubscriberSecret(req.params.id, secret, orgId)
+      const updated = await rotateSubscriberSecret(req.params.id, orgId, secret)
       if (!updated) {
         return next(AppError.notFound('Webhook subscription not found'))
       }
