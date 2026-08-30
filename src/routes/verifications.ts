@@ -1,10 +1,10 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireVerifier, requireAdmin } from '../middleware/rbac.js'
-import { recordVerification, listVerifications, VerificationConflictError } from '../services/verifiers.js'
+import { recordVerification, listVerifications } from '../services/verifiers.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { AppError } from '../middleware/errorHandler.js'
-import { createEvidenceReference, EvidenceReferenceValidationError, EvidenceReference } from '../services/evidence.js'
+import { createEvidenceReference, EvidenceReference } from '../services/evidence.js'
 import { db } from '../db/knex.js'
 import { retryWithBackoff } from '../utils/retry.js'
 import {
@@ -36,7 +36,7 @@ verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request
 
   if (rawIdempotencyKey) {
     const validation = validateIdempotencyKey(rawIdempotencyKey)
-    if (!validation.valid) {
+    if (validation.valid === false) {
       return res.status(400).json({
         error: {
           code: validation.code,
@@ -124,24 +124,28 @@ verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request
               disputed: !!disputed,
               evidence_hash: cleanEvidenceHash,
             },
-          })
+          }, trx)
 
-          return verification
+          const evidenceReference = await createEvidenceReference(
+            verification.id,
+            cleanEvidenceHash,
+            evidenceReferenceUrl.trim(),
+            trx,
+          )
+
+          return { verification, evidenceReference }
         }),
       undefined,
       isSerializationError,
     )
 
-    const evidenceReference = await createEvidenceReference(
-      rec.id,
-      evidenceHash.trim(),
-      evidenceReferenceUrl.trim(),
-    )
-
-    const responseBody: { verification: typeof rec; evidenceReference: typeof evidenceReference; idempotency?: { key: string | null; replayed: boolean } } = { verification: rec, evidenceReference }
+    const responseBody: { verification: typeof rec.verification; evidenceReference: typeof rec.evidenceReference; idempotency?: { key: string | null; replayed: boolean } } = {
+      verification: rec.verification,
+      evidenceReference: rec.evidenceReference,
+    }
     if (scopedIdempotencyKey) {
       responseBody.idempotency = { key: rawIdempotencyKey, replayed: false }
-      await saveIdempotentResponse(scopedIdempotencyKey, requestHash, rec.id, responseBody)
+      await saveIdempotentResponse(scopedIdempotencyKey, requestHash, rec.verification.id, responseBody)
     }
 
     res.status(201).json(responseBody)
@@ -271,7 +275,7 @@ verificationsRouter.post('/bulk', authenticate, requireVerifier, async (req: Req
               trx,
             )
 
-            await             createAuditLog({
+            await createAuditLog({
               actor_user_id: verifierUserId,
               action: 'verification.decision.recorded',
               target_type: 'verification',
@@ -281,23 +285,24 @@ verificationsRouter.post('/bulk', authenticate, requireVerifier, async (req: Req
                 disputed: !!disputed,
                 evidence_hash: cleanEvidenceHash,
               },
-            })
+            }, trx)
 
-            return verification
+            const evidenceReference = await createEvidenceReference(
+              verification.id,
+              cleanEvidenceHash,
+              cleanEvidenceReferenceUrl,
+              trx,
+            )
+
+            return { verification, evidenceReference }
           }),
         undefined,
         isSerializationError,
       )
 
-      const evidenceReference = await createEvidenceReference(
-        rec.id,
-        cleanEvidenceHash,
-        cleanEvidenceReferenceUrl,
-      )
-
       itemResult.success = true
-      itemResult.verification = rec
-      itemResult.evidenceReference = evidenceReference
+      itemResult.verification = rec.verification
+      itemResult.evidenceReference = rec.evidenceReference
       succeeded++
     } catch (error: any) {
       failed++

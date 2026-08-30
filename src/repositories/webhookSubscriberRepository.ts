@@ -295,6 +295,19 @@ export class WebhookSubscriberRepository {
     return count > 0
   }
 
+  /**
+   * Org-scoped removal. Deletes only when the row both exists AND belongs to
+   * the given organization, so a caller who is authorized for org A can never
+   * delete a subscriber owned by org B (enforced in SQL, not inferred from a
+   * client-supplied id + membership the caller happens to hold).
+   */
+  async removeForOrg(id: string, organizationId: string): Promise<boolean> {
+    const count = await this.db('webhook_subscribers')
+      .where({ id, organization_id: organizationId })
+      .del()
+    return count > 0
+  }
+
   async upsertBreakerState(
     subscriberId: string,
     data: {
