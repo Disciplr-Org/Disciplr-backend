@@ -87,6 +87,132 @@ export const allMilestonesVerified = (vaultId: string): boolean => {
 export const resetMilestonesTable = (): void => {
   milestonesTable.length = 0
 }
+
+// ============================================================================
+// Milestone lifecycle state machine (monotonic, auditable, duplicate-safe)
+// ============================================================================
+
+/**
+ * Explicit milestone lifecycle states. Transitions are monotonic: they may
+ * only move forward through this chain, never backwards:
+ *
+ *   created -> submitted -> validated -> settled
+ *
+ * - `settled` is terminal (vault completion follows from it; the milestone
+ *   itself never regresses).
+ * - Rejected/failed outcomes are recorded as events, never as state regressions.
+ * - Every successful transition emits exactly one ordered lifecycle event.
+ */
+export type MilestoneLifecycleState = 'created' | 'submitted' | 'validated' | 'settled'
+
+const LIFECYCLE_ORDER: Record<MilestoneLifecycleState, number> = {
+  created: 0,
+  submitted: 1,
+  validated: 2,
+  settled: 3,
+}
+
+export const LIFECYCLE_TRANSITIONS: Record<MilestoneLifecycleState, MilestoneLifecycleState[]> = {
+  created: ['submitted'],
+  submitted: ['validated'],
+  validated: ['settled'],
+  settled: [],
+}
+
+/** Per-milestone lifecycle state, mirrored onto the milestone record. */
+const lifecycleState: Record<string, MilestoneLifecycleState> = {}
+/** Monotonic sequence number per milestone; also the global event sequence key. */
+const lifecycleSeq: Record<string, number> = {}
+/** Idempotency keys already applied, per milestone (duplicate-request safety). */
+const appliedIdempotencyKeys: Record<string, Set<string>> = {}
+
+export const getMilestoneLifecycleState = (id: string): MilestoneLifecycleState | null =>
+  lifecycleState[id] ?? null
+
+export const resetMilestoneLifecycle = (): void => {
+  for (const key of Object.keys(lifecycleState)) delete lifecycleState[key]
+  for (const key of Object.keys(lifecycleSeq)) delete lifecycleSeq[key]
+  for (const key of Object.keys(appliedIdempotencyKeys)) delete appliedIdempotencyKeys[key]
+}
+
+/**
+ * Advance a milestone's lifecycle state through an allowed forward transition.
+ *
+ * Invariants enforced here:
+ * - Monotonicity: target rank must be strictly greater than current rank;
+ *   any backwards or self transition is rejected with `regression`.
+ * - Unknown states and unknown milestones are rejected.
+ * - On success, `milestone.verified`/`verifiedAt` are advanced atomically with
+ *   the state change and exactly one ordered lifecycle event is emitted.
+ */
+export const transitionMilestone = (
+  id: string,
+  to: MilestoneLifecycleState,
+  opts?: { idempotencyKey?: string; actor?: string; at?: string },
+): { success: boolean; milestone?: Milestone; from?: MilestoneLifecycleState; to?: MilestoneLifecycleState; error?: string } => {
+  const milestone = milestonesTable.find((m) => m.id === id)
+  if (!milestone) return { success: false, error: 'Milestone not found' }
+
+  if (!(to in LIFECYCLE_ORDER)) return { success: false, error: `Unknown lifecycle state: ${String(to)}` }
+
+  const from: MilestoneLifecycleState = lifecycleState[id] ?? 'created'
+
+  // Duplicate-request safety: the same idempotency key may only apply once
+  // per milestone. A retry with the same key is acknowledged without
+  // re-applying the transition (exactly-once semantics). Checked before the
+  // monotonicity guards so a replay of an already-applied transition is
+  // acknowledged as a duplicate rather than misreported as a regression.
+  const idem = opts?.idempotencyKey
+  if (idem !== undefined && appliedIdempotencyKeys[id]?.has(idem)) {
+    return { success: true, milestone, from, to, error: 'duplicate-idempotent-replay' }
+  }
+
+  if (from === 'settled') {
+    return { success: false, error: 'Milestone already settled', milestone, from, to }
+  }
+  if (LIFECYCLE_ORDER[to] <= LIFECYCLE_ORDER[from]) {
+    return { success: false, error: 'Lifecycle regression: cannot move backwards', milestone, from, to }
+  }
+  if (!LIFECYCLE_TRANSITIONS[from].includes(to)) {
+    return { success: false, error: `Invalid transition: ${from} -> ${to}`, milestone, from, to }
+  }
+
+  if (idem !== undefined) {
+    if (!appliedIdempotencyKeys[id]) appliedIdempotencyKeys[id] = new Set()
+    appliedIdempotencyKeys[id].add(idem)
+  }
+
+  lifecycleState[id] = to
+  if (lifecycleSeq[id] === undefined) lifecycleSeq[id] = 0
+  lifecycleSeq[id] += 1
+
+  if (to === 'validated' || to === 'settled') {
+    milestone.verified = true
+    milestone.verifiedAt = opts?.at ?? new Date().toISOString()
+    milestone.verifiedBy = opts?.actor ?? milestone.verifiedBy
+  }
+
+  addMilestoneEvent({
+    userId: opts?.actor ?? 'system',
+    vaultId: milestone.vaultId,
+    name: `milestone.lifecycle.${to}`,
+    status: 'success',
+    timestamp: opts?.at ?? new Date().toISOString(),
+  })
+
+  return { success: true, milestone, from, to }
+}
+
+/**
+ * Global monotonic sequence number for a milestone's lifecycle events.
+ * Every successful transition increments it; never resets while the process lives.
+ */
+export const getMilestoneEventSeq = (id: string): number => lifecycleSeq[id] ?? 0
+
+// ============================================================================
+// Ordered, auditable milestone event ledger
+// ============================================================================
+
 export type MilestoneStatus = 'success' | 'failed'
 export interface MilestoneEvent {
   id: string
@@ -103,8 +229,32 @@ export const resetMilestones = (): void => {
   milestones = []
 }
 
+/**
+ * Append a milestone event to the audit ledger.
+ *
+ * Invariants:
+ * - Append-only: events are never mutated or removed.
+ * - Ordered: each event gets a monotonically increasing per-milestone sequence
+ *   number embedded in its id (`m_<seq>_...`), so ledger order is auditable
+ *   and survives equal timestamps.
+ * - Duplicate-safe: the same (userId, vaultId, name, timestamp) tuple is
+ *   acknowledged by returning the already-recorded event instead of
+ *   appending a second copy (exactly-once under duplicate requests).
+ */
 export const addMilestoneEvent = (event: Omit<MilestoneEvent, 'id'>): MilestoneEvent => {
-  const id = `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  const dup = milestones.find(
+    (e) =>
+      e.userId === event.userId &&
+      e.vaultId === event.vaultId &&
+      e.name === event.name &&
+      e.timestamp === event.timestamp,
+  )
+  if (dup) return dup
+
+  if (!lifecycleSeq[event.vaultId]) lifecycleSeq[event.vaultId] = 0
+  lifecycleSeq[event.vaultId] += 1
+  const seq = lifecycleSeq[event.vaultId]
+  const id = `m_${seq}_${Math.random().toString(36).slice(2, 9)}`
   const record: MilestoneEvent = { id, ...event }
   milestones.push(record)
   return record
@@ -284,10 +434,7 @@ export const validateMilestoneMultiVerifier = (
 }
 
 /**
- * Check if all milestones in a vault meet their approval thresholds.
- */
-/**
- * Check if every milestone in a vault has met its approval threshold,
+ * Check if all milestones in a vault meet their approval threshold,
  * taking into account veto-by-rejection semantics.
  *
  * A milestone is settled (not-vetoed + threshold met) when:

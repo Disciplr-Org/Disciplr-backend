@@ -844,9 +844,22 @@ export function serializeExportData(
   }
 
   if (format === 'ndjson') {
-    const filename = `export-${timestamp}.ndjson.gz`
-    const readable = ndjsonGzipReadable(filteredData)
-    return { filename, readable }
+    // Local (non-S3) storage uses the compatibility buffer serializer. NDJSON is
+    // gzip-compressed only on the object-store streaming path
+    // (createStreamingExportReadable); here we emit plain newline-delimited JSON
+    // so the completed job always carries a downloadable result.
+    const lines: string[] = []
+    for (const sectionName of EXPORT_SECTION_ORDER) {
+      const rows = filteredData[sectionName]
+      if (!rows) continue
+      for (const row of rows) {
+        lines.push(JSON.stringify(row))
+      }
+    }
+    return {
+      buffer: Buffer.from(lines.length > 0 ? `${lines.join('\n')}\n` : '', 'utf8'),
+      filename: `export-${timestamp}.ndjson`,
+    }
   }
 
   const parts: string[] = [CSV_UTF8_BOM]
@@ -973,7 +986,7 @@ export async function processJob(
       attempts: nextAttempt,
       completedAt: new Date().toISOString(),
       error: undefined,
-      result: job.format === 'ndjson' ? undefined : buffer,
+      result: buffer,
       filename,
       s3Key,
     })

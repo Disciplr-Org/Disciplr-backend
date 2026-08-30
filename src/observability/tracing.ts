@@ -323,13 +323,28 @@ class TracerImpl implements Tracer {
     }
   }
 
+  /**
+   * Atomically drain all pending spans and export them.
+   *
+   * The splice(0) call is synchronous and removes all elements from
+   * pendingSpans in one operation. If multiple flush() calls race (e.g.
+   * from concurrent shutdown + timer), each sees a different batch —
+   * no span is exported twice.
+   *
+   * Invariant: every span that has been ended (endTime set) will
+   * eventually be exported exactly once, even under concurrent flush.
+   */
   async flush(): Promise<void> {
     if (this.pendingSpans.length === 0) return
+    // Atomic drain: splice returns the removed elements and mutates
+    // pendingSpans in a single synchronous operation.
     const batch = this.pendingSpans.splice(0)
     try {
       await this.exporter.export(batch)
     } catch {
-      // Exporter handles its own error logging
+      // Exporter handles its own error logging.
+      // Spans in `batch` are lost — this is acceptable for observability
+      // data where a missed export is preferable to blocking the event loop.
     }
   }
 

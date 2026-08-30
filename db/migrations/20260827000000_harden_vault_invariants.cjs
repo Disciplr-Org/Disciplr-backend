@@ -170,7 +170,23 @@ async function addValidatedCheck(knex, tableName, constraintName, expression) {
   ]);
 }
 
-async function createConcurrentIndex(knex, indexName, tableName, columns) {
+async function createConcurrentIndex(knex, indexName, tableName, columns, options = {}) {
+  if (await indexExists(knex, indexName)) return;
+  const quotedColumns = columns
+    .map(
+      (column) =>
+        `"${column.name}"${column.direction ? ` ${column.direction}` : ""}`,
+    )
+    .join(", ");
+  // `options.unique` builds a UNIQUE index (needed for the milestone ordering
+  // constraint, which is attached with `UNIQUE USING INDEX` below).
+  const sql = options.unique
+    ? `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "${indexName}" ON "${tableName}" (${quotedColumns})`
+    : `CREATE INDEX CONCURRENTLY IF NOT EXISTS "${indexName}" ON "${tableName}" (${quotedColumns})`;
+  await knex.raw(sql);
+}
+
+async function createConcurrentUniqueIndex(knex, indexName, tableName, columns) {
   if (await indexExists(knex, indexName)) return;
   const quotedColumns = columns
     .map(
@@ -179,7 +195,7 @@ async function createConcurrentIndex(knex, indexName, tableName, columns) {
     )
     .join(", ");
   await knex.raw(
-    `CREATE INDEX CONCURRENTLY IF NOT EXISTS "${indexName}" ON "${tableName}" (${quotedColumns})`,
+    `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "${indexName}" ON "${tableName}" (${quotedColumns})`,
   );
 }
 
@@ -261,12 +277,24 @@ exports.up = async function up(knex) {
 
   // A vault can have only one milestone at a given position. Build the unique
   // index online first, then attach it as a named constraint for introspection.
+  // The index must itself be UNIQUE for the later
+  // `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE USING INDEX` to succeed.
   const orderingIndex = "uq_milestones_vault_sort_order";
   if (!(await constraintExists(knex, "milestones", orderingIndex))) {
-    await createConcurrentIndex(knex, orderingIndex, "milestones", [
-      { name: "vault_id" },
-      { name: "sort_order" },
-    ]);
+    // If a previous run left a non-unique index with this name behind (e.g. a
+    // failed attach), drop it so the UNIQUE index can be created in its place.
+    if (await indexExists(knex, orderingIndex)) {
+      await knex.raw(
+        'DROP INDEX CONCURRENTLY IF EXISTS "uq_milestones_vault_sort_order"',
+      );
+    }
+    await createConcurrentIndex(
+      knex,
+      orderingIndex,
+      "milestones",
+      [{ name: "vault_id" }, { name: "sort_order" }],
+      { unique: true },
+    );
     if (!(await constraintExists(knex, "milestones", orderingIndex))) {
       await knex.raw("ALTER TABLE ?? ADD CONSTRAINT ?? UNIQUE USING INDEX ??", [
         "milestones",

@@ -1,5 +1,5 @@
-/**
- * @param {import('knex').Knex} knex
+/*
+ * @param {import('knex').Knex}
  */
 exports.up = async function up(knex) {
   const exists = await knex.schema.hasTable('webhook_delivery_attempts')
@@ -23,8 +23,8 @@ exports.up = async function up(knex) {
   }
 }
 
-/**
- * @param {import('knex').Knex} knex
+/*
+ * @param {import('knex').Knex}
  */
 exports.down = async function down(knex) {
   await knex.schema.dropTableIfExists('webhook_delivery_attempts')

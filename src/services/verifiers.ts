@@ -83,7 +83,7 @@ export const createVerifierProfile = async (
       before: null,
       after,
       changedFields,
-    })
+    }, trx)
 
     return { before: null, after, changedFields, auditLog }
   })
@@ -143,7 +143,7 @@ export const updateVerifierProfile = async (
       before,
       after,
       changedFields,
-    })
+    }, trx)
 
     return { before, after, changedFields, auditLog }
   })
@@ -175,9 +175,85 @@ export const deleteVerifierProfile = async (
       before,
       after: null,
       changedFields: ['deleted'],
-    })
+    }, trx)
 
     return { deleted: true, before, auditLog }
+  })
+}
+
+export const createOrTransitionVerifier = async (
+  userId: string,
+  status: VerifierStatus,
+  context: VerifierMutationContext,
+): Promise<VerifierMutationResult> => {
+  return db.transaction(async (trx) => {
+    let current = await trx('verifiers').where({ user_id: userId }).first()
+
+    if (!current) {
+      const insertedRows = await trx('verifiers')
+        .insert({
+          user_id: userId,
+          display_name: null,
+          metadata: null,
+          ...mapStatusToUpdates(status),
+        })
+        .onConflict('user_id')
+        .ignore()
+        .returning('*')
+
+      const inserted = insertedRows[0]
+      if (inserted) {
+        const after = mapVerifierRow(inserted)
+        const changedFields = ['user_id', 'status']
+        const auditLog = await createVerifierAuditLog({
+          action: 'verifier.created',
+          context,
+          targetId: after.userId,
+          before: null,
+          after,
+          changedFields,
+        }, trx)
+
+        return { before: null, after, changedFields, auditLog }
+      }
+
+      current = await trx('verifiers').where({ user_id: userId }).first()
+      if (!current) {
+        throw new Error('Verifier profile was not available after concurrent create')
+      }
+    }
+
+    const before = mapVerifierRow(current)
+    if (!canTransition(before.status, status)) {
+      throw new InvalidVerifierStatusTransitionError(before.status, status)
+    }
+
+    if (before.status === status) {
+      return { before, after: before, changedFields: [], auditLog: null }
+    }
+
+    const [updated] = await trx('verifiers')
+      .where({ user_id: userId })
+      .update(mapStatusToUpdates(status))
+      .returning('*')
+
+    const after = mapVerifierRow(updated)
+    const action = statusAction(before.status, after.status)
+
+    if (!action) {
+      throw new Error(`Missing verifier audit action for ${before.status} -> ${after.status}`)
+    }
+
+    const auditLog = await createVerifierAuditLog({
+      action,
+      context,
+      targetId: userId,
+      before,
+      after,
+      changedFields: ['status'],
+    }, trx)
+
+    return { before, after, changedFields: ['status'], auditLog }
   })
 }
 
@@ -349,7 +425,7 @@ function createVerifierAuditLog(input: {
   before: VerifierProfile | null
   after: VerifierProfile | null
   changedFields: string[]
-}): Promise<AuditLog> {
+}, trx?: Knex.Transaction): Promise<AuditLog> {
   return createAuditLog({
     actor_user_id: input.context.actorUserId,
     action: input.action,
@@ -361,7 +437,7 @@ function createVerifierAuditLog(input: {
       changed_fields: input.changedFields,
       ...(input.context.reason ? { reason: input.context.reason } : {}),
     },
-  })
+  }, trx)
 }
 
 function statusAction(from: VerifierStatus | null, to: VerifierStatus): string | null {
@@ -520,6 +596,7 @@ export const recordMilestoneApproval = async (
  */
 export const getMilestoneApprovals = async (
   milestoneId: string,
+  trx?: Knex.Transaction,
 ): Promise<{
   approved: MilestoneApproval[]
   rejected: MilestoneApproval[]
@@ -534,7 +611,8 @@ export const getMilestoneApprovals = async (
     updated_at: string
   }
 
-  const rows = await db<MilestoneApprovalRow>('milestone_approvals')
+  const client = trx ?? db
+  const rows = await client<MilestoneApprovalRow>('milestone_approvals')
     .where({ milestone_id: milestoneId })
     .orderBy('created_at', 'asc')
 
@@ -609,6 +687,7 @@ export const getMilestoneApprovalProgress = async (
   milestoneId: string,
   approvalThreshold: number,
   totalVerifiers?: number,
+  trx?: Knex.Transaction,
 ): Promise<{
   approved: number
   rejected: number
@@ -618,18 +697,27 @@ export const getMilestoneApprovalProgress = async (
   isRejected: boolean
   approvalPercentage: number
 }> => {
-  // Hostile-input boundary: clamp thresholds to sane ranges.
+  // A milestone always requires at least one approval, so clamp a non-positive
+  // or non-numeric threshold to 1. NaN must be treated as unknown (=1) rather
+  // than leaking into comparisons.
+  const safeThreshold =
+    typeof approvalThreshold === 'number' && Number.isFinite(approvalThreshold)
+      ? Math.max(1, Math.floor(approvalThreshold))
+      : 1
+
+  const approvals = await getMilestoneApprovals(milestoneId, trx)
+  const approved = approvals.approved.length
+  const rejected = approvals.rejected.length
+  const pending = approvals.pending.length
+  const totalVoted = approved + rejected + pending
+
+  // Hostile-input boundary: clamp thresholds to sane ranges so zero, negative,
+  // or non-numeric inputs can never produce a degenerate veto/complete result.
   const safeThreshold = Math.max(1, Math.floor(Number(approvalThreshold) || 1))
   const safeTotal =
     totalVerifiers !== undefined && totalVerifiers > 0
       ? Math.max(1, Math.floor(Number(totalVerifiers)))
       : undefined
-
-  const approvals = await getMilestoneApprovals(milestoneId)
-  const approved = approvals.approved.length
-  const rejected = approvals.rejected.length
-  const pending = approvals.pending.length
-  const totalVoted = approved + rejected + pending
 
   // Veto math: can we still reach threshold?
   let isRejected: boolean

@@ -1,10 +1,13 @@
-import type { Request, Response, NextFunction } from 'express'
+import { describe, expect, it, beforeEach, jest } from '@jest/globals'
+import type { Request, Response } from 'express'
 import {
   checkAndIncrementExportQuota,
   configureOrgQuotaRepository,
+  createInMemoryOrgQuotaRepository,
   resetOrgQuotas,
   utcDateString,
   EXPORT_QUOTA_METRIC,
+  type OrgQuotaRepository,
 } from '../services/exportQuota.js'
 import { resetExportJobs } from '../services/exportQueue.js'
 import { initEnv, _resetEnvForTesting } from '../config/index.js'
@@ -13,7 +16,7 @@ import { initEnv, _resetEnvForTesting } from '../config/index.js'
 process.env.DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://dummy:dummy@dummy/dummy'
 
 // ── auth mock ──────────────────────────────────────────────────────────────
-mock.module('../middleware/auth.js', () => ({
+jest.mock('../middleware/auth.js', () => ({
   authenticate: (_req: Request, _res: Response, next: () => void) => next(),
   requireAdmin: (_req: Request, _res: Response, next: () => void) => next(),
   signDownloadToken: () => 'mock-token',
@@ -142,15 +145,18 @@ describe('checkAndIncrementExportQuota', () => {
 describe('configureOrgQuotaRepository', () => {
   it('accepts a custom repository and uses it', async () => {
     let count = 0
-    const customRepo = {
-      increment: jest.fn(async () => ({
-        orgId: 'x',
-        quotaDate: utcDateString(),
-        metric: EXPORT_QUOTA_METRIC,
-        count: ++count,
-        limit: 10,
-        updatedAt: new Date().toISOString(),
-      })),
+    const customRepo: OrgQuotaRepository = {
+      incrementIfWithinLimit: jest.fn(async (orgId, date, metric, dailyLimit) => {
+        count += 1
+        return {
+          orgId,
+          quotaDate: date,
+          metric,
+          count,
+          limit: dailyLimit,
+          updatedAt: new Date().toISOString(),
+        }
+      }),
       get: jest.fn(async () => undefined),
       reset: jest.fn(async () => undefined),
     }
@@ -158,22 +164,11 @@ describe('configureOrgQuotaRepository', () => {
     configureOrgQuotaRepository(customRepo)
     const result = await checkAndIncrementExportQuota('x', 10)
     expect(result.allowed).toBe(true)
-    expect(customRepo.increment).toHaveBeenCalledTimes(1)
+    expect(customRepo.incrementIfWithinLimit).toHaveBeenCalledTimes(1)
+    expect(customRepo.incrementIfWithinLimit).toHaveBeenCalledWith('x', utcDateString(), EXPORT_QUOTA_METRIC, 10)
 
-    // Restore default in-memory repo
-    configureOrgQuotaRepository({
-      increment: async (orgId, date, metric, dailyLimit) => {
-        await resetOrgQuotas()
-        const r = await checkAndIncrementExportQuota(orgId, dailyLimit)
-        void r
-        return { orgId, quotaDate: date, metric, count: 1, limit: dailyLimit, updatedAt: new Date().toISOString() }
-      },
-      get: async () => undefined,
-      reset: async () => undefined,
-    })
-    // Reset to fresh in-memory repo after this test
-    const { configureOrgQuotaRepository: restore } = await import('../services/exportQuota.js')
-    // Re-import will reuse module cache; just reset quotas
+    // Restore the default in-memory repository for the remaining tests
+    configureOrgQuotaRepository(createInMemoryOrgQuotaRepository())
     await resetOrgQuotas()
   })
 })
@@ -191,7 +186,104 @@ describe('utcDateString', () => {
 })
 
 // ══════════════════════════════════════════════════════════════════════════
-// 2. Route integration: POST /me quota enforcement
+// 2. Concurrency: quota is enforced consistently under bursts
+// ══════════════════════════════════════════════════════════════════════════
+describe('Concurrent quota enforcement', () => {
+  const LIMIT = 10
+
+  it('admits exactly LIMIT requests out of a 3x concurrent burst', async () => {
+    await resetOrgQuotas()
+    const N = LIMIT * 3
+    const results = await Promise.all(
+      Array.from({ length: N }, () => checkAndIncrementExportQuota('burst-org', LIMIT)),
+    )
+
+    const accepted = results.filter((r) => r.allowed).length
+    const rejected = results.filter((r) => !r.allowed).length
+    expect(accepted).toBe(LIMIT)
+    expect(rejected).toBe(N - LIMIT)
+  })
+
+  it('never lets the stored counter exceed the limit (no over-grant, no overshoot)', async () => {
+    const inner = createInMemoryOrgQuotaRepository()
+    let maxObservedCount = 0
+    const spyRepo: OrgQuotaRepository = {
+      incrementIfWithinLimit: async (orgId, date, metric, dailyLimit) => {
+        const entry = await inner.incrementIfWithinLimit(orgId, date, metric, dailyLimit)
+        if (entry) {
+          maxObservedCount = Math.max(maxObservedCount, entry.count)
+        }
+        return entry
+      },
+      get: (orgId, date, metric) => inner.get(orgId, date, metric),
+      reset: () => inner.reset(),
+    }
+    configureOrgQuotaRepository(spyRepo)
+
+    const N = 200
+    let accepted = 0
+    await Promise.all(
+      Array.from({ length: N }, async () => {
+        const r = await checkAndIncrementExportQuota('spy-org', LIMIT)
+        if (r.allowed) accepted += 1
+      }),
+    )
+
+    expect(accepted).toBe(LIMIT)
+    // The atomic conditional increment never writes a count past the limit,
+    // even when 20x the limit arrives concurrently.
+    expect(maxObservedCount).toBe(LIMIT)
+
+    configureOrgQuotaRepository(createInMemoryOrgQuotaRepository())
+    await resetOrgQuotas()
+  })
+
+  it('isolates concurrent bursts between different orgs', async () => {
+    await resetOrgQuotas()
+    const N = LIMIT * 3
+
+    const [org1, org2] = await Promise.all([
+      Promise.all(Array.from({ length: N }, () => checkAndIncrementExportQuota('burst-org-1', LIMIT))),
+      Promise.all(Array.from({ length: N }, () => checkAndIncrementExportQuota('burst-org-2', LIMIT))),
+    ])
+
+    expect(org1.filter((r) => r.allowed).length).toBe(LIMIT)
+    expect(org2.filter((r) => r.allowed).length).toBe(LIMIT)
+  })
+
+  it('boundary: limit 1 admits exactly one concurrent request', async () => {
+    await resetOrgQuotas()
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => checkAndIncrementExportQuota('limit-one', 1)),
+    )
+    expect(results.filter((r) => r.allowed).length).toBe(1)
+    expect(results.filter((r) => !r.allowed).length).toBe(9)
+  })
+
+  it('boundary: limit 0 rejects every request without writing a counter', async () => {
+    await resetOrgQuotas()
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => checkAndIncrementExportQuota('limit-zero', 0)),
+    )
+    expect(results.every((r) => !r.allowed)).toBe(true)
+  })
+
+  it('boundary: requests after an exhausted quota are rejected with retryAfter', async () => {
+    await resetOrgQuotas()
+    await Promise.all(
+      Array.from({ length: LIMIT }, () => checkAndIncrementExportQuota('boundary-org', LIMIT)),
+    )
+    const result = await checkAndIncrementExportQuota('boundary-org', LIMIT)
+    expect(result.allowed).toBe(false)
+    if (!result.allowed) {
+      expect(result.retryAfter).toBeGreaterThanOrEqual(1)
+      expect(result.retryAfter).toBeLessThanOrEqual(86400)
+    }
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// 3. Route integration: POST /me quota enforcement
 // ══════════════════════════════════════════════════════════════════════════
 describe('POST /me quota enforcement', () => {
   const makeReq = (userId = 'user-quota-1', orgId?: string) =>
@@ -229,7 +321,7 @@ describe('POST /me quota enforcement', () => {
     expect((res2.jsonBody as any).error).toMatch(/quota exceeded/i)
     expect((res2.jsonBody as any).retryAfter).toBeGreaterThan(0)
 
-    (env as any).EXPORT_DAILY_QUOTA_LIMIT = original;
+    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = original
   })
 
   it('ignores client-supplied orgId — quota is always scoped to req.user.userId', async () => {
@@ -273,7 +365,7 @@ describe('POST /me quota enforcement', () => {
     await handle(victimReq, res3 as unknown as Response)
     expect(res3.statusCode).toBe(202)
 
-    (env as any).EXPORT_DAILY_QUOTA_LIMIT = original;
+    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = original
   })
 
   it('does not enqueue job when quota is exceeded', async () => {
@@ -287,12 +379,38 @@ describe('POST /me quota enforcement', () => {
     expect(res.statusCode).toBe(429)
     expect(jobSystem.enqueue).not.toHaveBeenCalled()
 
-    (env as any).EXPORT_DAILY_QUOTA_LIMIT = original;
+    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = original
+  })
+
+  it('admits exactly N concurrent /me requests up to the quota', async () => {
+    const { handle } = getHandler('/me', 'post')
+    const env = (await import('../config/index.js')).getEnv()
+    const original = env.EXPORT_DAILY_QUOTA_LIMIT
+    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = 3
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => {
+        const res = mockRes()
+        return handle(
+          {
+            query: { format: 'json', scope: 'vaults' },
+            user: { userId: 'user-burst-route', role: 'USER' },
+            header: () => undefined,
+          } as unknown as Request,
+          res as unknown as Response,
+        ).then(() => res.statusCode)
+      }),
+    )
+
+    expect(results.filter((code) => code === 202).length).toBe(3)
+    expect(results.filter((code) => code === 429).length).toBe(7)
+
+    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = original
   })
 })
 
 // ══════════════════════════════════════════════════════════════════════════
-// 3. Route integration: POST /admin quota enforcement
+// 4. Route integration: POST /admin quota enforcement
 // ══════════════════════════════════════════════════════════════════════════
 describe('POST /admin quota enforcement', () => {
   it('returns 202 when under quota', async () => {
@@ -330,12 +448,12 @@ describe('POST /admin quota enforcement', () => {
     expect(res2.statusCode).toBe(429)
     expect(res2.headers['Retry-After']).toBeDefined()
 
-    (env as any).EXPORT_DAILY_QUOTA_LIMIT = original;
+    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = original
   })
 })
 
 // ══════════════════════════════════════════════════════════════════════════
-// 4. Quota isolation: different users don't share quota
+// 5. Quota isolation: different users don't share quota
 // ══════════════════════════════════════════════════════════════════════════
 describe('Quota isolation between users', () => {
   it('each user has an independent quota when no orgId is set', async () => {
@@ -369,6 +487,6 @@ describe('Quota isolation between users', () => {
     await handle(req2, res2a as unknown as Response)
     expect(res2a.statusCode).toBe(202)
 
-    (env as any).EXPORT_DAILY_QUOTA_LIMIT = original;
+    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = original
   })
 })
