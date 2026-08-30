@@ -602,6 +602,27 @@ export const removeSubscriber = async (id: string): Promise<boolean> => {
 }
 
 /**
+ * Org-scoped removal used by the management routes.
+ *
+ * Unlike {@link removeSubscriber} (which targets a raw id for internal use),
+ * this refuses to delete a subscriber that does not belong to `organizationId`.
+ * The ownership check runs in the repository query, so authorization is
+ * enforced against server-known state rather than inferred from client input.
+ */
+export const removeSubscriberForOrg = async (
+  id: string,
+  organizationId: string,
+): Promise<boolean> => {
+  const removed = await repo.removeForOrg(id, organizationId)
+  if (removed) {
+    breakerCache.delete(id)
+    inFlightProbes.delete(id)
+    await repo.removeBreakerState(id).catch(() => {})
+  }
+  return removed
+}
+
+/**
  * Idempotent variant of addSubscriber.
  *
  * Re-registering the same (org, URL) pair updates the existing row in-place

@@ -61,6 +61,12 @@ export class MilestoneRepository {
     embedding: number[],
     modelVersion: string = CURRENT_EMBEDDING_MODEL_VERSION,
   ): Promise<void> {
+    if (!milestoneId) {
+      throw new Error("Invariant violation: milestoneId is required");
+    }
+    if (!Array.isArray(embedding) || embedding.length !== 768) {
+      throw new Error("Invariant violation: Embedding must be a 768-dimensional float array");
+    }
     const vectorLiteral = `[${embedding.join(",")}]`;
     await this.db.raw(
       `INSERT INTO milestone_embeddings (milestone_id, embedding, model_version, updated_at)
@@ -86,6 +92,9 @@ export class MilestoneRepository {
     milestoneId: string,
     k = 5,
   ): Promise<NearestNeighborResult[]> {
+    if (!milestoneId) {
+      throw new Error("Invariant violation: milestoneId is required");
+    }
     // Cap k so callers cannot inflate a top-k vector lookup into an unbounded LIMIT.
     const cappedK = Math.min(100, Math.max(1, Math.trunc(Number(k)) || 5));
 
@@ -120,6 +129,9 @@ export class MilestoneRepository {
    * Return the stored embedding record for a milestone, or null if absent.
    */
   async findEmbedding(milestoneId: string): Promise<MilestoneEmbedding | null> {
+    if (!milestoneId) {
+      throw new Error("Invariant violation: milestoneId is required");
+    }
     const row = await this.db("milestone_embeddings")
       .where({ milestone_id: milestoneId })
       .select(
@@ -143,6 +155,9 @@ export class MilestoneRepository {
    * Delete the embedding for a milestone (e.g. when the milestone is removed).
    */
   async deleteEmbedding(milestoneId: string): Promise<void> {
+    if (!milestoneId) {
+      throw new Error("Invariant violation: milestoneId is required");
+    }
     await this.db("milestone_embeddings")
       .where({ milestone_id: milestoneId })
       .delete();
@@ -254,6 +269,7 @@ export class MilestoneRepository {
    * leave a milestone invisible to default reads.
    */
   async softDelete(id: string, deletedAt: Date = new Date()): Promise<boolean> {
+    if (!id) throw new Error("Invariant violation: id is required");
     const updated = await this.db("milestones")
       .where({ id })
       .whereNull("deleted_at")
@@ -268,6 +284,7 @@ export class MilestoneRepository {
    * soft-deleted.
    */
   async restore(id: string): Promise<boolean> {
+    if (!id) throw new Error("Invariant violation: id is required");
     const updated = await this.db("milestones")
       .where({ id })
       .whereNotNull("deleted_at")

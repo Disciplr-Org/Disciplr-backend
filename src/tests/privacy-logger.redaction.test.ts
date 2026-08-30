@@ -228,10 +228,12 @@ describe('privacyLogger middleware', () => {
   })
 
   it('emits the exact stable set of top-level keys', () => {
+    ;(req as any).correlationId = 'req-123'
+    ;(req as any).traceContext = { traceId: 'trace-456' }
     privacyLogger(req as Request, res as Response, next as unknown as NextFunction)
     const line = getLogLine()
     expect(Object.keys(line).sort()).toEqual(
-      ['body', 'durationMs', 'event', 'headers', 'ip', 'level', 'method', 'query', 'service', 'status', 'timestamp', 'url'],
+      ['body', 'correlationId', 'durationMs', 'event', 'headers', 'ip', 'level', 'method', 'query', 'service', 'status', 'timestamp', 'traceId', 'url'],
     )
   })
 
@@ -243,7 +245,8 @@ describe('privacyLogger middleware', () => {
     expect(line.service).toBe('disciplr-backend')
   })
 
-  it('captures method, url, and status from req/res', () => {
+  it('captures method, url (without query string), and status from req/res', () => {
+    req = buildReq({ url: '/api/vaults?secret=123', originalUrl: '/api/vaults?secret=123' })
     ;(res as { statusCode: number }).statusCode = 201
     privacyLogger(req as Request, res as Response, next as unknown as NextFunction)
     const line = getLogLine()
@@ -407,6 +410,8 @@ describe('privacyLogger middleware', () => {
     // Replace non-deterministic fields for snapshot stability
     line.timestamp = '2024-01-01T00:00:00.000Z'
     line.durationMs = 0
+    delete line.traceId
+    delete line.correlationId
 
     expect(line).toMatchSnapshot()
 

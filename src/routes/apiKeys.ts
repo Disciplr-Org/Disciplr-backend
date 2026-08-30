@@ -3,6 +3,7 @@ import express from 'express'
 import { z } from 'zod'
 import { authenticate } from '../middleware/auth.js'
 import { requireStepUp } from '../middleware/stepUp.js'
+import { requireJson } from '../middleware/requireJson.js'
 import { apiKeyRateLimiter } from '../middleware/rateLimiter.js'
 import { requestTelemetry } from '../middleware/telemetry.js'
 import {
@@ -15,6 +16,7 @@ import {
 import { formatValidationError } from '../lib/validation.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { ApiScope } from '../types/auth.js'
+import db from '../db/index.js'
 
 export const apiKeysRouter = Router()
 
@@ -27,6 +29,8 @@ const MAX_LIST_LIMIT = 100
 const MAX_LABEL_LENGTH = 100
 const MAX_SCOPES_COUNT = 20
 const MAX_SCOPE_LENGTH = 64
+
+const apiKeysJson = requireJson({ maxBytes: 16 * 1024 })
 
 const createApiKeySchema = z.object({
   label: z.string().trim().min(1, 'label is required.').max(MAX_LABEL_LENGTH, `label must be at most ${MAX_LABEL_LENGTH} characters.`),
@@ -54,7 +58,7 @@ apiKeysRouter.get('/', async (req, res) => {
   })
 })
 
-apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
+apiKeysRouter.post('/', apiKeysJson, apiKeyRateLimiter, async (req, res, next) => {
   const userId = req.user!.userId
   const parseResult = createApiKeySchema.safeParse(req.body)
   if (!parseResult.success) {
@@ -64,25 +68,33 @@ apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
 
   const { label, scopes, orgId } = parseResult.data
 
-  // Validate scope names against the typed ApiScope enum
-  const validScopeValues = new Set(Object.values(ApiScope) as string[])
-  const invalidIndex = scopes.findIndex((s: string) => !validScopeValues.has(s))
-  if (invalidIndex !== -1) {
-    res.status(400).json({
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'Invalid request payload',
-        fields: [{ path: `scopes[${invalidIndex}]`, message: 'Invalid scope', code: 'invalid_value' }],
-      },
-    })
-    return
+  // Server-side ownership verification: never trust a client-supplied orgId.
+  // The key may only be bound to an org the caller actually belongs to.
+  if (orgId) {
+    try {
+      const org = await getOrgById(orgId)
+      if (!org) {
+        res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Organization not found.' } })
+        return
+      }
+      const membership = await getOrgMembership(orgId, userId)
+      if (!membership) {
+        res.status(403).json({
+          error: { code: 'FORBIDDEN', message: 'Forbidden: not a member of this organization.' },
+        })
+        return
+      }
+    } catch (err) {
+      next(err)
+      return
+    }
   }
 
   const { apiKey, record } = await createApiKey({
     userId,
-    orgId: orgId?.trim() || undefined,
+    orgId,
     label,
-    scopes: scopes as ApiScope[],
+    scopes,
   })
 
   const { keyHash: _keyHash, ...publicRecord } = record
@@ -92,10 +104,16 @@ apiKeysRouter.post('/', apiKeyRateLimiter, async (req, res) => {
   })
 })
 
-apiKeysRouter.post('/:id/rotate', apiKeyRateLimiter, async (req, res) => {
+apiKeysRouter.post('/:id/rotate', apiKeysJson, apiKeyRateLimiter, async (req, res, next) => {
   const userId = req.user!.userId
+  const paramsResult = apiKeyIdParamSchema.safeParse(req.params)
+  if (!paramsResult.success) {
+    res.status(400).json(formatValidationError(paramsResult.error))
+    return
+  }
+
   const rotated = await rotateApiKey({
-    apiKeyId: req.params.id,
+    apiKeyId: paramsResult.data.id,
     userId,
   })
 
@@ -121,7 +139,13 @@ apiKeysRouter.post('/:id/rotate', apiKeyRateLimiter, async (req, res) => {
 
 apiKeysRouter.post('/:id/revoke', apiKeyRateLimiter, requireStepUp(), async (req, res) => {
   const userId = req.user!.userId
-  const record = await revokeApiKey(req.params.id, userId)
+  const paramsResult = apiKeyIdParamSchema.safeParse(req.params)
+  if (!paramsResult.success) {
+    res.status(400).json(formatValidationError(paramsResult.error))
+    return
+  }
+
+  const record = await revokeApiKey(paramsResult.data.id, userId)
 
   if (!record) {
     res.status(404).json({ error: 'API key not found.' })
@@ -140,8 +164,40 @@ apiKeysRouter.post('/:id/revoke', apiKeyRateLimiter, requireStepUp(), async (req
   res.json({ apiKeyMeta: publicRecord })
 })
 
-export const getApiKeyUsageHandler = async (req: any, res: any) => {
-  const { orgId } = req.params
+export const getApiKeyUsageHandler = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  const paramsResult = orgIdParamSchema.safeParse(req.params ?? {})
+  if (!paramsResult.success) {
+    res.status(400).json(formatValidationError(paramsResult.error))
+    return
+  }
+
+  // Authorization must come from server-side identity, never client state.
+  const userId = (req as any).user?.userId ?? (req as any).authUser?.userId
+  if (!userId) {
+    res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required.' } })
+    return
+  }
+
+  const orgId = paramsResult.data.orgId
+
+  try {
+    const org = await getOrgById(orgId)
+    if (!org) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Organization not found.' } })
+      return
+    }
+    const membership = await getOrgMembership(orgId, userId)
+    if (!membership) {
+      res.status(403).json({
+        error: { code: 'FORBIDDEN', message: 'Forbidden: not a member of this organization.' },
+      })
+      return
+    }
+  } catch (err) {
+    next(err)
+    return
+  }
+
   const keys = await listApiKeysForOrg(orgId)
 
   const usage = keys.map(({ keyHash: _keyHash, ...publicRecord }) => ({
