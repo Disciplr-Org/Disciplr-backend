@@ -25,6 +25,7 @@ import { queryParser } from '../middleware/queryParser.js'
 import { utcNow } from '../utils/timestamps.js'
 import { etagMatches } from '../utils/etag.js'
 import type { VaultCreateResponse } from '../types/vaults.js'
+import { getTracer, parseTraceparent } from '../observability/tracing.js'
 
 export const vaultsRouter = Router()
 
@@ -102,6 +103,9 @@ export const getTestVaults = (): Vault[] => testVaults
 export const vaults = testVaults
 
 // GET /api/vaults
+// Enforces explicit pagination bounds: pageSize is capped at MAX_PAGE_SIZE (100),
+// page must be a positive integer. Requests outside these bounds get a 400 before
+// any store fetch runs. This prevents unbounded memory and query cost.
 vaultsRouter.get(
   '/',
   authenticate,
@@ -111,6 +115,26 @@ vaultsRouter.get(
     allowedFilterFields: ['status', 'creator'],
   }),
   async (req: Request, res: Response) => {
+    // Enforce explicit pageSize bound before touching the store.
+    const MAX_PAGE_SIZE = 100
+    const rawPageSize = req.query.pageSize !== undefined ? Number(req.query.pageSize) : undefined
+    if (rawPageSize !== undefined && (!Number.isInteger(rawPageSize) || rawPageSize < 1 || rawPageSize > MAX_PAGE_SIZE)) {
+      res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: `pageSize must be a positive integer no greater than ${MAX_PAGE_SIZE}`,
+        },
+      })
+      return
+    }
+    const rawPage = req.query.page !== undefined ? Number(req.query.page) : undefined
+    if (rawPage !== undefined && (!Number.isInteger(rawPage) || rawPage < 1)) {
+      res.status(400).json({
+        error: { code: 'VALIDATION_ERROR', message: 'page must be a positive integer' },
+      })
+      return
+    }
+
     try {
       let result = await listVaults()
 
@@ -125,9 +149,18 @@ vaultsRouter.get(
   },
 )
 
-// POST /api/vaults 
+// POST /api/vaults
 
 vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  const tracer = getTracer()
+  const parentContext = req.headers.traceparent
+    ? parseTraceparent(String(req.headers.traceparent))
+    : null
+  const span = tracer.startSpan('vault.create', parentContext, {
+    'vault.idempotency_key_present': Boolean(req.header('idempotency-key')),
+  })
+  const startMs = Date.now()
+
   const rawIdempotencyKey = req.header('idempotency-key') ?? null
   let scopedIdempotencyKey: string | null = null
 
@@ -137,6 +170,9 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
   if (!actorUserId) {
     // Disconnected-wallet boundary: creating a vault requires a verified
     // principal so the idempotency reservation and audit trail can be bound.
+    span.setStatus({ code: 'ERROR', message: 'UNAUTHORIZED' })
+    span.setAttribute('vault.create.error_code', 'UNAUTHORIZED')
+    span.end()
     res.status(401).json({
       error: { code: 'UNAUTHORIZED', message: 'Authentication required to create a vault' },
     })
@@ -146,6 +182,9 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
   if (rawIdempotencyKey) {
     const validation = validateIdempotencyKey(rawIdempotencyKey)
     if (!validation.valid) {
+      span.setStatus({ code: 'ERROR', message: validation.code ?? 'INVALID_IDEMPOTENCY_KEY' })
+      span.setAttribute('vault.create.error_code', validation.code ?? 'INVALID_IDEMPOTENCY_KEY')
+      span.end()
       res.status(400).json({
         error: {
           code: validation.code,
@@ -167,6 +206,9 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
 
   const parseResult = createVaultSchema.safeParse(req.body)
   if (!parseResult.success) {
+    span.setStatus({ code: 'ERROR', message: 'VALIDATION_ERROR' })
+    span.setAttribute('vault.create.error_code', 'VALIDATION_ERROR')
+    span.end()
     res.status(400).json({ details: flattenZodErrors(parseResult.error) })
     return
   }
@@ -175,29 +217,47 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
 
   try {
     if (input.verifier && !(await isValidStellarAddress(input.verifier))) {
+      span.setStatus({ code: 'ERROR', message: 'INVALID_VERIFIER_ADDRESS' })
+      span.setAttribute('vault.create.error_code', 'INVALID_VERIFIER_ADDRESS')
+      span.end()
       return next(AppError.validation('invalid Stellar public key', { field: 'verifier' }))
     }
 
     if (input.destinations?.success && !(await isValidStellarAddress(input.destinations.success))) {
+      span.setStatus({ code: 'ERROR', message: 'INVALID_SUCCESS_ADDRESS' })
+      span.setAttribute('vault.create.error_code', 'INVALID_SUCCESS_ADDRESS')
+      span.end()
       return next(AppError.validation('invalid Stellar public key', { field: 'destinations.success' }))
     }
 
     if (input.destinations?.failure && !(await isValidStellarAddress(input.destinations.failure))) {
+      span.setStatus({ code: 'ERROR', message: 'INVALID_FAILURE_ADDRESS' })
+      span.setAttribute('vault.create.error_code', 'INVALID_FAILURE_ADDRESS')
+      span.end()
       return next(AppError.validation('invalid Stellar public key', { field: 'destinations.failure' }))
     }
 
     if (input.destinations?.success && !StrKey.isValidMed25519PublicKey(input.destinations.success)) {
       if (await isMemoRequired(input.destinations.success)) {
+        span.setStatus({ code: 'ERROR', message: 'MEMO_REQUIRED_SUCCESS' })
+        span.setAttribute('vault.create.error_code', 'MEMO_REQUIRED_SUCCESS')
+        span.end()
         return next(AppError.validation('Destination is a known exchange that requires a memo. Use a muxed address.', { field: 'destinations.success' }))
       }
     }
 
     if (input.destinations?.failure && !StrKey.isValidMed25519PublicKey(input.destinations.failure)) {
       if (await isMemoRequired(input.destinations.failure)) {
+        span.setStatus({ code: 'ERROR', message: 'MEMO_REQUIRED_FAILURE' })
+        span.setAttribute('vault.create.error_code', 'MEMO_REQUIRED_FAILURE')
+        span.end()
         return next(AppError.validation('Destination is a known exchange that requires a memo. Use a muxed address.', { field: 'destinations.failure' }))
       }
     }
   } catch (err) {
+    span.setStatus({ code: 'ERROR', message: 'ADDRESS_VALIDATION_FAILED' })
+    span.setAttribute('vault.create.error_code', 'ADDRESS_VALIDATION_FAILED')
+    span.end()
     return next(AppError.internal('address validation failed'))
   }
 
@@ -205,27 +265,27 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
     let responseBody: VaultCreateResponse
     let replayed = false
     if (scopedIdempotencyKey) {
-        const createResult = await createVaultIdempotently(
-          { key: scopedIdempotencyKey, requestHash, owner },
-          {
-            createVault: async client => {
-              const { vault } = await createVaultWithMilestones(input, client ?? undefined)
-              return vault
-            },
-            getVault: async (_client, id) => {
-              const vault = await getVaultById(id)
-              if (!vault) throw new Error('Vault not found')
-              return vault
-            },
-            buildResponse: async vault => {
-              return {
-                vault,
-                onChain: await buildVaultCreationPayload(input, vault),
-                idempotency: { key: rawIdempotencyKey, replayed: false },
-              }
+      const createResult = await createVaultIdempotently(
+        { key: scopedIdempotencyKey, requestHash, owner },
+        {
+          createVault: async client => {
+            const { vault } = await createVaultWithMilestones(input, client ?? undefined)
+            return vault
+          },
+          getVault: async (_client, id) => {
+            const vault = await getVaultById(id)
+            if (!vault) throw new Error('Vault not found')
+            return vault
+          },
+          buildResponse: async vault => {
+            return {
+              vault,
+              onChain: await buildVaultCreationPayload(input, vault),
+              idempotency: { key: rawIdempotencyKey, replayed: false },
             }
           }
-        )
+        }
+      )
       responseBody = {
         ...createResult.response,
         idempotency: { key: rawIdempotencyKey, replayed: createResult.replayed },
@@ -254,189 +314,209 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
     })
 
     updateAnalyticsSummary()
+
+    const latencyMs = Date.now() - startMs
+    span.setAttribute('vault.create.vault_id', vault.id)
+    span.setAttribute('vault.create.replayed', replayed)
+    span.setAttribute('vault.create.latency_ms', latencyMs)
+    span.setAttribute('vault.create.milestone_count', input.milestones.length)
+    span.setStatus({ code: 'OK' })
+    span.end()
+
     res.status(replayed ? 200 : 201).json(responseBody)
   } catch (error) {
+    const latencyMs = Date.now() - startMs
+    span.setAttribute('vault.create.latency_ms', latencyMs)
+
     if (error instanceof VaultCreationIdempotencyConflictError || error instanceof VaultCreationOwnerError) {
+      span.setStatus({ code: 'ERROR', message: error.code })
+      span.setAttribute('vault.create.error_code', error.code)
+      span.end()
       res.status(409).json({ error: { code: error.code, message: error.message } })
       return
     }
     if (error instanceof VaultCreationInProgressError) {
+      span.setStatus({ code: 'ERROR', message: error.code })
+      span.setAttribute('vault.create.error_code', error.code)
+      span.setAttribute('vault.create.retryable', true)
+      span.end()
       res.status(409).json({ error: { code: error.code, message: error.message, retryable: true } })
       return
     }
+    span.setStatus({ code: 'ERROR', message: 'INTERNAL_ERROR' })
+    span.setAttribute('vault.create.error_code', 'INTERNAL_ERROR')
+    span.end()
     console.error('Vault creation failed', error)
     res.status(500).json({ error: 'Failed to create vault.' })
   }
-})
+  // ─── GET /api/vaults/:id ─────────────────────────────────────────────────────
 
-// ─── GET /api/vaults/:id ─────────────────────────────────────────────────────
+  // GET /api/vaults/:id
+  // Supports ETag-based HTTP caching via If-None-Match header
+  // Returns 304 Not Modified if client holds current version
+  vaultsRouter.get('/:id', authenticate, requireScopes(ApiScope.ReadVaults), requireValidVaultId, async (req: Request, res: Response) => {
+    try {
+      // Use DB-backed store
+      const vault = await getVaultById(req.params.id)
 
-// GET /api/vaults/:id
-// Supports ETag-based HTTP caching via If-None-Match header
-// Returns 304 Not Modified if client holds current version
-vaultsRouter.get('/:id', authenticate, requireScopes(ApiScope.ReadVaults), requireValidVaultId, async (req: Request, res: Response) => {
-  try {
-    // Use DB-backed store
-    const vault = await getVaultById(req.params.id)
-    
-    if (!vault) {
-      res.status(404).json({ error: 'Vault not found' })
-      return
-    }
-
-    // Compute ETag from vault revision (optimistic-concurrency version)
-    const etag = await getVaultETag(req.params.id)
-    if (etag) {
-      res.set('ETag', etag)
-      res.set('Cache-Control', 'private, max-age=0, must-revalidate')
-
-      // Check If-None-Match header for conditional GET support
-      // RFC 7232 Section 3.2: If any of the validators match, send 304
-      const ifNoneMatch = req.headers['if-none-match'] as string | undefined
-      if (etagMatches(ifNoneMatch, etag)) {
-        res.status(304).end()
+      if (!vault) {
+        res.status(404).json({ error: 'Vault not found' })
         return
       }
+
+      // Compute ETag from vault revision (optimistic-concurrency version)
+      const etag = await getVaultETag(req.params.id)
+      if (etag) {
+        res.set('ETag', etag)
+        res.set('Cache-Control', 'private, max-age=0, must-revalidate')
+
+        // Check If-None-Match header for conditional GET support
+        // RFC 7232 Section 3.2: If any of the validators match, send 304
+        const ifNoneMatch = req.headers['if-none-match'] as string | undefined
+        if (etagMatches(ifNoneMatch, etag)) {
+          res.status(304).end()
+          return
+        }
+      }
+
+      res.json(vault)
+    } catch (_err) {
+      res.status(500).json({ error: 'Failed to fetch vault' })
     }
+  })
 
-    res.json(vault)
-  } catch (_err) {
-    res.status(500).json({ error: 'Failed to fetch vault' })
-  }
-})
-
-// PATCH /api/vaults/:id — optimistic-lock update; requires X-Vault-Revision header
-vaultsRouter.patch('/:id', authenticate, requireValidVaultId, async (req: Request, res: Response) => {
-  const revision = req.header('x-vault-revision') ?? ''
-  if (!revision) {
-    res.status(400).json({ error: 'X-Vault-Revision header is required' })
-    return
-  }
-
-  try {
-    const updated = await updateVaultById(req.params.id, revision, req.body)
-    res.json(updated)
-  } catch (err: any) {
-    if (err?.status === 409) {
-      res.status(409).json({ error: err.message ?? 'Vault update conflict' })
+  // PATCH /api/vaults/:id — optimistic-lock update; requires X-Vault-Revision header
+  vaultsRouter.patch('/:id', authenticate, requireValidVaultId, async (req: Request, res: Response) => {
+    const revision = req.header('x-vault-revision') ?? ''
+    if (!revision) {
+      res.status(400).json({ error: 'X-Vault-Revision header is required' })
       return
     }
-    if (err?.status === 400) {
-      res.status(400).json({ error: err.message })
+
+    try {
+      const updated = await updateVaultById(req.params.id, revision, req.body)
+      res.json(updated)
+    } catch (err: any) {
+      if (err?.status === 409) {
+        res.status(409).json({ error: err.message ?? 'Vault update conflict' })
+        return
+      }
+      if (err?.status === 400) {
+        res.status(400).json({ error: err.message })
+        return
+      }
+      res.status(500).json({ error: 'Failed to update vault' })
+    }
+  })
+
+  // GET /api/vaults/:id/timeline
+  vaultsRouter.get('/:id/timeline', authenticate, requireValidVaultId, async (req, res, next) => {
+    const { id } = req.params
+    const actorUserId = req.user!.userId
+    const actorRole = req.user!.role
+
+    try {
+      const vault = await getVaultById(id)
+      if (!vault) {
+        return next(AppError.notFound('Vault not found'))
+      }
+
+      // Authorization: only vault creator or an admin can view the timeline
+      if (actorUserId !== vault.creator && actorRole !== UserRole.ADMIN) {
+        return next(AppError.forbidden('You do not have permission to view this vault timeline.'))
+      }
+
+      const timeline = await VaultService.getVaultTimeline(id)
+      res.json({ timeline })
+    } catch (error) {
+      console.error(`Failed to fetch timeline for vault ${id}:`, error)
+      return next(AppError.internal('Failed to fetch vault timeline.'))
+    }
+  })
+
+  // POST /api/vaults/:id/cancel
+  vaultsRouter.post('/:id/cancel', authenticate, requireValidVaultId, async (req, res) => {
+    const actorUserId = req.user!.userId
+    const actorRole = req.user!.role
+
+    const existingVault = await VaultService.getVaultById(req.params.id)
+    if (!existingVault) return res.status(404).json({ error: 'Vault not found' })
+
+    if (actorUserId !== existingVault.creator && actorRole !== UserRole.ADMIN) {
+      return res.status(403).json({ error: 'Forbidden' })
+    }
+
+    try {
+      await VaultService.updateVaultStatus(req.params.id, 'cancelled')
+    } catch (_err) { /* non-fatal */ }
+
+    updateAnalyticsSummary()
+    res.status(200).json({ message: 'Vault cancelled', id: req.params.id })
+  })
+
+  // POST /api/vaults/:id/dispute
+  // Admin-only: places an `active` vault into `disputed`, blocking slash/claim until resolved.
+  // `requireAdmin` derives the caller's role from the verified JWT (req.user.role), not
+  // from anything supplied in the request body — see vaultTransitions.ts for details.
+  vaultsRouter.post('/:id/dispute', authenticate, requireAdmin, requireValidVaultId, (req: Request, res: Response) => {
+    const result = disputeVault(req.params.id, req.user!.userId, req.user!.role)
+
+    if (!result.success) {
+      const status = result.error === 'Vault not found' ? 404 : 409
+      res.status(status).json({ error: result.error })
       return
     }
-    res.status(500).json({ error: 'Failed to update vault' })
-  }
-})
 
-// GET /api/vaults/:id/timeline
-vaultsRouter.get('/:id/timeline', authenticate, requireValidVaultId, async (req, res, next) => {
-  const { id } = req.params
-  const actorUserId = req.user!.userId
-  const actorRole = req.user!.role
+    updateAnalyticsSummary()
+    res.status(200).json({ message: 'Vault placed into disputed state', id: req.params.id })
+  })
 
-  try {
-    const vault = await getVaultById(id)
-    if (!vault) {
-      return next(AppError.notFound('Vault not found'))
+  const DISPUTE_RESOLUTION_TARGETS = ['active', 'completed', 'failed'] as const
+  type DisputeResolutionTarget = (typeof DISPUTE_RESOLUTION_TARGETS)[number]
+
+  const isDisputeResolutionTarget = (value: unknown): value is DisputeResolutionTarget =>
+    typeof value === 'string' && (DISPUTE_RESOLUTION_TARGETS as readonly string[]).includes(value)
+
+  // POST /api/vaults/:id/resolve-dispute
+  // Admin-only: resolves a `disputed` vault back to `active`, or directly to `completed` / `failed`.
+  vaultsRouter.post('/:id/resolve-dispute', authenticate, requireAdmin, requireValidVaultId, (req: Request, res: Response) => {
+    const { target } = (req.body ?? {}) as { target?: unknown }
+
+    if (!isDisputeResolutionTarget(target)) {
+      res.status(400).json({
+        error: `target is required and must be one of: ${DISPUTE_RESOLUTION_TARGETS.join(', ')}`,
+      })
+      return
     }
 
-    // Authorization: only vault creator or an admin can view the timeline
-    if (actorUserId !== vault.creator && actorRole !== UserRole.ADMIN) {
-      return next(AppError.forbidden('You do not have permission to view this vault timeline.'))
+    const result = resolveDispute(req.params.id, req.user!.userId, req.user!.role, target)
+
+    if (!result.success) {
+      const status = result.error === 'Vault not found' ? 404 : 409
+      res.status(status).json({ error: result.error })
+      return
     }
 
-    const timeline = await VaultService.getVaultTimeline(id)
-    res.json({ timeline })
-  } catch (error) {
-    console.error(`Failed to fetch timeline for vault ${id}:`, error)
-    return next(AppError.internal('Failed to fetch vault timeline.'))
-  }
-})
+    updateAnalyticsSummary()
+    res.status(200).json({ message: 'Vault dispute resolved', id: req.params.id, status: target })
+  })
 
-// POST /api/vaults/:id/cancel
-vaultsRouter.post('/:id/cancel', authenticate, requireValidVaultId, async (req, res) => {
-  const actorUserId = req.user!.userId
-  const actorRole = req.user!.role
-
-  const existingVault = await VaultService.getVaultById(req.params.id)
-  if (!existingVault) return res.status(404).json({ error: 'Vault not found' })
-
-  if (actorUserId !== existingVault.creator && actorRole !== UserRole.ADMIN) {
-    return res.status(403).json({ error: 'Forbidden' })
-  }
-
-  try {
-    await VaultService.updateVaultStatus(req.params.id, 'cancelled')
-  } catch (_err) { /* non-fatal */ }
-
-  updateAnalyticsSummary()
-  res.status(200).json({ message: 'Vault cancelled', id: req.params.id })
-})
-
-// POST /api/vaults/:id/dispute
-// Admin-only: places an `active` vault into `disputed`, blocking slash/claim until resolved.
-// `requireAdmin` derives the caller's role from the verified JWT (req.user.role), not
-// from anything supplied in the request body — see vaultTransitions.ts for details.
-vaultsRouter.post('/:id/dispute', authenticate, requireAdmin, requireValidVaultId, (req: Request, res: Response) => {
-  const result = disputeVault(req.params.id, req.user!.userId, req.user!.role)
-
-  if (!result.success) {
-    const status = result.error === 'Vault not found' ? 404 : 409
-    res.status(status).json({ error: result.error })
-    return
-  }
-
-  updateAnalyticsSummary()
-  res.status(200).json({ message: 'Vault placed into disputed state', id: req.params.id })
-})
-
-const DISPUTE_RESOLUTION_TARGETS = ['active', 'completed', 'failed'] as const
-type DisputeResolutionTarget = (typeof DISPUTE_RESOLUTION_TARGETS)[number]
-
-const isDisputeResolutionTarget = (value: unknown): value is DisputeResolutionTarget =>
-  typeof value === 'string' && (DISPUTE_RESOLUTION_TARGETS as readonly string[]).includes(value)
-
-// POST /api/vaults/:id/resolve-dispute
-// Admin-only: resolves a `disputed` vault back to `active`, or directly to `completed` / `failed`.
-vaultsRouter.post('/:id/resolve-dispute', authenticate, requireAdmin, requireValidVaultId, (req: Request, res: Response) => {
-  const { target } = (req.body ?? {}) as { target?: unknown }
-
-  if (!isDisputeResolutionTarget(target)) {
-    res.status(400).json({
-      error: `target is required and must be one of: ${DISPUTE_RESOLUTION_TARGETS.join(', ')}`,
-    })
-    return
-  }
-
-  const result = resolveDispute(req.params.id, req.user!.userId, req.user!.role, target)
-
-  if (!result.success) {
-    const status = result.error === 'Vault not found' ? 404 : 409
-    res.status(status).json({ error: result.error })
-    return
-  }
-
-  updateAnalyticsSummary()
-  res.status(200).json({ message: 'Vault dispute resolved', id: req.params.id, status: target })
-})
-
-// GET /api/vaults/user/:address 
-vaultsRouter.get('/user/:address', authenticate, requireScopes(ApiScope.ReadVaults), async (req: Request, res: Response) => {
-  // Wallet-identity boundary: the address is a route parameter, i.e. untrusted
-  // client input; reject anything that is not a Stellar public key before it
-  // reaches the store.
-  const address = req.params.address
-  if (!StrKey.isValidEd25519PublicKey(address) && !StrKey.isValidMed25519PublicKey(address)) {
-    res.status(400).json({
-      error: { code: 'VALIDATION_ERROR', message: 'User address must be a valid Stellar public key' },
-    })
-    return
-  }
-  try {
-    const userVaults = await VaultService.getVaultsByUser(address)
-    res.json(userVaults)
-  } catch (_err) {
-    res.status(500).json({ error: 'Failed to fetch user vaults' })
-  }
-})
+  // GET /api/vaults/user/:address 
+  vaultsRouter.get('/user/:address', authenticate, requireScopes(ApiScope.ReadVaults), async (req: Request, res: Response) => {
+    // Wallet-identity boundary: the address is a route parameter, i.e. untrusted
+    // client input; reject anything that is not a Stellar public key before it
+    // reaches the store.
+    const address = req.params.address
+    if (!StrKey.isValidEd25519PublicKey(address) && !StrKey.isValidMed25519PublicKey(address)) {
+      res.status(400).json({
+        error: { code: 'VALIDATION_ERROR', message: 'User address must be a valid Stellar public key' },
+      })
+      return
+    }
+    try {
+      const userVaults = await VaultService.getVaultsByUser(address)
+      res.json(userVaults)
+    } catch (_err) {
+      res.status(500).json({ error: 'Failed to fetch user vaults' })
+    }
+  })
