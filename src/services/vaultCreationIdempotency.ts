@@ -226,24 +226,7 @@ async function completeDurably<T>(
   if (result.rowCount !== 1) throw new Error('Idempotency reservation was not completed')
 }
 
-async function bindVaultToClaim(client: PoolClient, key: string, vaultId: string, now: Date): Promise<void> {
-  await client.query(
-    `UPDATE vault_creation_idempotency
-        SET vault_id = $2, updated_at = $3
-      WHERE idempotency_key = $1 AND state = 'pending'`,
-    [key, vaultId, now],
-  )
-}
-
-/**
- * Execute vault creation under one durable idempotency reservation.
- *
- * The reservation, vault rows, milestone rows, and final response commit in
- * one PostgreSQL transaction. A concurrent insert blocks on the unique key;
- * after the first transaction commits it reads the stored response and never
- * creates a second vault. Expired pending claims can be reclaimed safely.
- */
-export async function createVaultIdempotently<V extends { id: string }, T>(
+export async function createVaultIdempotently<T>(
   options: CoordinatorOptions,
   actions: IdempotencyActions<V, T>,
   poolOverride?: Pool | null,
@@ -252,33 +235,44 @@ export async function createVaultIdempotently<V extends { id: string }, T>(
   if (!pool) return createInMemory(options, actions)
 
   const now = options.now ?? (() => new Date())
-  
-  let vault: V
-  const client1 = await pool.connect()
+  let claim;
+  const claimClient = await pool.connect()
   try {
-    await client1.query('BEGIN')
-    const claim = await claimDurably(client1, options)
-    
-    if (!claim.claimed) {
-      await client1.query('COMMIT')
-      return {
-        vault: { id: claim.vaultId } as V,
-        response: parseResponse<T>(claim.response),
-        replayed: true,
-      }
-    }
+    claim = await claimDurably(claimClient, options)
+  } finally {
+    claimClient.release()
+  }
 
-    if (claim.vaultId) {
-      const existing = await actions.getVault(client1, claim.vaultId)
-      if (!existing) throw new Error('Vault missing during durable replay')
-      vault = existing
-    } else {
-      vault = await actions.createVault(client1)
-      await bindVaultToClaim(client1, options.key, vault.id, now())
+  if (!claim.claimed) {
+    return {
+      vault: { id: claim.vaultId } as PersistedVault,
+      response: parseResponse<T>(claim.response),
+      replayed: true,
     }
-    await client1.query('COMMIT')
+  }
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const created = await create(client)
+    await completeDurably(client, options.key, created.vault, created.response, now())
+    await client.query('COMMIT')
+    return { ...created, replayed: false }
   } catch (error) {
-    await client1.query('ROLLBACK').catch(() => undefined)
+    await client.query('ROLLBACK').catch(() => undefined)
+    
+    // Attempt to clear the pending claim so the user doesn't have to wait for TTL to retry
+    const cleanupClient = await pool.connect()
+    try {
+      await cleanupClient.query(
+        `DELETE FROM vault_creation_idempotency WHERE idempotency_key = $1 AND state = 'pending'`,
+        [options.key]
+      )
+    } catch(e) {
+      // Ignore cleanup errors
+    } finally {
+      cleanupClient.release()
+    }
     throw error
   } finally {
     client1.release()
