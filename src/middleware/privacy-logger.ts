@@ -307,8 +307,10 @@ export const privacyLogger = (
       }
 
       console.log(JSON.stringify(line))
+      transitionOperation(req, 'logging', 'done')
       transitionLifecycle(requestId, 'COMPLETED')
-    } catch {
+    } catch (err) {
+      transitionOperation(req, 'logging', 'failed', err instanceof Error ? err.message : 'serialization failure')
       // The timestamp serialization may itself have thrown (e.g. a mocked
       // Date#toISOString). Fall back to a known epoch string.
       let failureTimestamp: string

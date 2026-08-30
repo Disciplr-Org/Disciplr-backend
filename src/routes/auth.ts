@@ -224,14 +224,14 @@ authRouter.post('/webauthn/assert', authenticate, async (req, res, next) => {
     return next(AppError.validation('Validation failed', bodyResult.error.format()))
   }
 
-  const { nonce, credentialId, publicKey } = bodyResult.data
+  const validated = bodyResult.data
 
-  const recorded = await AuthService.recordStepUpAssertion(nonce, req.user.userId)
+  const recorded = await AuthService.recordStepUpAssertion(validated.nonce, req.user.userId)
   if (!recorded) {
     return next(AppError.unauthorized('Invalid or expired step-up assertion'))
   }
 
-  await AuthService.registerWebAuthnCredential(req.user.userId, credentialId, publicKey)
+  await AuthService.registerWebAuthnCredential(req.user.userId, validated.credentialId, validated.publicKey)
   res.status(200).json({ success: true })
 })
 
