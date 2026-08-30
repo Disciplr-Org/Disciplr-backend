@@ -220,7 +220,7 @@ describe('POST /api/oauth/token – client identity binding', () => {
 // ---------------------------------------------------------------------------
 
 describe('POST /api/oauth/token – scope edge cases', () => {
-  it('rejects an empty scope list with invalid_scope', async () => {
+  it('treats an empty/whitespace scope as the full client grant (RFC 6749 §4.4.3)', async () => {
     const { apiKey, record } = await makeKey([ApiScope.ReadVaults, ApiScope.ReadAnalytics])
     const res = await post('/api/oauth/token', {
       grant_type: 'client_credentials',
@@ -228,8 +228,12 @@ describe('POST /api/oauth/token – scope edge cases', () => {
       client_secret: apiKey,
       scope: '   ',
     })
-    expect(res.status).toBe(400)
-    expect(((await res.json()) as any).error).toBe('invalid_scope')
+    expect(res.status).toBe(200)
+    const body = await res.json() as any
+    const scopes = String(body.scope).split(' ')
+    expect(scopes).toHaveLength(2)
+    expect(scopes).toContain('read:vaults')
+    expect(scopes).toContain('read:analytics')
   })
 
   it('deduplicates repeated scopes in the minted token', async () => {

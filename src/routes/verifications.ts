@@ -132,11 +132,23 @@ verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request
       isSerializationError,
     )
 
-    const evidenceReference = await createEvidenceReference(
-      rec.id,
-      evidenceHash.trim(),
-      evidenceReferenceUrl.trim(),
-    )
+    let evidenceReference
+    try {
+      evidenceReference = await createEvidenceReference(
+        rec.id,
+        evidenceHash.trim(),
+        evidenceReferenceUrl.trim(),
+      )
+    } catch (err) {
+      await db('verifications').where({ id: rec.id }).delete()
+      await db('audit_logs').where({
+        target_id: cleanTargetId,
+        target_type: 'verification',
+        action: 'verification.decision.recorded',
+        actor_user_id: verifierUserId
+      }).delete()
+      throw err
+    }
 
     const responseBody: { verification: typeof rec; evidenceReference: typeof evidenceReference; idempotency?: { key: string | null; replayed: boolean } } = { verification: rec, evidenceReference }
     if (scopedIdempotencyKey) {
@@ -289,11 +301,23 @@ verificationsRouter.post('/bulk', authenticate, requireVerifier, async (req: Req
         isSerializationError,
       )
 
-      const evidenceReference = await createEvidenceReference(
-        rec.id,
-        cleanEvidenceHash,
-        cleanEvidenceReferenceUrl,
-      )
+      let evidenceReference
+      try {
+        evidenceReference = await createEvidenceReference(
+          rec.id,
+          cleanEvidenceHash,
+          cleanEvidenceReferenceUrl,
+        )
+      } catch (err) {
+        await db('verifications').where({ id: rec.id }).delete()
+        await db('audit_logs').where({
+          target_id: cleanTargetId,
+          target_type: 'verification',
+          action: 'verification.decision.recorded',
+          actor_user_id: verifierUserId
+        }).delete()
+        throw err
+      }
 
       itemResult.success = true
       itemResult.verification = rec

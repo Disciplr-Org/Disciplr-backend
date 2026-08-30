@@ -162,35 +162,29 @@ oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res:
       .filter(Boolean) as ApiScope[]
 
     if (requested.length === 0) {
-      auditLog({
-        actor_user_id: canonicalClientId,
-        action: 'oauth.token_denied',
-        target_type: 'oauth_client',
-        target_id: canonicalClientId,
-        metadata: { reason: 'empty_scope', grant_type: 'client_credentials' },
-      })
-      oauthError(res, 400, 'invalid_scope', 'Requested scope must be a non-empty list of scopes')
-      return
+      // RFC 6749 §4.4.3 — an empty/whitespace-only scope request means "no
+      // specific scopes requested", so the full client grant applies.
+      grantedScopes = clientScopes
+    } else {
+      // Deduplicate before comparison so duplicate scope strings cannot be used
+      // to bypass capabilities or pollute the minted token.
+      const unique = Array.from(new Set(requested))
+
+      const unknown = unique.filter((s) => !clientScopes.includes(s))
+      if (unknown.length > 0) {
+        auditLog({
+          actor_user_id: canonicalClientId,
+          action: 'oauth.token_denied',
+          target_type: 'oauth_client',
+          target_id: canonicalClientId,
+          metadata: { reason: 'scope_exceeded', requested_scopes: unique, client_scopes: clientScopes },
+        })
+        oauthError(res, 400, 'invalid_scope', `Requested scope(s) exceed client grants: ${unknown.join(' ')}`)
+        return
+      }
+
+      grantedScopes = unique
     }
-
-    // Deduplicate before comparison so duplicate scope strings cannot be used
-    // to bypass capabilities or pollute the minted token.
-    const unique = Array.from(new Set(requested))
-
-    const unknown = unique.filter((s) => !clientScopes.includes(s))
-    if (unknown.length > 0) {
-      auditLog({
-        actor_user_id: canonicalClientId,
-        action: 'oauth.token_denied',
-        target_type: 'oauth_client',
-        target_id: canonicalClientId,
-        metadata: { reason: 'scope_exceeded', requested_scopes: unique, client_scopes: clientScopes },
-      })
-      oauthError(res, 400, 'invalid_scope', `Requested scope(s) exceed client grants: ${unknown.join(' ')}`)
-      return
-    }
-
-    grantedScopes = unique
   } else {
     grantedScopes = clientScopes
   }

@@ -49,6 +49,40 @@ Pass `lateCheckInWindowSecs` when creating a vault:
 | `now > endDate` (even within grace window) | ❌ `400 DeadlinePassed` |
 | No `dueDate` on milestone | ✅ Accepted (no deadline) |
 
+## Milestone Lifecycle State Machine (Monotonic, Auditable, Duplicate-Safe)
+
+The service layer (`src/services/milestones.ts`) exposes an explicit monotonic lifecycle state machine. Transitions may only move forward; backwards movement is rejected.
+
+### Lifecycle states and allowed transitions
+
+```
+created -> submitted -> validated -> settled (terminal)
+```
+
+- **Monotonicity:** every transition must strictly increase the lifecycle rank. Backwards or self transitions are rejected with a `Lifecycle regression` error; `settled` is terminal.
+- **Atomicity:** on a successful `validated`/`settled` transition, `milestone.verified`/`verifiedAt`/`verifiedBy` are advanced atomically with the state change.
+- **Auditable events:** every successful transition emits exactly one `milestone.lifecycle.<state>` event to the append-only ledger. Each event id embeds a monotonically increasing per-vault sequence number (`m_<seq>_...`), so ledger order is auditable even under equal timestamps. Failed transitions emit no events.
+- **Duplicate-request safety (retry):** `transitionMilestone(id, to, { idempotencyKey })` acknowledges a retry carrying the same idempotency key for the same milestone (`success: true`, `error: 'duplicate-idempotent-replay'`) without re-applying the transition or emitting a second event. Idempotency keys are scoped per milestone.
+
+### Service API — lifecycle extensions (additive, backward-compatible)
+
+| Export | Signature | Description |
+|---|---|---|
+| `MilestoneLifecycleState` | type `'created' \| 'submitted' \| 'validated' \| 'settled'` | Explicit lifecycle states. |
+| `transitionMilestone` | `(id, to, opts?: { idempotencyKey?, actor?, at? }) => { success, milestone?, from?, to?, error? }` | Advance the lifecycle through an allowed forward transition; enforces monotonicity, emits exactly one ordered event, honors idempotency keys. |
+| `getMilestoneLifecycleState` | `(id) => MilestoneLifecycleState \| null` | Current lifecycle state (`null` if unknown milestone). |
+| `getMilestoneEventSeq` | `(id) => number` | Monotonic per-milestone event sequence number. |
+| `resetMilestoneLifecycle` | `() => void` | Test hook: clears lifecycle/idempotency bookkeeping. |
+
+Existing exports (`createMilestone`, `getMilestoneById`, `verifyMilestone`, `validateMilestone`, `allMilestonesVerified`, `addMilestoneEvent`, `listMilestoneEvents`, `resetMilestones`, the multi-verifier threshold API, and `allMilestonesMetThreshold`) keep their signatures and semantics. `addMilestoneEvent` additionally deduplicates identical `(userId, vaultId, name, timestamp)` tuples by returning the already-recorded event — an additive exactly-once guarantee; event ids now embed a monotonic per-vault sequence number (`m_<seq>_...`) instead of a timestamp-derived prefix, so consumers keying on exact id format must match `m_<seq>_<suffix>`.
+
+### Regression contract (tested in `src/tests/milestoneLifecycle.test.ts`)
+
+- Monotonicity: backwards/self transitions rejected; invalid skips rejected; `settled` terminal.
+- Event ordering: exactly one event per successful transition, monotonic sequence numbers, no events on failure, ledger append-only under filtering.
+- Retry safety: same idempotency key acknowledged without re-application; distinct keys applied; keys scoped per milestone; concurrent duplicates apply exactly once.
+- Boundary/permission: `verifyMilestone` idempotent; `validateMilestone` enforces assigned-verifier + replay protection; multi-verifier thresholds and veto semantics preserved.
+
 ## Milestone Validation
 
 ### POST /api/vaults/:vaultId/milestones/:milestoneId/validate
