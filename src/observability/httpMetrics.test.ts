@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import { recordMetricsDirectly, httpMetricsMiddleware, httpRequestsTotal, httpRequestDurationSeconds } from './httpMetrics';
 import { Request, Response } from 'express';
 import client from 'prom-client';
