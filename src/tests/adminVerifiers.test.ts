@@ -22,8 +22,12 @@ jest.unstable_mockModule('../services/verifiers.js', () => ({
   deleteVerifierProfile: mockDeleteVerifierProfile,
   getVerifierProfile: mockGetVerifierProfile,
   getVerifierStats: mockGetVerifierStats,
-  listVerifierProfiles: mockListVerifierProfiles,
-  updateVerifierProfile: mockUpdateVerifierProfile,
+  // The adminVerifiers router imports the full verifiers surface; provide
+  // stubs for the exports this suite does not exercise directly.
+  createOrGetVerifierProfile: jest.fn(),
+  deleteVerifierProfile: jest.fn(),
+  listVerifierProfiles: jest.fn(),
+  updateVerifierProfile: jest.fn(),
   InvalidVerifierStatusTransitionError: class InvalidVerifierStatusTransitionError extends Error {
     constructor(from: string, to: string) {
       super(`Invalid transition from ${from} to ${to}`)

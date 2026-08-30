@@ -333,7 +333,7 @@ describe('MilestoneRepository — reindex support', () => {
     db.raw = jest.fn<any>().mockResolvedValue(undefined)
     const repo = new MilestoneRepository(db)
 
-    await repo.upsertEmbedding('m-000', [0.1, 0.2], 'custom-model-v2')
+    await repo.upsertEmbedding('m-000', Array(768).fill(0.1), 'custom-model-v2')
 
     expect(db.raw).toHaveBeenCalledWith(
       expect.stringContaining('model_version'),
@@ -346,7 +346,7 @@ describe('MilestoneRepository — reindex support', () => {
     db.raw = jest.fn<any>().mockResolvedValue(undefined)
     const repo = new MilestoneRepository(db)
 
-    await repo.upsertEmbedding('m-000', [0.1])
+    await repo.upsertEmbedding('m-000', Array(768).fill(0.1))
 
     expect(db.raw).toHaveBeenCalledWith(
       expect.any(String),

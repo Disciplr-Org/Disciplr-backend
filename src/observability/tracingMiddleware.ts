@@ -85,21 +85,29 @@ export function tracingMiddleware(req: Request, res: Response, next: NextFunctio
   res.setHeader('traceparent', outgoingTraceparent)
 
   // ── Record response metrics on finish ──
+  // Wrapped in try/catch so that a failure in attribute setting or
+  // span.end() never leaves the span in a dangling (un-ended) state.
+  // The span.end() call is idempotent — calling it twice is safe.
   res.on('finish', () => {
-    // Idempotency guard: if tracing already completed or failed, skip.
-    if (isTerminal(req, 'tracing')) {
-      return
+    try {
+      span.setAttribute('http.status_code', res.statusCode)
+      span.setAttribute('http.response_content_length', Number(res.getHeader('content-length') ?? 0))
+
+      if (res.statusCode >= 400) {
+        span.setStatus({ code: 'ERROR', message: `HTTP ${res.statusCode}` })
+      } else {
+        span.setStatus({ code: 'OK' })
+      }
+    } catch {
+      // If attribute setting fails, record the failure as a span event
+      // but still attempt to end the span to prevent resource leaks.
+      try {
+        span.addEvent('span.finish.error', { error: 'setAttribute failed' })
+      } catch { /* best-effort */ }
     }
 
-    span.setAttribute('http.status_code', res.statusCode)
-    span.setAttribute('http.response_content_length', Number(res.getHeader('content-length') ?? 0))
-
-    if (res.statusCode >= 400) {
-      span.setStatus({ code: 'ERROR', message: `HTTP ${res.statusCode}` })
-    } else {
-      span.setStatus({ code: 'OK' })
-    }
-
+    // Always end the span — even if attribute setting failed.
+    // span.end() is idempotent (safe to call multiple times).
     span.end()
     transitionOperation(req, 'tracing', 'done')
   })

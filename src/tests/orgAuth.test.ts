@@ -1,13 +1,18 @@
 // src/tests/orgAuth.test.ts
-import { Request, Response, NextFunction } from 'express';
-import { requireOrgAccess } from '../middleware/orgAuth.js';
-import db from '../db/index.js';
-import { getAuthenticatedUserId } from '../middleware/auth.js';
+import { jest } from '@jest/globals';
+import type { Request, Response, NextFunction } from 'express';
 
-jest.mock('../db/index.js');
-jest.mock('../middleware/auth.js', () => ({
+jest.unstable_mockModule('../db/index.js', () => ({
+  default: jest.fn(),
+}));
+
+jest.unstable_mockModule('../middleware/auth.js', () => ({
   getAuthenticatedUserId: jest.fn(),
 }));
+
+const { requireOrgAccess } = await import('../middleware/orgAuth.js');
+const db = (await import('../db/index.js')).default;
+const { getAuthenticatedUserId } = await import('../middleware/auth.js');
 
 describe('requireOrgAccess middleware', () => {
   const mockNext = jest.fn() as unknown as NextFunction;
@@ -49,9 +54,9 @@ describe('requireOrgAccess middleware', () => {
     (getAuthenticatedUserId as jest.Mock).mockReturnValue(null);
     const middleware = requireOrgAccess('admin');
     await middleware(req, mockRes, mockNext);
-    expect(mockRes.status).toHaveBeenCalledWith(401);
-    expect(mockRes.json).toHaveBeenCalled();
-    expect(mockNext).not.toHaveBeenCalled();
+    // requireOrgAccess reports failures via next(AppError), not res.status.
+    expect(mockNext).toHaveBeenCalledWith(expect.objectContaining({ status: 401 }));
+    expect(mockRes.status).not.toHaveBeenCalled();
   });
 
   it('returns 404 when organization not found', async () => {
@@ -66,9 +71,8 @@ describe('requireOrgAccess middleware', () => {
     });
     const middleware = requireOrgAccess('admin');
     await middleware(req, mockRes, mockNext);
-    expect(mockRes.status).toHaveBeenCalledWith(404);
-    expect(mockRes.json).toHaveBeenCalled();
-    expect(mockNext).not.toHaveBeenCalled();
+    expect(mockNext).toHaveBeenCalledWith(expect.objectContaining({ status: 404 }));
+    expect(mockRes.status).not.toHaveBeenCalled();
   });
 
   it('returns 403 when membership missing', async () => {
@@ -86,9 +90,8 @@ describe('requireOrgAccess middleware', () => {
     });
     const middleware = requireOrgAccess('admin');
     await middleware(req, mockRes, mockNext);
-    expect(mockRes.status).toHaveBeenCalledWith(403);
-    expect(mockRes.json).toHaveBeenCalled();
-    expect(mockNext).not.toHaveBeenCalled();
+    expect(mockNext).toHaveBeenCalledWith(expect.objectContaining({ status: 403 }));
+    expect(mockRes.status).not.toHaveBeenCalled();
   });
 
   it('returns 403 when role not allowed', async () => {
@@ -106,8 +109,7 @@ describe('requireOrgAccess middleware', () => {
     });
     const middleware = requireOrgAccess('admin');
     await middleware(req, mockRes, mockNext);
-    expect(mockRes.status).toHaveBeenCalledWith(403);
-    expect(mockRes.json).toHaveBeenCalled();
-    expect(mockNext).not.toHaveBeenCalled();
+    expect(mockNext).toHaveBeenCalledWith(expect.objectContaining({ status: 403 }));
+    expect(mockRes.status).not.toHaveBeenCalled();
   });
 });

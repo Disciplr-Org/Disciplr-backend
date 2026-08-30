@@ -270,9 +270,13 @@ export interface ListVerifierProfilesOptions {
 
 export const listVerifierProfiles = async (opts: ListVerifierProfilesOptions = {}): Promise<VerifierProfile[]> => {
   const parsedLimit = Number(opts.limit)
-  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.floor(parsedLimit) : 100
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
+    ? Math.min(Math.floor(parsedLimit), 500)  // Cap at 500 to prevent resource exhaustion
+    : 100
   const parsedOffset = Number(opts.offset)
-  const offset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? Math.floor(parsedOffset) : 0
+  const offset = Number.isFinite(parsedOffset) && parsedOffset >= 0
+    ? Math.floor(parsedOffset)
+    : 0
   const rows = await db('verifiers').select('*').orderBy('created_at', 'desc').limit(limit).offset(offset)
   return rows.map(mapVerifierRow)
 }
@@ -525,6 +529,17 @@ export class DuplicateVerifierVoteError extends Error {
 }
 
 /**
+ * Validate that a value is a non-empty string.
+ * Used as a hostile-input guard for identifiers.
+ */
+const assertNonEmptyString = (value: unknown, name: string): string => {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`${name} must be a non-empty string`)
+  }
+  return value
+}
+
+/**
  * Record a milestone approval vote from a verifier.
  * Throws DuplicateVerifierVoteError if verifier has already voted.
  */
@@ -533,6 +548,14 @@ export const recordMilestoneApproval = async (
   verifierUserId: string,
   approvalStatus: MilestoneApprovalStatus,
 ): Promise<MilestoneApproval> => {
+  // Hostile-input boundary: reject empty/missing identifiers early.
+  assertNonEmptyString(milestoneId, 'milestoneId')
+  assertNonEmptyString(verifierUserId, 'verifierUserId')
+
+  if (approvalStatus !== 'approved' && approvalStatus !== 'rejected') {
+    throw new Error('approvalStatus must be "approved" or "rejected"')
+  }
+
   return db.transaction(async (trx) => {
     const existing = await trx('milestone_approvals')
       .where({
@@ -674,6 +697,13 @@ export const getMilestoneApprovalProgress = async (
   isRejected: boolean
   approvalPercentage: number
 }> => {
+  // Hostile-input boundary: clamp thresholds to sane ranges.
+  const safeThreshold = Math.max(1, Math.floor(Number(approvalThreshold) || 1))
+  const safeTotal =
+    totalVerifiers !== undefined && totalVerifiers > 0
+      ? Math.max(1, Math.floor(Number(totalVerifiers)))
+      : undefined
+
   const approvals = await getMilestoneApprovals(milestoneId, trx)
   const approved = approvals.approved.length
   const rejected = approvals.rejected.length
@@ -682,10 +712,10 @@ export const getMilestoneApprovalProgress = async (
 
   // Veto math: can we still reach threshold?
   let isRejected: boolean
-  if (totalVerifiers !== undefined && totalVerifiers > 0) {
-    const remaining = totalVerifiers - totalVoted
+  if (safeTotal !== undefined) {
+    const remaining = safeTotal - totalVoted
     const maxPossibleApprovals = approved + Math.max(remaining, 0)
-    isRejected = maxPossibleApprovals < approvalThreshold
+    isRejected = maxPossibleApprovals < safeThreshold
   } else {
     // Legacy: any rejection vetoes
     isRejected = rejected > 0
@@ -697,8 +727,8 @@ export const getMilestoneApprovalProgress = async (
     approved,
     rejected,
     pending,
-    required: approvalThreshold,
-    isComplete: approved >= approvalThreshold && !isRejected,
+    required: safeThreshold,
+    isComplete: approved >= safeThreshold && !isRejected,
     isRejected,
     approvalPercentage,
   }

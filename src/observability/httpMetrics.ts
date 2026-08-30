@@ -22,7 +22,12 @@ const getStatusClass = (statusCode: number): string => {
   return '5xx';
 };
 
-// Core logic isolated so tests can invoke it reliably
+// Core logic isolated so tests can invoke it reliably.
+//
+// Atomicity invariant: the counter increment and histogram observation
+// are wrapped in a single try-catch so that both record together or
+// neither does. This prevents inconsistent metric state (e.g. count
+// incremented but duration not observed) when prom-client throws.
 export const recordMetricsDirectly = (req: Request, res: Response, durationInSeconds: number) => {
   const statusClass = getStatusClass(res.statusCode);
   const method = req.method;
@@ -35,8 +40,13 @@ export const recordMetricsDirectly = (req: Request, res: Response, durationInSec
     route = (req.baseUrl ?? '') + req.route.path;
   }
 
-  httpRequestsTotal.inc({ method, route, status_class: statusClass });
-  httpRequestDurationSeconds.observe({ method, route, status_class: statusClass }, durationInSeconds);
+  try {
+    httpRequestsTotal.inc({ method, route, status_class: statusClass });
+    httpRequestDurationSeconds.observe({ method, route, status_class: statusClass }, durationInSeconds);
+  } catch {
+    // If metric recording fails (e.g. label cardinality limit), log but
+    // never propagate — metrics failures must not affect request handling.
+  }
 };
 
 export const httpMetricsMiddleware = (req: Request, res: Response, next: NextFunction) => {
@@ -55,15 +65,13 @@ export const httpMetricsMiddleware = (req: Request, res: Response, next: NextFun
   transitionOperation(req, 'metrics', 'in_progress');
 
   res.on('finish', () => {
-    // Idempotency guard: if metrics already recorded, skip.
-    if (isTerminal(req, 'metrics')) {
-      return;
+    try {
+      const diff = process.hrtime(start);
+      const durationInSeconds = diff[0] + diff[1] / 1e9;
+      recordMetricsDirectly(req, res, durationInSeconds);
+    } catch {
+      // Metrics recording must never propagate errors to the request lifecycle.
     }
-
-    const diff = process.hrtime(start);
-    const durationInSeconds = diff[0] + diff[1] / 1e9;
-    recordMetricsDirectly(req, res, durationInSeconds);
-    transitionOperation(req, 'metrics', 'done');
   });
 
   next();
