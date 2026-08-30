@@ -10,9 +10,17 @@ const mockCreateEvidenceReference = jest.fn<any>()
 
 const mockTrx = { isMockTrx: true }
 const mockDbTransaction = jest.fn<any>(async (cb: (trx: any) => Promise<any>) => cb(mockTrx))
+// The route calls db('verifications').where(...).delete() in its evidence-
+// failure cleanup path, so the mock `db` must be callable, not just an object.
+const mockDb = Object.assign(
+  jest.fn<any>().mockReturnValue({
+    where: jest.fn<any>().mockReturnValue({ delete: jest.fn<any>().mockResolvedValue(undefined) }),
+  }),
+  { transaction: mockDbTransaction },
+)
 
 jest.unstable_mockModule('../db/knex.js', () => ({
-  db: { transaction: mockDbTransaction },
+  db: mockDb,
   closeDatabase: jest.fn<any>(),
 }))
 
@@ -383,6 +391,19 @@ describe('verifications bulk endpoint', () => {
         id: 'ev-1',
         verificationId: 'ver-1',
       })
+    })
+
+    test('writes evidence reference inside the item transaction', async () => {
+      const items = [createValidItem({ targetId: 'milestone-1' })]
+      const res = await request(app).post('/api/verifications/bulk').send(items)
+      expect(res.status).toBe(200)
+
+      expect(mockCreateEvidenceReference).toHaveBeenCalledWith(
+        'ver-1',
+        HASH,
+        REF_URL,
+        mockTrx,
+      )
     })
 
     test('evidenceReference in response uses referenceUrl field (not evidenceReferenceUrl)', async () => {

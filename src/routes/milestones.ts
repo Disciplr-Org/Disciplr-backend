@@ -14,6 +14,17 @@ import { randomUUID } from 'node:crypto'
 import db from '../db/index.js'
 import { MilestoneRepositoryEnhanced } from '../repositories/milestoneRepositoryEnhanced.js'
 import {
+  parseMilestoneInput,
+  flattenZodErrors,
+} from '../services/vaultValidation.js'
+
+import { transitionVaultStatus } from '../services/vaultTransitions.js'
+import { getVaultById } from '../services/vaultStore.js'
+import { AppError } from '../middleware/errorHandler.js'
+import { randomUUID } from 'node:crypto'
+import db from '../db/index.js'
+import { MilestoneRepositoryEnhanced } from '../repositories/milestoneRepositoryEnhanced.js'
+import {
   recordMilestoneApproval,
   hasVerifierVoted,
   getMilestoneApprovalProgress,
