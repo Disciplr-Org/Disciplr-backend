@@ -6,9 +6,17 @@ import { getJwtSecret } from '../lib/auth-utils.js'
 import { authRateLimiter } from '../middleware/rateLimiter.js'
 import { getEnv } from '../config/index.js'
 import type { ApiScope } from '../types/auth.js'
+import { requestTelemetry } from '../middleware/telemetry.js'
+import { requireJson } from '../middleware/requireJson.js'
 
 export const oauthRouter = Router()
+oauthRouter.use(requestTelemetry);
+
 const TOKEN_TTL_SECONDS = Number(process.env.OAUTH_TOKEN_TTL_SECONDS ?? 3600)
+const MAX_SCOPES_PER_REQUEST = 20
+const MAX_SCOPE_LENGTH = 64
+
+const oauthJson = requireJson({ maxBytes: 16384 })
 
 /** Non-blocking audit log helper — failures are logged but never propagate. */
 const auditLog = (entry: Parameters<typeof createAuditLog>[0]): void => {
@@ -26,7 +34,7 @@ const oauthError = (res: Response, status: number, error: string, description: s
     .json({ error, error_description: description })
 }
 
-oauthRouter.post('/token', authRateLimiter, async (req: Request, res: Response): Promise<void> => {
+oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res: Response): Promise<void> => {
   const { grant_type, client_id, client_secret, scope } = req.body ?? {}
 
   if (grant_type !== 'client_credentials') {
@@ -71,10 +79,40 @@ oauthRouter.post('/token', authRateLimiter, async (req: Request, res: Response):
   let grantedScopes: ApiScope[]
 
   if (scope) {
+    if (typeof scope !== 'string' || scope.length > MAX_SCOPES_PER_REQUEST * MAX_SCOPE_LENGTH) {
+      oauthError(res, 400, 'invalid_scope', 'Requested scope is too long')
+      return
+    }
+
     const requested = String(scope)
       .split(' ')
       .map((s) => s.trim())
       .filter(Boolean) as ApiScope[]
+
+    if (requested.length > MAX_SCOPES_PER_REQUEST) {
+      auditLog({
+        actor_user_id: canonicalClientId,
+        action: 'oauth.token_denied',
+        target_type: 'oauth_client',
+        target_id: canonicalClientId,
+        metadata: { reason: 'scope_limit_exceeded', requested_scopes: requested },
+      })
+      oauthError(res, 400, 'invalid_scope', `Requested scope count exceeds limit of ${MAX_SCOPES_PER_REQUEST}`)
+      return
+    }
+
+    const invalidLength = requested.find((s) => s.length > MAX_SCOPE_LENGTH)
+    if (invalidLength) {
+      auditLog({
+        actor_user_id: canonicalClientId,
+        action: 'oauth.token_denied',
+        target_type: 'oauth_client',
+        target_id: canonicalClientId,
+        metadata: { reason: 'scope_length_exceeded', invalid_scope: invalidLength },
+      })
+      oauthError(res, 400, 'invalid_scope', `Scope '${invalidLength}' exceeds maximum length of ${MAX_SCOPE_LENGTH}`)
+      return
+    }
 
     const unknown = requested.filter((s) => !clientScopes.includes(s))
     if (unknown.length > 0) {
