@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import { getTracer, parseTraceparent, serializeTraceparent, generateTraceId, generateSpanId, type TraceContext } from './tracing.js'
+import { transitionOperation, isTerminal } from './observabilityState.js'
 
 /**
  * Augmented Express Request carrying trace context.
@@ -50,6 +51,9 @@ export function tracingMiddleware(req: Request, res: Response, next: NextFunctio
     }
   }
 
+  // Mark tracing as in-progress
+  transitionOperation(req, 'tracing', 'in_progress')
+
   // ── Start server span ──
   const span = tracer.startSpan(
     `${req.method} ${req.route?.path ?? req.path}`,
@@ -82,6 +86,11 @@ export function tracingMiddleware(req: Request, res: Response, next: NextFunctio
 
   // ── Record response metrics on finish ──
   res.on('finish', () => {
+    // Idempotency guard: if tracing already completed or failed, skip.
+    if (isTerminal(req, 'tracing')) {
+      return
+    }
+
     span.setAttribute('http.status_code', res.statusCode)
     span.setAttribute('http.response_content_length', Number(res.getHeader('content-length') ?? 0))
 
@@ -92,6 +101,7 @@ export function tracingMiddleware(req: Request, res: Response, next: NextFunctio
     }
 
     span.end()
+    transitionOperation(req, 'tracing', 'done')
   })
 
   next()
