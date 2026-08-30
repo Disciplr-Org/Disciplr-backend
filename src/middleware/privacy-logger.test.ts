@@ -1,3 +1,4 @@
+import { jest, describe, it, expect } from '@jest/globals';
 import { redact, shouldRedact, shouldAllow, maskIp, REDACTED, privacyLogger } from './privacy-logger';
 import { Request, Response } from 'express';
 
