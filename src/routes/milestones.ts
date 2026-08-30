@@ -3,14 +3,16 @@ import { authenticate } from '../middleware/auth.js'
 
 import { requireUser, requireVerifier } from '../middleware/rbac.js'
 import {
-  createMilestoneWithThreshold,
-  getMilestonesByVaultId,
-  getMilestoneById,
-  verifyMilestone,
-  validateMilestone,
-  allMilestonesVerified,
-  allMilestonesMetThreshold,
-} from '../services/milestones.js'
+  parseMilestoneInput,
+  flattenZodErrors,
+} from '../services/vaultValidation.js'
+
+import { transitionVaultStatus } from '../services/vaultTransitions.js'
+import { getVaultById } from '../services/vaultStore.js'
+import { AppError } from '../middleware/errorHandler.js'
+import { randomUUID } from 'node:crypto'
+import db from '../db/index.js'
+import { MilestoneRepositoryEnhanced } from '../repositories/milestoneRepositoryEnhanced.js'
 import {
   parseMilestoneInput,
   flattenZodErrors,
@@ -197,8 +199,8 @@ milestonesRouter.post('/', authenticate, requireWalletIdentity, requireUser, req
     }
     
     // Explicit authorization check to ensure the caller actually owns this vault
-    const isOwner = (owner.userId && vault.creator === owner.userId) || 
-                    (owner.orgId && vault.orgId === owner.orgId);
+    const isOwner = (owner.userId && vault.ownerId === owner.userId) || 
+                    (owner.orgId && vault.organizationId === owner.orgId);
                     
     if (!isOwner) {
       throw AppError.forbidden('Unauthorized: you do not own this vault')
@@ -241,9 +243,22 @@ milestonesRouter.get('/', authenticate, requireValidVaultId, async (req: Request
     return next(AppError.notFound('Vault not found'))
   }
 
+  const defaultLimit = 20
+  const maxLimit = 100
+  const limitRaw = req.query.limit
+  const offsetRaw = req.query.offset
+  const limit = Math.min(Math.max(typeof limitRaw === 'string' ? parseInt(limitRaw, 10) || defaultLimit : defaultLimit, 1), maxLimit)
+  const offset = Math.max(typeof offsetRaw === 'string' ? parseInt(offsetRaw, 10) || 0 : 0, 0)
+
   const milestones = await milestoneRepo.listByVault(vaultId)
+  const totalCount = milestones.length
+
+  res.setHeader('X-Total-Count', String(totalCount))
+  res.setHeader('Cache-Control', 'private, max-age=30')
+
+  const pagedMilestones = milestones.slice(offset, offset + limit)
   res.json({
-    milestones: milestones.map((m) => ({
+    milestones: pagedMilestones.map((m) => ({
       id: m.id,
       vaultId: m.vault_id,
       title: m.title,
