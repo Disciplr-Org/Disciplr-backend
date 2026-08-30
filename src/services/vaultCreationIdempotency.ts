@@ -226,7 +226,7 @@ async function completeDurably<T>(
   if (result.rowCount !== 1) throw new Error('Idempotency reservation was not completed')
 }
 
-export async function createVaultIdempotently<T>(
+export async function createVaultIdempotently<V extends { id: string }, T>(
   options: CoordinatorOptions,
   actions: IdempotencyActions<V, T>,
   poolOverride?: Pool | null,
@@ -235,7 +235,7 @@ export async function createVaultIdempotently<T>(
   if (!pool) return createInMemory(options, actions)
 
   const now = options.now ?? (() => new Date())
-  let claim;
+  let claim: Awaited<ReturnType<typeof claimDurably>>
   const claimClient = await pool.connect()
   try {
     claim = await claimDurably(claimClient, options)
@@ -245,54 +245,51 @@ export async function createVaultIdempotently<T>(
 
   if (!claim.claimed) {
     return {
-      vault: { id: claim.vaultId } as PersistedVault,
+      vault: { id: claim.vaultId } as unknown as V,
       response: parseResponse<T>(claim.response),
       replayed: true,
     }
   }
 
+  // A claimed pending reservation: create the vault and persist the response
+  // atomically. On failure we clear the pending row so the caller can retry
+  // immediately without waiting for the TTL to expire.
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const created = await create(client)
-    await completeDurably(client, options.key, created.vault, created.response, now())
+    let vault: V
+    if (claim.vaultId) {
+      // Idempotency row already has a vault_id (stale pending reclaim): fetch it.
+      const existing = await actions.getVault(client, claim.vaultId)
+      if (!existing) throw new Error('Vault missing during durable replay')
+      vault = existing
+    } else {
+      vault = await actions.createVault(client)
+    }
+    const response = await actions.buildResponse(vault)
+    await completeDurably(client, options.key, vault as unknown as PersistedVault, response, now())
     await client.query('COMMIT')
-    return { ...created, replayed: false }
+    return { vault, response, replayed: false }
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined)
-    
-    // Attempt to clear the pending claim so the user doesn't have to wait for TTL to retry
+
+    // Best-effort: clear the pending claim so the caller can retry immediately
+    // rather than waiting for TTL. Errors here are non-fatal.
     const cleanupClient = await pool.connect()
     try {
       await cleanupClient.query(
         `DELETE FROM vault_creation_idempotency WHERE idempotency_key = $1 AND state = 'pending'`,
-        [options.key]
+        [options.key],
       )
-    } catch(e) {
-      // Ignore cleanup errors
+    } catch {
+      // Ignore cleanup errors — the TTL will expire the row eventually.
     } finally {
       cleanupClient.release()
     }
     throw error
   } finally {
-    client1.release()
+    client.release()
   }
-
-  const response = await actions.buildResponse(vault)
-
-  const client2 = await pool.connect()
-  try {
-    await client2.query('BEGIN')
-    await completeDurably(client2, options.key, vault as any, response, now())
-    await client2.query('COMMIT')
-  } catch (error) {
-    await client2.query('ROLLBACK').catch(() => undefined)
-    throw error
-  } finally {
-    client2.release()
-  }
-  
-  return { vault, response, replayed: false }
 }
 
 /** Test-only cleanup for the no-database fallback. */
