@@ -163,6 +163,22 @@ export function validateHorizonListenerConfig(config: HorizonListenerConfig): vo
     errors.push('lagThreshold must be a safe integer between 0 and 100000')
   }
 
+  if (config.retryMaxAttempts !== undefined && config.retryMaxAttempts < 0) {
+    errors.push('RETRY_MAX_ATTEMPTS must be non-negative')
+  }
+  if (config.retryBackoffMs !== undefined && config.retryBackoffMs < 0) {
+    errors.push('RETRY_BACKOFF_MS must be non-negative')
+  }
+  if (config.shutdownTimeoutMs !== undefined && config.shutdownTimeoutMs < 0) {
+    errors.push('HORIZON_SHUTDOWN_TIMEOUT_MS must be non-negative')
+  }
+  if (config.lagThreshold !== undefined && config.lagThreshold < 0) {
+    errors.push('HORIZON_LAG_THRESHOLD must be non-negative')
+  }
+  if (config.startLedger !== undefined && config.startLedger < 0) {
+    errors.push('START_LEDGER must be non-negative')
+  }
+
   if (errors.length > 0) {
     console.error(
       JSON.stringify({

@@ -185,8 +185,20 @@ export class TransactionRepository {
         ...transaction,
         created_at: this.db.fn.now(),
       })
+      .onConflict('tx_hash')
+      .ignore()
       .returning('*');
-    return created;
+      
+    if (created) {
+      return created;
+    }
+    
+    // If ignored due to conflict, fetch the existing transaction
+    const existing = await this.findByHash(transaction.tx_hash as string);
+    if (!existing) {
+      throw new Error(`Failed to create or retrieve transaction with hash ${transaction.tx_hash}`);
+    }
+    return existing;
   }
 
   /**
