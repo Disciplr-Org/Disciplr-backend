@@ -192,9 +192,17 @@ export interface ListVerifierProfilesOptions {
   offset?: number
 }
 
+/**
+ * Hard upper bound for a single page of verifier profiles.
+ * Callers that pass a larger value are silently clamped to this ceiling.
+ * Prevents accidental full-table pulls via a misconfigured client.
+ */
+export const MAX_VERIFIER_PROFILES_LIMIT = 200
+
 export const listVerifierProfiles = async (opts: ListVerifierProfilesOptions = {}): Promise<VerifierProfile[]> => {
   const parsedLimit = Number(opts.limit)
-  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.floor(parsedLimit) : 100
+  const uncapped = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.floor(parsedLimit) : 50
+  const limit = Math.min(uncapped, MAX_VERIFIER_PROFILES_LIMIT)
   const parsedOffset = Number(opts.offset)
   const offset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? Math.floor(parsedOffset) : 0
   const rows = await db('verifiers').select('*').orderBy('created_at', 'desc').limit(limit).offset(offset)
@@ -273,8 +281,28 @@ export const recordVerification = async (
   return mapVerificationRow(rec)
 }
 
-export const listVerifications = async (targetIds?: string[]): Promise<VerificationRecord[]> => {
-  const query = db('verifications').select('*').orderBy('timestamp', 'desc')
+export interface ListVerificationsOptions {
+  limit?: number
+  offset?: number
+}
+
+/**
+ * Hard upper bound on a single `listVerifications` page.
+ * The verifications table can grow very large; callers must paginate.
+ */
+export const MAX_VERIFICATIONS_LIMIT = 500
+
+export const listVerifications = async (
+  targetIds?: string[],
+  opts: ListVerificationsOptions = {},
+): Promise<VerificationRecord[]> => {
+  const parsedLimit = Number(opts.limit)
+  const uncapped = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.floor(parsedLimit) : 100
+  const limit = Math.min(uncapped, MAX_VERIFICATIONS_LIMIT)
+  const parsedOffset = Number(opts.offset)
+  const offset = Number.isFinite(parsedOffset) && parsedOffset >= 0 ? Math.floor(parsedOffset) : 0
+
+  const query = db('verifications').select('*').orderBy('timestamp', 'desc').limit(limit).offset(offset)
   if (targetIds && targetIds.length > 0) {
     query.whereIn('target_id', targetIds)
   }
@@ -573,6 +601,12 @@ export const hasVerifierVoted = async (
 /**
  * Get approval progress for a milestone (X of Y approvals).
  *
+ * Invariants enforced:
+ *   - approvalThreshold must be a positive integer (≥ 1).
+ *   - totalVerifiers, when provided, must be ≥ approvalThreshold (quorum can
+ *     only be reachable when the panel is large enough to satisfy the threshold).
+ *   - totalVerifiers must be a positive integer when provided.
+ *
  * Veto math (when totalVerifiers N is provided):
  *   A milestone is irrevocably rejected once it is impossible for approvals
  *   to ever reach the threshold M:
@@ -598,6 +632,23 @@ export const getMilestoneApprovalProgress = async (
   isRejected: boolean
   approvalPercentage: number
 }> => {
+  // ── Invariant checks ─────────────────────────────────────────────────────
+  if (!Number.isInteger(approvalThreshold) || approvalThreshold < 1) {
+    throw new Error(`Invalid approvalThreshold: must be a positive integer, got ${approvalThreshold}`)
+  }
+
+  if (totalVerifiers !== undefined) {
+    if (!Number.isInteger(totalVerifiers) || totalVerifiers < 1) {
+      throw new Error(`Invalid totalVerifiers: must be a positive integer when provided, got ${totalVerifiers}`)
+    }
+    if (totalVerifiers < approvalThreshold) {
+      throw new Error(
+        `Invalid quorum configuration: totalVerifiers (${totalVerifiers}) must be ≥ approvalThreshold (${approvalThreshold})`,
+      )
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   const approvals = await getMilestoneApprovals(milestoneId, trx)
   const approved = approvals.approved.length
   const rejected = approvals.rejected.length
