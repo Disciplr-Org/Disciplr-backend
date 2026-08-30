@@ -186,6 +186,19 @@ async function createConcurrentIndex(knex, indexName, tableName, columns, option
   await knex.raw(sql);
 }
 
+async function createConcurrentUniqueIndex(knex, indexName, tableName, columns) {
+  if (await indexExists(knex, indexName)) return;
+  const quotedColumns = columns
+    .map(
+      (column) =>
+        `"${column.name}"${column.direction ? ` ${column.direction}` : ""}`,
+    )
+    .join(", ");
+  await knex.raw(
+    `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "${indexName}" ON "${tableName}" (${quotedColumns})`,
+  );
+}
+
 exports.up = async function up(knex) {
   await log("preflight", "start");
   await assertCleanData(knex);
@@ -264,6 +277,8 @@ exports.up = async function up(knex) {
 
   // A vault can have only one milestone at a given position. Build the unique
   // index online first, then attach it as a named constraint for introspection.
+  // The index must itself be UNIQUE for the later
+  // `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE USING INDEX` to succeed.
   const orderingIndex = "uq_milestones_vault_sort_order";
   if (!(await constraintExists(knex, "milestones", orderingIndex))) {
     // If a previous run left a non-unique index with this name behind (e.g. a

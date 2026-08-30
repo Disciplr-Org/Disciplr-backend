@@ -7,6 +7,7 @@ import express from 'express'
 import request from 'supertest'
 import { jest } from '@jest/globals'
 import { IdempotencyConflictError, IdempotencyOwnerMismatchError } from '../services/idempotency.js'
+import { DuplicateVerifierVoteError } from '../services/verifiers.js'
 
 let authenticatedUser: { userId: string; role: string; enterpriseId?: string } | null = { userId: 'user-1', role: 'USER' }
 
@@ -51,7 +52,9 @@ jest.unstable_mockModule('../services/vaultStore.js', () => ({
   getVaultById: jest.fn<any>().mockResolvedValue({
     id: '00000000-0000-0000-0000-000000000000',
     status: 'active',
+    creator: 'user-1',
     verifier: 'GBBM6BKZPEHWYO3E3YKREDPQXMS4VK35YLNU7NFBRI26RAN7GI5POFBB',
+    creator: 'user-1',
   }),
 }))
 
@@ -81,6 +84,8 @@ jest.unstable_mockModule('../services/milestones.js', () => ({
     milestone: { id: 'ms-12345-abcdefg', verified: true },
   }),
   allMilestonesVerified: jest.fn<any>().mockReturnValue(false),
+  getMilestonesByVaultId: jest.fn<any>().mockReturnValue([]),
+  allMilestonesMetThreshold: jest.fn<any>().mockReturnValue(false),
 }))
 
 jest.unstable_mockModule('../services/vaultTransitions.js', () => ({
@@ -99,6 +104,7 @@ jest.unstable_mockModule('../services/verifiers.js', () => ({
   getMilestoneApprovalProgress: jest.fn<any>().mockResolvedValue({ isComplete: false, isRejected: false }),
   recordMilestoneApproval: jest.fn<any>().mockResolvedValue({ id: 'app-1', approvalStatus: 'approved' }),
   getMilestoneApprovals: jest.fn<any>().mockResolvedValue({ approved: [], rejected: [], pending: [] }),
+  DuplicateVerifierVoteError,
 }))
 
 const { milestonesRouter } = await import('../routes/milestones.js')
@@ -116,9 +122,24 @@ const MOCK_RESPONSE = {
   amount: '300',
 }
 
+// POST/PATCH milestone endpoints require a wallet identity + network header
+// (requireWalletIdentity). Send them on every request that must reach the
+// handler so the boundary is exercised past the wallet check.
+const WALLET_HEADERS = {
+  'x-wallet-address': '0x' + 'a'.repeat(40),
+  'x-network-id': 'testnet',
+}
+
 const app = express()
 app.use(express.json())
 app.use('/api/vaults/:vaultId/milestones', milestonesRouter)
+
+// requireWalletIdentity (defined in milestones.ts) demands a connected-wallet
+// identity on POST routes: a 0x-prefixed wallet address + a network identifier.
+const WALLET_HEADERS = {
+  'x-wallet-address': '0x' + 'a'.repeat(40),
+  'x-network-id': 'testnet',
+}
 
 function setupHappyPath() {
   mockValidateIdempotencyKey.mockImplementation((key: string) =>
@@ -126,7 +147,7 @@ function setupHappyPath() {
       ? { valid: true }
       : { valid: false, code: 'INVALID_IDEMPOTENCY_KEY', error: 'Idempotency key is invalid' },
   )
-  mockScopeIdempotencyKey.mockImplementation((userId: string, key: string) => \`\${userId}:\${key}\`)
+  mockScopeIdempotencyKey.mockImplementation((userId: string, key: string) => `${userId}:${key}`)
   mockHashRequestPayload.mockReturnValue('hash-1')
   mockGetIdempotentResponse.mockResolvedValue(null)
   mockSaveIdempotentResponse.mockResolvedValue(undefined)
@@ -142,6 +163,7 @@ describe('POST /api/vaults/:vaultId/milestones — authorization and idempotency
   test('creates a milestone and binds the idempotency key to the authenticated principal', async () => {
     const res = await request(app)
       .post('/api/vaults/00000000-0000-0000-0000-000000000000/milestones')
+      .set(WALLET_HEADERS)
       .set('idempotency-key', 'create-1')
       .send(validBody())
 
@@ -167,6 +189,7 @@ describe('POST /api/vaults/:vaultId/milestones — authorization and idempotency
 
     const res = await request(app)
       .post('/api/vaults/00000000-0000-0000-0000-000000000000/milestones')
+      .set(WALLET_HEADERS)
       .set('idempotency-key', 'create-replay')
       .send(validBody())
 
@@ -180,6 +203,7 @@ describe('POST /api/vaults/:vaultId/milestones — authorization and idempotency
 
     const res = await request(app)
       .post('/api/vaults/00000000-0000-0000-0000-000000000000/milestones')
+      .set(WALLET_HEADERS)
       .set('idempotency-key', 'create-tamper')
       .send({ ...validBody(), amount: '9999' })
 
@@ -196,6 +220,7 @@ describe('POST /api/vaults/:vaultId/milestones — authorization and idempotency
 
     const res = await request(app)
       .post('/api/vaults/00000000-0000-0000-0000-000000000000/milestones')
+      .set(WALLET_HEADERS)
       .set('idempotency-key', 'bad key!')
       .send(validBody())
 
@@ -209,6 +234,7 @@ describe('POST /api/vaults/:vaultId/milestones — authorization and idempotency
 
     const res = await request(app)
       .post('/api/vaults/00000000-0000-0000-0000-000000000000/milestones')
+      .set(WALLET_HEADERS)
       .set('idempotency-key', 'create-replay-malformed')
       .send(validBody())
 
@@ -219,6 +245,7 @@ describe('POST /api/vaults/:vaultId/milestones — authorization and idempotency
   test('rejects a malformed vault id on POST with 400', async () => {
     const res = await request(app)
       .post('/api/vaults/not-a-uuid/milestones')
+      .set(WALLET_HEADERS)
       .send(validBody())
     expect(res.status).toBe(400)
   })
@@ -226,6 +253,7 @@ describe('POST /api/vaults/:vaultId/milestones — authorization and idempotency
   test('rejects a malformed milestone id on POST validate with 400', async () => {
     const res = await request(app)
       .post('/api/vaults/00000000-0000-0000-0000-000000000000/milestones/invalid-id/validate')
+      .set(WALLET_HEADERS)
       .send({ evidenceHash: '00000000000000000000000000000000' })
     expect(res.status).toBe(400)
   })

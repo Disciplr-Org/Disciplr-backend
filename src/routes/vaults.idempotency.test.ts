@@ -175,9 +175,10 @@ function setupHappyPath() {
   )
   mockScopeIdempotencyKey.mockImplementation((userId: string, key: string) => `${userId}:${key}`)
   mockHashRequestPayload.mockReturnValue('hash-1')
-  mockCreateVaultIdempotently.mockImplementation(async (_options: unknown, create: any) => {
-    const created = await create(null)
-    return { ...created, replayed: false }
+  mockCreateVaultIdempotently.mockImplementation(async (_options: unknown, actions: any) => {
+    const vault = await actions.createVault(null)
+    const response = await actions.buildResponse(vault)
+    return { vault, response, replayed: false }
   })
 }
 

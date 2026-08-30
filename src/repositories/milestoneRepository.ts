@@ -1,6 +1,19 @@
 import { Knex } from "knex";
 import { CURRENT_EMBEDDING_MODEL_VERSION } from "../services/embeddingProvider.js";
 
+const EMBEDDING_DIMENSIONS = 768;
+const MAX_NEIGHBOR_COUNT = 100;
+const MAX_PAGE_SIZE = 100;
+const MAX_BATCH_IDS = 1000;
+
+function normalizePageSize(limit: number | undefined, fallback = 10): number {
+  const parsed = Number(limit);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return Math.min(MAX_PAGE_SIZE, fallback);
+  }
+  return Math.min(MAX_PAGE_SIZE, Math.trunc(parsed));
+}
+
 export interface MilestoneEmbedding {
   milestone_id: string;
   embedding: number[];
@@ -64,8 +77,16 @@ export class MilestoneRepository {
     if (!milestoneId) {
       throw new Error("Invariant violation: milestoneId is required");
     }
-    if (!Array.isArray(embedding) || embedding.length !== 768) {
-      throw new Error("Invariant violation: Embedding must be a 768-dimensional float array");
+    if (
+      !Array.isArray(embedding) ||
+      embedding.length !== EMBEDDING_DIMENSIONS ||
+      !embedding.every(
+        (value) => typeof value === "number" && Number.isFinite(value),
+      )
+    ) {
+      throw new Error(
+        `Invariant violation: Embedding must be a ${EMBEDDING_DIMENSIONS}-dimensional float array`,
+      );
     }
     const vectorLiteral = `[${embedding.join(",")}]`;
     await this.db.raw(
@@ -96,7 +117,7 @@ export class MilestoneRepository {
       throw new Error("Invariant violation: milestoneId is required");
     }
     // Cap k so callers cannot inflate a top-k vector lookup into an unbounded LIMIT.
-    const cappedK = Math.min(100, Math.max(1, Math.trunc(Number(k)) || 5));
+    const cappedK = Math.min(MAX_NEIGHBOR_COUNT, Math.max(1, Math.trunc(Number(k)) || 5));
 
     // Fetch the query embedding first so we can pass it as a plain literal.
     // This avoids a correlated sub-query that would prevent index use.
@@ -177,10 +198,11 @@ export class MilestoneRepository {
     afterId: string | null,
     limit: number,
   ): Promise<MilestoneSummary[]> {
+    const pageSize = normalizePageSize(limit);
     let query = this.db("milestones")
       .select("id", "title", "description")
       .orderBy("id", "asc")
-      .limit(limit);
+      .limit(pageSize);
 
     if (afterId !== null) {
       query = query.where("id", ">", afterId);
@@ -273,7 +295,7 @@ export class MilestoneRepository {
     const updated = await this.db("milestones")
       .where({ id })
       .whereNull("deleted_at")
-      .update({ deleted_at: deletedAt });
+      .update({ deleted_at: deletedAt, updated_at: new Date() });
 
     return updated > 0;
   }
@@ -288,7 +310,7 @@ export class MilestoneRepository {
     const updated = await this.db("milestones")
       .where({ id })
       .whereNotNull("deleted_at")
-      .update({ deleted_at: null });
+      .update({ deleted_at: null, updated_at: new Date() });
 
     return updated > 0;
   }
@@ -300,12 +322,18 @@ export class MilestoneRepository {
   async findEmbeddingModelVersions(
     milestoneIds: string[],
   ): Promise<Map<string, string>> {
-    if (milestoneIds.length === 0) {
+    const uniqueIds = [...new Set(milestoneIds)];
+    if (uniqueIds.length === 0) {
       return new Map();
+    }
+    if (uniqueIds.length > MAX_BATCH_IDS) {
+      throw new Error(
+        `Invariant violation: milestoneIds must contain at most ${MAX_BATCH_IDS} unique entries`,
+      );
     }
 
     const rows = await this.db("milestone_embeddings")
-      .whereIn("milestone_id", milestoneIds)
+      .whereIn("milestone_id", uniqueIds)
       .select("milestone_id", "model_version");
 
     return new Map(
@@ -335,6 +363,8 @@ export class MilestoneRepository {
       includeDeleted = false,
     } = options;
 
+    const pageSize = normalizePageSize(limit);
+
     let query = this.db("milestones")
       .join("vaults", "milestones.vault_id", "vaults.id")
       .select(
@@ -353,7 +383,7 @@ export class MilestoneRepository {
       )
       .where("vaults.organization_id", orgId)
       .orderBy("milestones.id", "asc")
-      .limit(limit);
+      .limit(pageSize);
 
     if (!includeDeleted) {
       query = query.whereNull("milestones.deleted_at");

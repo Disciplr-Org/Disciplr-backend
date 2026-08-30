@@ -144,6 +144,20 @@ const VALID_SORT_FIELDS = new Set([
 ]);
 const VALID_SORT_ORDERS = new Set(["asc", "desc"]);
 
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** True when value is a real calendar date in YYYY-MM-DD form. */
+function isValidDateOnly(value: string): boolean {
+  if (!DATE_ONLY_RE.test(value)) return false
+  const [y, m, d] = value.split("-").map(Number)
+  const probe = new Date(Date.UTC(y, m - 1, d))
+  return (
+    probe.getUTCFullYear() === y &&
+    probe.getUTCMonth() === m - 1 &&
+    probe.getUTCDate() === d
+  )
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface SavedSearchQueryDefinition {
@@ -235,10 +249,13 @@ export function validateAndSanitizeQueryDefinition(
 
   for (const field of ["date_from", "date_to"] as const) {
     if (input[field] !== undefined) {
-      if (
-        typeof input[field] !== "string" ||
-        !isValidISO8601(input[field])
-      ) {
+      // Accept either a date-only ISO 8601 string (YYYY-MM-DD) or a full
+      // timestamp with an explicit timezone. The downstream `new Date()`
+      // consumption handles both, and the API contract exposes `format: date`.
+      const valid =
+        typeof input[field] === "string" &&
+        (isValidDateOnly(input[field]) || isValidISO8601(input[field]));
+      if (!valid) {
         errors.push(`${field} must be a valid ISO 8601 date string`);
       } else {
         sanitized[field] = input[field] as string;

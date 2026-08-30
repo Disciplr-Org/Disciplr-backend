@@ -2,6 +2,27 @@ import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
 
 import { requireUser, requireVerifier } from '../middleware/rbac.js'
+import { UserRole } from '../types/user.js'
+import {
+  parseMilestoneInput,
+  flattenZodErrors,
+} from '../services/vaultValidation.js'
+
+import {
+  createMilestoneWithThreshold,
+  getMilestonesByVaultId,
+  getMilestoneById,
+  verifyMilestone,
+  validateMilestone,
+  allMilestonesVerified,
+  allMilestonesMetThreshold,
+} from '../services/milestones.js'
+
+import { transitionVaultStatus } from '../services/vaultTransitions.js'
+import { getVaultById } from '../services/vaultStore.js'
+import { AppError } from '../middleware/errorHandler.js'
+import db from '../db/index.js'
+import { MilestoneRepositoryEnhanced } from '../repositories/milestoneRepositoryEnhanced.js'
 import {
   parseMilestoneInput,
   flattenZodErrors,
@@ -21,7 +42,6 @@ import {
   DuplicateVerifierVoteError,
   getVerifierProfile,
 } from '../services/verifiers.js'
-import type { MilestoneStatus } from '../types/milestone.js'
 
 const milestoneRepo = new MilestoneRepositoryEnhanced(db)
 
@@ -187,9 +207,12 @@ milestonesRouter.post('/', authenticate, requireWalletIdentity, requireUser, req
       throw AppError.notFound('Vault not found')
     }
     
-    // Explicit authorization check to ensure the caller actually owns this vault
-    const isOwner = (owner.userId && vault.ownerId === owner.userId) || 
-                    (owner.orgId && vault.organizationId === owner.orgId);
+    // Explicit authorization check to ensure the caller actually owns this vault.
+    // Mirrors the vaults route: the vault creator, an org-scoped principal whose
+    // org matches the vault's org, or an admin may manage the vault's milestones.
+    const isOwner = (owner.userId && vault.creator === owner.userId) ||
+                    (owner.orgId && vault.orgId === owner.orgId) ||
+                    req.user?.role === UserRole.ADMIN;
                     
     if (!isOwner) {
       throw AppError.forbidden('Unauthorized: you do not own this vault')
@@ -232,9 +255,22 @@ milestonesRouter.get('/', authenticate, requireValidVaultId, async (req: Request
     return next(AppError.notFound('Vault not found'))
   }
 
+  const defaultLimit = 20
+  const maxLimit = 100
+  const limitRaw = req.query.limit
+  const offsetRaw = req.query.offset
+  const limit = Math.min(Math.max(typeof limitRaw === 'string' ? parseInt(limitRaw, 10) || defaultLimit : defaultLimit, 1), maxLimit)
+  const offset = Math.max(typeof offsetRaw === 'string' ? parseInt(offsetRaw, 10) || 0 : 0, 0)
+
   const milestones = await milestoneRepo.listByVault(vaultId)
+  const totalCount = milestones.length
+
+  res.setHeader('X-Total-Count', String(totalCount))
+  res.setHeader('Cache-Control', 'private, max-age=30')
+
+  const pagedMilestones = milestones.slice(offset, offset + limit)
   res.json({
-    milestones: milestones.map((m) => ({
+    milestones: pagedMilestones.map((m) => ({
       id: m.id,
       vaultId: m.vault_id,
       title: m.title,

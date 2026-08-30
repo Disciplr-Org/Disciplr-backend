@@ -129,6 +129,13 @@ export class AuthService {
             throw new Error('Invalid credentials')
         }
 
+        // Soft-deleted or non-active accounts are never allowed to authenticate,
+        // regardless of password correctness — fail closed.
+        const isActive = typeof user.status !== 'string' || user.status === 'ACTIVE'
+        if (user.deletedAt || !isActive) {
+            throw new Error('Invalid credentials')
+        }
+
         const isValid = await comparePassword(input.password, user.passwordHash)
         if (!isValid) {
             throw new Error('Invalid credentials')

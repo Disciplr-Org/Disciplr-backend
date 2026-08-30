@@ -175,6 +175,70 @@ describe('Milestone event ledger (ordered, auditable, duplicate-safe)', () => {
   })
 })
 
+describe('Event ledger ordering and filter boundaries', () => {
+  beforeEach(() => {
+    resetMilestonesTable()
+    resetMilestones()
+    resetMilestoneLifecycle()
+  })
+
+  it('embeds a monotonic per-vault sequence number in every event id (m_<seq>_<suffix>)', () => {
+    const m = freshMilestone()
+    transitionMilestone(m.id, 'submitted')
+    transitionMilestone(m.id, 'validated')
+    const events = listMilestoneEvents({ vaultId: V })
+    expect(events[0].id).toMatch(/^m_1_[a-z0-9]+$/i)
+    expect(events[1].id).toMatch(/^m_2_[a-z0-9]+$/i)
+    expect(events[0].id).not.toBe(events[1].id)
+  })
+
+  it('keeps the shared per-vault sequence monotonic across transitions and manual events', () => {
+    const m = freshMilestone()
+    transitionMilestone(m.id, 'submitted') // seq 1
+    transitionMilestone(m.id, 'validated') // seq 2
+    addMilestoneEvent({ userId: 'v1', vaultId: V, name: 'milestone.manual', status: 'success', timestamp: '2026-08-29T12:00:00.000Z' }) // seq 3
+    const events = listMilestoneEvents({ vaultId: V })
+    expect(events).toHaveLength(3)
+    const seqs = events.map((e) => Number(e.id.split('_')[1]))
+    expect(seqs).toEqual([1, 2, 3])
+  })
+
+  it('applies from/to filters inclusively on timestamps', () => {
+    const m = freshMilestone()
+    transitionMilestone(m.id, 'submitted', { at: '2026-08-29T10:00:00.000Z' })
+    transitionMilestone(m.id, 'validated', { at: '2026-08-29T11:00:00.000Z' })
+    transitionMilestone(m.id, 'settled', { at: '2026-08-29T12:00:00.000Z' })
+
+    const from = listMilestoneEvents({ vaultId: V, from: '2026-08-29T11:00:00.000Z' })
+    expect(from.map((e) => e.name)).toEqual(['milestone.lifecycle.validated', 'milestone.lifecycle.settled'])
+    const to = listMilestoneEvents({ vaultId: V, to: '2026-08-29T11:00:00.000Z' })
+    expect(to.map((e) => e.name)).toEqual(['milestone.lifecycle.submitted', 'milestone.lifecycle.validated'])
+    const range = listMilestoneEvents({ vaultId: V, from: '2026-08-29T10:30:00.000Z', to: '2026-08-29T11:30:00.000Z' })
+    expect(range.map((e) => e.name)).toEqual(['milestone.lifecycle.validated'])
+  })
+
+  it('returns an empty result for unparseable filter timestamps instead of throwing', () => {
+    const m = freshMilestone()
+    transitionMilestone(m.id, 'submitted', { at: '2026-08-29T10:00:00.000Z' })
+    expect(listMilestoneEvents({ vaultId: V, from: 'not-a-date' })).toEqual([])
+    expect(listMilestoneEvents({ vaultId: V, to: 'not-a-date' })).toEqual([])
+  })
+
+  it('recognises an idempotency-key replay of an already-applied transition even after settlement', () => {
+    const m = freshMilestone()
+    expect(transitionMilestone(m.id, 'submitted', { idempotencyKey: 'req-1' }).success).toBe(true)
+    expect(transitionMilestone(m.id, 'validated', { idempotencyKey: 'req-2' }).success).toBe(true)
+    expect(transitionMilestone(m.id, 'settled', { idempotencyKey: 'req-3' }).success).toBe(true)
+
+    // The replay check runs before the settled guard: a retry of the original
+    // transition is acknowledged as a duplicate, not misreported as a regression.
+    const replay = transitionMilestone(m.id, 'submitted', { idempotencyKey: 'req-1' })
+    expect(replay.success).toBe(true)
+    expect(replay.error).toBe('duplicate-idempotent-replay')
+    expect(getMilestoneLifecycleState(m.id)).toBe('settled')
+  })
+})
+
 describe('Lifecycle duplicate-request idempotency (retry safety)', () => {
   beforeEach(() => {
     resetMilestonesTable()

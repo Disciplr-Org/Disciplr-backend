@@ -11,9 +11,25 @@ import express from 'express'
 import request from 'supertest'
 import type { NextFunction, Request, Response } from 'express'
 
+// The middleware proves the target org/team exists (returns 404 otherwise)
+// before checking membership, so the DB mock must answer those lookups with a
+// real row while letting the membership lookup vary per test.
 const mockFirst = jest.fn<() => Promise<unknown>>()
 const mockWhere = jest.fn(() => ({ first: mockFirst }))
-const mockDb = jest.fn(() => ({ where: mockWhere }))
+const mockDb = jest.fn((table: string) => ({
+  where: () => ({ first: () => promiseForTable(table) }),
+}))
+
+/**
+ * `organizations`/`teams` lookups always resolve to an existing row; the
+ * membership tables honor whatever `mockFirst` was configured to resolve.
+ */
+function promiseForTable(table: string): Promise<unknown> {
+  if (table === 'organizations' || table === 'teams') {
+    return Promise.resolve({ id: table === 'organizations' ? 'org-1' : 'team-1' })
+  }
+  return mockFirst()
+}
 
 jest.unstable_mockModule('../db/index.js', () => ({
   default: mockDb,
@@ -72,7 +88,11 @@ describe('requireOrgRole / requireTeamRole DB error handling', () => {
   })
 
   it('returns 403 when org membership is missing (no-row, not an exception)', async () => {
-    mockFirst.mockResolvedValue(undefined)
+    // requireOrgRole first proves the org exists (first query), then looks up
+    // membership (second query) — the missing row is the membership, not the org.
+    mockFirst
+      .mockResolvedValueOnce({ id: 'org-1' })
+      .mockResolvedValue(undefined)
 
     const res = await request(buildOrgApp()).get('/orgs/org-1/secure')
 
@@ -110,7 +130,11 @@ describe('requireOrgRole / requireTeamRole DB error handling', () => {
   })
 
   it('returns 403 when team membership is missing (no-row, not an exception)', async () => {
-    mockFirst.mockResolvedValue(undefined)
+    // requireTeamRole first proves the team exists (first query), then looks up
+    // membership (second query) — the missing row is the membership, not the team.
+    mockFirst
+      .mockResolvedValueOnce({ id: 'team-1' })
+      .mockResolvedValue(undefined)
 
     const res = await request(buildTeamApp()).get('/teams/team-1/secure')
 

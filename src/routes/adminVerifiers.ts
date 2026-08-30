@@ -4,7 +4,7 @@ import { authenticate } from '../middleware/auth.js'
 import { requireAdmin } from '../middleware/rbac.js'
 import {
   VerifierStatus,
-  createOrGetVerifierProfile,
+  createOrTransitionVerifier,
   createVerifierProfile,
   deleteVerifierProfile,
   getVerifierProfile,
@@ -125,7 +125,7 @@ adminVerifiersRouter.post('/', async (req: Request, res: Response, next: NextFun
     if (userId && typeof userId === 'string' && !(await isValidStellarAddress(userId.trim()))) {
       return next(AppError.validation('invalid Stellar public key', { field: 'userId' }))
     }
-  } catch (err) {
+  } catch {
     return next(AppError.internal('address validation failed'))
   }
 
@@ -543,8 +543,6 @@ const createOrGetAndTransitionStatus = async (req: Request, res: Response, userI
   } finally {
     inFlightTransitions.delete(userId)
   }
-
-  await transitionStatus(req, res, userId, status)
 }
 
 const getStringQuery = (value: unknown): string | undefined =>
