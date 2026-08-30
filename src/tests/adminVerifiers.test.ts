@@ -12,8 +12,10 @@ const mockCreateOrTransitionVerifier = jest.fn()
 const mockDeleteVerifierProfile = jest.fn()
 const mockGetVerifierProfile = jest.fn()
 const mockGetVerifierStats = jest.fn()
-const mockListVerifierProfiles = jest.fn()
+const mockDeleteVerifierProfile = jest.fn()
 const mockUpdateVerifierProfile = jest.fn()
+const mockListVerifierProfiles = jest.fn()
+const mockCreateOrGetVerifierProfile = jest.fn()
 
 jest.unstable_mockModule('../services/verifiers.js', () => ({
   transitionVerifier: mockTransitionVerifier,
@@ -22,12 +24,10 @@ jest.unstable_mockModule('../services/verifiers.js', () => ({
   deleteVerifierProfile: mockDeleteVerifierProfile,
   getVerifierProfile: mockGetVerifierProfile,
   getVerifierStats: mockGetVerifierStats,
-  // The adminVerifiers router imports the full verifiers surface; provide
-  // stubs for the exports this suite does not exercise directly.
-  createOrGetVerifierProfile: jest.fn(),
-  deleteVerifierProfile: jest.fn(),
-  listVerifierProfiles: jest.fn(),
-  updateVerifierProfile: jest.fn(),
+  deleteVerifierProfile: mockDeleteVerifierProfile,
+  updateVerifierProfile: mockUpdateVerifierProfile,
+  listVerifierProfiles: mockListVerifierProfiles,
+  createOrGetVerifierProfile: mockCreateOrGetVerifierProfile,
   InvalidVerifierStatusTransitionError: class InvalidVerifierStatusTransitionError extends Error {
     constructor(from: string, to: string) {
       super(`Invalid transition from ${from} to ${to}`)
@@ -64,8 +64,10 @@ describe('adminVerifiers', () => {
     mockDeleteVerifierProfile.mockReset()
     mockGetVerifierProfile.mockReset()
     mockGetVerifierStats.mockReset()
-    mockListVerifierProfiles.mockReset()
+    mockDeleteVerifierProfile.mockReset()
     mockUpdateVerifierProfile.mockReset()
+    mockListVerifierProfiles.mockReset()
+    mockCreateOrGetVerifierProfile.mockReset()
   })
 
   it('allows ADMIN to transition verifier status and passes reason', async () => {

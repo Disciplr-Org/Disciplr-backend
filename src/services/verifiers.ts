@@ -548,14 +548,10 @@ export const recordMilestoneApproval = async (
   verifierUserId: string,
   approvalStatus: MilestoneApprovalStatus,
 ): Promise<MilestoneApproval> => {
-  // Hostile-input boundary: reject malformed votes before touching the DB so
-  // they can never be persisted or counted toward a threshold.
-  if (typeof milestoneId !== 'string' || milestoneId.trim().length === 0) {
-    throw new Error('milestoneId must be a non-empty string')
-  }
-  if (typeof verifierUserId !== 'string' || verifierUserId.trim().length === 0) {
-    throw new Error('verifierUserId must be a non-empty string')
-  }
+  // Hostile-input boundary: reject empty/missing identifiers early.
+  assertNonEmptyString(milestoneId, 'milestoneId')
+  assertNonEmptyString(verifierUserId, 'verifierUserId')
+
   if (approvalStatus !== 'approved' && approvalStatus !== 'rejected') {
     throw new Error('approvalStatus must be "approved" or "rejected"')
   }
@@ -714,6 +710,14 @@ export const getMilestoneApprovalProgress = async (
   const rejected = approvals.rejected.length
   const pending = approvals.pending.length
   const totalVoted = approved + rejected + pending
+
+  // Hostile-input boundary: clamp thresholds to sane ranges so zero, negative,
+  // or non-numeric inputs can never produce a degenerate veto/complete result.
+  const safeThreshold = Math.max(1, Math.floor(Number(approvalThreshold) || 1))
+  const safeTotal =
+    totalVerifiers !== undefined && totalVerifiers > 0
+      ? Math.max(1, Math.floor(Number(totalVerifiers)))
+      : undefined
 
   // Veto math: can we still reach threshold?
   let isRejected: boolean

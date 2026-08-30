@@ -2,15 +2,25 @@ import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
 
 import { requireUser, requireVerifier } from '../middleware/rbac.js'
+import { UserRole } from '../types/user.js'
 import {
   parseMilestoneInput,
   flattenZodErrors,
 } from '../services/vaultValidation.js'
 
+import {
+  createMilestoneWithThreshold,
+  getMilestonesByVaultId,
+  getMilestoneById,
+  verifyMilestone,
+  validateMilestone,
+  allMilestonesVerified,
+  allMilestonesMetThreshold,
+} from '../services/milestones.js'
+
 import { transitionVaultStatus } from '../services/vaultTransitions.js'
 import { getVaultById } from '../services/vaultStore.js'
 import { AppError } from '../middleware/errorHandler.js'
-import { randomUUID } from 'node:crypto'
 import db from '../db/index.js'
 import { MilestoneRepositoryEnhanced } from '../repositories/milestoneRepositoryEnhanced.js'
 import {
@@ -32,7 +42,6 @@ import {
   DuplicateVerifierVoteError,
   getVerifierProfile,
 } from '../services/verifiers.js'
-import type { MilestoneStatus } from '../types/milestone.js'
 
 const milestoneRepo = new MilestoneRepositoryEnhanced(db)
 
@@ -198,9 +207,12 @@ milestonesRouter.post('/', authenticate, requireWalletIdentity, requireUser, req
       throw AppError.notFound('Vault not found')
     }
     
-    // Explicit authorization check to ensure the caller actually owns this vault
-    const isOwner = (owner.userId && vault.ownerId === owner.userId) || 
-                    (owner.orgId && vault.organizationId === owner.orgId);
+    // Explicit authorization check to ensure the caller actually owns this vault.
+    // Mirrors the vaults route: the vault creator, an org-scoped principal whose
+    // org matches the vault's org, or an admin may manage the vault's milestones.
+    const isOwner = (owner.userId && vault.creator === owner.userId) ||
+                    (owner.orgId && vault.orgId === owner.orgId) ||
+                    req.user?.role === UserRole.ADMIN;
                     
     if (!isOwner) {
       throw AppError.forbidden('Unauthorized: you do not own this vault')

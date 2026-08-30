@@ -7,6 +7,7 @@ import express from 'express'
 import request from 'supertest'
 import { jest } from '@jest/globals'
 import { IdempotencyConflictError, IdempotencyOwnerMismatchError } from '../services/idempotency.js'
+import { DuplicateVerifierVoteError } from '../services/verifiers.js'
 
 let authenticatedUser: { userId: string; role: string; enterpriseId?: string } | null = { userId: 'user-1', role: 'USER' }
 
@@ -51,6 +52,7 @@ jest.unstable_mockModule('../services/vaultStore.js', () => ({
   getVaultById: jest.fn<any>().mockResolvedValue({
     id: '00000000-0000-0000-0000-000000000000',
     status: 'active',
+    creator: 'user-1',
     verifier: 'GBBM6BKZPEHWYO3E3YKREDPQXMS4VK35YLNU7NFBRI26RAN7GI5POFBB',
     creator: 'user-1',
   }),
@@ -102,8 +104,7 @@ jest.unstable_mockModule('../services/verifiers.js', () => ({
   getMilestoneApprovalProgress: jest.fn<any>().mockResolvedValue({ isComplete: false, isRejected: false }),
   recordMilestoneApproval: jest.fn<any>().mockResolvedValue({ id: 'app-1', approvalStatus: 'approved' }),
   getMilestoneApprovals: jest.fn<any>().mockResolvedValue({ approved: [], rejected: [], pending: [] }),
-  // milestones.ts route imports DuplicateVerifierVoteError for instanceof checks.
-  DuplicateVerifierVoteError: class DuplicateVerifierVoteError extends Error {},
+  DuplicateVerifierVoteError,
 }))
 
 const { milestonesRouter } = await import('../routes/milestones.js')
@@ -119,6 +120,14 @@ const MOCK_RESPONSE = {
   id: 'ms-12345-abcdefg',
   title: 'Test Milestone',
   amount: '300',
+}
+
+// POST/PATCH milestone endpoints require a wallet identity + network header
+// (requireWalletIdentity). Send them on every request that must reach the
+// handler so the boundary is exercised past the wallet check.
+const WALLET_HEADERS = {
+  'x-wallet-address': '0x' + 'a'.repeat(40),
+  'x-network-id': 'testnet',
 }
 
 const app = express()
