@@ -548,10 +548,14 @@ export const recordMilestoneApproval = async (
   verifierUserId: string,
   approvalStatus: MilestoneApprovalStatus,
 ): Promise<MilestoneApproval> => {
-  // Hostile-input boundary: reject empty/missing identifiers early.
-  assertNonEmptyString(milestoneId, 'milestoneId')
-  assertNonEmptyString(verifierUserId, 'verifierUserId')
-
+  // Hostile-input boundary: reject malformed votes before touching the DB so
+  // they can never be persisted or counted toward a threshold.
+  if (typeof milestoneId !== 'string' || milestoneId.trim().length === 0) {
+    throw new Error('milestoneId must be a non-empty string')
+  }
+  if (typeof verifierUserId !== 'string' || verifierUserId.trim().length === 0) {
+    throw new Error('verifierUserId must be a non-empty string')
+  }
   if (approvalStatus !== 'approved' && approvalStatus !== 'rejected') {
     throw new Error('approvalStatus must be "approved" or "rejected"')
   }
@@ -697,12 +701,13 @@ export const getMilestoneApprovalProgress = async (
   isRejected: boolean
   approvalPercentage: number
 }> => {
-  // Hostile-input boundary: clamp thresholds to sane ranges.
-  const safeThreshold = Math.max(1, Math.floor(Number(approvalThreshold) || 1))
-  const safeTotal =
-    totalVerifiers !== undefined && totalVerifiers > 0
-      ? Math.max(1, Math.floor(Number(totalVerifiers)))
-      : undefined
+  // A milestone always requires at least one approval, so clamp a non-positive
+  // or non-numeric threshold to 1. NaN must be treated as unknown (=1) rather
+  // than leaking into comparisons.
+  const safeThreshold =
+    typeof approvalThreshold === 'number' && Number.isFinite(approvalThreshold)
+      ? Math.max(1, Math.floor(approvalThreshold))
+      : 1
 
   const approvals = await getMilestoneApprovals(milestoneId, trx)
   const approved = approvals.approved.length

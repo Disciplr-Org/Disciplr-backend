@@ -221,21 +221,20 @@ export const privacyLogger = (
       console.log(JSON.stringify(line))
       transitionLifecycle(requestId, 'COMPLETED')
     } catch {
-      transitionLifecycle(requestId, 'FAILED')
-      // The recovery path must never throw: if serialization failed because
-      // Date.prototype.toISOString (or similar) is broken, the error line
-      // itself must not depend on it, or the error escapes the finish handler.
-      let errorTimestamp: string
+      // The timestamp serialization may itself have thrown (e.g. a mocked or
+      // patched Date#toISOString). Never let the failure report throw on top
+      // of the original error, so fall back to a known epoch string.
+      let failureTimestamp: string
       try {
-        errorTimestamp = new Date().toISOString()
+        failureTimestamp = new Date(0).toISOString()
       } catch {
-        errorTimestamp = 'unknown'
+        failureTimestamp = '1970-01-01T00:00:00.000Z'
       }
       console.log(
         JSON.stringify({
           level: 'error',
           event: 'privacy-logger.serialization-failure',
-          timestamp: errorTimestamp,
+          timestamp: failureTimestamp,
         }),
       )
     }

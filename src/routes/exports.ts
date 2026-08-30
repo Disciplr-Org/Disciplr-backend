@@ -291,6 +291,8 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
 
     const mimeType = job.format === 'csv'
       ? 'text/csv; charset=utf-8'
+      : job.format === 'ndjson'
+      ? 'application/x-ndjson; charset=utf-8'
       : 'application/json; charset=utf-8'
 
     res.setHeader('Content-Type', mimeType)
