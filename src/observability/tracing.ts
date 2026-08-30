@@ -39,7 +39,6 @@ export function generateTraceId(): string {
  */
 export function generateSpanId(): string {
   const bytes = new Uint8Array(8)
-  // Use crypto.getRandomValues if available, else Math.random fallback
   if (typeof globalThis.crypto?.getRandomValues === 'function') {
     globalThis.crypto.getRandomValues(bytes)
   } else {
@@ -47,6 +46,38 @@ export function generateSpanId(): string {
   }
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
+
+// ── Bounds ───────────────────────────────────────────────────────────────────
+
+/**
+ * Maximum spans buffered in memory before a forced flush.
+ * Prevents unbounded memory growth under high traffic or a slow exporter.
+ */
+export const MAX_PENDING_SPANS = 200
+
+/**
+ * Maximum attributes per span. Extra setAttribute() calls beyond this
+ * limit are silently dropped to bound per-span memory.
+ */
+export const MAX_SPAN_ATTRIBUTES = 64
+
+/**
+ * Maximum events per span.
+ */
+export const MAX_SPAN_EVENTS = 32
+
+/**
+ * Consecutive OTLP export failures before the exporter enters cooldown.
+ * During cooldown, spans are dropped (not buffered) to prevent OOM when
+ * the collector is unavailable.
+ */
+export const EXPORTER_FAILURE_THRESHOLD = 5
+
+/**
+ * Cooldown duration in milliseconds after the failure threshold is reached.
+ * The exporter retries once this period elapses.
+ */
+export const EXPORTER_COOLDOWN_MS = 30_000
 
 // ── Span interface ──────────────────────────────────────────────────────────
 
@@ -61,17 +92,25 @@ export interface Span {
   startTime: number
   endTime?: number
   status: SpanStatus
-  events: Array<{ name: string; time: number; attributes?: Record<string, string | number | boolean> }>
+  events: Array<{
+    name: string
+    time: number
+    attributes?: Record<string, string | number | boolean>
+  }>
 
   setAttribute(key: string, value: string | number | boolean): void
   setStatus(status: SpanStatus): void
-  addEvent(name: string, attributes?: Record<string, string | number | boolean>): void
+  addEvent(
+    name: string,
+    attributes?: Record<string, string | number | boolean>,
+  ): void
   recordException(error: Error): void
   end(): void
 }
 
 /**
- * Internal span implementation. Not exported directly — created via tracer.startSpan().
+ * Internal span implementation. Not exported directly — created via
+ * tracer.startSpan().
  */
 class SpanImpl implements Span {
   readonly traceId: string
@@ -82,7 +121,11 @@ class SpanImpl implements Span {
   startTime: number
   endTime?: number
   status: SpanStatus = { code: 'OK' }
-  events: Array<{ name: string; time: number; attributes?: Record<string, string | number | boolean> }> = []
+  events: Array<{
+    name: string
+    time: number
+    attributes?: Record<string, string | number | boolean>
+  }> = []
 
   private readonly onEnd: (span: Span) => void
 
@@ -102,6 +145,7 @@ class SpanImpl implements Span {
   }
 
   setAttribute(key: string, value: string | number | boolean): void {
+    if (Object.keys(this.attributes).length >= MAX_SPAN_ATTRIBUTES) return
     this.attributes[key] = value
   }
 
@@ -109,7 +153,11 @@ class SpanImpl implements Span {
     this.status = status
   }
 
-  addEvent(name: string, attributes?: Record<string, string | number | boolean>): void {
+  addEvent(
+    name: string,
+    attributes?: Record<string, string | number | boolean>,
+  ): void {
+    if (this.events.length >= MAX_SPAN_EVENTS) return
     this.events.push({ name, time: Date.now(), attributes })
   }
 
@@ -161,26 +209,37 @@ export interface SpanExporter {
 }
 
 /**
- * OTLP/HTTP span exporter — sends finished spans to an OTLP-compatible
- * collector endpoint (e.g. Jaeger, Collector, Grafana Alloy).
+ * OTLP/HTTP span exporter.
  *
- * When no endpoint is configured the exporter is a no-op.
+ * Circuit-breaker: after EXPORTER_FAILURE_THRESHOLD consecutive failures
+ * the exporter enters a cooldown of EXPORTER_COOLDOWN_MS. During cooldown
+ * export() returns immediately so the caller is never back-pressured.
+ * The breaker resets on the first successful export after cooldown.
  */
 export class OTLPExporter implements SpanExporter {
   private readonly endpoint: string
   private readonly serviceName: string
+
+  private consecutiveFailures = 0
+  private coolingDownUntil = 0
 
   constructor(endpoint: string, serviceName: string) {
     this.endpoint = endpoint.replace(/\/+$/, '')
     this.serviceName = serviceName
   }
 
+  /** Exposed for testing. */
+  get isInCooldown(): boolean {
+    return Date.now() < this.coolingDownUntil
+  }
+
   async export(spans: Span[]): Promise<void> {
     if (spans.length === 0) return
 
-    const resource = {
-      'service.name': this.serviceName,
-    }
+    // Circuit breaker: drop silently during cooldown
+    if (this.isInCooldown) return
+
+    const resource = { 'service.name': this.serviceName }
 
     const otelSpans = spans.map((s) => ({
       traceId: s.traceId,
@@ -189,7 +248,11 @@ export class OTLPExporter implements SpanExporter {
       kind: 1, // SPAN_KIND_INTERNAL
       startTimeUnixNano: BigInt(s.startTime) * 1_000_000n,
       endTimeUnixNano: BigInt(s.endTime ?? s.startTime) * 1_000_000n,
-      status: { code: s.status.code === 'OK' ? 1 : 2, message: (s.status as any).message ?? '' },
+      status: {
+        code: s.status.code === 'OK' ? 1 : 2,
+        message:
+          (s.status as { code: string; message?: string }).message ?? '',
+      },
       attributes: Object.entries(s.attributes).map(([key, value]) => ({
         key,
         value: { stringValue: String(value) },
@@ -207,7 +270,16 @@ export class OTLPExporter implements SpanExporter {
       parentSpanId: s.parentSpanId ?? '',
     }))
 
-    const body = JSON.stringify({ resourceSpans: [{ resource, scopeSpans: [{ scope: { name: 'disciplr-backend' }, spans: otelSpans }] }] })
+    const body = JSON.stringify({
+      resourceSpans: [
+        {
+          resource,
+          scopeSpans: [
+            { scope: { name: 'disciplr-backend' }, spans: otelSpans },
+          ],
+        },
+      ],
+    })
 
     try {
       const response = await fetch(`${this.endpoint}/v1/traces`, {
@@ -217,10 +289,27 @@ export class OTLPExporter implements SpanExporter {
         signal: AbortSignal.timeout(5_000),
       })
       if (!response.ok) {
-        console.error(`[Tracing] OTLP export failed: ${response.status} ${response.statusText}`)
+        this._handleFailure(`HTTP ${response.status} ${response.statusText}`)
+      } else {
+        // Reset circuit breaker on success
+        this.consecutiveFailures = 0
+        this.coolingDownUntil = 0
       }
-    } catch (err: any) {
-      console.error(`[Tracing] OTLP export error:`, err?.message)
+    } catch (err: unknown) {
+      this._handleFailure((err as Error)?.message ?? 'unknown error')
+    }
+  }
+
+  private _handleFailure(reason: string): void {
+    this.consecutiveFailures++
+    console.error(
+      `[Tracing] OTLP export failed (attempt ${this.consecutiveFailures}/${EXPORTER_FAILURE_THRESHOLD}): ${reason}`,
+    )
+    if (this.consecutiveFailures >= EXPORTER_FAILURE_THRESHOLD) {
+      this.coolingDownUntil = Date.now() + EXPORTER_COOLDOWN_MS
+      console.error(
+        `[Tracing] OTLP exporter entering cooldown for ${EXPORTER_COOLDOWN_MS}ms`,
+      )
     }
   }
 }
@@ -252,11 +341,14 @@ class TracerImpl implements Tracer {
     this.exporter = exporter
     this.samplingRate = samplingRate
 
-    // Periodic flush every 5 seconds for buffered exports
     if (samplingRate > 0) {
       this.flushTimer = setInterval(() => void this.flush(), 5_000)
-      if (typeof (this.flushTimer as any).unref === 'function') {
-        (this.flushTimer as any).unref()
+      if (
+        typeof (
+          this.flushTimer as NodeJS.Timeout & { unref?: () => void }
+        ).unref === 'function'
+      ) {
+        (this.flushTimer as NodeJS.Timeout & { unref: () => void }).unref()
       }
     }
   }
@@ -266,17 +358,21 @@ class TracerImpl implements Tracer {
     parentContext?: { traceId: string; spanId: string } | null,
     attributes?: Record<string, string | number | boolean>,
   ): Span {
-    // Sampling
     if (this.samplingRate <= 0) return NoopSpan.instance
-    if (this.samplingRate < 1 && Math.random() > this.samplingRate) return NoopSpan.instance
+    if (this.samplingRate < 1 && Math.random() > this.samplingRate)
+      return NoopSpan.instance
+
+    // Back-pressure: drop when pending buffer is full
+    if (this.pendingSpans.length >= MAX_PENDING_SPANS) return NoopSpan.instance
 
     const traceId = parentContext?.traceId ?? generateTraceId()
     const spanId = generateSpanId()
     const parentSpanId = parentContext?.spanId
 
     const span = new SpanImpl(name, traceId, spanId, parentSpanId, (s) => {
-      this.pendingSpans.push(s)
-      // Flush immediately if batch reaches 50
+      if (this.pendingSpans.length < MAX_PENDING_SPANS) {
+        this.pendingSpans.push(s)
+      }
       if (this.pendingSpans.length >= 50) {
         void this.flush()
       }
@@ -307,8 +403,11 @@ class TracerImpl implements Tracer {
             span.end()
             return v
           })
-          .catch((err) => {
-            span.setStatus({ code: 'ERROR', message: err?.message ?? 'Unknown error' })
+          .catch((err: unknown) => {
+            span.setStatus({
+              code: 'ERROR',
+              message: (err as Error)?.message ?? 'Unknown error',
+            })
             span.end()
             throw err
           })
@@ -316,8 +415,11 @@ class TracerImpl implements Tracer {
       span.setStatus({ code: 'OK' })
       span.end()
       return result
-    } catch (err: any) {
-      span.setStatus({ code: 'ERROR', message: err?.message ?? 'Unknown error' })
+    } catch (err: unknown) {
+      span.setStatus({
+        code: 'ERROR',
+        message: (err as Error)?.message ?? 'Unknown error',
+      })
       span.end()
       throw err
     }
@@ -330,21 +432,14 @@ class TracerImpl implements Tracer {
    * pendingSpans in one operation. If multiple flush() calls race (e.g.
    * from concurrent shutdown + timer), each sees a different batch —
    * no span is exported twice.
-   *
-   * Invariant: every span that has been ended (endTime set) will
-   * eventually be exported exactly once, even under concurrent flush.
    */
   async flush(): Promise<void> {
     if (this.pendingSpans.length === 0) return
-    // Atomic drain: splice returns the removed elements and mutates
-    // pendingSpans in a single synchronous operation.
     const batch = this.pendingSpans.splice(0)
     try {
       await this.exporter.export(batch)
     } catch {
       // Exporter handles its own error logging.
-      // Spans in `batch` are lost — this is acceptable for observability
-      // data where a missed export is preferable to blocking the event loop.
     }
   }
 
@@ -370,7 +465,11 @@ class NoopSpan implements Span {
   readonly attributes: Record<string, string | number | boolean> = {}
   startTime = 0
   status: SpanStatus = { code: 'OK' }
-  events: Array<{ name: string; time: number; attributes?: Record<string, string | number | boolean> }> = []
+  events: Array<{
+    name: string
+    time: number
+    attributes?: Record<string, string | number | boolean>
+  }> = []
 
   setAttribute(): void {}
   setStatus(): void {}
@@ -385,7 +484,10 @@ class NoopTracerImpl implements Tracer {
   startSpan(): Span {
     return NoopSpan.instance
   }
-  withSpan<T>(name: string, fn: (span: Span) => T | Promise<T>): T | Promise<T> {
+  withSpan<T>(
+    name: string,
+    fn: (span: Span) => T | Promise<T>,
+  ): T | Promise<T> {
     return fn(NoopSpan.instance)
   }
 }
@@ -400,75 +502,79 @@ let _exporter: SpanExporter | null = null
  * spans are exported via OTLP/HTTP; otherwise a no-op tracer is used.
  *
  * Call once at startup (before any middleware or routes).
+ *
+ * Sampling rate resolution order:
+ *  1. options.samplingRate (explicit argument)
+ *  2. OTEL_TRACES_SAMPLER=always_off → 0
+ *  3. OTEL_TRACES_SAMPLER=traceidratio + OTEL_TRACES_SAMPLER_ARG → parsed float, clamped to [0,1]
+ *  4. Default: 1 (sample everything)
  */
 export function initTracing(options?: {
   endpoint?: string
   serviceName?: string
   samplingRate?: number
 }): void {
-  const endpoint = options?.endpoint ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+  const endpoint =
+    options?.endpoint ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT
   if (!endpoint) {
     _tracer = new NoopTracerImpl()
     _exporter = null
     return
   }
 
-  const serviceName = options?.serviceName ?? process.env.OTEL_SERVICE_NAME ?? 'disciplr-backend'
-  const samplerArg = process.env.OTEL_TRACES_SAMPLER_ARG
+  const serviceName =
+    options?.serviceName ??
+    process.env.OTEL_SERVICE_NAME ??
+    'disciplr-backend'
   let samplingRate = options?.samplingRate ?? 1
 
   const sampler = process.env.OTEL_TRACES_SAMPLER
   if (sampler === 'always_off') {
     samplingRate = 0
-  } else if (sampler === 'traceidratio' && samplerArg !== undefined) {
-    samplingRate = samplerArg as unknown as number
+  } else if (sampler === 'traceidratio') {
+    const samplerArg = process.env.OTEL_TRACES_SAMPLER_ARG
+    if (samplerArg !== undefined) {
+      const parsed = parseFloat(samplerArg)
+      // Guard against NaN / out-of-range — clamp to [0, 1]
+      if (!Number.isNaN(parsed)) {
+        samplingRate = Math.max(0, Math.min(1, parsed))
+      }
+    }
   }
 
   _exporter = new OTLPExporter(endpoint, serviceName)
   _tracer = new TracerImpl(_exporter, samplingRate)
 }
 
-/**
- * Replace the tracer (for tests only).
- */
+/** Replace the tracer (for tests only). */
 export function _setTracerForTesting(tracer: Tracer): void {
   _tracer = tracer
 }
 
-/**
- * Reset to no-op (for tests).
- */
+/** Reset to no-op (for tests). */
 export function _resetTracingForTesting(): void {
   _tracer = new NoopTracerImpl()
   _exporter = null
 }
 
-/**
- * Get the global tracer instance.
- */
+/** Get the global tracer instance. */
 export function getTracer(): Tracer {
   return _tracer
 }
 
-/**
- * Check whether tracing is enabled (i.e. an endpoint is configured).
- */
+/** Check whether tracing is enabled (i.e. an endpoint is configured). */
 export function isTracingEnabled(): boolean {
   return _exporter !== null
 }
 
-/**
- * Flush any pending spans (e.g. during graceful shutdown).
- */
+/** Flush any pending spans (e.g. during graceful shutdown). */
 export async function flushTracing(): Promise<void> {
   if (_tracer instanceof TracerImpl) {
     await _tracer.flush()
   }
 }
 
-/**
- * Shut down the tracer and flush remaining spans.
- */
+/** Shut down the tracer and flush remaining spans. */
 export async function shutdownTracing(): Promise<void> {
   if (_tracer instanceof TracerImpl) {
     await _tracer.shutdown()
