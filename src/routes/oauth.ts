@@ -8,78 +8,17 @@ import { requireJson } from '../middleware/requireJson.js'
 import { authRateLimiter } from '../middleware/rateLimiter.js'
 import { getEnv } from '../config/index.js'
 import type { ApiScope } from '../types/auth.js'
+import { requestTelemetry } from '../middleware/telemetry.js'
+import { requireJson } from '../middleware/requireJson.js'
 
 export const oauthRouter = Router()
-const oauthJson = requireJson({ maxBytes: 4 * 1024 })
+oauthRouter.use(requestTelemetry);
 
-const DEFAULT_TOKEN_TTL_SECONDS = 3600
-const MIN_TOKEN_TTL_SECONDS = 60
-const MAX_TOKEN_TTL_SECONDS = 12 * 60 * 60 // 12-hour ceiling on access tokens
+const TOKEN_TTL_SECONDS = Number(process.env.OAUTH_TOKEN_TTL_SECONDS ?? 3600)
+const MAX_SCOPES_PER_REQUEST = 20
+const MAX_SCOPE_LENGTH = 64
 
-/**
- * Resolve the OAuth access-token lifetime from configuration.
- *
- * Falls back to 1 hour when the value is missing, unparsable, or outside the
- * enforceable [60s, 12h] window so a hostile/misconfigured deployment can never
- * mint unbounded-lifetime tokens.
- */
-export const resolveTokenTtlSeconds = (): number => {
-  const raw = process.env.OAUTH_TOKEN_TTL_SECONDS
-  if (!raw) {
-    return DEFAULT_TOKEN_TTL_SECONDS
-  }
-
-  const parsed = Number(raw)
-  if (
-    !Number.isInteger(parsed) ||
-    parsed < MIN_TOKEN_TTL_SECONDS ||
-    parsed > MAX_TOKEN_TTL_SECONDS
-  ) {
-    return DEFAULT_TOKEN_TTL_SECONDS
-  }
-
-  return parsed
-}
-
-const TOKEN_TTL_SECONDS = resolveTokenTtlSeconds()
-
-/**
- * Resolve the Stellar network this deployment is bound to. OAuth tokens carry
- * a `net` claim so a token minted against one network cannot be replayed
- * against another (testnet→mainnet submission). `null` when undeclared.
- */
-export const getNetworkId = (): string | null => {
-  try {
-    return (
-      getEnv().STELLAR_NETWORK_PASSPHRASE ??
-      getEnv().SOROBAN_NETWORK_PASSPHRASE ??
-      null
-    )
-  } catch {
-    return (
-      process.env.STELLAR_NETWORK_PASSPHRASE ??
-      process.env.SOROBAN_NETWORK_PASSPHRASE ??
-      null
-    )
-  }
-}
-
-const NETWORK_ID = getNetworkId()
-
-/** RFC 6749 §2.3.1 / §4.4.1 token-request payload boundary. */
-export const oauthTokenRequestSchema = z.object({
-  grant_type: z.literal('client_credentials'),
-  client_id: z.string().uuid('client_id must be a valid UUID.'),
-  client_secret: z
-    .string()
-    .min(1, 'client_secret is required.')
-    .max(1024, 'client_secret exceeds the maximum permitted length.'),
-  scope: z
-    .string()
-    .trim()
-    .max(256, 'scope exceeds the maximum permitted length.')
-    .optional(),
-})
+const oauthJson = requireJson({ maxBytes: 16384 })
 
 /** Non-blocking audit log helper — failures are logged but never propagate. */
 const auditLog = (entry: Parameters<typeof createAuditLog>[0]): void => {
@@ -98,8 +37,7 @@ const oauthError = (res: Response, status: number, error: string, description: s
 }
 
 oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res: Response): Promise<void> => {
-  const body: unknown = req.body
-  const rawBody = (body ?? {}) as Record<string, unknown>
+  const { grant_type, client_id, client_secret, scope } = req.body ?? {}
 
   // RFC 6749 §5.2 — an unsupported/missing grant_type is reported distinctly.
   if (rawBody.grant_type !== 'client_credentials') {
@@ -155,20 +93,54 @@ oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res:
   const clientScopes: ApiScope[] = result.context.scopes
   let grantedScopes: ApiScope[]
 
-  if (scope !== undefined) {
+  if (scope) {
+    if (typeof scope !== 'string' || scope.length > MAX_SCOPES_PER_REQUEST * MAX_SCOPE_LENGTH) {
+      oauthError(res, 400, 'invalid_scope', 'Requested scope is too long')
+      return
+    }
+
     const requested = String(scope)
       .split(' ')
       .map((s) => s.trim())
       .filter(Boolean) as ApiScope[]
 
-    if (requested.length === 0) {
-      // RFC 6749 §4.4.3 — an empty/whitespace-only scope request means "no
-      // specific scopes requested", so the full client grant applies.
-      grantedScopes = clientScopes
-    } else {
-      // Deduplicate before comparison so duplicate scope strings cannot be used
-      // to bypass capabilities or pollute the minted token.
-      const unique = Array.from(new Set(requested))
+    if (requested.length > MAX_SCOPES_PER_REQUEST) {
+      auditLog({
+        actor_user_id: canonicalClientId,
+        action: 'oauth.token_denied',
+        target_type: 'oauth_client',
+        target_id: canonicalClientId,
+        metadata: { reason: 'scope_limit_exceeded', requested_scopes: requested },
+      })
+      oauthError(res, 400, 'invalid_scope', `Requested scope count exceeds limit of ${MAX_SCOPES_PER_REQUEST}`)
+      return
+    }
+
+    const invalidLength = requested.find((s) => s.length > MAX_SCOPE_LENGTH)
+    if (invalidLength) {
+      auditLog({
+        actor_user_id: canonicalClientId,
+        action: 'oauth.token_denied',
+        target_type: 'oauth_client',
+        target_id: canonicalClientId,
+        metadata: { reason: 'scope_length_exceeded', invalid_scope: invalidLength },
+      })
+      oauthError(res, 400, 'invalid_scope', `Scope '${invalidLength}' exceeds maximum length of ${MAX_SCOPE_LENGTH}`)
+      return
+    }
+
+    const unknown = requested.filter((s) => !clientScopes.includes(s))
+    if (unknown.length > 0) {
+      auditLog({
+        actor_user_id: canonicalClientId,
+        action: 'oauth.token_denied',
+        target_type: 'oauth_client',
+        target_id: canonicalClientId,
+        metadata: { reason: 'scope_exceeded', requested_scopes: requested, client_scopes: clientScopes },
+      })
+      oauthError(res, 400, 'invalid_scope', `Requested scope(s) exceed client grants: ${unknown.join(' ')}`)
+      return
+    }
 
       const unknown = unique.filter((s) => !clientScopes.includes(s))
       if (unknown.length > 0) {

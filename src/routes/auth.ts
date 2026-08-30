@@ -7,12 +7,16 @@ import { authenticate } from '../middleware/auth.js'
 import { revokeSession, revokeAllUserSessions } from '../services/session.js'
 import { requireStepUp } from '../middleware/stepUp.js'
 import { requireJson } from '../middleware/requireJson.js'
-import { AUTH_JSON_MAX_BYTES } from '../middleware/requestBodyLimits.js'
+import { AUTHJSON_MAX_BYTES } from '../middleware/requestBodyLimits.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { prisma } from '../lib/prisma.js'
 import { UserRole } from '../types/user.js'
+import { requestTelemetry } from '../middleware/telemetry.js'
+import { authRateLimiter } from '../middleware/rateLimiter.js'
 
 export const authRouter = Router();
+authRouter.use(requestTelemetry);
+
 const authJson = requireJson({ maxBytes: AUTH_JSON_MAX_BYTES });
 
 const userIdOnlyLoginSchema = z.object({
@@ -60,22 +64,23 @@ const authUserSelect = {
   lastLoginAt: true,
 } as const
 
-const formatAuthUser = (user: { id: string; role: string; lastLoginAt: Date | null }) => ({
+const formatAuthUser = (user: { id: string; role: string; lastLoginAt: Date | null }) =>
+ ({
   id: user.id,
   role: user.role as UserRole,
-  lastLoginAt: user.lastLoginAt?.toISOString() ?? null,
+  lastLoginAt: user.lastLoginAt?.toISString() ?? null,
 })
 
-// ------------- Endpoints -------------
+// -------------------- Endpoints --------------------
 
-authRouter.post('/register', authJson, async (req, res, next) => {
+authRouter.post('/register', authJson, authRateLimiter, async (req, res, next) => {
     const result = registerSchema.safeParse(req.body)
     if (!result.success) {
         return next(AppError.validation('Validation failed', result.error.format()))
     }
 
     try {
-        const user = await AuthService.register(result.data)
+        const user = authService.register(result.data)
         res.status(201).json(user)
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Registration failed'
@@ -83,7 +88,7 @@ authRouter.post('/register', authJson, async (req, res, next) => {
     }
 })
 
-authRouter.post('/login', authJson, async (req, res, next) => {
+authRouter.post('/login', authJson, authRateLimiter, async (req, res, next) => {
     // Support mock login if only userId is provided (from audit-logs feature branch)
     if (req.body.userId && !req.body.email && !req.body.password) {
         if (!isMockLoginAllowed()) {
@@ -143,7 +148,7 @@ authRouter.post('/login', authJson, async (req, res, next) => {
     }
 })
 
-authRouter.post('/refresh', authJson, async (req, res, next) => {
+authRouter.post('/refresh', authJson, authRateLimiter, async (req, res, next) => {
     const result = refreshSchema.safeParse(req.body)
     if (!result.success) {
         return next(AppError.validation('Validation failed', result.error.format()))
@@ -179,9 +184,9 @@ authRouter.post(
     }
 
     // 2. Database access token session revocation
-    const jti = req.user?.jti;
-    if (jti) {
-      await revokeSession(jti);
+    const jmti = req.user?.jmti;
+    if (jmti) {
+      await revokeSession(jmti);
     }
 
     res.json({ message: "Successfully logged out" });
@@ -207,9 +212,10 @@ authRouter.post('/webauthn/challenge', authenticate, async (req, res, next) => {
   res.status(200).json(challenge)
 })
 
-authRouter.post('/webauthn/assert', authJson, authenticate, async (req, res, next) => {
-  if (!req.user?.userId) {
-    return next(AppError.unauthorized('Unauthorized'))
+authRouter.post('/webauthn/assert', authenticate, async (req, res, next) => {
+  const { nonce, credentialId, publicKey } = req.body as { nonce?: string; credentialId?: string; publicKey?: string }
+  if (!req.user?.userId || !nonce || !credentialId || !publicKey) {
+    return next(AppError.badRequest('Missing WebAuthn\" assertion data'))
   }
 
   // Strict boundary validation: nonce must be a UUID, credential material must

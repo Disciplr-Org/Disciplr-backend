@@ -1,9 +1,11 @@
-import { Router, type NextFunction, type Request, type Response } from 'express'
+import { Router } from 'express'
+import express from 'express'
 import { z } from 'zod'
 import { authenticate } from '../middleware/auth.js'
 import { requireStepUp } from '../middleware/stepUp.js'
 import { requireJson } from '../middleware/requireJson.js'
 import { apiKeyRateLimiter } from '../middleware/rateLimiter.js'
+import { requestTelemetry } from '../middleware/telemetry.js'
 import {
   createApiKey,
   listApiKeysForUser,
@@ -19,50 +21,41 @@ import db from '../db/index.js'
 export const apiKeysRouter = Router()
 
 apiKeysRouter.use(authenticate)
+apiKeysRouter.use(requestTelemetry)
+apiKeysRouter.use(express.json({ limit: 16384 }))
+
+const DEFAULT_LIST_LIMIT = 50
+const MAX_LIST_LIMIT = 100
+const MAX_LABEL_LENGTH = 100
+const MAX_SCOPES_COUNT = 20
+const MAX_SCOPE_LENGTH = 64
 
 const apiKeysJson = requireJson({ maxBytes: 16 * 1024 })
 
 const createApiKeySchema = z.object({
-  label: z
-    .string()
-    .trim()
-    .min(1, 'label is required.')
-    .max(120, 'label must be at most 120 characters.'),
-  scopes: z
-    .array(z.nativeEnum(ApiScope), { error: 'scopes must be an array of strings.' })
-    .min(1, 'at least one scope is required.')
-    .max(30, 'too many scopes.'),
-  orgId: z.string().uuid('orgId must be a valid UUID.').optional(),
-}).refine((data) => new Set(data.scopes).size === data.scopes.length, {
-  message: 'scopes must not contain duplicates.',
-  path: ['scopes'],
+  label: z.string().trim().min(1, 'label is required.').max(MAX_LABEL_LENGTH, `label must be at most ${MAX_LABEL_LENGTH} characters.`),
+  scopes: z.array(z.string().trim().min(1, 'scope must be a non-empty string.').max(MAX_SCOPE_LENGTH, `scope must be at most ${MAX_SCOPE_LENGTH} characters.`)).max(MAX_SCOPES_COUNT, `scopes must have at most ${MAX_SCOPES_COUNT} items.`),
+  orgId: z.string().trim().optional(),
 })
 
-const apiKeyIdParamSchema = z.object({
-  id: z.string().uuid('id must be a valid UUID.'),
-})
-
-const orgIdParamSchema = z.object({
-  orgId: z
-    .string()
-    .regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/, 'orgId must be a valid organization identifier.'),
-})
-
-/** Load the user's membership row for an org, or null when absent. */
-const getOrgMembership = (orgId: string, userId: string): Promise<{ role: string } | null> =>
-  db('org_members')
-    .where({ org_id: orgId, user_id: userId })
-    .first() as Promise<{ role: string } | null>
-
-/** Resolve an org or null when it does not exist. */
-const getOrgById = (orgId: string): Promise<{ id: string } | null> =>
-  db('organizations').where({ id: orgId }).first() as Promise<{ id: string } | null>
+const parsePagination = (query: Record<string, unknown>): { limit: number; offset: number } => {
+  const rawLimit = typeof query.limit === 'string' ? query.limit : undefined
+  const rawOffset = typeof query.offset === 'string' ? query.offset : undefined
+  const limit = rawLimit ? Math.min(Math.max(parseInt(rawLimit, 10) || 0, 1), MAX_LIST_LIMIT) : DEFAULT_LIST_LIMIT
+  const offset = rawOffset ? Math.max(parseInt(rawOffset, 10) || 0, 0) : 0
+  return { limit, offset }
+}
 
 apiKeysRouter.get('/', async (req, res) => {
   const userId = req.user!.userId
-  const apiKeys = (await listApiKeysForUser(userId)).map(({ keyHash: _keyHash, ...publicRecord }) => publicRecord)
-
-  res.json({ apiKeys })
+  const { limit, offset } = parsePagination(req.query)
+  // NOTE: The service currently returns all keys. We bound the response size here.
+  const allKeys = await listApiKeysForUser(userId)
+  const page = allKeys.slice(offset, offset + limit).map(({ keyHash: _keyHash, ...publicRecord }) => publicRecord)
+  res.json({
+    apiKeys: page,
+    pagination: { limit, offset, total: allKeys.length },
+  })
 })
 
 apiKeysRouter.post('/', apiKeysJson, apiKeyRateLimiter, async (req, res, next) => {
@@ -144,7 +137,7 @@ apiKeysRouter.post('/:id/rotate', apiKeysJson, apiKeyRateLimiter, async (req, re
   })
 })
 
-apiKeysRouter.post('/:id/revoke', apiKeysJson, apiKeyRateLimiter, requireStepUp(), async (req, res, next) => {
+apiKeysRouter.post('/:id/revoke', apiKeyRateLimiter, requireStepUp(), async (req, res) => {
   const userId = req.user!.userId
   const paramsResult = apiKeyIdParamSchema.safeParse(req.params)
   if (!paramsResult.success) {
