@@ -12,6 +12,11 @@ export interface Milestone {
   dueDate: string | null
 }
 
+import {
+  authorizeVerifierQueueAction,
+  assertVerifierLifecycleTransition,
+} from './verifierTransitions.js'
+
 const milestonesTable: Milestone[] = []
 
 export const createMilestone = (vaultId: string, description: string, verifierId?: string | null, dueDate?: string | null): Milestone => {
@@ -40,12 +45,27 @@ export const getMilestoneById = (id: string): Milestone | undefined => {
   return milestonesTable.find((m) => m.id === id)
 }
 
-export const verifyMilestone = (id: string): Milestone | null => {
+export const verifyMilestone = (id: string, verifierUserId?: string): Milestone | null => {
   const milestone = milestonesTable.find((m) => m.id === id)
   if (!milestone) return null
 
+  if (verifierUserId !== undefined) {
+    authorizeVerifierQueueAction(milestone, verifierUserId, 'verify')
+  }
+
   milestone.verified = true
   milestone.verifiedAt = new Date().toISOString()
+  milestone.verifiedBy = verifierUserId ?? milestone.verifiedBy
+
+  if (verifierUserId !== undefined) {
+    addMilestoneEvent({
+      userId: verifierUserId,
+      vaultId: milestone.vaultId,
+      name: 'milestone.verified',
+      status: 'success',
+      timestamp: new Date().toISOString(),
+    })
+  }
   return milestone
 }
 
@@ -53,8 +73,16 @@ export const validateMilestone = (id: string, validatorUserId: string, evidenceH
   const milestone = milestonesTable.find((m) => m.id === id)
   if (!milestone) return { success: false, error: 'Milestone not found' }
 
-  if (milestone.verifierId && milestone.verifierId !== validatorUserId) {
-    return { success: false, error: 'Unauthorized: only assigned verifier can validate' }
+  // Preserve the public replay contract for the current assignee while still
+  // checking assignment before an unverified item can be mutated.
+  if (milestone.verified && milestone.verifierId === validatorUserId) {
+    return { success: false, error: 'Milestone already validated' }
+  }
+
+  try {
+    authorizeVerifierQueueAction(milestone, validatorUserId, 'validate')
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Verifier is not authorized' }
   }
 
   if (milestone.verified) {
@@ -156,6 +184,16 @@ export const transitionMilestone = (
   if (!(to in LIFECYCLE_ORDER)) return { success: false, error: `Unknown lifecycle state: ${String(to)}` }
 
   const from: MilestoneLifecycleState = lifecycleState[id] ?? 'created'
+
+  // Submission is created by the vault workflow, not a verifier queue action.
+  // Authorization begins when a verifier changes the submitted item.
+  if (opts?.actor !== undefined && to !== 'submitted') {
+    const action = to === 'settled' ? 'approve' : 'validate'
+    // A replay must be acknowledged before checking the now-advanced state.
+    if (!opts.idempotencyKey || !appliedIdempotencyKeys[id]?.has(opts.idempotencyKey)) {
+      assertVerifierLifecycleTransition(milestone, opts.actor, action, from, to)
+    }
+  }
 
   // Duplicate-request safety: the same idempotency key may only apply once
   // per milestone. A retry with the same key is acknowledged without
@@ -412,10 +450,12 @@ export const validateMilestoneMultiVerifier = (
   }
 
   // For thresholds > 1, multiple verifiers should be able to approve
-  if (milestone.approvalThreshold === 1 && milestone.verifierId && milestone.verifierId !== validatorUserId) {
+  try {
+    authorizeVerifierQueueAction(milestone, validatorUserId, 'approve')
+  } catch (error) {
     return {
       success: false,
-      error: 'Unauthorized: only assigned verifier can validate this milestone',
+      error: error instanceof Error ? error.message : 'Verifier is not authorized',
       milestone,
       canApprove: false,
     }

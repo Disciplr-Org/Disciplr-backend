@@ -14,6 +14,8 @@ import {
   getMilestoneById,
   verifyMilestone,
   validateMilestone,
+  validateMilestoneMultiVerifier,
+  addMilestoneEvent,
   allMilestonesVerified,
   allMilestonesMetThreshold,
 } from '../services/milestones.js'
@@ -42,6 +44,7 @@ import {
   DuplicateVerifierVoteError,
   getVerifierProfile,
 } from '../services/verifiers.js'
+import { VerifierAuthorizationError } from '../services/verifierTransitions.js'
 
 const milestoneRepo = new MilestoneRepositoryEnhanced(db)
 
@@ -308,7 +311,17 @@ milestonesRouter.patch('/:id/verify', authenticate, requireWalletIdentity, requi
       throw AppError.notFound('Milestone not found')
     }
 
-    const verified = verifyMilestone(id)
+    let verified
+    try {
+      verified = verifyMilestone(id, actorUserId)
+    } catch (error) {
+      if (error instanceof VerifierAuthorizationError) {
+        throw error.code === 'ALREADY_SETTLED'
+          ? AppError.conflict(error.message)
+          : AppError.forbidden(error.message)
+      }
+      throw error
+    }
     if (!verified) {
       throw AppError.notFound('Milestone not found')
     }
@@ -370,7 +383,10 @@ milestonesRouter.post('/:id/validate', authenticate, requireWalletIdentity, requ
       if (result.error === 'Milestone already validated') {
         throw AppError.conflict('Milestone already validated')
       }
-      if (result.error === 'Unauthorized: only assigned verifier can validate') {
+      if (/already settled|already validated/i.test(result.error ?? '')) {
+        throw AppError.conflict(result.error!)
+      }
+      if (/assigned verifier|not assigned/i.test(result.error ?? '')) {
         throw AppError.forbidden('Unauthorized: only assigned verifier can validate')
       }
       throw AppError.badRequest(result.error!)
@@ -434,6 +450,15 @@ milestonesRouter.post('/:id/approve', authenticate, requireWalletIdentity, requi
         throw AppError.forbidden('Only approved verifiers may cast milestone approvals')
       }
 
+      const authorization = validateMilestoneMultiVerifier(
+        id,
+        verifierUserId,
+        verifier?.status,
+      )
+      if (!authorization.success) {
+        throw AppError.forbidden(authorization.error ?? 'Verifier is not authorized for this queue item')
+      }
+
       // Check if verifier has already voted (duplicate vote prevention)
       const hasVoted = await hasVerifierVoted(id, verifierUserId)
 
@@ -453,6 +478,14 @@ milestonesRouter.post('/:id/approve', authenticate, requireWalletIdentity, requi
       // Record the approval
       const approval = await recordMilestoneApproval(id, verifierUserId, approvalStatus as any)
 
+      addMilestoneEvent({
+        userId: verifierUserId,
+        vaultId,
+        name: 'milestone.approval.recorded',
+        status: 'success',
+        timestamp: new Date().toISOString(),
+      })
+
       // Get updated approval progress
       const approvalProgress = await getMilestoneApprovalProgress(id, approvalThreshold, totalVerifiers)
 
@@ -465,6 +498,14 @@ milestonesRouter.post('/:id/approve', authenticate, requireWalletIdentity, requi
         milestone.verified = true
         milestone.verifiedAt = new Date().toISOString()
         milestone.verifiedBy = verifierUserId
+
+        addMilestoneEvent({
+          userId: verifierUserId,
+          vaultId,
+          name: 'milestone.settled',
+          status: 'success',
+          timestamp: milestone.verifiedAt,
+        })
 
         // Build approval/rejection counts for veto-aware vault check
         const vaultMilestones = getMilestonesByVaultId(vaultId)
