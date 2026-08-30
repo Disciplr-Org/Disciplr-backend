@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import client from 'prom-client';
-import { transitionOperation } from './observabilityState.js';
+import { transitionOperation, isTerminal } from './observabilityState.js';
 
 // ── Core RED metrics ─────────────────────────────────────────────────────────
 
@@ -137,12 +137,17 @@ export const httpMetricsMiddleware = (
   res.on('finish', () => {
     httpRequestsInFlight.dec({ method });
 
+    // Idempotent: skip if metrics already recorded (duplicate finish events)
+    if (isTerminal(req, 'metrics')) return;
+
     try {
       const diff = process.hrtime(start);
       const durationInSeconds = diff[0] + diff[1] / 1e9;
       recordMetricsDirectly(req, res, durationInSeconds);
+      transitionOperation(req, 'metrics', 'done');
     } catch {
       // Metrics recording must never propagate errors to the request lifecycle.
+      transitionOperation(req, 'metrics', 'failed', 'metrics recording error');
     }
   });
 

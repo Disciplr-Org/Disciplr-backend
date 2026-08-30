@@ -558,9 +558,10 @@ export class InMemoryJobQueue {
     } catch (error) {
       const message = getErrorMessage(error)
 
-      // If the handler marked the error as non-retryable, skip retry and move to dead letter
+      // If the handler marked the error as non-retryable, record failure without dead-lettering
       if (error && (error as any).nonRetryable) {
-        this.moveToDeadLetter(job, message)
+        this.transitionState(job, 'failed', 'non-retryable')
+        this.recordFailedJob(job, message)
       } else if (job.attempt < job.maxAttempts) {
         // Atomically transition running → pending (retry with backoff)
         this.transitionState(job, 'pending', 'retry')
@@ -627,6 +628,7 @@ export class InMemoryJobQueue {
       createdAt: job.createdAt,
       runAt: job.runAt,
       maxAttempts: job.maxAttempts,
+      state: 'dead-lettered',
     }
 
     this.deadLetterJobs.unshift(record)

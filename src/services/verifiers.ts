@@ -713,7 +713,6 @@ export const getMilestoneApprovalProgress = async (
 
   // Hostile-input boundary: clamp thresholds to sane ranges so zero, negative,
   // or non-numeric inputs can never produce a degenerate veto/complete result.
-  const safeThreshold = Math.max(1, Math.floor(Number(approvalThreshold) || 1))
   const safeTotal =
     totalVerifiers !== undefined && totalVerifiers > 0
       ? Math.max(1, Math.floor(Number(totalVerifiers)))
