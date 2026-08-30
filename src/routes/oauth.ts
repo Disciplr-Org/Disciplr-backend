@@ -142,21 +142,7 @@ oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res:
       return
     }
 
-      const unknown = unique.filter((s) => !clientScopes.includes(s))
-      if (unknown.length > 0) {
-        auditLog({
-          actor_user_id: canonicalClientId,
-          action: 'oauth.token_denied',
-          target_type: 'oauth_client',
-          target_id: canonicalClientId,
-          metadata: { reason: 'scope_exceeded', requested_scopes: unique, client_scopes: clientScopes },
-        })
-        oauthError(res, 400, 'invalid_scope', `Requested scope(s) exceed client grants: ${unknown.join(' ')}`)
-        return
-      }
-
-      grantedScopes = unique
-    }
+    grantedScopes = requested
   } else {
     grantedScopes = clientScopes
   }

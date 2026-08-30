@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { requireVerifier, requireAdmin } from '../middleware/rbac.js'
 import { recordVerification, listVerifications } from '../services/verifiers.js'
@@ -22,9 +23,52 @@ export const verificationsRouter = Router()
 const EVIDENCE_HASH_RE = /^[0-9a-f]{32,128}$/i
 const MAX_BATCH_SIZE = 100
 
+/**
+ * Hard upper bound on verifications returned per admin list page.
+ * Prevents unbounded DB scans on the verifications table.
+ */
+const MAX_VERIFICATIONS_PAGE_LIMIT = 500
+
+/**
+ * In-flight bulk guard: prevents the same verifier from having multiple
+ * concurrent bulk submissions active simultaneously, which could produce
+ * duplicate evidence records or amplify DB load during reconnects.
+ * Process-local; for multi-replica deployments a distributed lock is needed.
+ */
+const bulkInFlight = new Set<string>()
+
 function isSerializationError(err: Error): boolean {
   const msg = err.message.toLowerCase()
   return msg.includes('serialization') || msg.includes('could not serialize') || msg.includes('deadlock')
+}
+
+/**
+ * Emit a structured JSON diagnostic event for verifications routes.
+ * No user-controlled values are interpolated into the message string.
+ * No secrets, tokens, or evidence URLs are included.
+ */
+function emitVerificationDiagnostic(event: {
+  level: 'info' | 'warn' | 'error'
+  action: string
+  verifierUserId?: string
+  latencyMs?: number
+  outcome?: string
+  errorCode?: string
+  count?: number
+}): void {
+  const entry: Record<string, unknown> = {
+    level: event.level,
+    service: 'disciplr-backend',
+    component: 'verifications',
+    action: event.action,
+    timestamp: new Date().toISOString(),
+  }
+  if (event.verifierUserId !== undefined) entry.verifierUserId = event.verifierUserId
+  if (event.latencyMs !== undefined) entry.latencyMs = event.latencyMs
+  if (event.outcome !== undefined) entry.outcome = event.outcome
+  if (event.errorCode !== undefined) entry.errorCode = event.errorCode
+  if (event.count !== undefined) entry.count = event.count
+  console.error(JSON.stringify(entry))
 }
 
 verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request, res: Response, next: NextFunction) => {
@@ -166,9 +210,27 @@ verificationsRouter.post('/', authenticate, requireVerifier, async (req: Request
   }
 })
 
-verificationsRouter.get('/', authenticate, requireAdmin, async (_req: Request, res: Response) => {
-  const all = await listVerifications()
-  res.json({ verifications: all })
+verificationsRouter.get('/', authenticate, requireAdmin, async (req: Request, res: Response) => {
+  // Enforce an upper bound to prevent full-table scans on large deployments.
+  // Default: 100 items. Maximum: MAX_VERIFICATIONS_PAGE_LIMIT (500).
+  const rawLimit = req.query.limit !== undefined ? Number(req.query.limit) : 100
+  const limit = Math.min(
+    Number.isFinite(rawLimit) && rawLimit > 0 ? Math.floor(rawLimit) : 100,
+    MAX_VERIFICATIONS_PAGE_LIMIT,
+  )
+  const rawOffset = req.query.offset !== undefined ? Number(req.query.offset) : 0
+  const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : 0
+
+  const page = await listVerifications(undefined, { limit, offset })
+  res.json({
+    verifications: page,
+    pagination: {
+      limit,
+      offset,
+      count: page.length,
+      hasMore: page.length === limit,
+    },
+  })
 })
 
 interface BulkCheckInItem {
@@ -224,10 +286,28 @@ verificationsRouter.post('/bulk', authenticate, requireVerifier, async (req: Req
     return next(AppError.badRequest(`Batch size exceeds maximum of ${MAX_BATCH_SIZE}`))
   }
 
+  // Guard: reject a second concurrent bulk submission from the same verifier.
+  // This prevents duplicate evidence writes or DB amplification during rapid
+  // reconnects or double-clicks from a misbehaving client.
+  if (bulkInFlight.has(verifierUserId)) {
+    emitVerificationDiagnostic({
+      level: 'warn',
+      action: 'verification.bulk',
+      verifierUserId,
+      outcome: 'concurrent_request_rejected',
+      count: items.length,
+    })
+    return next(AppError.badRequest('a bulk submission is already in progress for this verifier; retry after it completes'))
+  }
+
+  bulkInFlight.add(verifierUserId)
+  const t0 = Date.now()
+
   const results: BulkCheckInResult[] = []
   let succeeded = 0
   let failed = 0
 
+  try {
   for (const item of items) {
     const { targetId, result, disputed, evidenceHash, evidenceReferenceUrl } = item
 
@@ -351,6 +431,17 @@ verificationsRouter.post('/bulk', authenticate, requireVerifier, async (req: Req
     }
 
     results.push(itemResult)
+  }
+  } finally {
+    bulkInFlight.delete(verifierUserId)
+    emitVerificationDiagnostic({
+      level: 'info',
+      action: 'verification.bulk',
+      verifierUserId,
+      latencyMs: Date.now() - t0,
+      outcome: failed === 0 ? 'success' : 'partial',
+      count: items.length,
+    })
   }
 
   const response: BulkCheckInResponse = {
