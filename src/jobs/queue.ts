@@ -175,6 +175,20 @@ const asPositiveInteger = (value: number | undefined, fallback: number): number 
   return Math.floor(value)
 }
 
+const asNonNegativeInteger = (value: number | undefined, fallback: number): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return fallback
+  }
+  return Math.floor(value)
+}
+
+const asAttemptCount = (value: number | undefined, fallback = 3): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback
+  }
+  return Math.max(1, Math.floor(value))
+}
+
 export class InMemoryJobQueue {
   private readonly handlers = new Map<JobType, JobHandler>()
   private readonly pendingJobs: Array<InternalQueuedJob<JobType>> = []
@@ -265,8 +279,8 @@ export class InMemoryJobQueue {
     }
 
     const now = Date.now()
-    const delayMs = Math.max(0, Math.floor(options.delayMs ?? 0))
-    const maxAttempts = Math.max(1, Math.floor(options.maxAttempts ?? 3))
+    const delayMs = asNonNegativeInteger(options.delayMs, 0)
+    const maxAttempts = asAttemptCount(options.maxAttempts)
     const job: InternalQueuedJob<T> = {
       id: randomUUID(),
       type,
@@ -437,13 +451,11 @@ export class InMemoryJobQueue {
       this.activeJobs.delete(jobId)
 
       if (job.attempt >= job.maxAttempts) {
-        // Atomically transition running → failed (stale lease)
-        this.transitionState(job, 'failed', 'stale lease reclaimed')
-        this.moveToDeadLetter(
+        const record = this.moveToDeadLetter(
           job,
           `Stuck job reclaimed: lease age ${leaseAgeMs}ms exceeded staleLeaseMs ${staleLeaseMs}ms`,
         )
-        deadLettered.push(this.deadLetterJobs[0])
+        deadLettered.push(record)
       } else {
         // Atomically transition running → pending (reclaim for retry)
         this.transitionState(job, 'pending', 'stale lease reclaimed')
@@ -546,15 +558,9 @@ export class InMemoryJobQueue {
     } catch (error) {
       const message = getErrorMessage(error)
 
-      // Check whether sweep reclaimed this job while the handler was running.
-      if (!this.activeJobs.has(job.id)) {
-        return
-      }
-
-      // If the handler marked the error as non-retryable, move to failed
+      // If the handler marked the error as non-retryable, skip retry and move to dead letter
       if (error && (error as any).nonRetryable) {
-        this.transitionState(job, 'failed', 'non-retryable')
-        this.recordFailedJob(job, message)
+        this.moveToDeadLetter(job, message)
       } else if (job.attempt < job.maxAttempts) {
         // Atomically transition running → pending (retry with backoff)
         this.transitionState(job, 'pending', 'retry')
@@ -600,10 +606,7 @@ export class InMemoryJobQueue {
     this.trimHistory(this.completedJobs)
   }
 
-  private moveToDeadLetter(job: InternalQueuedJob<JobType>, error: string): void {
-    // Atomically transition failed → dead-lettered
-    this.transitionState(job, 'dead-lettered', 'max attempts exhausted')
-
+  private moveToDeadLetter(job: InternalQueuedJob<JobType>, error: string): DeadLetterJobRecord {
     this.totals.failed += 1
     this.failedJobs.unshift({
       jobId: job.id,
@@ -614,7 +617,7 @@ export class InMemoryJobQueue {
     })
     this.trimHistory(this.failedJobs)
 
-    this.deadLetterJobs.unshift({
+    const record: DeadLetterJobRecord = {
       jobId: job.id,
       type: job.type,
       failedAt: new Date().toISOString(),
@@ -624,13 +627,10 @@ export class InMemoryJobQueue {
       createdAt: job.createdAt,
       runAt: job.runAt,
       maxAttempts: job.maxAttempts,
-      state: job.state,
-    })
-
-    // Clean up idempotency key so the same key can be reused after DLQ
-    if (job.idempotencyKey) {
-      this.idempotencyIndex.delete(job.idempotencyKey)
     }
+
+    this.deadLetterJobs.unshift(record)
+    return record
   }
 
   getDeadLetters(): DeadLetterJobRecord[] {
@@ -683,6 +683,7 @@ export class InMemoryJobQueue {
       }
 
       this.deadLetterJobs.splice(deadLetterIndex, 1)
+      this.totals.retried += 1
 
       const job: InternalQueuedJob<JobType> = {
         id: entry.jobId,

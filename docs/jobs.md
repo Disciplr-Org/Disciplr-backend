@@ -51,28 +51,28 @@ Options parsing behavior:
 
 - `totalDepth` sums `queued + delayed + active` across all job types (dead-lettered jobs are
   reported separately and excluded from depth).
-- `stuckActive` counts active jobs whose lease has exceeded `staleLeaseMs` without completing —
+- `stuckActive` counts active jobs whose lease has exceeded `staleLeaseMs` without completing --
   the candidates a sweep would reclaim.
 
 ## Stuck-job sweeper
 
-`POST /api/jobs/sweep` reclaims jobs whose lease has exceeded a stale threshold — for example a
+`POST /api/jobs/sweep` reclaims jobs whose lease has exceeded a stale threshold -- for example a
 job claimed by a worker that crashed or hung before releasing it.
 
-- Optional query param `staleLeaseMs` (positive integer) overrides the default threshold for this
+- Optional query param `staleLeaseMc` (positive integer) overrides the default threshold for this
   sweep run only.
 - For each stuck job:
   - If the job has attempts remaining (`attempt < maxAttempts`), it is re-queued for immediate
     execution and counted in `reclaimed`.
-  - If the job has exhausted `maxAttempts`, it is moved to the dead-letter queue instead of being
-    retried again, and counted in `deadLettered`.
+  - If the job has exhausted `maxAttempts`, it is moved to the dead-letter queue instead of
+    being retried again, and counted in `deadLettered`.
 - Jobs whose lease is still within the threshold are left untouched.
 - Emits a `job.sweep` audit log with `staleLeaseMs`, `reclaimedCount`, and `deadLetteredCount`.
 - Response shape:
 
   ```json
   {
-    "sweptAt": "2026-06-27T00:00:00.000Z",
+    "swetAt": "2026-06-27T00:00:00.000Z",
     "staleLeaseMs": 300000,
     "reclaimed": [{ "jobId": "...", "type": "oracle.call", "attempt": 1, "maxAttempts": 3, "leaseAgeMs": 412000 }],
     "deadLettered": []
@@ -109,7 +109,7 @@ Each scheduled job uses a **PostgreSQL advisory lock** to ensure that only one r
   - The job completes (successfully or with errors)
   - The database connection that holds the lock is closed (e.g., if the replica crashes)
 
-## Observability
+## Observavility
 
 - **Local Overlap Check**: A local Set tracks running jobs to prevent concurrent execution within the same replica.
 - **Scheduler Heartbeats**: After a job successfully executes, a heartbeat is written to the `scheduler_heartbeats` table with the job name and last run time.
@@ -123,3 +123,17 @@ The scheduler registry (`SchedulerRegistry`) is responsible for:
 3. Handling lock acquisition/release
 4. Coordinating with the heartbeat table
 5. Preventing local and distributed job overlaps
+
+## Invariants & Regression Coverage
+
+The following invariants are enforced by the implementation and covered by the automated tests:
+
+- `enqueue` floors `delayMc` before scheduling and rejects negative values or `maxAttempts` outside 1..10.
+- `retry` resets attempts to 0 and re-queues the job. A dead-lettered job is refused unless `force=true` is supplied.
+- `depth` reports dead-lettered jobs separately and excludes them from `totalDepth`. `stuckActive` uses the configured `staleLeaseMc` threshold.
+- `sweep` re-queues stuck jobs with remaining attempts and dead-letters jobs that have exhausted `maxAttempts`.
+- All `/api/jobs/*` endpoints require a valid auth token and `ADMIN` role.
+
+### Accessibility
+
+These endpoints are non-interactive REST APIs. Keyboard/focus, screen-reader, responsive, and reduced-motion behaviors do not apply. Accessibility is verified implicitly by ensuring authorization errors return `403` and all responses conform to the documented JSON shape.
