@@ -38,7 +38,7 @@ describe('TransactionRepository', () => {
 
   describe('create', () => {
     it('should successfully insert a new transaction', async () => {
-      const tx = { tx_hash: 'hash-1', user_id: 'user-1' };
+      const tx = { tx_hash: 'hash-1', user_id: 'user-1', vault_id: 'vault-1', type: 'creation' };
       const result = await repo.create(tx);
       expect(result).toEqual({ id: 'tx-1', tx_hash: 'hash-1' });
       
@@ -52,7 +52,7 @@ describe('TransactionRepository', () => {
       // simulate .returning() returning empty array due to .ignore()
       mockDb().returning.mockResolvedValueOnce([]);
       
-      const tx = { tx_hash: 'hash-1', user_id: 'user-1' };
+      const tx = { tx_hash: 'hash-1', user_id: 'user-1', vault_id: 'vault-1', type: 'creation' };
       const result = await repo.create(tx);
       
       expect(result).toEqual({ id: 'tx-1', tx_hash: 'hash-1' });
@@ -66,7 +66,7 @@ describe('TransactionRepository', () => {
       mockDb().returning.mockResolvedValueOnce([]);
       mockDb().first.mockResolvedValueOnce(undefined);
       
-      const tx = { tx_hash: 'hash-unknown' };
+      const tx = { tx_hash: 'hash-unknown', user_id: 'user-1', vault_id: 'vault-1', type: 'creation' };
       await expect(repo.create(tx)).rejects.toThrow(/Failed to create or retrieve/);
     });
   });

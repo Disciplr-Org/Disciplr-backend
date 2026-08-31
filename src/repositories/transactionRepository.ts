@@ -218,10 +218,7 @@ export class TransactionRepository {
     const safeLim = clampLimit(limit);
 
     let query = this.db('transactions')
-      .where({ user_id: userId.trim() })
-      .orderBy('stellar_timestamp', 'desc')
-      .orderBy('id', 'desc')
-      .limit(safeLim + 1);
+      .where({ user_id: userId.trim() });
 
     if (filters.vaultId) {
       query = query.where({ vault_id: filters.vaultId.trim() });
@@ -260,7 +257,10 @@ export class TransactionRepository {
       }
     }
 
-    const transactions = await query;
+    const transactions = await query
+      .orderBy('stellar_timestamp', 'desc')
+      .orderBy('id', 'desc')
+      .limit(safeLim + 1);
     const hasMore = transactions.length > safeLim;
     const data = hasMore ? transactions.slice(0, safeLim) : transactions;
 
@@ -395,10 +395,7 @@ export class TransactionRepository {
     validateTransactionFilters(filters);
 
     let query = this.db('transactions')
-      .where('vault_id', vaultId.trim())
-      .orderBy('stellar_timestamp', 'desc')
-      .orderBy('id', 'desc')
-      .limit(safeLim + 1);
+      .where('vault_id', vaultId.trim());
 
     if (filters.type) {
       query = query.where('type', filters.type.trim());
@@ -434,7 +431,10 @@ export class TransactionRepository {
       }
     }
 
-    const transactions = await query;
+    const transactions = await query
+      .orderBy('stellar_timestamp', 'desc')
+      .orderBy('id', 'desc')
+      .limit(safeLim + 1);
     const hasMore = transactions.length > safeLim;
     const data = hasMore ? transactions.slice(0, safeLim) : transactions;
 
