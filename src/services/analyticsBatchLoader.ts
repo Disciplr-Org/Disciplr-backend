@@ -15,11 +15,21 @@ export interface MilestoneAggregate {
   pendingMilestones: number
 }
 
-// Minimal subset of the better-sqlite3 Database interface used by the loader.
+export interface OrgVaultAnalytics {
+  totalVaults: number
+  activeVaults: number
+  completedVaults: number
+  failedVaults: number
+  totalLockedCapital: string
+  successRate: number
+  totalMilestones: number
+  completedMilestones: number
+}
+
+// Async query interface compatible with pg.Pool.
+// pg.Pool.query(text, params) returns Promise<{ rows }> — this matches.
 export interface DbLike {
-  prepare(sql: string): {
-    all(...params: unknown[]): unknown[]
-  }
+  query(sql: string, params?: unknown[]): Promise<{ rows: unknown[] }>
 }
 
 /**
@@ -54,15 +64,14 @@ export class AnalyticsBatchLoader {
    * Load vault aggregates for a set of vault IDs in one query.
    * Deduplicates keys; already-cached keys do not trigger additional queries.
    */
-  loadVaults(vaultIds: string[]): Map<string, VaultAggregate> {
+  async loadVaults(vaultIds: string[]): Promise<Map<string, VaultAggregate>> {
     const unique = [...new Set(vaultIds)]
     const uncached = unique.filter((id) => !this.vaultCache.has(id))
 
     if (uncached.length > 0) {
-      const placeholders = uncached.map(() => '?').join(',')
-      const rows = this.db
-        .prepare(
-          `SELECT
+      const placeholders = uncached.map((_, i) => `$${i + 1}`).join(',')
+      const { rows } = await this.db.query(
+        `SELECT
             v.id          AS vaultId,
             v.status,
             v.amount,
@@ -72,18 +81,12 @@ export class AnalyticsBatchLoader {
           LEFT JOIN milestones m ON m.vault_id = v.id
           WHERE v.id IN (${placeholders})
           GROUP BY v.id, v.status, v.amount`,
-        )
-        .all(...uncached) as {
-          vaultId: string
-          status: string
-          amount: string
-          milestoneCount: number
-          completedMilestones: number
-        }[]
+        uncached,
+      )
 
       this._queryCount++
 
-      for (const row of rows) {
+      for (const row of rows as VaultAggregate[]) {
         this.vaultCache.set(row.vaultId, {
           vaultId: row.vaultId,
           status: row.status,
@@ -105,15 +108,14 @@ export class AnalyticsBatchLoader {
   /**
    * Load milestone aggregates grouped by vault for a set of vault IDs in one query.
    */
-  loadMilestones(vaultIds: string[]): Map<string, MilestoneAggregate> {
+  async loadMilestones(vaultIds: string[]): Promise<Map<string, MilestoneAggregate>> {
     const unique = [...new Set(vaultIds)]
     const uncached = unique.filter((id) => !this.milestoneCache.has(id))
 
     if (uncached.length > 0) {
-      const placeholders = uncached.map(() => '?').join(',')
-      const rows = this.db
-        .prepare(
-          `SELECT
+      const placeholders = uncached.map((_, i) => `$${i + 1}`).join(',')
+      const { rows } = await this.db.query(
+        `SELECT
             vault_id      AS vaultId,
             COUNT(*)      AS milestoneCount,
             SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completedMilestones,
@@ -121,17 +123,12 @@ export class AnalyticsBatchLoader {
           FROM milestones
           WHERE vault_id IN (${placeholders})
           GROUP BY vault_id`,
-        )
-        .all(...uncached) as {
-          vaultId: string
-          milestoneCount: number
-          completedMilestones: number
-          pendingMilestones: number
-        }[]
+        uncached,
+      )
 
       this._queryCount++
 
-      for (const row of rows) {
+      for (const row of rows as MilestoneAggregate[]) {
         this.milestoneCache.set(row.vaultId, {
           vaultId: row.vaultId,
           milestoneCount: Number(row.milestoneCount),
@@ -160,6 +157,67 @@ export class AnalyticsBatchLoader {
       if (hit) result.set(id, hit)
     }
     return result
+  }
+}
+
+/**
+ * Compute a point-in-time analytics snapshot for a set of vault IDs
+ * using the batch loader. Uses Postgres-compatible parameterised queries.
+ */
+export async function getOrgAnalyticsBatched(
+  vaultIds: string[],
+  db?: DbLike,
+): Promise<OrgVaultAnalytics> {
+  if (vaultIds.length === 0) {
+    return {
+      totalVaults: 0,
+      activeVaults: 0,
+      completedVaults: 0,
+      failedVaults: 0,
+      totalLockedCapital: '0',
+      successRate: 0,
+      totalMilestones: 0,
+      completedMilestones: 0,
+    }
+  }
+
+  const loader = new AnalyticsBatchLoader(db)
+  const vaults = await loader.loadVaults(vaultIds)
+  const milestones = await loader.loadMilestones(vaultIds)
+
+  let totalVaults = 0
+  let activeVaults = 0
+  let completedVaults = 0
+  let failedVaults = 0
+  let totalLockedCapital = 0
+  let totalMilestones = 0
+  let completedMilestones = 0
+
+  for (const v of vaults.values()) {
+    totalVaults++
+    if (v.status === 'active') activeVaults++
+    else if (v.status === 'completed') completedVaults++
+    else if (v.status === 'failed') failedVaults++
+    totalLockedCapital += Number(v.amount)
+  }
+
+  for (const m of milestones.values()) {
+    totalMilestones += m.milestoneCount
+    completedMilestones += m.completedMilestones
+  }
+
+  const resolvedVaults = completedVaults + failedVaults
+  const successRate = resolvedVaults > 0 ? completedVaults / resolvedVaults : 0
+
+  return {
+    totalVaults,
+    activeVaults,
+    completedVaults,
+    failedVaults,
+    totalLockedCapital: totalLockedCapital.toString(),
+    successRate,
+    totalMilestones,
+    completedMilestones,
   }
 }
 

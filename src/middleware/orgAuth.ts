@@ -1,21 +1,21 @@
 import { Request, Response, NextFunction } from "express";
 import { AuthenticatedRequest, getAuthenticatedUserId } from "./auth.js";
 import { AppError } from "./errorHandler.js";
-import {
-  getOrganization,
-  getMemberRole as lookupMemberRole,
-} from "../models/organizations.js";
 import type { OrgRole } from "../models/organizations.js";
 import db from "../db/index.js";
 
 export type { OrgRole } from "../models/organizations.js";
 
 /**
- * In-memory org access middleware (used by orgVaults routes).
- * Checks org existence and membership via in-memory store.
+ * DB-backed org access middleware.
+ * Checks org existence and membership via the organizations and org_members tables.
  */
 export function requireOrgAccess(...allowedRoles: (OrgRole | string)[]) {
-  return (req: AuthenticatedRequest, _res: Response, next: NextFunction) => {
+  return async (
+    req: AuthenticatedRequest,
+    _res: Response,
+    next: NextFunction,
+  ) => {
     const orgId = req.params.orgId || (req.query.orgId as string);
     const userId = getAuthenticatedUserId(req);
 
@@ -24,29 +24,38 @@ export function requireOrgAccess(...allowedRoles: (OrgRole | string)[]) {
       return;
     }
 
-    const org = getOrganization(orgId);
-    if (!org) {
-      next(AppError.notFound("Organization not found"));
-      return;
-    }
-    (req as any).orgId = orgId;
+    try {
+      const org = await db("organizations").where({ id: orgId }).first();
+      if (!org) {
+        next(AppError.notFound("Organization not found"));
+        return;
+      }
+      (req as any).orgId = orgId;
 
-    const role = lookupMemberRole(orgId, userId);
-    if (!role) {
-      next(AppError.forbidden("Forbidden: not a member of this organization"));
-      return;
-    }
+      const membership = await db("org_members")
+        .where({ org_id: orgId, user_id: userId })
+        .first();
 
-    if (!allowedRoles.includes(role)) {
-      next(
-        AppError.forbidden(
-          `Forbidden: requires role ${allowedRoles.join(" or ")}`,
-        ),
-      );
-      return;
-    }
+      if (!membership) {
+        next(
+          AppError.forbidden("Forbidden: not a member of this organization"),
+        );
+        return;
+      }
 
-    next();
+      if (!allowedRoles.includes(membership.role)) {
+        next(
+          AppError.forbidden(
+            `Forbidden: requires role ${allowedRoles.join(" or ")}`,
+          ),
+        );
+        return;
+      }
+
+      next();
+    } catch (err) {
+      next(err);
+    }
   };
 }
 
@@ -60,7 +69,7 @@ export const requireOrgRole = (roles: (OrgRole | string)[]) => {
     next: NextFunction,
   ) => {
     const orgId = req.params.orgId || (req.query.orgId as string);
-    const userId = req.user?.userId || (req.user as any)?.sub;
+    const userId = getAuthenticatedUserId(req);
 
     if (!orgId || !userId) {
       res.status(401).json({ error: "Auth/Org info missing" });
@@ -68,6 +77,15 @@ export const requireOrgRole = (roles: (OrgRole | string)[]) => {
     }
 
     try {
+      // Prove the target org exists before looking up membership, so a
+      // cross-organization reference cannot be mistaken for an authorization
+      // denial (or leak existence only as a 403).
+      const org = await db("organizations").where({ id: orgId }).first();
+      if (!org) {
+        res.status(404).json({ error: "Organization not found" });
+        return;
+      }
+
       const membership = await db("org_members")
         .where({ org_id: orgId, user_id: userId })
         .first();
@@ -98,7 +116,7 @@ export const requireTeamRole = (roles: (OrgRole | string)[]) => {
     next: NextFunction,
   ) => {
     const teamId = req.params.teamId || (req.query.teamId as string);
-    const userId = req.user?.userId || (req.user as any)?.sub;
+    const userId = getAuthenticatedUserId(req);
 
     if (!teamId || !userId) {
       res.status(401).json({ error: "Auth/Team info missing" });
@@ -106,6 +124,12 @@ export const requireTeamRole = (roles: (OrgRole | string)[]) => {
     }
 
     try {
+      const team = await db("teams").where({ id: teamId }).first();
+      if (!team) {
+        res.status(404).json({ error: "Team not found" });
+        return;
+      }
+
       const membership = await db("team_members")
         .where({ team_id: teamId, user_id: userId })
         .first();

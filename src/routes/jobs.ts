@@ -5,6 +5,7 @@ import {
   type EnqueueOptions,
   type JobPayloadByType,
   type JobType,
+  JOB_TYPES,
   isJobType,
   isPayloadForJobType,
   isRecord,
@@ -41,20 +42,7 @@ const enqueueTypedJob = (
   payload: JobPayloadByType[JobType],
   options: EnqueueOptions,
 ) => {
-  switch (type) {
-    case 'notification.send':
-      return jobSystem.enqueue(type, payload, options)
-    case 'deadline.check':
-      return jobSystem.enqueue(type, payload, options)
-    case 'oracle.call':
-      return jobSystem.enqueue(type, payload, options)
-    case 'analytics.recompute':
-      return jobSystem.enqueue(type, payload, options)
-    case 'retention.purge':
-      return jobSystem.enqueue(type, payload, options)
-    default:
-      throw new Error('Unsupported job type')
-  }
+  return jobSystem.enqueue(type as any, payload as any, options)
 }
 
 // Router factory
@@ -69,7 +57,11 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
 
   // All jobs endpoints require an authenticated admin
   jobsRouter.use(authenticate)
-   
+
+  // NOTE (#1548): every jobs endpoint — including dead-letter inspection and
+  // replay (`GET/POST /deadletters/...`) — is gated behind this admin check, so
+  // operator replay is an authorized, boundary-enforced action. This guard
+  // already exists in main; no functional change is required here.
   jobsRouter.use(authorize([UserRole.ADMIN]))
 
   // GET /metrics — internal queue metrics (admin only)
@@ -215,7 +207,7 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
         if (!isJobType(type)) {
           res.status(400).json({
             error:
-              'Invalid or missing job type. Supported types: notification.send, deadline.check, oracle.call, analytics.recompute, retention.purge',
+              `Invalid or missing job type. Supported types: ${JOB_TYPES.join(', ')}`,
           })
           return
         }

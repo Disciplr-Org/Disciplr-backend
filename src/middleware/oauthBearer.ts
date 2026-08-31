@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction, RequestHandler } from 'express'
 import jwt from 'jsonwebtoken'
+import { getEnv } from '../config/index.js'
 import type { ApiScope } from '../types/auth.js'
-import { getJwtSecret } from '../lib/auth-utils.js'
 
 export interface OAuthTokenPayload {
   sub: string
@@ -13,6 +13,29 @@ export interface OAuthTokenPayload {
   aud: string
   iat: number
   exp: number
+  jti?: string
+  net?: string
+}
+
+/**
+ * Resolve the Stellar network this deployment is bound to. Tokens carrying a
+ * `net` claim are only accepted when it matches, preventing cross-network
+ * (e.g. testnet→mainnet) token replay. `null` when undeclared.
+ */
+const getNetworkId = (): string | null => {
+  try {
+    return (
+      getEnv().STELLAR_NETWORK_PASSPHRASE ??
+      getEnv().SOROBAN_NETWORK_PASSPHRASE ??
+      null
+    )
+  } catch {
+    return (
+      process.env.STELLAR_NETWORK_PASSPHRASE ??
+      process.env.SOROBAN_NETWORK_PASSPHRASE ??
+      null
+    )
+  }
 }
 
 declare global {
@@ -41,7 +64,7 @@ export const authenticateOAuthBearer = (requiredScopes: ApiScope[] = []): Reques
 
     let payload: OAuthTokenPayload
     try {
-      payload = jwt.verify(token, getJwtSecret(), {
+      payload = jwt.verify(token, getEnv().JWT_SECRET, {
         issuer: 'disciplr',
         audience: 'disciplr-api',
       }) as OAuthTokenPayload
@@ -61,6 +84,15 @@ export const authenticateOAuthBearer = (requiredScopes: ApiScope[] = []): Reques
         res.status(403).json({ error: `Forbidden: missing scope(s): ${missing.join(' ')}` })
         return
       }
+    }
+
+    // Cross-network replay guard: when the token declares the network it was
+    // minted for (`net` claim), it must match the network this deployment is
+    // bound to. Tokens without the claim are accepted for backward
+    // compatibility with previously-issued tokens.
+    if (payload.net !== undefined && payload.net !== getNetworkId()) {
+      res.status(401).json({ error: 'Unauthorized: Token bound to a different network' })
+      return
     }
 
     req.oauthToken = payload

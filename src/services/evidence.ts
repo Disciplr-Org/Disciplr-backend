@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma.js'
 import { isUrlAllowed } from './webhooks.js'
+import type { Knex } from 'knex'
 
 export class EvidenceReferenceValidationError extends Error {
   constructor(message: string) {
@@ -159,10 +160,36 @@ export async function createEvidenceReference(
   verificationId: string,
   evidenceHash: string,
   evidenceReferenceUrl: string,
+  trx?: Knex.Transaction,
 ): Promise<EvidenceReference> {
   const normalizedHash = normalizeEvidenceHash(evidenceHash)
-  const expiresAt = validateSignedObjectStorageUrl(evidenceReferenceUrl.trim())
+  const cleanReferenceUrl = evidenceReferenceUrl.trim()
+  const expiresAt = validateSignedObjectStorageUrl(cleanReferenceUrl)
   const now = new Date()
+
+  if (trx) {
+    const [row] = await trx('evidence_references')
+      .insert({
+        verification_id: verificationId,
+        evidence_hash: normalizedHash,
+        reference_url: cleanReferenceUrl,
+        expires_at: expiresAt,
+        created_at: now,
+      })
+      .onConflict('verification_id')
+      .merge({
+        evidence_hash: normalizedHash,
+        reference_url: cleanReferenceUrl,
+        expires_at: expiresAt,
+      })
+      .returning(['id', 'verification_id', 'evidence_hash', 'reference_url', 'expires_at', 'created_at'])
+
+    if (!row) {
+      throw new Error('Failed to persist evidence reference')
+    }
+
+    return mapEvidenceReferenceRow(row)
+  }
 
   const rows = await prisma.$queryRaw<
     Array<{
@@ -183,7 +210,7 @@ export async function createEvidenceReference(
     ) VALUES (
       ${verificationId},
       ${normalizedHash},
-      ${evidenceReferenceUrl.trim()},
+      ${cleanReferenceUrl},
       ${expiresAt},
       ${now}
     )
@@ -200,13 +227,24 @@ export async function createEvidenceReference(
     throw new Error('Failed to persist evidence reference')
   }
 
+  return mapEvidenceReferenceRow(row)
+}
+
+function mapEvidenceReferenceRow(row: {
+  id: string
+  verification_id: string
+  evidence_hash: string
+  reference_url: string
+  expires_at: Date | string
+  created_at: Date | string
+}): EvidenceReference {
   return {
     id: row.id,
     verificationId: row.verification_id,
     evidenceHash: row.evidence_hash,
     referenceUrl: row.reference_url,
-    expiresAt: row.expires_at.toISOString(),
-    createdAt: row.created_at.toISOString(),
+    expiresAt: row.expires_at instanceof Date ? row.expires_at.toISOString() : new Date(row.expires_at).toISOString(),
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : new Date(row.created_at).toISOString(),
   }
 }
 
@@ -343,7 +381,7 @@ export async function findSimilar(
     LIMIT ${limit}
   `
 
-  return results.map((r) => ({
+  return results.map((r: any) => ({
     milestoneId: r.milestone_id,
     evidenceHash: r.evidence_hash,
     referenceUrl: r.reference_url,

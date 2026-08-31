@@ -99,6 +99,62 @@ jest.mock('../db/knex', () => {
   return { db }
 })
 
+jest.mock('../db/index.js', () => {
+  const tokenStore = new Map<string, any>()
+  let tokenCounter = 0
+
+  const makeChain = (resolveWith: unknown) => ({
+    where: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    count: jest.fn().mockReturnThis(),
+    max: jest.fn().mockReturnThis(),
+    first: jest.fn().mockResolvedValue(resolveWith as never),
+    insert: jest.fn().mockResolvedValue([1] as never),
+    returning: jest.fn().mockResolvedValue([{ id: 'audit-123' }] as never),
+    update: jest.fn().mockResolvedValue([1] as never),
+    delete: jest.fn().mockResolvedValue(0 as never),
+  })
+
+  const db = jest.fn().mockImplementation((table: string) => {
+    if (table === 'confirmation_tokens') {
+      return {
+        where: jest.fn().mockImplementation((criteria: Record<string, any>) => ({
+          first: jest.fn().mockImplementation(() => {
+            const token = tokenStore.get(criteria.token_id)
+            return Promise.resolve(token ? { ...token } : null)
+          }),
+          update: jest.fn().mockImplementation((data: Record<string, any>) => {
+            for (const [id, token] of tokenStore) {
+              if (id === criteria.token_id) {
+                tokenStore.set(id, { ...token, ...data })
+                break
+              }
+            }
+            return Promise.resolve([1])
+          }),
+        })),
+        insert: jest.fn().mockImplementation((data: Record<string, any>) => {
+          tokenCounter++
+          tokenStore.set(data.token_id, { id: `mock-id-${tokenCounter}`, ...data })
+          return Promise.resolve([1])
+        }),
+        delete: jest.fn().mockImplementation(() => {
+          tokenStore.clear()
+          return Promise.resolve(0)
+        }),
+      }
+    }
+    return makeChain(null)
+  }) as jest.MockedFunction<any> & { transaction: jest.MockedFunction<any> }
+
+  db.transaction = jest.fn().mockImplementation(async (fn: (trx: unknown) => unknown) =>
+    fn(db),
+  ) as jest.MockedFunction<any>
+
+  return { db, default: db }
+})
+
 jest.mock('../services/checkpointStore', () => ({
   CheckpointStore: jest.fn().mockImplementation(() => ({
     getAllCheckpoints: jest.fn().mockResolvedValue([
@@ -163,15 +219,15 @@ const mockedCreateAuditLog = createAuditLog as jest.MockedFunction<typeof create
 // ── Unit tests: token lifecycle ───────────────────────────────────────────────
 
 describe('confirmationToken: issueConfirmationToken', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.useFakeTimers()
     jest.setSystemTime(new Date('2026-06-28T00:00:00.000Z'))
-    clearConfirmationTokens()
+    await clearConfirmationTokens()
   })
   afterEach(() => jest.useRealTimers())
 
-  test('issues a token with correct fields', () => {
-    const entry = issueConfirmationToken('admin-1', 'horizon.cursor.reset', 'CCONTRACT1')
+  test('issues a token with correct fields', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'horizon.cursor.reset', 'CCONTRACT1')
     expect(entry.tokenId).toMatch(/^[0-9a-f-]{36}$/)
     expect(entry.userId).toBe('admin-1')
     expect(entry.action).toBe('horizon.cursor.reset')
@@ -181,85 +237,85 @@ describe('confirmationToken: issueConfirmationToken', () => {
     expect(entry.expiresAt).toBe(Date.now() + 5 * 60 * 1000)
   })
 
-  test('dual-control action gets longer TTL', () => {
-    const entry = issueConfirmationToken('admin-1', 'user.hard_delete')
+  test('dual-control action gets longer TTL', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'user.hard_delete')
     expect(entry.dualControlRequired).toBe(true)
     expect(entry.expiresAt).toBe(Date.now() + 15 * 60 * 1000)
   })
 
-  test('each issued token has a unique tokenId', () => {
-    const a = issueConfirmationToken('admin-1', 'horizon.cursor.reset')
-    const b = issueConfirmationToken('admin-1', 'horizon.cursor.reset')
+  test('each issued token has a unique tokenId', async () => {
+    const a = await issueConfirmationToken('admin-1', 'horizon.cursor.reset')
+    const b = await issueConfirmationToken('admin-1', 'horizon.cursor.reset')
     expect(a.tokenId).not.toBe(b.tokenId)
   })
 })
 
 describe('confirmationToken: validateConfirmationToken', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.useFakeTimers()
     jest.setSystemTime(new Date('2026-06-28T00:00:00.000Z'))
-    clearConfirmationTokens()
+    await clearConfirmationTokens()
   })
   afterEach(() => jest.useRealTimers())
 
-  test('valid token is consumed and returned', () => {
-    const entry = issueConfirmationToken('admin-1', 'horizon.cursor.reset')
-    const result = validateConfirmationToken(entry.tokenId, 'admin-1', 'horizon.cursor.reset')
+  test('valid token is consumed and returned', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'horizon.cursor.reset')
+    const result = await validateConfirmationToken(entry.tokenId, 'admin-1', 'horizon.cursor.reset')
     expect(result).not.toBeNull()
     expect(result!.tokenId).toBe(entry.tokenId)
   })
 
-  test('missing token returns null', () => {
-    expect(validateConfirmationToken('no-such-token', 'admin-1', 'horizon.cursor.reset')).toBeNull()
+  test('missing token returns null', async () => {
+    expect(await validateConfirmationToken('no-such-token', 'admin-1', 'horizon.cursor.reset')).toBeNull()
   })
 
-  test('expired token is rejected', () => {
-    const entry = issueConfirmationToken('admin-1', 'horizon.cursor.reset')
+  test('expired token is rejected', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'horizon.cursor.reset')
     jest.setSystemTime(new Date('2026-06-28T00:05:01.000Z'))
-    expect(validateConfirmationToken(entry.tokenId, 'admin-1', 'horizon.cursor.reset')).toBeNull()
+    expect(await validateConfirmationToken(entry.tokenId, 'admin-1', 'horizon.cursor.reset')).toBeNull()
   })
 
-  test('wrong-scope (action mismatch) token is rejected', () => {
-    const entry = issueConfirmationToken('admin-1', 'horizon.cursor.reset')
-    expect(validateConfirmationToken(entry.tokenId, 'admin-1', 'embeddings.force_resync')).toBeNull()
+  test('wrong-scope (action mismatch) token is rejected', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'horizon.cursor.reset')
+    expect(await validateConfirmationToken(entry.tokenId, 'admin-1', 'embeddings.force_resync')).toBeNull()
   })
 
-  test('wrong-user token is rejected', () => {
-    const entry = issueConfirmationToken('admin-1', 'horizon.cursor.reset')
-    expect(validateConfirmationToken(entry.tokenId, 'admin-2', 'horizon.cursor.reset')).toBeNull()
+  test('wrong-user token is rejected', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'horizon.cursor.reset')
+    expect(await validateConfirmationToken(entry.tokenId, 'admin-2', 'horizon.cursor.reset')).toBeNull()
   })
 
-  test('already-used token is rejected (single-use enforcement)', () => {
-    const entry = issueConfirmationToken('admin-1', 'horizon.cursor.reset')
-    validateConfirmationToken(entry.tokenId, 'admin-1', 'horizon.cursor.reset')
-    expect(validateConfirmationToken(entry.tokenId, 'admin-1', 'horizon.cursor.reset')).toBeNull()
+  test('already-used token is rejected (single-use enforcement)', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'horizon.cursor.reset')
+    await validateConfirmationToken(entry.tokenId, 'admin-1', 'horizon.cursor.reset')
+    expect(await validateConfirmationToken(entry.tokenId, 'admin-1', 'horizon.cursor.reset')).toBeNull()
   })
 
-  test('dual-control token without approval is rejected', () => {
-    const entry = issueConfirmationToken('admin-1', 'user.hard_delete')
-    expect(validateConfirmationToken(entry.tokenId, 'admin-1', 'user.hard_delete')).toBeNull()
+  test('dual-control token without approval is rejected', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'user.hard_delete')
+    expect(await validateConfirmationToken(entry.tokenId, 'admin-1', 'user.hard_delete')).toBeNull()
   })
 
-  test('dual-control token after approval is accepted', () => {
-    const entry = issueConfirmationToken('admin-1', 'user.hard_delete')
-    approveConfirmationToken(entry.tokenId, 'admin-2')
-    const result = validateConfirmationToken(entry.tokenId, 'admin-1', 'user.hard_delete')
+  test('dual-control token after approval is accepted', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'user.hard_delete')
+    await approveConfirmationToken(entry.tokenId, 'admin-2')
+    const result = await validateConfirmationToken(entry.tokenId, 'admin-1', 'user.hard_delete')
     expect(result).not.toBeNull()
     expect(result!.approvedBy).toBe('admin-2')
   })
 })
 
 describe('confirmationToken: approveConfirmationToken', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.useFakeTimers()
     jest.setSystemTime(new Date('2026-06-28T00:00:00.000Z'))
-    clearConfirmationTokens()
+    await clearConfirmationTokens()
   })
   afterEach(() => jest.useRealTimers())
 
-  test('approves a pending dual-control token', () => {
-    const entry = issueConfirmationToken('admin-1', 'user.hard_delete')
-    const result = approveConfirmationToken(entry.tokenId, 'admin-2')
+  test('approves a pending dual-control token', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'user.hard_delete')
+    const result = await approveConfirmationToken(entry.tokenId, 'admin-2')
     expect(result.ok).toBe(true)
     if (result.ok) {
       expect(result.entry.approvedBy).toBe('admin-2')
@@ -267,47 +323,47 @@ describe('confirmationToken: approveConfirmationToken', () => {
     }
   })
 
-  test('rejects self-approval', () => {
-    const entry = issueConfirmationToken('admin-1', 'user.hard_delete')
-    const result = approveConfirmationToken(entry.tokenId, 'admin-1')
+  test('rejects self-approval', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'user.hard_delete')
+    const result = await approveConfirmationToken(entry.tokenId, 'admin-1')
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.reason).toBe('self_approval_not_allowed')
   })
 
-  test('rejects approval of non-dual-control action', () => {
-    const entry = issueConfirmationToken('admin-1', 'horizon.cursor.reset')
-    const result = approveConfirmationToken(entry.tokenId, 'admin-2')
+  test('rejects approval of non-dual-control action', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'horizon.cursor.reset')
+    const result = await approveConfirmationToken(entry.tokenId, 'admin-2')
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.reason).toBe('action_does_not_require_approval')
   })
 
-  test('rejects approval of non-existent token', () => {
-    const result = approveConfirmationToken('no-such-token', 'admin-2')
+  test('rejects approval of non-existent token', async () => {
+    const result = await approveConfirmationToken('no-such-token', 'admin-2')
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.reason).toBe('token_not_found')
   })
 
-  test('rejects double-approval', () => {
-    const entry = issueConfirmationToken('admin-1', 'user.hard_delete')
-    approveConfirmationToken(entry.tokenId, 'admin-2')
-    const result = approveConfirmationToken(entry.tokenId, 'admin-3')
+  test('rejects double-approval', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'user.hard_delete')
+    await approveConfirmationToken(entry.tokenId, 'admin-2')
+    const result = await approveConfirmationToken(entry.tokenId, 'admin-3')
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.reason).toBe('already_approved')
   })
 
-  test('rejects approval of expired token', () => {
-    const entry = issueConfirmationToken('admin-1', 'user.hard_delete')
+  test('rejects approval of expired token', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'user.hard_delete')
     jest.setSystemTime(new Date('2026-06-28T00:15:01.000Z'))
-    const result = approveConfirmationToken(entry.tokenId, 'admin-2')
+    const result = await approveConfirmationToken(entry.tokenId, 'admin-2')
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.reason).toBe('token_expired')
   })
 
-  test('rejects approval of already-consumed token', () => {
-    const entry = issueConfirmationToken('admin-1', 'user.hard_delete')
-    approveConfirmationToken(entry.tokenId, 'admin-2')
-    validateConfirmationToken(entry.tokenId, 'admin-1', 'user.hard_delete')
-    const result = approveConfirmationToken(entry.tokenId, 'admin-3')
+  test('rejects approval of already-consumed token', async () => {
+    const entry = await issueConfirmationToken('admin-1', 'user.hard_delete')
+    await approveConfirmationToken(entry.tokenId, 'admin-2')
+    await validateConfirmationToken(entry.tokenId, 'admin-1', 'user.hard_delete')
+    const result = await approveConfirmationToken(entry.tokenId, 'admin-3')
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.reason).toBe('token_not_found')
   })
@@ -341,9 +397,9 @@ describe('confirmationToken: isDualControlRequired', () => {
 // ── HTTP integration tests: prepare endpoint ──────────────────────────────────
 
 describe('POST /api/admin/confirm/prepare', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks()
-    clearConfirmationTokens()
+    await clearConfirmationTokens()
   })
 
   test('issues a confirmation token for a valid action', async () => {
@@ -447,9 +503,9 @@ describe('POST /api/admin/confirm/prepare', () => {
 // ── HTTP integration tests: approve endpoint ──────────────────────────────────
 
 describe('POST /api/admin/confirm/approve/:tokenId', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks()
-    clearConfirmationTokens()
+    await clearConfirmationTokens()
   })
 
   test('second admin can approve a dual-control token', async () => {
@@ -568,9 +624,9 @@ describe('POST /api/admin/confirm/approve/:tokenId', () => {
 // ── HTTP: guarded routes — rejection path (no service mocks needed) ────────────
 
 describe('Confirmation token guard: POST /api/admin/horizon/listener/reset-cursor', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks()
-    clearConfirmationTokens()
+    await clearConfirmationTokens()
   })
 
   test('rejects request without any confirmation token (403)', async () => {
@@ -588,7 +644,7 @@ describe('Confirmation token guard: POST /api/admin/horizon/listener/reset-curso
   test('rejects expired confirmation token (403)', async () => {
     jest.useFakeTimers()
     jest.setSystemTime(new Date('2026-06-28T00:00:00.000Z'))
-    const entry = issueConfirmationToken('admin-1', 'horizon.cursor.reset')
+    const entry = await issueConfirmationToken('admin-1', 'horizon.cursor.reset')
     jest.setSystemTime(new Date('2026-06-28T00:05:01.000Z'))
 
     const res = await request(app)
@@ -603,7 +659,7 @@ describe('Confirmation token guard: POST /api/admin/horizon/listener/reset-curso
   })
 
   test('rejects wrong-scope confirmation token (403)', async () => {
-    const entry = issueConfirmationToken('admin-1', 'embeddings.force_resync')
+    const entry = await issueConfirmationToken('admin-1', 'embeddings.force_resync')
 
     const res = await request(app)
       .post('/api/admin/horizon/listener/reset-cursor')
@@ -616,8 +672,8 @@ describe('Confirmation token guard: POST /api/admin/horizon/listener/reset-curso
   })
 
   test('rejects already-used (replayed) confirmation token (403)', async () => {
-    const entry = issueConfirmationToken('admin-1', 'horizon.cursor.reset')
-    validateConfirmationToken(entry.tokenId, 'admin-1', 'horizon.cursor.reset')
+    const entry = await issueConfirmationToken('admin-1', 'horizon.cursor.reset')
+    await validateConfirmationToken(entry.tokenId, 'admin-1', 'horizon.cursor.reset')
 
     const res = await request(app)
       .post('/api/admin/horizon/listener/reset-cursor')
@@ -630,7 +686,7 @@ describe('Confirmation token guard: POST /api/admin/horizon/listener/reset-curso
   })
 
   test('accepts valid confirmation token via header and executes the action', async () => {
-    const entry = issueConfirmationToken('admin-1', 'horizon.cursor.reset')
+    const entry = await issueConfirmationToken('admin-1', 'horizon.cursor.reset')
 
     await request(app)
       .post('/api/admin/horizon/listener/reset-cursor')
@@ -641,7 +697,7 @@ describe('Confirmation token guard: POST /api/admin/horizon/listener/reset-curso
   })
 
   test('accepts valid confirmation token via request body', async () => {
-    const entry = issueConfirmationToken('admin-1', 'horizon.cursor.reset')
+    const entry = await issueConfirmationToken('admin-1', 'horizon.cursor.reset')
 
     await request(app)
       .post('/api/admin/horizon/listener/reset-cursor')
@@ -651,7 +707,7 @@ describe('Confirmation token guard: POST /api/admin/horizon/listener/reset-curso
   })
 
   test('token is single-use: second request with same token is rejected', async () => {
-    const entry = issueConfirmationToken('admin-1', 'horizon.cursor.reset')
+    const entry = await issueConfirmationToken('admin-1', 'horizon.cursor.reset')
 
     await request(app)
       .post('/api/admin/horizon/listener/reset-cursor')
@@ -670,9 +726,9 @@ describe('Confirmation token guard: POST /api/admin/horizon/listener/reset-curso
 })
 
 describe('Confirmation token guard: DELETE /api/admin/users/:id', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks()
-    clearConfirmationTokens()
+    await clearConfirmationTokens()
   })
 
   test('soft-delete: rejects without confirmation token — action is user.soft_delete', async () => {
@@ -696,7 +752,7 @@ describe('Confirmation token guard: DELETE /api/admin/users/:id', () => {
   })
 
   test('hard-delete: soft_delete token is rejected for hard_delete (wrong scope)', async () => {
-    const entry = issueConfirmationToken('admin-1', 'user.soft_delete')
+    const entry = await issueConfirmationToken('admin-1', 'user.soft_delete')
 
     const res = await request(app)
       .delete('/api/admin/users/user-to-delete?hard=true')
@@ -708,7 +764,7 @@ describe('Confirmation token guard: DELETE /api/admin/users/:id', () => {
   })
 
   test('soft-delete: accepts user.soft_delete token', async () => {
-    const entry = issueConfirmationToken('admin-1', 'user.soft_delete')
+    const entry = await issueConfirmationToken('admin-1', 'user.soft_delete')
 
     await request(app)
       .delete('/api/admin/users/user-to-delete')
@@ -718,7 +774,7 @@ describe('Confirmation token guard: DELETE /api/admin/users/:id', () => {
   })
 
   test('hard-delete: dual-control token without approval is rejected (403)', async () => {
-    const entry = issueConfirmationToken('admin-1', 'user.hard_delete')
+    const entry = await issueConfirmationToken('admin-1', 'user.hard_delete')
 
     const res = await request(app)
       .delete('/api/admin/users/user-to-delete?hard=true')
@@ -730,8 +786,8 @@ describe('Confirmation token guard: DELETE /api/admin/users/:id', () => {
   })
 
   test('hard-delete: dual-control approved token succeeds', async () => {
-    const entry = issueConfirmationToken('admin-1', 'user.hard_delete')
-    approveConfirmationToken(entry.tokenId, 'admin-2')
+    const entry = await issueConfirmationToken('admin-1', 'user.hard_delete')
+    await approveConfirmationToken(entry.tokenId, 'admin-2')
 
     await request(app)
       .delete('/api/admin/users/user-to-delete?hard=true')
@@ -742,9 +798,9 @@ describe('Confirmation token guard: DELETE /api/admin/users/:id', () => {
 })
 
 describe('Confirmation token guard: POST /api/admin/embeddings/reembed', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks()
-    clearConfirmationTokens()
+    await clearConfirmationTokens()
   })
 
   test('rejects request without confirmation token', async () => {
@@ -759,7 +815,7 @@ describe('Confirmation token guard: POST /api/admin/embeddings/reembed', () => {
   })
 
   test('rejects wrong-scope token', async () => {
-    const entry = issueConfirmationToken('admin-1', 'horizon.cursor.reset')
+    const entry = await issueConfirmationToken('admin-1', 'horizon.cursor.reset')
 
     const res = await request(app)
       .post('/api/admin/embeddings/reembed')
@@ -772,7 +828,7 @@ describe('Confirmation token guard: POST /api/admin/embeddings/reembed', () => {
   })
 
   test('accepts valid embeddings.force_resync token', async () => {
-    const entry = issueConfirmationToken('admin-1', 'embeddings.force_resync')
+    const entry = await issueConfirmationToken('admin-1', 'embeddings.force_resync')
 
     await request(app)
       .post('/api/admin/embeddings/reembed')
@@ -786,9 +842,9 @@ describe('Confirmation token guard: POST /api/admin/embeddings/reembed', () => {
 // ── End-to-end dual-control flow via HTTP ─────────────────────────────────────
 
 describe('Dual-control: full HTTP flow for user.hard_delete', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks()
-    clearConfirmationTokens()
+    await clearConfirmationTokens()
   })
 
   test('full flow: prepare → fail-without-approval → approve → execute', async () => {
@@ -837,8 +893,8 @@ describe('Dual-control: full HTTP flow for user.hard_delete', () => {
   })
 
   test('replay: approved token cannot be consumed twice', async () => {
-    const entry = issueConfirmationToken('admin-1', 'user.hard_delete')
-    approveConfirmationToken(entry.tokenId, 'admin-2')
+    const entry = await issueConfirmationToken('admin-1', 'user.hard_delete')
+    await approveConfirmationToken(entry.tokenId, 'admin-2')
 
     await request(app)
       .delete('/api/admin/users/user-to-delete?hard=true')

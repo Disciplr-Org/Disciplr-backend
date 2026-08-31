@@ -16,6 +16,24 @@ export type JwtPayload = JWTPayload & { jti?: string };
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+/**
+ * CSRF protection middleware.
+ *
+ * SAFE methods (GET, HEAD, OPTIONS) are always allowed.
+ *
+ * For non-safe methods, this middleware checks the Origin / Referer headers
+ * against the configured CORS allowlist.
+ *
+ * Bearer-token exemption: requests carrying `Authorization: Bearer <token>`
+ * are only exempted from CSRF checks when the token is a *verifiable* JWT
+ * (passes `verifyAccessToken` or `jwt.verify`). Unverifiable tokens —
+ * including the unsigned `user:<id>` strings accepted by `requireUserAuth` —
+ * fall through to normal origin/referer validation. This prevents a CSRF
+ * bypass on any router still using the legacy `requireUserAuth` flow.
+ *
+ * @see requireUserAuth — legacy mock auth that accepts unverified Bearer tokens
+ * @deprecated requireUserAuth is deprecated; migrate routers to `authenticate`
+ */
 export function csrfProtection(
   req: Request,
   res: Response,
@@ -44,7 +62,7 @@ export function csrfProtection(
         return
       }
     } catch {
-      // Token wasn't verifiable -> fall through to normal CSRF checks
+      // Token was not verifiable -> fall through to normal CSRF checks
     }
   }
 

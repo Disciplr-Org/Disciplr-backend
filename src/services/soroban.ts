@@ -1,8 +1,18 @@
-import type { CreateVaultInput, PersistedVault, VaultCreateResponse, StakeInput, StakeResponse, StakeWithMemoInput, StakeWithMemoResponse } from '../types/vaults.js'
+import type {
+  CreateVaultInput,
+  PersistedVault,
+  StakeInput,
+  StakeResponse,
+  StakeWithMemoInput,
+  StakeWithMemoResponse,
+  VaultCreateResponse,
+} from '../types/vaults.js'
+import { MemoTooLongError } from '../types/vaults.js'
 import { retryWithBackoff, sleep, type RetryConfig } from '../utils/retry.js'
 import { StrKey } from '@stellar/stellar-sdk'
 import { AppError, SorobanTimeoutError } from '../middleware/errorHandler.js'
 import { getTracer } from '../observability/tracing.js'
+import { recordSorobanTransaction } from '../observability/sorobanMetrics.js'
 
 export function normalizeToClassicAddress(address: string): string {
   try {
@@ -58,13 +68,19 @@ const positiveIntFromEnv = (key: string, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
-const getSubmitRetryConfig = (): RetryConfig => ({
-  maxAttempts: positiveIntFromEnv('RETRY_MAX_ATTEMPTS', DEFAULT_SUBMIT_RETRY_MAX_ATTEMPTS),
-  initialBackoffMs: positiveIntFromEnv('RETRY_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_BACKOFF_MS),
-  maxBackoffMs: positiveIntFromEnv('SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_MAX_BACKOFF_MS),
-  backoffMultiplier: DEFAULT_SUBMIT_RETRY_BACKOFF_MULTIPLIER,
-  jitterFactor: DEFAULT_SUBMIT_RETRY_JITTER_FACTOR,
-})
+let _cachedSubmitRetryConfig: RetryConfig | null = null
+
+const getSubmitRetryConfig = (): RetryConfig => {
+  if (_cachedSubmitRetryConfig) return _cachedSubmitRetryConfig
+  _cachedSubmitRetryConfig = {
+    maxAttempts: positiveIntFromEnv('RETRY_MAX_ATTEMPTS', DEFAULT_SUBMIT_RETRY_MAX_ATTEMPTS),
+    initialBackoffMs: positiveIntFromEnv('RETRY_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_BACKOFF_MS),
+    maxBackoffMs: positiveIntFromEnv('SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_MAX_BACKOFF_MS),
+    backoffMultiplier: DEFAULT_SUBMIT_RETRY_BACKOFF_MULTIPLIER,
+    jitterFactor: DEFAULT_SUBMIT_RETRY_JITTER_FACTOR,
+  }
+  return _cachedSubmitRetryConfig
+}
 
 /**
  * Resolved once per process — env is static for the process lifetime.
@@ -347,6 +363,9 @@ async function submitTransaction(
   return tracer.withSpan(
     `soroban.${methodName}`,
     async (span) => {
+      const startedAt = Date.now()
+      let outcome: 'success' | 'failure' = 'failure'
+      try {
       span.setAttribute('soroban.method', methodName)
       span.setAttribute('soroban.contract_id', config.contractId)
 
@@ -391,14 +410,14 @@ async function submitTransaction(
             .setTimeout(30)
             .build()
 
-          const prepared = await retryRpc('prepareTransaction', config, () =>
+          const prepared: any = await retryRpc('prepareTransaction', config, () =>
             server.prepareTransaction(tx),
           )
           prepared.sign(keypair)
 
           // sendTransaction is retried on the SAME endpoint for transient network
           // errors; switching endpoints only happens if it never returns at all.
-          const response = await retryRpc('sendTransaction', config, () =>
+          const response: any = await retryRpc('sendTransaction', config, () =>
             server.sendTransaction(prepared),
           )
           responseHash = response.hash
@@ -422,7 +441,7 @@ async function submitTransaction(
               if (Date.now() >= deadline) {
                 throw new SorobanTimeoutError(response.hash, config.submitTimeoutMs)
               }
-              const result = await server.getTransaction(response.hash)
+              const result: any = await server.getTransaction(response.hash)
               if (result.status === 'NOT_FOUND') {
                 throw Object.assign(new Error('transaction_pending'), { retryable: true })
               }
@@ -438,7 +457,8 @@ async function submitTransaction(
 
           activePool.recordSuccess(url)
           span.setAttribute('soroban.tx_hash', response.hash)
-          span.setStatus({ code: 'OK' })
+          span.setStatus({ code: 'OK' } as any)
+          outcome = 'success'
           return { txHash: response.hash }
 
         } catch (err) {
@@ -475,6 +495,9 @@ async function submitTransaction(
       span.recordException(lastError)
       span.setStatus({ code: 'ERROR', message: lastError.message })
       throw lastError
+      } finally {
+        recordSorobanTransaction(methodName, outcome, Date.now() - startedAt)
+      }
     },
   )
 }
@@ -491,6 +514,10 @@ export interface SorobanClient {
     args: Record<string, unknown>,
   ): Promise<{ txHash: string }>
   submitStake(
+    config: SorobanConfig,
+    args: Record<string, unknown>,
+  ): Promise<{ txHash: string }>
+  submitStakeWithMemo(
     config: SorobanConfig,
     args: Record<string, unknown>,
   ): Promise<{ txHash: string }>
@@ -623,6 +650,24 @@ export const createDefaultSorobanClient = (
     )
   },
 
+  async submitStakeWithMemo(config, args) {
+    const { nativeToScVal, xdr } = await loadSdk()
+    const memoHex = typeof args.memo === 'string' ? args.memo : ''
+    const memoBytes = Buffer.from(memoHex, 'hex')
+    const memoScVal = xdr.ScVal.scvBytes(memoBytes)
+    return submitTransaction(
+      config,
+      'stake_with_memo',
+      [
+        nativeToScVal(args.vaultId, { type: 'string' }),
+        nativeToScVal(args.amount, { type: 'string' }),
+        memoScVal,
+      ],
+      loadSdk,
+      pool,
+    )
+  },
+
   async submitCheckIn(config, args) {
     const { nativeToScVal, xdr } = await loadSdk()
     // evidence_hash is a 32-byte Buffer encoded as hex string from the backend.
@@ -685,13 +730,13 @@ export const createDefaultSorobanClient = (
       scValToNative,
     } = await import('@stellar/stellar-sdk')
 
-    const server = new SorobanRpc.Server(config.rpcUrl)
+    const server = new SorobanRpc.Server(config.rpcUrl as string)
     const contract = new Contract(config.contractId)
 
     try {
-      const callOp = contract.call('get_vault', nativeToScVal(vaultId, { type: 'string' }))
+      const callOp: any = contract.call('get_vault', nativeToScVal(vaultId, { type: 'string' }))
 
-      const result = await server.simulateTransaction(callOp)
+      const result: any = await server.simulateTransaction(callOp)
 
       if (result.result === undefined || result.result === null) {
         return null
@@ -728,6 +773,91 @@ export const resetSorobanClient = (): void => {
 }
 
 export const getSorobanClient = (): SorobanClient => _client
+
+/**
+ * Builds the on-chain staking payload descriptor for a vault.
+ * Mirrors `buildPayload` (vault creation) but operates on the
+ * `StakeInput` shape — no persisted vault is required because the
+ * stake path derives everything it needs from the input itself.
+ *
+ * Repeated calls with the same `StakeInput` produce identical payloads
+ * (idempotent client-side). On-chain idempotency is a contract concern.
+ */
+const buildStakePayload = (input: StakeInput): StakeResponse['payload'] => {
+  return {
+    contractId: input.onChain?.contractId ?? process.env.SOROBAN_CONTRACT_ID ?? DEFAULT_CONTRACT_ID,
+    networkPassphrase:
+      input.onChain?.networkPassphrase ??
+      process.env.SOROBAN_NETWORK_PASSPHRASE ??
+      'Test SDF Network ; September 2015',
+    sourceAccount: input.onChain?.sourceAccount ?? process.env.SOROBAN_SOURCE_ACCOUNT ?? DEFAULT_SOURCE_ACCOUNT,
+    method: 'stake',
+    args: {
+      vaultId: input.vaultId,
+      amount: input.amount,
+      user: input.user,
+    },
+  }
+}
+
+/**
+ * Builds the on-chain staking-with-memo payload descriptor for a vault.
+ * The memo is a hex-encoded Bytes payload (e.g. an idempotency key
+ * derived from `vaultId + amount`). It is bound to the on-chain funding
+ * event for off-chain correlation.
+ *
+ * `memo` on the input is optional. When absent or empty, the payload
+ * simply omits the memo argument — no throw. When present, the memo
+ * must be a valid even-length hex string whose decoded byte length
+ * falls in `[1, MEMO_MAX_BYTES]`; otherwise the function throws so
+ * callers see the failure synchronously rather than after a chain
+ * submission.
+ */
+const buildStakeWithMemoPayload = (
+  input: StakeWithMemoInput,
+): StakeWithMemoResponse['payload'] => {
+  const baseArgs: Record<string, unknown> = {
+    vaultId: input.vaultId,
+    amount: input.amount,
+    user: input.user,
+  }
+
+  if (input.memo !== undefined && input.memo !== null && input.memo !== '') {
+    const memoHex = input.memo
+    if (memoHex.length % 2 !== 0) {
+      throw new Error('Memo must be an even-length hex string')
+    }
+    const memoBytes = Buffer.from(memoHex, 'hex')
+    // Buffer.from silently drops non-hex characters; verify the re-encoded
+    // length matches so malformed input (e.g. 'zz') is reliably rejected.
+    if (memoBytes.length * 2 !== memoHex.length) {
+      throw new Error('Memo contains non-hex characters')
+    }
+    if (memoBytes.length === 0) {
+      throw new Error('Memo cannot decode to zero bytes')
+    }
+    if (memoBytes.length > MEMO_MAX_BYTES) {
+      throw new MemoTooLongError(memoBytes.length, MEMO_MAX_BYTES)
+    }
+    baseArgs.memo = memoBytes.toString('hex')
+  }
+
+  return {
+    contractId: input.onChain?.contractId ?? process.env.SOROBAN_CONTRACT_ID ?? DEFAULT_CONTRACT_ID,
+    networkPassphrase:
+      input.onChain?.networkPassphrase ??
+      process.env.SOROBAN_NETWORK_PASSPHRASE ??
+      'Test SDF Network ; September 2015',
+    sourceAccount: input.onChain?.sourceAccount ?? process.env.SOROBAN_SOURCE_ACCOUNT ?? DEFAULT_SOURCE_ACCOUNT,
+    method: 'stake_with_memo',
+    args: baseArgs,
+  }
+}
+
+// Re-export the validators so callers can detect memo-size violations
+// without importing from ../types/vaults if they only need this module.
+export { buildStakePayload, buildStakeWithMemoPayload }
+
 /**
  * Builds the on-chain payload for staking into a vault.
  * Mirrors the same idempotent pattern as `buildVaultCreationPayload`:
@@ -953,7 +1083,7 @@ export const buildVaultCreationPayload = async (
         submission: { 
           attempted: true, 
           status: 'error', 
-          error: { code: appError.code, message: appError.message, details: appError.details } 
+          error: { code: appError.code, message: appError.message, details: appError.details, retryable: appError.retryable }
         },
       }
     }

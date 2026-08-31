@@ -97,12 +97,12 @@ describe('AbuseMonitor Heuristics', () => {
     jest.advanceTimersByTime(1000)
     const result = smallMonitor.record({ id: 'user3', type: 'request', weight: 200 })
 
-    // user3 was tracked — its high-weight signal should cause the expected return value
+    // user3 was tracked ? its high-weight signal should cause the expected return value
     // (false here because 200 < 9999 penaltyScoreLimit)
     expect(result).toBe(false)
 
     // user3 is now in the map; user1 (LRU) was evicted, user2 survives
-    // We can verify by driving user3 score over the limit — it must be tracked
+    // We can verify by driving user3 score over the limit ? it must be tracked
     const flagged = smallMonitor.record({ id: 'user3', type: 'auth_fail', weight: 9999 })
     expect(flagged).toBe(true)
 
@@ -117,7 +117,7 @@ describe('AbuseMonitor Heuristics', () => {
     // Fill the single slot
     smallMonitor.record({ id: 'early-actor', type: 'request' })
 
-    // A new high-weight actor arrives — it must displace early-actor and be scored
+    // A new high-weight actor arrives ? it must displace early-actor and be scored
     jest.advanceTimersByTime(500)
     const flagged = smallMonitor.record({ id: 'new-bad-actor', type: 'auth_fail', weight: 9999 })
     expect(flagged).toBe(true)
@@ -239,10 +239,11 @@ describe('security/abuse-monitor structured events (pino integration)', () => {
     })
 
     expect(spy).toHaveBeenCalledTimes(1)
-    const payloadStr = JSON.stringify(spy.mock.calls[0][0])
-    expect(payloadStr).toContain('vault.vault_missing_onchain')
-    expect(payloadStr).toContain('vault-123')
-    expect(payloadStr).toContain('active')
+    const payload = spy.mock.calls[0][0]
+    expect(payload.event).toBe('vault.vault_missing_onchain')
+    expect(payload.ip).toBe('')
+    expect(payload.vaultId).toBe('vault-123')
+    expect(payload.persistedStatus).toBe('active')
 
     spy.mockRestore()
   })
@@ -258,11 +259,11 @@ describe('security/abuse-monitor structured events (pino integration)', () => {
     })
 
     expect(spy).toHaveBeenCalledTimes(1)
-    const payloadStr = JSON.stringify(spy.mock.calls[0][0])
-    expect(payloadStr).toContain('vault.vault_state_drift')
-    expect(payloadStr).toContain('vault-456')
-    expect(payloadStr).toContain('status')
-    expect(payloadStr).toContain('amount')
+    const payload = spy.mock.calls[0][0]
+    expect(payload.event).toBe('vault.vault_state_drift')
+    expect(payload.ip).toBe('')
+    expect(payload.vaultId).toBe('vault-456')
+    expect(payload.driftedFields).toEqual(['status', 'amount'])
 
     spy.mockRestore()
   })
@@ -276,10 +277,11 @@ describe('security/abuse-monitor structured events (pino integration)', () => {
     })
 
     expect(spy).toHaveBeenCalledTimes(1)
-    const payloadStr = JSON.stringify(spy.mock.calls[0][0])
-    expect(payloadStr).toContain('vault.vault_reconciliation_error')
-    expect(payloadStr).toContain('vault-789')
-    expect(payloadStr).toContain('RPC timeout')
+    const payload = spy.mock.calls[0][0]
+    expect(payload.event).toBe('vault.vault_reconciliation_error')
+    expect(payload.ip).toBe('')
+    expect(payload.vaultId).toBe('vault-789')
+    expect(payload.error).toBe('RPC timeout')
 
     spy.mockRestore()
   })

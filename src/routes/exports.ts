@@ -1,4 +1,5 @@
 import { Router, type Response } from 'express'
+import { z } from 'zod'
 import type { BackgroundJobSystem } from '../jobs/system.js'
 import {
   authenticate,
@@ -43,6 +44,21 @@ const logExportEvent = (event: string, payload: Record<string, unknown>): void =
   }))
 }
 
+/**
+ * Derive the org identifier used for quota and access-control decisions.
+ *
+ * SECURITY: orgId MUST come only from the verified JWT payload populated by the
+ * `authenticate` middleware. Never read orgId from `req.query`, `req.headers`,
+ * or any other client-supplied input — those values are attacker-controlled and
+ * carry no membership verification.
+ */
+const resolveOrgId = (req: AuthenticatedRequest): string =>
+  // The current JWTPayload type does not carry an orgId claim, so we always
+  // fall back to the authenticated userId as the quota-accounting key.
+  // If a future JWT version adds a verified orgId claim, it should be
+  // added to JWTPayload and read from req.user.orgId (no cast required).
+  req.user!.userId
+
 const enforceExportQuota = async (
   req: AuthenticatedRequest,
   res: Response,
@@ -83,22 +99,34 @@ const negotiateFormat = (req: AuthenticatedRequest, queryFormat?: string): Expor
   return 'json'
 }
 
+const JobIdSchema = z.string().min(1).max(255)
+const TokenSchema = z.string().min(1).max(2048)
+const IdempotencyKeySchema = z.string().min(1).max(255).optional()
+const TargetUserIdSchema = z.string().min(1).max(255).optional()
+
 export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
   const router = Router()
 
   const parseOptions = (req: AuthenticatedRequest): ParseOptionsResult | null => {
-    const format = negotiateFormat(req, req.query.format as string | undefined)
-    const scope = (req.query.scope ?? 'all') as string
-    const columnsParam = req.query.columns as string | undefined
+    const formatStr = typeof req.query.format === 'string' ? req.query.format : undefined
+    const format = negotiateFormat(req, formatStr)
+    const scopeStr = typeof req.query.scope === 'string' ? req.query.scope : 'all'
 
     const validScopes = ['vaults', 'transactions', 'analytics', 'all']
     if (!validScopes.includes(scope)) return null
+    const ScopeSchema = z.enum(['vaults', 'transactions', 'analytics', 'all'])
+    const scopeParse = ScopeSchema.safeParse(scopeStr)
+    if (!scopeParse.success) {
+      return null
+    }
+    const scope = scopeParse.data
 
     const result: ParseOptionsResult = {
       format,
-      scope: scope as ExportScope,
+      scope,
     }
 
+    const columnsParam = req.query.columns
     if (columnsParam) {
       if (!isWithinByteLimit(columnsParam, EXPORT_BOUNDS.MAX_COLUMN_FILTER_BYTES)) return null
 
@@ -111,6 +139,27 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
           const allowed = ALLOWED_COLUMNS[section as keyof typeof ALLOWED_COLUMNS]
           if (!allowed || !Array.isArray(cols) || cols.length > EXPORT_BOUNDS.MAX_COLUMNS_PER_SECTION) return null
           if (!cols.every(col => typeof col === 'string' && allowed.includes(col))) return null
+        const parsedColumns: unknown = typeof columnsParam === 'string'
+          ? JSON.parse(columnsParam)
+          : columnsParam
+        
+        const ColumnsSchema = z.record(z.array(z.string()))
+        const colsParse = ColumnsSchema.safeParse(parsedColumns)
+        if (!colsParse.success) {
+          return null
+        }
+        
+        result.columns = {}
+
+        for (const [section, cols] of Object.entries(colsParse.data)) {
+          const allowed = ALLOWED_COLUMNS[section as keyof typeof ALLOWED_COLUMNS]
+          if (!allowed) {
+            return null
+          }
+
+          if (!cols.every(col => allowed.includes(col))) {
+            return null
+          }
           result.columns[section as keyof typeof ALLOWED_COLUMNS] = cols
         }
       } catch {
@@ -158,6 +207,24 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
 
     try {
       if (!await enforceExportQuota(req, res)) return
+    const idemParse = IdempotencyKeySchema.safeParse(req.header('idempotency-key'))
+    if (!idemParse.success) {
+      res.status(400).json({ error: 'Invalid idempotency-key header' })
+      return
+    }
+
+    if (!await enforceExportQuota(req, res)) return
+
+    try {
+      const job = await enqueueExportJob(jobSystem, {
+        userId: req.user!.userId,
+        orgId: resolveOrgId(req),
+        isAdmin: false,
+        scope: options.scope,
+        format: options.format,
+        columns: options.columns as any,
+        idempotencyKey: idemParse.data,
+      })
 
       try {
         const job = await enqueueExportJob(jobSystem, {
@@ -210,6 +277,33 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
 
     try {
       if (!await enforceExportQuota(req, res)) return
+    const idemParse = IdempotencyKeySchema.safeParse(req.header('idempotency-key'))
+    if (!idemParse.success) {
+      res.status(400).json({ error: 'Invalid idempotency-key header' })
+      return
+    }
+
+    const targetUserParse = TargetUserIdSchema.safeParse(req.query.targetUserId)
+    if (!targetUserParse.success) {
+      res.status(400).json({ error: 'Invalid targetUserId parameter' })
+      return
+    }
+
+    if (!await enforceExportQuota(req, res)) return
+
+    const targetUserId = targetUserParse.data
+
+    try {
+      const job = await enqueueExportJob(jobSystem, {
+        userId: req.user!.userId,
+        orgId: resolveOrgId(req),
+        isAdmin: true,
+        targetUserId,
+        scope: options.scope,
+        format: options.format,
+        columns: options.columns as any,
+        idempotencyKey: idemParse.data,
+      })
 
       try {
         const job = await enqueueExportJob(jobSystem, {
@@ -250,7 +344,14 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
   })
 
   router.get('/status/:jobId', authenticate, async (req: AuthenticatedRequest, res: Response) => {
-    const job = await getJob(req.params.jobId)
+    const parseResult = JobIdSchema.safeParse(req.params.jobId)
+    if (!parseResult.success) {
+      res.status(400).json({ error: 'Invalid jobId parameter' })
+      return
+    }
+    const jobId = parseResult.data
+
+    const job = await getJob(jobId)
     if (!job) {
       res.status(404).json({ error: 'Job not found' })
       return
@@ -284,7 +385,14 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
   })
 
   router.get('/download/:token', async (req, res: Response) => {
-    const verified = verifyDownloadToken(req.params.token)
+    const parseResult = TokenSchema.safeParse(req.params.token)
+    if (!parseResult.success) {
+      res.status(400).json({ error: 'Invalid token parameter' })
+      return
+    }
+    const token = parseResult.data
+
+    const verified = verifyDownloadToken(token)
     if (!verified) {
       res.status(401).json({ error: 'Invalid or expired download token' })
       return
@@ -314,7 +422,14 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
   })
 
   router.get('/:id/download', authenticate, async (req: AuthenticatedRequest, res: Response) => {
-    const job = await getJob(req.params.id)
+    const parseResult = JobIdSchema.safeParse(req.params.id)
+    if (!parseResult.success) {
+      res.status(400).json({ error: 'Invalid id parameter' })
+      return
+    }
+    const id = parseResult.data
+
+    const job = await getJob(id)
     if (!job || job.status !== 'done') {
       res.status(404).json({ error: 'Export not ready or not found' })
       return

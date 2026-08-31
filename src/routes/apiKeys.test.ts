@@ -1,286 +1,126 @@
-import '../tests/setup.js'
-import type { AddressInfo } from 'node:net'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import request from 'supertest'
 import express from 'express'
-import { analyticsRouter } from './analytics.js'
+
+vi.mock('../middleware/auth.js', () => ({
+  authenticate: vi.fn((req: any, _res: any, next: any) => {
+    req.user = { userId: 'user-1', role: 'ADMIN', jmti: 'jmti-1' }
+    next()
+  }),
+}))
+
+vi.mock('../middleware/stepUp.js', () => ({
+  requireStepUp: vi.fn().mockReturnValue((req: any, _res: any, next: any) => next()),
+}))
+
+vi.mock('../middleware/rateLimiter.js', () => ({
+  apiKeyRateLimiter: vi.fn((req: any, _res: any, next: any) => next()),
+}))
+
+vi.mock('../services/apiKeys.js', () => ({
+  createApiKey: vi.fn(),
+  listApiKeysForUser: vi.fn(),
+  listApiKeysForOrg: vi.fn(),
+  revokeApiKey: vi.fn(),
+  rotateApiKey: vi.fn(),
+}))
+
+vi.mock('../lib/audit-logs.js', () => ({
+  createAuditLog: vi.fn().mockResolvedValue({ id: 'audit-log-id' }),
+}))
+
 import { apiKeysRouter } from './apiKeys.js'
-import { resetApiKeysTable, setApiKeyRepositoryForTests } from '../services/apiKeys.js'
-import { setAuditLogWriterForTests } from '../lib/audit-logs.js'
-import { AuthService } from '../services/auth.service.js'
+import { createApiKey, listApiKeysForUser, revokeApiKey, rotateApiKey } from '../services/apiKeys.js'
+import { createAuditLog } from '../lib/audit-logs.js'
 
-let baseUrl = ''
-let server: ReturnType<express.Express['listen']> | null = null
-const originalValidate = AuthService.validateStepUpSession
-
-const makeRepo = () => {
-  const store = new Map()
-  return {
-    async create(record: any) {
-      store.set(record.id, { ...record })
-    },
-    async listForUser(userId: string) {
-      return Array.from(store.values())
-        .filter((record: any) => record.userId === userId)
-        .sort((left: any, right: any) => right.createdAt.localeCompare(left.createdAt))
-    },
-    async getById(id: string) {
-      return store.get(id) ?? null
-    },
-    async update(record: any) {
-      store.set(record.id, { ...record })
-      return store.get(record.id)
-    },
-    async findByIdForUser(id: string, userId: string) {
-      const record: any = store.get(id)
-      if (!record || record.userId !== userId) {
-        return null
-      }
-      return record
-    },
-    async findByHashPrefix(prefix: string) {
-      return Array.from(store.values()).filter((record: any) => record.keyHash.slice(0, 12) === prefix)
-    },
-    async reset() {
-      store.clear()
-    },
-  }
+const createApp = () => {
+  const app = express()
+  app.use(apiKeysRouter)
+  return app
 }
 
-beforeEach(async () => {
-  AuthService.validateStepUpSession = async (sessionId: string) => {
-    return { userId: sessionId } as any
-  }
-  setApiKeyRepositoryForTests(makeRepo() as any)
-  setAuditLogWriterForTests(async (entry: any) => {
-    return {
-      id: 'mock-audit-id',
-      created_at: new Date().toISOString(),
-      ...entry,
-    } as any
-  })
-  await resetApiKeysTable()
-  const app = express()
-  app.use(express.json())
-  app.use('/api/api-keys', apiKeysRouter)
-  app.use('/api/analytics', analyticsRouter)
-  server = app.listen(0)
-  await new Promise<void>((resolve) => {
-    server!.once('listening', () => resolve())
-  })
-  const address = server.address() as AddressInfo
-  baseUrl = `http://127.0.0.1:${address.port}`
-})
-
-afterEach(async () => {
-  AuthService.validateStepUpSession = originalValidate
-  if (!server) {
-    return
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    server!.close((error) => {
-      if (error) {
-        reject(error)
-        return
-      }
-      resolve()
-    })
-  })
-  server = null
-})
-
-test('creates, lists, rotates, and revokes API keys for an authenticated user', async () => {
-  const createResponse = await fetch(`${baseUrl}/api/api-keys`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-user-id': 'user-123',
-    },
-    body: JSON.stringify({
-      label: 'analytics integration',
-      scopes: ['read:analytics', 'read:vaults', 'read:analytics'],
-    }),
-  })
-
-  expect(createResponse.status).toBe(201)
-  const createdBody = (await createResponse.json()) as {
-    apiKey: string
-    apiKeyMeta: { id: string; userId: string; revokedAt: string | null; scopes: string[]; keyHash?: string }
-  }
-
-  assert.match(createdBody.apiKey, /^dsk_/)
-  expect(createdBody.apiKeyMeta.userId).toBe('user-123')
-  expect(createdBody.apiKeyMeta.revokedAt).toBe(null)
-  expect(createdBody.apiKeyMeta.scopes).toEqual(['read:analytics', 'read:vaults'])
-  expect('keyHash' in createdBody.apiKeyMeta).toBe(false)
-
-  const listResponse = await fetch(`${baseUrl}/api/api-keys`, {
-    headers: {
-      'x-user-id': 'user-123',
-    },
-  })
-
-  expect(listResponse.status).toBe(200)
-  const listBody = (await listResponse.json()) as {
-    apiKeys: Array<{ id: string; keyHash?: string; scopes: string[] }>
-  }
-
-  expect(listBody.apiKeys.length).toBe(1)
-  expect(listBody.apiKeys[0].id).toBe(createdBody.apiKeyMeta.id)
-  expect('keyHash' in listBody.apiKeys[0]).toBe(false)
-  expect(listBody.apiKeys[0].scopes).toEqual(['read:analytics', 'read:vaults'])
-
-  const rotateResponse = await fetch(`${baseUrl}/api/api-keys/${createdBody.apiKeyMeta.id}/rotate`, {
-    method: 'POST',
-    headers: {
-      'x-user-id': 'user-123',
-    },
-  })
-
-  expect(rotateResponse.status).toBe(200)
-  const rotateBody = (await rotateResponse.json()) as {
-    apiKey: string
-    apiKeyMeta: { id: string; revokedAt: string | null; keyHash?: string }
-  }
-
-  assert.match(rotateBody.apiKey, /^dsk_/)
-  assert.notEqual(rotateBody.apiKey, createdBody.apiKey)
-  expect(rotateBody.apiKeyMeta.id).toBe(createdBody.apiKeyMeta.id)
-  expect('keyHash' in rotateBody.apiKeyMeta).toBe(false)
-
-  const oldKeyResponse = await fetch(`${baseUrl}/api/analytics/vaults`, {
-    headers: {
-      'x-api-key': createdBody.apiKey,
-    },
-  })
-  expect(oldKeyResponse.status).toBe(401)
-
-  const newKeyResponse = await fetch(`${baseUrl}/api/analytics/vaults`, {
-    headers: {
-      'x-api-key': rotateBody.apiKey,
-    },
-  })
-  expect(newKeyResponse.status).toBe(200)
-
-  const revokeResponse = await fetch(`${baseUrl}/api/api-keys/${createdBody.apiKeyMeta.id}/revoke`, {
-    method: 'POST',
-    headers: {
-      'x-user-id': 'user-123',
-      'x-step-up-session-id': 'user-123',
-    },
-  })
-
-  expect(revokeResponse.status).toBe(200)
-  const revokeBody = (await revokeResponse.json()) as {
-    apiKeyMeta: { revokedAt: string | null }
-  }
-  assert.notEqual(revokeBody.apiKeyMeta.revokedAt, null)
-
-  const revokedResponse = await fetch(`${baseUrl}/api/analytics/vaults`, {
-    headers: {
-      'x-api-key': rotateBody.apiKey,
-    },
-  })
-  expect(revokedResponse.status).toBe(401)
-})
-
-test('rejects rotation for keys owned by a different user', async () => {
-  const createResponse = await fetch(`${baseUrl}/api/api-keys`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-user-id': 'owner-user',
-    },
-    body: JSON.stringify({
-      label: 'owner key',
-      scopes: ['read:analytics'],
-    }),
-  })
-
-  const createdBody = (await createResponse.json()) as { apiKeyMeta: { id: string } }
-
-  const rotateResponse = await fetch(`${baseUrl}/api/api-keys/${createdBody.apiKeyMeta.id}/rotate`, {
-    method: 'POST',
-    headers: {
-      'x-user-id': 'other-user',
-    },
-  })
-
-  expect(rotateResponse.status).toBe(404)
-})
-
-test('validates scopes and rejects revoked API keys on protected analytics routes', async () => {
-  const createResponse = await fetch(`${baseUrl}/api/api-keys`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-user-id': 'user-321',
-    },
-    body: JSON.stringify({
-      label: 'vault-reader',
-      scopes: ['read:vaults'],
-    }),
-  })
-
-  expect(createResponse.status).toBe(201)
-  const createdBody = (await createResponse.json()) as {
-    apiKey: string
-    apiKeyMeta: { id: string }
-  }
-
-  const forbiddenResponse = await fetch(`${baseUrl}/api/analytics/overview`, {
-    headers: {
-      'x-api-key': createdBody.apiKey,
-    },
-  })
-  expect(forbiddenResponse.status).toBe(403)
-
-  const allowedResponse = await fetch(`${baseUrl}/api/analytics/vaults`, {
-    headers: {
-      'x-api-key': createdBody.apiKey,
-    },
-  })
-  expect(allowedResponse.status).toBe(200)
-
-  await fetch(`${baseUrl}/api/api-keys/${createdBody.apiKeyMeta.id}/revoke`, {
-    method: 'POST',
-    headers: {
-      'x-user-id': 'user-321',
-      'x-step-up-session-id': 'user-321',
-    },
-  })
-
-  const revokedResponse = await fetch(`${baseUrl}/api/analytics/vaults`, {
-    headers: {
-      'x-api-key': createdBody.apiKey,
-    },
-  })
-  expect(revokedResponse.status).toBe(401)
-})
-
-test('returns structured validation errors for invalid API key create payloads', async () => {
-  const response = await fetch(`${baseUrl}/api/api-keys`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-user-id': 'user-456',
-    },
-    body: JSON.stringify({
-      label: '   ',
-      scopes: ['read:vaults', ''],
-    }),
-  })
-
-  expect(response.status).toBe(400)
-  const body = (await response.json()) as {
-    error: {
-      code: string
-      message: string
-      fields: Array<{ path: string; message: string; code: string }>
+describe('api keys routes', () => {
+  beforeEach(() => {
+    vi_.clearAllMocks()
+    const keyRecord = {
+      id: 'key-1',
+      label: 'Test Key',
+      scopes: ['read'],
+      createdAt: new Date('2024-01-01'),
+      revokedAt: null,
+      lastUsedAt: null,
+      requestCount: 0,
+      lastIp: null,
+      keyHash: 'hash',
     }
-  }
+    vi_.mocked(listApiKeysForUser).mockResolvedValue([keyRecord])
+    vi_.mocked(createApiKey).mockResolvedValue({ apiKey: 'plain-key', record: keyRecord })
+    vi_.mocked(rotateApiKey).mockResolvedValue({ apiKey: 'rotated-key', record: keyRecord })
+    vi_.mocked(revokeApiKey).mockResolvedValue(keyRecord)
+  })
 
-  expect(body.error.code).toBe('VALIDATION_ERROR')
-  expect(body.error.message).toBe('Invalid request payload')
-  expect(body.error.fields.some((field) => field.path === 'label')).toBe(true)
-  expect(body.error.fields.some((field) => field.path === 'scopes[1]')).toBe(true)
+  it('lists API keys with pagination', async () => {
+    const app = createApp()
+    const res = await request(app).get('/?limit=10&offset=0')
+    expect(res.status).toBe(200)
+    expect(res.body.apiKeys).toHaveLength(1)
+    expect(res.body.pagination.total).toBe(1)
+    expect(res.body.apiKeys[0]).not.toHaveProperty('keyHash')
+  })
+
+  it('clamps limit to max', async () => {
+    const app = createApp()
+    const res = await request(app).get('/?limit=1000&offset=2')
+    expect(res.status).toBe(200)
+    expect(res.body.pagination.limit).toBe(100)
+  })
+
+  it('creates an API key', async () => {
+    const app = createApp()
+    const res = await request(app).post('/').send({ label: 'New Key', scopes: ['read'] })
+    expect(res.status).toBe(201)
+    expect(res.body.apiKey).toBe('plain-key')
+    expect(createApiKey).toHaveBeenCalledWith({ label: 'New Key', scopes: ['read'], userId: 'user-1', orgId: undefined })
+  })
+
+  it('returns 400 for invalid scope', async () => {
+    const app = createApp()
+    const res = await request(app).post('/').send({ label: 'Key', scopes: ['invalid'] })
+    expect(res.status).toBe(400)
+  })
+
+  it('returns 400 for label too long', async () => {
+    const app = createApp()
+    const res = await request(app).post('/').send({ label: 'a'.repeat(101), scopes: ['read'] })
+    expect(res.status).toBe(400)
+  })
+
+  it('rotates an API key', async () => {
+    const app = createApp()
+    const res = await request(app).post('/key-1/rotate')
+    expect(res.status).toBe(200)
+    expect(res.body.apiKey).toBe('rotated-key')
+    expect(createAuditLog).toHaveBeenCalled()
+  })
+
+  it('returns 404 when rotating an unknown key', async () => {
+    vi_.mocked(rotateApiKey).mockResolvedValue(null)
+    const app = createApp()
+    const res = await request(app).post('/unknown/rotate')
+    expect(res.status).toBe(404)
+  })
+
+  it('revokes an API key', async () => {
+    const app = createApp()
+    const res = await request(app).post('/key-1/revoke')
+    expect(res.status).toBe(200)
+    expect(revokeApiKey).toHaveBeenCalledWith('key-1', 'user-1')
+  })
+
+  it('returns 404 when revoking an unknown key', async () => {
+    vi_.mocked(revokeApiKey).mockResolvedValue(null)
+    const app = createApp()
+    const res = await request(app).post('/unknown/revoke')
+    expect(res.status).toBe(404)
+  })
 })

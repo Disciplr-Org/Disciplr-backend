@@ -129,6 +129,13 @@ export class AuthService {
             throw new Error('Invalid credentials')
         }
 
+        // Soft-deleted or non-active accounts are never allowed to authenticate,
+        // regardless of password correctness — fail closed.
+        const isActive = typeof user.status !== 'string' || user.status === 'ACTIVE'
+        if (user.deletedAt || !isActive) {
+            throw new Error('Invalid credentials')
+        }
+
         const isValid = await comparePassword(input.password, user.passwordHash)
         if (!isValid) {
             throw new Error('Invalid credentials')
@@ -143,7 +150,7 @@ export class AuthService {
         const accessExpiresAt = new Date(Date.now() + 15 * 60 * 1000) // 15 minutes
         const tokenHash = hashToken(refreshTokenValue)
 
-        const loggedInUser = await prisma.$transaction(async (tx) => {
+        const loggedInUser = await prisma.$transaction(async (tx: any) => {
             const updatedUser = await tx.user.update({
                 where: { id: user.id },
                 data: { lastLoginAt },
@@ -295,20 +302,15 @@ export class AuthService {
     }
 
     static async registerWebAuthnCredential(userId: string, credentialId: string, publicKey: string) {
-        const existing = await getPrisma().$queryRaw<{ credential_id: string }[]>`
-            SELECT "credential_id" FROM "webauthn_credentials"
-            WHERE "credential_id" = ${credentialId}
-            LIMIT 1
-        `
-
-        if (existing.length > 0) {
-            throw new Error('Credential already registered')
-        }
-
-        await getPrisma().$executeRaw`
+        // The unique credential_id index is the synchronization point. An
+        // existence check followed by INSERT races under concurrent requests.
+        const inserted = await getPrisma().$executeRaw`
             INSERT INTO "webauthn_credentials" ("user_id", "credential_id", "public_key", "counter")
             VALUES (${userId}, ${credentialId}, ${publicKey}, 0)
+            ON CONFLICT ("credential_id") DO NOTHING
         `
+
+        if (inserted === 0) throw new Error('Credential already registered')
 
         return { userId, credentialId, publicKey }
     }
@@ -339,5 +341,3 @@ export class AuthService {
         return { credentialId, counter: newCounter }
     }
 }
-</absolute_path>
-</create_file>

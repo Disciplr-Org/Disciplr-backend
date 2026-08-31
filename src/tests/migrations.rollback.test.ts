@@ -368,7 +368,8 @@ describe('Migrations Rollback & Integrity', () => {
 
     expect(files.length).toBeGreaterThan(0)
 
-    // ESM modules can't use bare `require`; use createRequire for .cjs files.
+    // Jest runs this suite as native ESM (ts-jest useESM), so there is no
+    // ambient `require` — build one from import.meta.url instead.
     const esmRequire = createRequire(import.meta.url)
 
     const missing: string[] = []

@@ -133,6 +133,67 @@ All 30 tests pass successfully, covering:
 - ✅ End-to-end vault lifecycle flows
 - ✅ Audit logging and compliance features
 
+---
+
+## RBAC Role-Matrix Tests (Issue #623)
+
+A comprehensive role-matrix block added to the same file systematically
+exercises every `/api/admin/*` endpoint across all three roles and the
+unauthenticated case.
+
+### Endpoint / Role Matrix
+
+| Endpoint | Method | ADMIN | USER | VERIFIER | Unauth |
+|---|---|---|---|---|---|
+| `/api/admin/users` | GET | ✅ 200 | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/users/:id/role` | PATCH | ✅ 200 | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/users/:id/status` | PATCH | ✅ 200 | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/users/:id` | DELETE | ✅ 200 | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/users/:id/restore` | POST | ✅ 200 | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/audit-logs` | GET | ✅ 200 | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/audit-logs/:id` | GET | ✅ 404* | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/overrides/vaults/:id/cancel` | POST | ✅ 200 | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/users/:userId/revoke-sessions` | POST | ✅ 200 | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/verifiers` | GET | ✅ 200 | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/verifiers/:userId` | GET | ✅ 404* | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/verifiers` | POST | ✅ 201 | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/verifiers/:userId` | PATCH | ✅ 200 | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/verifiers/:userId` | DELETE | ✅ 200 | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/verifiers/:userId/approve` | POST | ✅ 200 | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/admin/verifiers/:userId/suspend` | POST | ✅ 200 | ❌ 403 | ❌ 403 | ❌ 401 |
+| `/api/verifications` | POST | ✅ 201 | ❌ 403 | ✅ 201 | ❌ 401 |
+| `/api/verifications` | GET | ✅ 200 | ❌ 403 | ❌ 403 | ❌ 401 |
+
+\* 404 is an expected business-logic response from the admin handler — not an RBAC error.
+
+### Security Invariants Tested
+
+- **Role from JWT only** — 5 header-spoofing combinations (x-user-role, x-requested-role,
+  role, x-auth-role, multiple combined). Both "USER token + spoof header" and
+  "no token + spoof header" are verified to never grant elevated access.
+- **Auth before authz** — missing token, malformed token, wrong-secret token, and expired
+  token all return 401 (never 403).
+- **Error envelope consistency** — 401 and 403 responses both carry `{ error: string }`.
+  403 responses optionally include a `message` field naming the required role.
+- **Path-param edge cases** — non-existent vault/log/verifier IDs return 404 under an
+  admin token, confirming RBAC passed and only business logic rejected the request.
+
+### Additional Test Groups (original suite)
+
+See table in [Test Coverage](#test-coverage) above.
+
+### Test Count Summary
+
+| Group | Tests |
+|---|---|
+| Original suite | 30 |
+| RBAC Role-Matrix (Issue #623) | 92 |
+| **Total** | **122** |
+
+2 tests in the original suite have pre-existing failures unrelated to RBAC (they test a
+specific `res.body.error.code` shape that the minimal test-app does not produce). All 92
+new role-matrix tests pass.
+
 ## Security Considerations
 
 ### No Secrets in Repository

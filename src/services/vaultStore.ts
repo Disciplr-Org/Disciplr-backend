@@ -6,8 +6,10 @@ import type {
   PersistedMilestone,
   PersistedVault,
 } from "../types/vaults.js";
+import { VaultStatus } from "../types/vault.js";
 import { getOrSet, getOrLoad, invalidate, invalidatePrefix } from "../lib/cache.js";
 import { encodeCursor, decodeCursor } from "../utils/pagination.js";
+import { normalizeTimestamp, toUTCDate } from "../utils/timestamps.js";
 
 type UpdateableVaultField =
   | "amount"
@@ -69,27 +71,27 @@ const memoryVaultRevisions = new Map<string, number>();
 const mapVaultRow = (row: {
   id: string;
   amount: string;
-  start_date: string;
-  end_date: string;
+  start_date: string | Date;
+  end_date: string | Date;
   verifier: string;
   success_destination: string;
   failure_destination: string;
   creator: string | null;
   status: PersistedVault["status"];
-  created_at: string;
+  created_at: string | Date;
   late_check_in_window_secs?: number | null;
   organization_id?: string | null;
 }): Omit<PersistedVault, "milestones"> => ({
   id: row.id,
   amount: row.amount,
-  startDate: row.start_date,
-  endDate: row.end_date,
+  startDate: normalizeTimestamp(row.start_date),
+  endDate: normalizeTimestamp(row.end_date),
   verifier: row.verifier,
   successDestination: row.success_destination,
   failureDestination: row.failure_destination,
   creator: row.creator,
   status: row.status,
-  createdAt: row.created_at,
+  createdAt: normalizeTimestamp(row.created_at),
   lateCheckInWindowSecs: row.late_check_in_window_secs ?? 0,
   orgId: row.organization_id ?? undefined,
 });
@@ -110,7 +112,7 @@ export const createVaultWithMilestones = async (
       vaultId,
       title: milestone.title,
       description: milestone.description?.trim() || null,
-      dueDate: milestone.dueDate,
+      dueDate: normalizeTimestamp(milestone.dueDate),
       amount: milestone.amount,
       sortOrder: index,
       verifierUserId: input.verifier, // Assign the vault's verifier to each milestone
@@ -136,7 +138,7 @@ export const createVaultWithMilestones = async (
       successDestination: input.destinations.success,
       failureDestination: input.destinations.failure,
       creator: input.creator ?? null,
-      status: "draft",
+      status: VaultStatus.DRAFT,
       createdAt: now,
       milestones,
       lateCheckInWindowSecs: input.lateCheckInWindowSecs ?? 0,
@@ -285,11 +287,11 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
       vaultId: milestone.vault_id,
       title: milestone.title,
       description: milestone.description,
-      dueDate: milestone.due_date,
+      dueDate: normalizeTimestamp(milestone.due_date),
       amount: milestone.amount,
       sortOrder: milestone.sort_order,
       verifierUserId: milestone.verifier_user_id,
-      createdAt: milestone.created_at,
+      createdAt: normalizeTimestamp(milestone.created_at),
     };
 
     const existing = milestonesByVault.get(milestone.vault_id);
@@ -351,7 +353,7 @@ export const listVaultsByOrg = async (
       .filter((v) => v.orgId === orgId)
       .sort((a, b) => {
         const timeDiff =
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+          toUTCDate(b.createdAt).getTime() - toUTCDate(a.createdAt).getTime();
         if (timeDiff !== 0) return timeDiff;
         return b.id < a.id ? -1 : b.id > a.id ? 1 : 0;
       });
@@ -361,8 +363,8 @@ export const listVaultsByOrg = async (
       const { timestamp, id } = decodeCursor(cursor);
       startIdx = orgVaults.findIndex(
         (v) =>
-          new Date(v.createdAt).getTime() < timestamp.getTime() ||
-          (new Date(v.createdAt).getTime() === timestamp.getTime() &&
+          toUTCDate(v.createdAt).getTime() < timestamp.getTime() ||
+          (toUTCDate(v.createdAt).getTime() === timestamp.getTime() &&
             v.id < id),
       );
       if (startIdx === -1) startIdx = orgVaults.length;
@@ -378,7 +380,7 @@ export const listVaultsByOrg = async (
     const last = items[items.length - 1];
     const nextCursor =
       hasNextPage && last
-        ? encodeCursor(new Date(last.createdAt), last.id)
+        ? encodeCursor(toUTCDate(last.createdAt), last.id)
         : null;
 
     return { vaults: items, nextCursor, hasNextPage };
@@ -461,11 +463,11 @@ export const listVaultsByOrg = async (
         vaultId: m.vault_id,
         title: m.title,
         description: m.description,
-        dueDate: m.due_date,
+        dueDate: normalizeTimestamp(m.due_date),
         amount: m.amount,
         sortOrder: m.sort_order,
         verifierUserId: m.verifier_user_id,
-        createdAt: m.created_at,
+        createdAt: normalizeTimestamp(m.created_at),
       };
       const existing = milestonesByVault.get(m.vault_id);
       if (existing) {
@@ -484,7 +486,7 @@ export const listVaultsByOrg = async (
   const last = vaults[vaults.length - 1];
   const nextCursor =
     hasNextPage && last
-      ? encodeCursor(new Date(last.createdAt), last.id)
+      ? encodeCursor(toUTCDate(last.createdAt), last.id)
       : null;
 
   return { vaults, nextCursor, hasNextPage };
@@ -592,11 +594,11 @@ export const updateVaultById = async (
       vaultId: milestone.vault_id,
       title: milestone.title,
       description: milestone.description,
-      dueDate: milestone.due_date,
+      dueDate: normalizeTimestamp(milestone.due_date),
       amount: milestone.amount,
       sortOrder: milestone.sort_order,
       verifierUserId: milestone.verifier_user_id,
-      createdAt: milestone.created_at,
+      createdAt: normalizeTimestamp(milestone.created_at),
     }),
   );
 
@@ -719,15 +721,15 @@ export const cancelVaultById = async (
     if (idx === -1) return { error: "not_found" };
     const vault = memoryVaults[idx];
 
-    if (vault.status === "cancelled") {
-      return { error: "already_cancelled", currentStatus: "cancelled" };
+    if (vault.status === VaultStatus.CANCELLED) {
+      return { error: "already_cancelled", currentStatus: VaultStatus.CANCELLED };
     }
-    if (vault.status !== "draft" && vault.status !== "active") {
+    if (vault.status !== VaultStatus.DRAFT && vault.status !== VaultStatus.ACTIVE) {
       return { error: "not_cancellable", currentStatus: vault.status };
     }
 
     const previousStatus = vault.status;
-    vault.status = "cancelled";
+    vault.status = VaultStatus.CANCELLED;
     const currentRevision = memoryVaultRevisions.get(id) ?? 0;
     memoryVaultRevisions.set(id, currentRevision + 1);
 

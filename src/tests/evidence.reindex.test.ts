@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, jest } from '@jest/globals'
 import {
   reindexEvidenceBatch,
   runReindexBatches,
+  buildEmbeddingText,
   EMBEDDING_REINDEX_JOB_NAME,
   type MilestoneEmbeddingSource,
   type ReindexCursorStore,
@@ -73,6 +74,22 @@ const makeMilestones = (count: number): FakeMilestoneRow[] =>
   }))
 
 const provider = new DeterministicEmbeddingProvider('v1')
+
+// ── buildEmbeddingText ───────────────────────────────────────────────────────
+
+describe('buildEmbeddingText', () => {
+  it('joins title and description on separate lines', () => {
+    expect(buildEmbeddingText({ title: 'Title', description: 'Description' })).toBe('Title\nDescription')
+  })
+
+  it('omits the description line when it is null', () => {
+    expect(buildEmbeddingText({ title: 'Title', description: null })).toBe('Title')
+  })
+
+  it('preserves an explicitly empty description rather than dropping it like a null one', () => {
+    expect(buildEmbeddingText({ title: 'Title', description: '' })).toBe('Title\n')
+  })
+})
 
 // ── reindexEvidenceBatch ─────────────────────────────────────────────────────
 
@@ -316,7 +333,9 @@ describe('MilestoneRepository — reindex support', () => {
     db.raw = jest.fn<any>().mockResolvedValue(undefined)
     const repo = new MilestoneRepository(db)
 
-    await repo.upsertEmbedding('m-000', [0.1, 0.2], 'custom-model-v2')
+    // The repository enforces a 768-dimensional invariant; the model-version
+    // pass-through is what this test pins, so the vector just needs to satisfy it.
+    await repo.upsertEmbedding('m-000', Array(768).fill(0.1), 'custom-model-v2')
 
     expect(db.raw).toHaveBeenCalledWith(
       expect.stringContaining('model_version'),
@@ -329,7 +348,7 @@ describe('MilestoneRepository — reindex support', () => {
     db.raw = jest.fn<any>().mockResolvedValue(undefined)
     const repo = new MilestoneRepository(db)
 
-    await repo.upsertEmbedding('m-000', [0.1])
+    await repo.upsertEmbedding('m-000', Array(768).fill(0.1))
 
     expect(db.raw).toHaveBeenCalledWith(
       expect.any(String),

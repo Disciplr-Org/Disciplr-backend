@@ -124,7 +124,7 @@ export interface CircuitBreakerConfig {
  *   { eventId, eventType, timestamp, data, organizationId, schema_version: 1 }
  *
  * v2 – Compact envelope:
- *   { schema_version: 2, event_type, data }
+ *   { schema_version: 2, event_type, organization_id, data }
  */
 export const buildVersionedPayload = (
   subscriber: WebhookSubscriber,
@@ -148,6 +148,7 @@ export const buildVersionedPayload = (
       return JSON.stringify({
         schema_version: 2,
         event_type: payload.eventType,
+        organization_id: payload.organizationId,
         data: maskedData,
       })
     default:
@@ -428,18 +429,39 @@ export const isUrlAllowed = (
 }
 
 /**
+ * Minimum length for a webhook signing secret. Secrets shorter than this are
+ * rejected to prevent accidental use of empty or weak keys.
+ */
+const MIN_SECRET_LENGTH = 16
+
+/**
  * Returns the HMAC-SHA256 signature header value for a given payload body.
  * Format: `sha256=<hex-digest>`
+ *
+ * Throws if `secret` is not a non-empty string of at least {@link MIN_SECRET_LENGTH}
+ * characters, preventing signatures from being computed with a trivially
+ * guessable key.
  */
 export const signPayload = (secret: string, body: string): string => {
+  if (!secret || typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `Webhook signing secret must be a non-empty string of at least ${MIN_SECRET_LENGTH} characters`,
+    )
+  }
   const digest = createHmac('sha256', secret).update(body, 'utf8').digest('hex')
   return `sha256=${digest}`
 }
 
 /**
  * Verifies a webhook signature in constant time.
+ *
+ * Returns `false` if `secret` is not a valid non-empty string (instead of
+ * silently computing an HMAC with an empty key).
  */
 export const verifySignature = (secret: string, body: string, signature: string): boolean => {
+  if (!secret || typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) {
+    return false
+  }
   const expected = signPayload(secret, body)
   if (expected.length !== signature.length) {
     return false
@@ -540,6 +562,12 @@ export const addSubscriber = async (
   events: string[],
   schemaVersion: number = DEFAULT_SCHEMA_VERSION,
 ): Promise<WebhookSubscriber> => {
+  if (!secret || typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `Webhook signing secret must be a non-empty string of at least ${MIN_SECRET_LENGTH} characters`,
+    )
+  }
+
   const check = await isUrlAllowedForOrg(organizationId, url)
   if (!check.allowed) {
     throw new Error(check.reason!)
@@ -574,6 +602,27 @@ export const removeSubscriber = async (id: string): Promise<boolean> => {
 }
 
 /**
+ * Org-scoped removal used by the management routes.
+ *
+ * Unlike {@link removeSubscriber} (which targets a raw id for internal use),
+ * this refuses to delete a subscriber that does not belong to `organizationId`.
+ * The ownership check runs in the repository query, so authorization is
+ * enforced against server-known state rather than inferred from client input.
+ */
+export const removeSubscriberForOrg = async (
+  id: string,
+  organizationId: string,
+): Promise<boolean> => {
+  const removed = await repo.removeForOrg(id, organizationId)
+  if (removed) {
+    breakerCache.delete(id)
+    inFlightProbes.delete(id)
+    await repo.removeBreakerState(id).catch(() => {})
+  }
+  return removed
+}
+
+/**
  * Idempotent variant of addSubscriber.
  *
  * Re-registering the same (org, URL) pair updates the existing row in-place
@@ -586,6 +635,12 @@ export const upsertSubscriber = async (
   secret: string,
   events: string[],
 ): Promise<WebhookSubscriber> => {
+  if (!secret || typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `Webhook signing secret must be a non-empty string of at least ${MIN_SECRET_LENGTH} characters`,
+    )
+  }
+
   const check = await isUrlAllowedForOrg(organizationId, url)
   if (!check.allowed) {
     throw new Error(check.reason!)
@@ -609,6 +664,11 @@ export const rotateSubscriberSecret = async (
   organizationId: string,
   newSecret: string,
 ): Promise<WebhookSubscriber | null> => {
+  if (!newSecret || typeof newSecret !== 'string' || newSecret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `Webhook signing secret must be a non-empty string of at least ${MIN_SECRET_LENGTH} characters`,
+    )
+  }
   return repo.rotateSecret(id, organizationId, newSecret)
 }
 

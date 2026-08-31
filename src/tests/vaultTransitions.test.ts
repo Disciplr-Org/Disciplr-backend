@@ -14,6 +14,8 @@ import {
   disputeVault,
   failVault,
   resolveDispute,
+  setTestVaults,
+  resetTestVaults,
 } from "../services/vaultTransitions.js";
 import { setVaults, type Vault } from "../routes/vaults.js";
 import { UserRole } from "../types/user.js";
@@ -142,6 +144,29 @@ describe("Vault transition invariants", () => {
     expect(expiredVault.status).toBe("failed");
   });
 
+  it("allows failing a vault whose endTimestamp is within the default clock-skew window (10 s)", () => {
+    // endTimestamp is 5 s in the future — beyond 0 but inside the 10 s skew
+    // tolerance — simulating a scheduler on a slightly-ahead clock.
+    const skewedVault = makeVault({
+      status: "active",
+      endTimestamp: new Date(Date.now() + 5000).toISOString(),
+    });
+    setTestVaults([skewedVault]);
+    expect(failVault(skewedVault.id).success).toBe(true);
+    expect(skewedVault.status).toBe("failed");
+  });
+
+  it("rejects failing a vault whose endTimestamp is beyond the clock-skew window", () => {
+    // endTimestamp is 60 s in the future — well outside the 10 s skew window.
+    const notYetVault = makeVault({
+      status: "active",
+      endTimestamp: new Date(Date.now() + 60000).toISOString(),
+    });
+    setTestVaults([notYetVault]);
+    expect(failVault(notYetVault.id).success).toBe(false);
+    expect(notYetVault.status).toBe("active");
+  });
+
   it("automatically fails active vaults whose deadline has passed during expiration checks", () => {
     const vault = makeVault({
       status: "active",
@@ -242,8 +267,12 @@ describe("Vault transition invariants", () => {
               continue;
             }
 
+            // Mirror the skew-tolerant check in getTransitionError: the
+            // transition is allowed when endTimestamp has passed OR is within
+            // the default 10 s clock-skew window (VAULT_TRANSITION_SKEW_MS).
+            const DEFAULT_SKEW_MS = 10_000;
             const deadlinePassed =
-              new Date(vault.endTimestamp).getTime() <= Date.now();
+              new Date(vault.endTimestamp).getTime() - Date.now() <= DEFAULT_SKEW_MS;
             expect(result.success).toBe(deadlinePassed);
             if (deadlinePassed) expect(vault.status).toBe("failed");
             else expect(vault.status).toBe("active");

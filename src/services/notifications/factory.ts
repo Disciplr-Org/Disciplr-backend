@@ -11,7 +11,7 @@ export class NotificationService {
   }
 
   getProvider(name?: string): NotificationProvider {
-    const providerName = name ?? this.defaultProviderName
+    const providerName = name || this.defaultProviderName
     const provider = this.providers[providerName]
 
     if (!provider) {

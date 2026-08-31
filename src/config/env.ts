@@ -222,9 +222,50 @@ export const envSchema = z
     HORIZON_LAG_THRESHOLD: nonNegativeInt(10),
     HORIZON_SHUTDOWN_TIMEOUT_MS: positiveInt(30_000),
 
+    // ── Vault transitions ────────────────────────────────────
+    /**
+     * Clock-skew tolerance (ms) applied when validating the 'failed'
+     * transition in getTransitionError. A vault whose endTimestamp is in
+     * the future by at most this many milliseconds is still accepted as
+     * expired to account for drift between scheduler/client clocks and the
+     * server wall clock.
+     *
+     * Default: 10 000 ms (10 s). Override via VAULT_TRANSITION_SKEW_MS.
+     */
+    VAULT_TRANSITION_SKEW_MS: positiveInt(10_000),
+
+    // ── Trust proxy ─────────────────────────────────────────
+    // Controls Express's "trust proxy" setting.
+    //
+    // Accepted values (passed verbatim to app.set('trust proxy', ...)):
+    //   - "false"  (default) – trust proxy disabled; req.ip is the direct
+    //     TCP peer.  Use this when the server is exposed directly to the
+    //     internet with no reverse proxy in front of it.
+    //   - "true"   – trust any forwarded header (leftmost IP wins).  Only
+    //     safe inside a fully-controlled network where only your proxy can
+    //     reach the app.
+    //   - "loopback" | "linklocal" | "uniquelocal" – trust only proxies
+    //     whose IP falls in the named subnet.
+    //   - A number (e.g. "1") – trust the given hop count of leftmost IPs.
+    //   - A comma-separated list of CIDR ranges / IP addresses, e.g.
+    //     "10.0.0.0/8,172.16.0.0/12".
+    //
+    // Security note: setting this too broadly allows clients to spoof their
+    // IP address via x-forwarded-for, which would corrupt IP-based auditing
+    // and rate-limiting.  Prefer the most restrictive value that matches your
+    // deployment topology (e.g. "loopback" or a specific CIDR).
+    TRUST_PROXY: z.string().default("false"),
+
     // ── Webhooks ────────────────────────────────────────────
     WEBHOOK_INBOUND_SECRET: z.string().optional(),
     WEBHOOK_INBOUND_SKEW_MS: positiveInt(300_000),
+    // Hard upper bound (bytes) for inbound webhook payload bodies. Requests
+    // larger than this are rejected with 413 before JSON parsing or HMAC work.
+    WEBHOOK_INBOUND_MAX_BODY_BYTES: positiveInt(500_000),
+    // Maximum number of distinct (timestamp, nonce) tuples retained for
+    // replay protection. A strict cap guarantees deduplication memory stays
+    // bounded under high churn even if the sweeping interval lags.
+    WEBHOOK_REPLAY_CACHE_SIZE: positiveInt(10_000),
     WEBHOOK_CIRCUIT_BREAKER_THRESHOLD: positiveInt(5),
     WEBHOOK_CIRCUIT_BREAKER_WINDOW_MS: positiveInt(60_000),
     WEBHOOK_CIRCUIT_BREAKER_HALF_OPEN_TIMEOUT_MS: positiveInt(30_000),

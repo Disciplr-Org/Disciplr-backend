@@ -23,6 +23,7 @@ export type AuditLogFilters = {
   action?: string
   target_type?: string
   target_id?: string
+  organization_id?: string
   limit?: number
   offset?: number
 }
@@ -129,10 +130,11 @@ export const computeAuditLogHash = (row: AuditLog, previousHash: string): string
 
 export const lookupPreviousAuditLogHash = async (
   organization_id?: string,
+  trx?: Knex.Transaction,
 ): Promise<string> => {
   const chainKey = organization_id || null
 
-  let query = db('audit_logs')
+  let query = (trx ?? db)('audit_logs')
     .orderBy('created_at', 'desc')
     .orderBy('id', 'desc')
 
@@ -144,6 +146,7 @@ export const lookupPreviousAuditLogHash = async (
 
 export const createAuditLog = async (
   entry: Omit<AuditLog, 'id' | 'created_at'> & { organization_id?: string },
+  trx?: Knex.Transaction,
 ): Promise<AuditLog> => {
   if (auditLogWriterOverride) {
     return auditLogWriterOverride(entry)
@@ -170,8 +173,8 @@ export const createAuditLog = async (
     metadata: normalizedMetadata,
   }
 
-  return await db.transaction(async (trx) => {
-    const prevHash = await lookupPreviousAuditLogHash(auditLog.organization_id)
+  const writeAuditLog = async (client: Knex.Transaction): Promise<AuditLog> => {
+    const prevHash = await lookupPreviousAuditLogHash(auditLog.organization_id, client)
     const rowHash = computeAuditLogHash(auditLog, prevHash)
 
     const insertPayload: Record<string, unknown> = {
@@ -190,9 +193,15 @@ export const createAuditLog = async (
       insertPayload.organization_id = auditLog.organization_id
     }
 
-    const [insertedLog] = await trx('audit_logs').insert(insertPayload).returning('*')
+    const [insertedLog] = await client('audit_logs').insert(insertPayload).returning('*')
     return insertedLog
-  })
+  }
+
+  if (trx) {
+    return writeAuditLog(trx)
+  }
+
+  return await db.transaction(writeAuditLog)
 }
 
 export const listAuditLogs = async (filters: AuditLogFilters = {}): Promise<AuditLog[]> => {

@@ -1,6 +1,8 @@
 import { allMilestonesVerified } from './milestones.js'
 import { type Knex } from 'knex';
 import { UserRole } from '../types/user.js';
+import { getEnv } from '../config/index.js'
+import { toUTCDate } from '../utils/timestamps.js'
 
 type TerminalStatus = 'completed' | 'failed' | 'cancelled';
 
@@ -80,13 +82,24 @@ export const getTransitionError = (
         return 'Cannot complete vault: not all milestones are verified';
       }
       return null;
-    case 'failed':
-      const now = new Date();
-      const end = new Date(vault.endTimestamp);
-      if (end > now) {
+    case 'failed': {
+      const now = Date.now();
+      const endMs = toUTCDate(vault.endTimestamp).getTime();
+      let skewMs = 10_000; // fallback if env is not yet initialized
+      try {
+        skewMs = getEnv().VAULT_TRANSITION_SKEW_MS;
+      } catch {
+        // env not initialized in tests; use the fallback default
+      }
+      // Allow the transition when endTimestamp has already passed OR is within
+      // the clock-skew window (end - now <= skewMs).  This prevents a vault
+      // whose deadline was reached on a slightly-ahead scheduler from being
+      // incorrectly rejected by a server whose clock is a few seconds behind.
+      if (endMs - now > skewMs) {
         return 'Cannot fail vault: endTimestamp has not passed yet';
       }
       return null;
+    }
     case 'cancelled':
       if (!requesterId || requesterId !== vault.creator) {
         return 'Cannot cancel vault: only the creator can cancel';
@@ -130,7 +143,7 @@ export const checkExpiredVaults = (): string[] => {
   const failed: string[] = [];
   for (const vault of memoryVaults) {
     if (vault.status !== 'active') continue;
-    const end = new Date(vault.endTimestamp);
+    const end = toUTCDate(vault.endTimestamp);
     if (end <= now) {
       vault.status = 'failed';
       failed.push(vault.id);

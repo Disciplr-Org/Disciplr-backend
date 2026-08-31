@@ -15,6 +15,15 @@ const MINIMAL_ENV = {
 _resetEnvForTesting()
 initEnv({ ...MINIMAL_ENV })
 
+// Mock deferred reminders service before dynamic imports
+const mockGetPendingCount = jest.fn<any>().mockResolvedValue(10)
+const mockGetDueCount = jest.fn<any>().mockResolvedValue(3)
+
+jest.unstable_mockModule('../services/deferredReminders.service.js', () => ({
+  getPendingCount: mockGetPendingCount,
+  getDueCount: mockGetDueCount,
+}))
+
 // Dynamically import express, supertest and local files after env initialization
 const express = (await import('express')).default
 const request = (await import('supertest')).default
@@ -69,5 +78,16 @@ describe('GET /api/health/security auth controls', () => {
       .set('Authorization', `Bearer ${token}`)
     expect(res.status).toBe(200)
     expect(res.body).toHaveProperty('topSources')
+  })
+
+  it('includes deferredReminders counts in admin response', async () => {
+    mockGetPendingCount.mockResolvedValueOnce(10)
+    mockGetDueCount.mockResolvedValueOnce(3)
+    const token = generateAccessToken({ userId: 'admin-456', role: UserRole.ADMIN })
+    const res = await request(app)
+      .get('/api/health/security')
+      .set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(200)
+    expect(res.body.deferredReminders).toEqual({ pendingCount: 10, dueCount: 3 })
   })
 })

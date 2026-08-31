@@ -41,6 +41,7 @@ export const orgMembersRouter = Router()
 
 // ─── GET /api/organizations/:orgId/members ────────────────────────────────────
 // Any member can list the org's membership roster.
+// Supports pagination via ?page=<n>&pageSize=<n> (defaults: page=1, pageSize=20, max pageSize=100).
 
 orgMembersRouter.get(
   '/:orgId/members',
@@ -49,8 +50,28 @@ orgMembersRouter.get(
   orgReadRateLimiter,
   async (req: Request, res: Response) => {
     try {
-      const members = await listOrgMemberships(req.params.orgId)
-      res.json({ members })
+      const page = req.query.page !== undefined ? parseInt(String(req.query.page), 10) : 1
+      const pageSize = req.query.pageSize !== undefined ? parseInt(String(req.query.pageSize), 10) : 20
+
+      if (!Number.isFinite(page) || page < 1) {
+        res.status(400).json({ error: 'page must be a positive integer' })
+        return
+      }
+      if (!Number.isFinite(pageSize) || pageSize < 1 || pageSize > 100) {
+        res.status(400).json({ error: 'pageSize must be between 1 and 100' })
+        return
+      }
+
+      const result = await listOrgMemberships(req.params.orgId, { page, pageSize })
+      res.json({
+        members: result.members,
+        pagination: {
+          page: result.page,
+          pageSize: result.pageSize,
+          total: result.total,
+          totalPages: Math.ceil(result.total / result.pageSize),
+        },
+      })
     } catch {
       res.status(500).json({ error: 'Failed to list members.' })
     }
@@ -213,11 +234,14 @@ orgMembersRouter.post(
   orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId } = req.params
-    const { email } = req.body as { email?: string }
+    const { email, role } = req.body as { email?: string; role?: string }
 
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return next(AppError.badRequest('A valid email is required.'))
     }
+
+    const validInviteRoles: OrgRole[] = ['owner', 'admin', 'member']
+    const invitedRole: OrgRole = role && validInviteRoles.includes(role as OrgRole) ? (role as OrgRole) : 'member'
 
     const rawToken = crypto.randomBytes(32).toString('hex')
     const tokenHash = hashToken(rawToken)
@@ -225,15 +249,15 @@ orgMembersRouter.post(
 
     try {
       const [invitation] = await db('org_invitations')
-        .insert({ org_id: orgId, email, token_hash: tokenHash, expires_at: expiresAt })
-        .returning(['id', 'org_id', 'email', 'expires_at'])
+        .insert({ org_id: orgId, email, role: invitedRole, token_hash: tokenHash, expires_at: expiresAt })
+        .returning(['id', 'org_id', 'email', 'role', 'expires_at'])
 
       createAuditLog({
         actor_user_id: req.user!.userId,
         action: 'org.invitation.created',
         target_type: 'org_invitation',
         target_id: invitation.id,
-        metadata: { orgId, email },
+        metadata: { orgId, email, role: invitedRole },
       })
 
       // Notify the invitee
@@ -248,6 +272,7 @@ orgMembersRouter.post(
         id: invitation.id,
         orgId: invitation.org_id,
         email: invitation.email,
+        role: invitation.role,
         expiresAt: invitation.expires_at,
         token: rawToken, // returned once — caller delivers this to the recipient
       })
@@ -352,14 +377,14 @@ orgMembersRouter.delete(
 
 // ─── POST /api/organizations/:orgId/invitations/accept ────────────────────────
 // Accept an invitation by submitting the raw token and desired userId.
-// Promotes the recipient to org member.
+// The role is taken from the stored invitation, not from the request body.
 
 orgMembersRouter.post(
   '/:orgId/invitations/accept',
   orgWriteRateLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     const { orgId } = req.params
-    const { token, userId, role } = req.body as { token?: string; userId?: string; role?: string }
+    const { token, userId } = req.body as { token?: string; userId?: string }
 
     if (!token || !userId) {
       return next(AppError.badRequest('token and userId are required.'))
@@ -378,14 +403,13 @@ orgMembersRouter.post(
       return next(AppError.badRequest('Invalid or expired invitation token.'))
     }
 
-    const validRoles: OrgRole[] = ['owner', 'admin', 'member']
-    const assignedRole: OrgRole = validRoles.includes(role as OrgRole) ? (role as OrgRole) : 'member'
+    const storedRole: OrgRole = invitation.role ?? 'member'
 
     try {
       const membership = await createMembership({
         user_id: userId,
         organization_id: orgId,
-        role: assignedRole,
+        role: storedRole,
       })
 
       await db('org_invitations').where({ id: invitation.id }).update({ accepted_at: new Date() })
@@ -395,7 +419,7 @@ orgMembersRouter.post(
         action: 'org.invitation.accepted',
         target_type: 'org_invitation',
         target_id: invitation.id,
-        metadata: { orgId, userId, role: assignedRole },
+        metadata: { orgId, userId, role: storedRole },
       })
 
       res.status(200).json({ orgId, userId, role: membership.role })

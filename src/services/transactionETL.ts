@@ -134,7 +134,7 @@ export class TransactionETLService {
       }
       
       const response = await builder.call()
-      return response.records.map(this.transformHorizonOperation)
+      return response.records.map((record) => this.transformHorizonOperation(record))
     } catch (error) {
       console.error('Error fetching Horizon operations:', error)
       throw error
@@ -441,7 +441,7 @@ export class TransactionETLService {
       
       const vaultOperations = operations.records
         .filter(op => new Date(op.created_at) >= from && new Date(op.created_at) <= to)
-        .map(this.transformHorizonOperation)
+        .map((record) => this.transformHorizonOperation(record))
       
       const transactions = await this.filterAndTransformOperations(vaultOperations)
       
@@ -472,6 +472,7 @@ export class TransactionETLService {
     driftedVaults: any[]
   }> {
     const config = getSorobanConfig()
+
     if (!config) {
       console.log('Soroban not configured, skipping vault reconciliation')
       return {
@@ -480,6 +481,7 @@ export class TransactionETLService {
         driftDetected: 0,
         missingOnChain: 0,
         errors: 0,
+        driftedVaults: [],
       }
     }
 

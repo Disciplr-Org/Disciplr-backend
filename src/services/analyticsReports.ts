@@ -24,7 +24,7 @@ export interface AnalyticsReport {
   /** Present when S3 is configured. */
   s3Key?: string
   /** Present when S3 is not configured (dev / test). */
-  localBuffer?: Buffer
+  localBuffer?: Uint8Array
   snapshotAt: string
   /** Content size in bytes (for informational purposes). */
   sizeBytes: number
@@ -60,7 +60,7 @@ export async function getOrgReports(
   ])
 
   return {
-    data: reports.map((r) => ({
+    data: reports.map((r: any) => ({
       id: r.id,
       orgId: r.orgId,
       createdAt: r.createdAt.toISOString(),
@@ -85,7 +85,7 @@ export async function saveOrgReport(
     data: {
       orgId: report.orgId,
       s3Key: report.s3Key,
-      localBuffer: report.localBuffer ?? null,
+      localBuffer: report.localBuffer ? Buffer.from(report.localBuffer) : null,
       snapshotAt: new Date(report.snapshotAt),
       sizeBytes: report.sizeBytes,
     },
@@ -98,7 +98,7 @@ export async function saveOrgReport(
     orgId: saved.orgId,
     createdAt: saved.createdAt.toISOString(),
     s3Key: saved.s3Key ?? undefined,
-    localBuffer: saved.localBuffer ?? undefined,
+    localBuffer: saved.localBuffer ? new Uint8Array(saved.localBuffer) : undefined,
     snapshotAt: saved.snapshotAt.toISOString(),
     sizeBytes: saved.sizeBytes,
   }
@@ -123,7 +123,7 @@ export async function getAllOrgIds(): Promise<string[]> {
     select: { orgId: true },
     distinct: ['orgId'],
   })
-  return reports.map((r) => r.orgId)
+  return reports.map((r: any) => r.orgId)
 }
 
 export async function _resetQuotaCounters(): Promise<void> {

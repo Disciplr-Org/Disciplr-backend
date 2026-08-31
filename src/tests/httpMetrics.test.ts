@@ -1,6 +1,12 @@
-import { Request, Response } from 'express';
+import express, { Request, Response } from 'express';
+import request from 'supertest';
 import assert from 'assert';
-import { recordMetricsDirectly, httpRequestsTotal, httpRequestDurationSeconds } from '../observability/httpMetrics.js';
+import {
+  recordMetricsDirectly,
+  httpRequestsTotal,
+  httpRequestDurationSeconds,
+  httpMetricsMiddleware,
+} from '../observability/httpMetrics.js';
 
 describe('RED Metrics HTTP Middleware Tests', () => {
 
@@ -114,6 +120,27 @@ describe('RED Metrics HTTP Middleware Tests', () => {
     assert.ok(
       !keys.some(k => k.includes('undefined')),
       `Route label must not contain the string 'undefined', found: ${keys.join(', ')}`,
+    );
+  });
+
+  // Regression test for #1263: the real health route is mounted at
+  // /api/health (and /api/v1/health) — not the bare /health the exclusion
+  // list originally checked for — so health-check polling traffic was
+  // silently still being recorded.
+  it('does not record requests to /api/health or /api/v1/health', async () => {
+    const app = express();
+    app.use(httpMetricsMiddleware);
+    app.get('/api/health', (_req, res) => res.status(200).json({ ok: true }));
+    app.get('/api/v1/health', (_req, res) => res.status(200).json({ ok: true }));
+
+    await request(app).get('/api/health').expect(200);
+    await request(app).get('/api/v1/health').expect(200);
+
+    const hashMap = (httpRequestsTotal as any).hashMap as Record<string, unknown>;
+    const keys = Object.keys(hashMap);
+    assert.ok(
+      !keys.some(k => k.includes('/api/health')),
+      `Expected no metric recorded for /api/health, found: ${keys.join(', ')}`,
     );
   });
 });

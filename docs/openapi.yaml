@@ -342,6 +342,7 @@ paths:
                   format: email
                 password:
                   type: string
+                  minLength: 8
               required:
                 - email
                 - password
@@ -938,26 +939,16 @@ paths:
         content:
           application/json:
             schema:
-              def:
-                type: object
-                shape:
-                  role:
-                    def:
-                      type: enum
-                      entries:
-                        USER: USER
-                        VERIFIER: VERIFIER
-                        ADMIN: ADMIN
-                    type: enum
-                    enum:
-                      USER: USER
-                      VERIFIER: VERIFIER
-                      ADMIN: ADMIN
-                    options:
-                      - USER
-                      - VERIFIER
-                      - ADMIN
               type: object
+              properties:
+                role:
+                  type: string
+                  enum:
+                    - USER
+                    - VERIFIER
+                    - ADMIN
+              required:
+                - role
       responses:
         "200":
           description: Role updated
@@ -982,26 +973,16 @@ paths:
         content:
           application/json:
             schema:
-              def:
-                type: object
-                shape:
-                  status:
-                    def:
-                      type: enum
-                      entries:
-                        ACTIVE: ACTIVE
-                        INACTIVE: INACTIVE
-                        SUSPENDED: SUSPENDED
-                    type: enum
-                    enum:
-                      ACTIVE: ACTIVE
-                      INACTIVE: INACTIVE
-                      SUSPENDED: SUSPENDED
-                    options:
-                      - ACTIVE
-                      - INACTIVE
-                      - SUSPENDED
               type: object
+              properties:
+                status:
+                  type: string
+                  enum:
+                    - ACTIVE
+                    - INACTIVE
+                    - SUSPENDED
+              required:
+                - status
       responses:
         "200":
           description: Status updated
@@ -1164,71 +1145,26 @@ paths:
         content:
           application/json:
             schema:
-              def:
-                type: object
-                shape:
-                  reasonCode:
-                    def:
-                      type: enum
-                      entries:
-                        USER_REQUEST: USER_REQUEST
-                        FRAUD_DETECTED: FRAUD_DETECTED
-                        SYSTEM_ERROR: SYSTEM_ERROR
-                        POLICY_VIOLATION: POLICY_VIOLATION
-                        EMERGENCY_ADMIN_ACTION: EMERGENCY_ADMIN_ACTION
-                        COMPLIANCE_REQUIREMENT: COMPLIANCE_REQUIREMENT
-                        TESTING_CLEANUP: TESTING_CLEANUP
-                    type: enum
-                    enum:
-                      USER_REQUEST: USER_REQUEST
-                      FRAUD_DETECTED: FRAUD_DETECTED
-                      SYSTEM_ERROR: SYSTEM_ERROR
-                      POLICY_VIOLATION: POLICY_VIOLATION
-                      EMERGENCY_ADMIN_ACTION: EMERGENCY_ADMIN_ACTION
-                      COMPLIANCE_REQUIREMENT: COMPLIANCE_REQUIREMENT
-                      TESTING_CLEANUP: TESTING_CLEANUP
-                    options:
-                      - USER_REQUEST
-                      - FRAUD_DETECTED
-                      - SYSTEM_ERROR
-                      - POLICY_VIOLATION
-                      - EMERGENCY_ADMIN_ACTION
-                      - COMPLIANCE_REQUIREMENT
-                      - TESTING_CLEANUP
-                  reason:
-                    def:
-                      type: optional
-                      innerType:
-                        def:
-                          type: string
-                        type: string
-                        format: null
-                        minLength: null
-                        maxLength: null
-                    type: optional
-                  idempotencyKey:
-                    def:
-                      type: optional
-                      innerType:
-                        def:
-                          type: string
-                        type: string
-                        format: null
-                        minLength: null
-                        maxLength: null
-                    type: optional
-                  details:
-                    def:
-                      type: optional
-                      innerType:
-                        def:
-                          type: string
-                        type: string
-                        format: null
-                        minLength: null
-                        maxLength: null
-                    type: optional
               type: object
+              properties:
+                reasonCode:
+                  type: string
+                  enum:
+                    - USER_REQUEST
+                    - FRAUD_DETECTED
+                    - SYSTEM_ERROR
+                    - POLICY_VIOLATION
+                    - EMERGENCY_ADMIN_ACTION
+                    - COMPLIANCE_REQUIREMENT
+                    - TESTING_CLEANUP
+                reason:
+                  type: string
+                idempotencyKey:
+                  type: string
+                details:
+                  type: string
+              required:
+                - reasonCode
       responses:
         "200":
           description: Vault cancelled
