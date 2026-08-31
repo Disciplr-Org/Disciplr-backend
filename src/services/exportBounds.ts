@@ -8,14 +8,6 @@ export const EXPORT_BOUNDS = {
   CONCURRENCY_RETRY_AFTER_SECONDS: 1,
 } as const
 
-/**
- * Process-local admission gate for export creation requests.
- *
- * The daily quota remains the authoritative cross-process limit. This gate is
- * deliberately smaller and short-lived: it protects the HTTP boundary from a
- * burst of simultaneous enqueue work without pretending to be a distributed
- * concurrency controller.
- */
 export class ExportRequestGate {
   private readonly activeRequests = new Map<string, number>()
 
@@ -46,18 +38,21 @@ export class ExportRequestGate {
 
 export const exportRequestGate = new ExportRequestGate()
 
-/**
- * Stream an already-materialized export without handing the whole Buffer to
- * Express in one write. Readable handles backpressure and the generator keeps
- * only one bounded chunk live at a time.
- */
 export const streamExportBuffer = (
-  res: NodeJS.WritableStream,
+  res: NodeJS.WritableStream & { send?: (body: Buffer) => unknown },
   buffer: Buffer,
   chunkSize = EXPORT_BOUNDS.DOWNLOAD_CHUNK_BYTES,
 ): void => {
   if (!Number.isInteger(chunkSize) || chunkSize <= 0) {
     throw new RangeError('chunkSize must be a positive integer')
+  }
+
+  if (typeof res.write !== 'function') {
+    if (typeof res.send === 'function') {
+      res.send(buffer)
+      return
+    }
+    throw new TypeError('response must support write() or send()')
   }
 
   function* chunks(): Generator<Buffer> {
