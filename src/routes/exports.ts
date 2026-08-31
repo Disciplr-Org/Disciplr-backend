@@ -4,7 +4,6 @@ import type { BackgroundJobSystem } from '../jobs/system.js'
 import {
   authenticate,
   requireAdmin,
-  signDownloadToken,
   verifyDownloadToken,
   type AuthenticatedRequest,
 } from '../middleware/auth.js'
@@ -23,6 +22,27 @@ import { getEnv } from '../config/index.js'
 import { resolveS3Config, getExportSignedUrl } from '../services/exportS3.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { isOrgMember } from '../models/organizations.js'
+import {
+  EXPORT_BOUNDS,
+  exportRequestGate,
+  isWithinByteLimit,
+  streamExportBuffer,
+} from '../services/exportBounds.js'
+
+/**
+ * The authenticated principal is the only trusted quota/access-control key.
+ * Client-supplied orgId query/header values are deliberately ignored.
+ */
+const resolveOrgId = (req: AuthenticatedRequest): string => req.user!.userId
+
+const logExportEvent = (event: string, payload: Record<string, unknown>): void => {
+  console.info(JSON.stringify({
+    level: 'info',
+    event,
+    ...payload,
+    timestamp: new Date().toISOString(),
+  }))
+}
 
 /**
  * Derive the org identifier used for quota and access-control decisions.
@@ -51,6 +71,7 @@ const enforceExportQuota = async (
       error: 'Export quota exceeded. Try again tomorrow.',
       retryAfter: result.retryAfter,
     })
+    logExportEvent('exports.quota_rejected', { orgId, retryAfter: result.retryAfter })
     return false
   }
   return true
@@ -91,6 +112,8 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
     const format = negotiateFormat(req, formatStr)
     const scopeStr = typeof req.query.scope === 'string' ? req.query.scope : 'all'
 
+    const validScopes = ['vaults', 'transactions', 'analytics', 'all']
+    if (!validScopes.includes(scope)) return null
     const ScopeSchema = z.enum(['vaults', 'transactions', 'analytics', 'all'])
     const scopeParse = ScopeSchema.safeParse(scopeStr)
     if (!scopeParse.success) {
@@ -105,7 +128,17 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
 
     const columnsParam = req.query.columns
     if (columnsParam) {
+      if (!isWithinByteLimit(columnsParam, EXPORT_BOUNDS.MAX_COLUMN_FILTER_BYTES)) return null
+
       try {
+        const parsedColumns: unknown = JSON.parse(columnsParam)
+        if (!parsedColumns || typeof parsedColumns !== 'object' || Array.isArray(parsedColumns)) return null
+
+        result.columns = {}
+        for (const [section, cols] of Object.entries(parsedColumns as Record<string, unknown>)) {
+          const allowed = ALLOWED_COLUMNS[section as keyof typeof ALLOWED_COLUMNS]
+          if (!allowed || !Array.isArray(cols) || cols.length > EXPORT_BOUNDS.MAX_COLUMNS_PER_SECTION) return null
+          if (!cols.every(col => typeof col === 'string' && allowed.includes(col))) return null
         const parsedColumns: unknown = typeof columnsParam === 'string'
           ? JSON.parse(columnsParam)
           : columnsParam
@@ -141,7 +174,25 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
     jobId,
     statusUrl: `/api/exports/status/${jobId}`,
     pollIntervalMs: 1000,
+    maxPollAttempts: 300,
   })
+
+  const acquireExportRequest = (req: AuthenticatedRequest, res: Response): string | null => {
+    const orgId = resolveOrgId(req)
+    if (exportRequestGate.tryAcquire(orgId)) return orgId
+
+    res.setHeader('Retry-After', String(EXPORT_BOUNDS.CONCURRENCY_RETRY_AFTER_SECONDS))
+    res.status(429).json({
+      error: 'Too many export requests in progress. Retry shortly.',
+      retryAfter: EXPORT_BOUNDS.CONCURRENCY_RETRY_AFTER_SECONDS,
+    })
+    logExportEvent('exports.concurrency_rejected', {
+      orgId,
+      activeRequests: exportRequestGate.active(orgId),
+      limit: EXPORT_BOUNDS.MAX_CONCURRENT_REQUESTS_PER_ORG,
+    })
+    return null
+  }
 
   router.post('/me', authenticate, requireScopes(ApiScope.ReadAnalytics, ApiScope.ReadVaults), async (req: AuthenticatedRequest, res: Response) => {
     const options = parseOptions(req)
@@ -150,6 +201,12 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
       return
     }
 
+    const orgId = acquireExportRequest(req, res)
+    if (!orgId) return
+    const startedAt = Date.now()
+
+    try {
+      if (!await enforceExportQuota(req, res)) return
     const idemParse = IdempotencyKeySchema.safeParse(req.header('idempotency-key'))
     if (!idemParse.success) {
       res.status(400).json({ error: 'Invalid idempotency-key header' })
@@ -169,15 +226,40 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
         idempotencyKey: idemParse.data,
       })
 
-      res.status(202).json(buildAcceptedResponse(job.id))
-    } catch (error) {
-      if (isExportIdempotencyConflictError(error)) {
-        res.status(409).json({ error: error.message })
-        return
-      }
+      try {
+        const job = await enqueueExportJob(jobSystem, {
+          userId: req.user!.userId,
+          orgId,
+          isAdmin: false,
+          scope: options.scope,
+          format: options.format,
+          columns: options.columns as any,
+          idempotencyKey: req.header('idempotency-key') ?? undefined,
+        })
 
-      const message = error instanceof Error ? error.message : 'Failed to enqueue export job'
-      res.status(500).json({ error: message })
+        logExportEvent('exports.enqueue_accepted', {
+          orgId,
+          jobId: job.id,
+          format: options.format,
+          scope: options.scope,
+          latencyMs: Date.now() - startedAt,
+        })
+        res.status(202).json(buildAcceptedResponse(job.id))
+      } catch (error) {
+        if (isExportIdempotencyConflictError(error)) {
+          res.status(409).json({ error: error.message })
+          return
+        }
+        const message = error instanceof Error ? error.message : 'Failed to enqueue export job'
+        logExportEvent('exports.enqueue_failed', {
+          orgId,
+          latencyMs: Date.now() - startedAt,
+          error: message.slice(0, 200),
+        })
+        res.status(500).json({ error: message })
+      }
+    } finally {
+      exportRequestGate.release(orgId)
     }
   })
 
@@ -188,6 +270,13 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
       return
     }
 
+    const targetUserId = typeof req.query.targetUserId === 'string' ? req.query.targetUserId : undefined
+    const orgId = acquireExportRequest(req, res)
+    if (!orgId) return
+    const startedAt = Date.now()
+
+    try {
+      if (!await enforceExportQuota(req, res)) return
     const idemParse = IdempotencyKeySchema.safeParse(req.header('idempotency-key'))
     if (!idemParse.success) {
       res.status(400).json({ error: 'Invalid idempotency-key header' })
@@ -216,15 +305,41 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
         idempotencyKey: idemParse.data,
       })
 
-      res.status(202).json(buildAcceptedResponse(job.id))
-    } catch (error) {
-      if (isExportIdempotencyConflictError(error)) {
-        res.status(409).json({ error: error.message })
-        return
-      }
+      try {
+        const job = await enqueueExportJob(jobSystem, {
+          userId: req.user!.userId,
+          orgId,
+          isAdmin: true,
+          targetUserId,
+          scope: options.scope,
+          format: options.format,
+          columns: options.columns as any,
+          idempotencyKey: req.header('idempotency-key') ?? undefined,
+        })
 
-      const message = error instanceof Error ? error.message : 'Failed to enqueue export job'
-      res.status(500).json({ error: message })
+        logExportEvent('exports.enqueue_accepted', {
+          orgId,
+          jobId: job.id,
+          format: options.format,
+          scope: options.scope,
+          latencyMs: Date.now() - startedAt,
+        })
+        res.status(202).json(buildAcceptedResponse(job.id))
+      } catch (error) {
+        if (isExportIdempotencyConflictError(error)) {
+          res.status(409).json({ error: error.message })
+          return
+        }
+        const message = error instanceof Error ? error.message : 'Failed to enqueue export job'
+        logExportEvent('exports.enqueue_failed', {
+          orgId,
+          latencyMs: Date.now() - startedAt,
+          error: message.slice(0, 200),
+        })
+        res.status(500).json({ error: message })
+      }
+    } finally {
+      exportRequestGate.release(orgId)
     }
   })
 
@@ -296,22 +411,14 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
       : 'application/json; charset=utf-8'
 
     res.setHeader('Content-Type', mimeType)
-    res.setHeader('Content-Disposition', `attachment; filename="${job.filename}"`)
+    res.setHeader('Content-Disposition', `attachment; filename=\"${job.filename}\"`)
     res.setHeader('Content-Length', job.result.length)
-
-    console.info(
-      JSON.stringify({
-        level: 'info',
-        event: 'exports.download_served',
-        jobId: job.id,
-        format: job.format,
-        bytes: job.result.length,
-        filename: job.filename,
-        timestamp: new Date().toISOString(),
-      }),
-    )
-
-    res.send(job.result)
+    logExportEvent('exports.download_served', {
+      jobId: job.id,
+      format: job.format,
+      bytes: job.result.length,
+    })
+    streamExportBuffer(res, job.result)
   })
 
   router.get('/:id/download', authenticate, async (req: AuthenticatedRequest, res: Response) => {
@@ -355,16 +462,10 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
       console.warn('Failed to record audit log for export download:', err)
     }
 
-    console.info(
-      JSON.stringify({
-        level: 'info',
-        event: 'exports.download_served',
-        jobId: job.id,
-        principal: req.user!.userId,
-        org: callerOrgId,
-        timestamp: new Date().toISOString(),
-      }),
-    )
+    logExportEvent('exports.download_requested', {
+      jobId: job.id,
+      storage: job.s3Key ? 's3' : 'local',
+    })
 
     const s3Config = resolveS3Config()
     if (s3Config && job.s3Key) {
@@ -390,9 +491,9 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
       : 'application/x-ndjson'
 
     res.setHeader('Content-Type', mimeType)
-    res.setHeader('Content-Disposition', `attachment; filename="${job.filename ?? 'export'}"`)
+    res.setHeader('Content-Disposition', `attachment; filename=\"${job.filename ?? 'export'}\"`)
     res.setHeader('Content-Length', job.result.length)
-    res.send(job.result)
+    streamExportBuffer(res, job.result)
   })
 
   return router
