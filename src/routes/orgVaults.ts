@@ -4,20 +4,24 @@ import { authenticate } from '../middleware/auth.js'
 import { requireOrgAccess } from '../middleware/orgAuth.js'
 import { queryParser } from '../middleware/queryParser.js'
 import { applyFilters, applySort, paginateArray, encodeCursor, decodeCursor } from '../utils/pagination.js'
-import { listVaults } from '../services/vaultStore.js'
+import { getPrisma } from '../lib/prismaScope.js'
 import db from '../db/index.js'
 import type { Knex } from 'knex'
 import { createHash } from 'node:crypto'
 import { isValidISO8601, normalizeTimestamp, toUTCDate } from '../utils/timestamps.js'
+import {
+  validateIdempotencyKey,
+  scopeIdempotencyKey,
+  hashRequestPayload,
+  getIdempotentResponse,
+  saveIdempotentResponse,
+  failPendingIdempotentResponse,
+  IdempotencyConflictError
+} from '../services/idempotency.js'
 
 export const orgVaultsRouter = Router()
 
 // ─── tsvector column detection cache ─────────────────────────────────────────
-// Whether the vaults.search_vector column exists is effectively static for the
-// lifetime of a running process (it only changes when a migration runs, which
-// requires a restart). We cache the result as a single shared Promise so that:
-//   1. The DB is queried at most once, even under concurrent first requests.
-//   2. All callers await the same in-flight promise instead of racing.
 let _hasFtsColumnCache: Promise<boolean> | null = null;
 
 function hasFtsColumn(): Promise<boolean> {
@@ -31,7 +35,6 @@ function hasFtsColumn(): Promise<boolean> {
       .first()
       .then(Boolean)
       .catch((err) => {
-        // On error, reset so the next request retries rather than caching a failure.
         _hasFtsColumnCache = null;
         return Promise.reject(err);
       });
@@ -57,28 +60,9 @@ orgVaultsRouter.get(
   }),
   async (req: Request, res: Response) => {
     const { orgId } = req.params
-    const dbVaults = await db('vaults')
-      .where({ organization_id: orgId })
-      .whereNull('deleted_at')
-      .select('*')
-    
-    // Map DB fields to the expected Vault shape
-    let result = dbVaults.map(v => ({
-      id: v.id,
-      creator: v.creator,
-      amount: v.amount,
-      status: v.status,
-      startTimestamp: normalizeTimestamp(v.start_date),
-      endTimestamp: normalizeTimestamp(v.end_date),
-      successDestination: v.success_destination,
-      failureDestination: v.failure_destination,
-      verifier: v.verifier,
-      createdAt: normalizeTimestamp(v.created_at),
-      orgId: v.organization_id
-    }))
 
     try {
-      const rows = await db("vaults")
+      const knexQuery = db("vaults")
         .where("organization_id", orgId)
         .whereNull("deleted_at")
         .select(
@@ -94,7 +78,10 @@ orgVaultsRouter.get(
           "updated_at",
         );
 
-      let result = rows.map((row: Record<string, unknown>) => ({
+      const { sql, bindings } = knexQuery.toSQL().toNative();
+      const rows = await getPrisma().$queryRawUnsafe<any[]>(sql, ...bindings);
+
+      let result = rows.map((row: any) => ({
         id: row.id,
         creator: row.creator,
         verifier: row.verifier,
@@ -118,7 +105,7 @@ orgVaultsRouter.get(
       const paginatedResult = paginateArray(result, req.pagination!);
       res.json(paginatedResult);
     } catch (error) {
-      console.error("Error listing org vaults:", error);
+      console.error("Error listing org vaults:", (error as any).stack || error);
       res.status(500).json({ error: "Internal server error" });
     }
   },
@@ -146,7 +133,6 @@ const VALID_SORT_ORDERS = new Set(["asc", "desc"]);
 
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-/** True when value is a real calendar date in YYYY-MM-DD form. */
 function isValidDateOnly(value: string): boolean {
   if (!DATE_ONLY_RE.test(value)) return false
   const [y, m, d] = value.split("-").map(Number)
@@ -249,9 +235,6 @@ export function validateAndSanitizeQueryDefinition(
 
   for (const field of ["date_from", "date_to"] as const) {
     if (input[field] !== undefined) {
-      // Accept either a date-only ISO 8601 string (YYYY-MM-DD) or a full
-      // timestamp with an explicit timezone. The downstream `new Date()`
-      // consumption handles both, and the API contract exposes `format: date`.
       const valid =
         typeof input[field] === "string" &&
         (isValidDateOnly(input[field]) || isValidISO8601(input[field]));
@@ -348,7 +331,8 @@ export async function runSavedSearch(
   const sortOrder = (queryDef.sort_order ?? "desc") as "asc" | "desc";
   query = query.orderBy(sortField, sortOrder).orderBy("id", "desc");
 
-  const rows = await query.limit(limit);
+  const { sql, bindings } = query.limit(limit).toSQL().toNative();
+  const rows = await getPrisma().$queryRawUnsafe<any[]>(sql, ...bindings);
   return rows.map((r: { id: string }) => r.id);
 }
 
@@ -368,7 +352,6 @@ orgVaultsRouter.post(
     const userId = req.user?.userId;
     if (!userId) {
       res.status(401).json({ error: "Authenticated user missing userId" });
-      return;
       return;
     }
     const {
@@ -424,42 +407,107 @@ orgVaultsRouter.post(
       }
     }
 
-    try {
-      const countRow = await db("org_vault_searches")
-        .where({ org_id: orgId })
-        .count("id as n")
-        .first();
+    const rawIdempotencyKey = req.header('idempotency-key') ?? null;
+    let scopedIdempotencyKey: string | null = null;
+    const owner = { userId, orgId };
 
-      const currentCount = Number(countRow?.n ?? 0);
-      if (currentCount >= MAX_SEARCHES_PER_ORG) {
-        res.status(422).json({
-          error: `Org has reached the maximum of ${MAX_SEARCHES_PER_ORG} saved searches`,
+    if (rawIdempotencyKey) {
+      const keyValidation = validateIdempotencyKey(rawIdempotencyKey);
+      if (!keyValidation.valid) {
+        res.status(400).json({
+          error: {
+            code: keyValidation.code,
+            message: keyValidation.error,
+          },
         });
         return;
       }
+      scopedIdempotencyKey = scopeIdempotencyKey(userId, rawIdempotencyKey);
+    }
 
-      const [search] = await db("org_vault_searches")
-        .insert({
-          org_id: orgId,
-          name: name.trim(),
-          query_definition: JSON.stringify(validation.sanitized),
-          alerts_enabled: alertsOn,
-          alert_recipient: alertsOn ? (alert_recipient as string).trim() : null,
-          alert_frequency_ms: alertsOn
-            ? alert_frequency_ms !== undefined
-              ? Number(alert_frequency_ms)
-              : MIN_ALERT_FREQUENCY_MS
-            : MIN_ALERT_FREQUENCY_MS,
-          created_by: userId,
-          created_at: new Date(),
-          updated_at: new Date(),
-        })
-        .returning("*");
+    const requestHash = hashRequestPayload(req.body);
 
-      res.status(201).json({ search });
-    } catch (error) {
-      console.error("Error creating saved search:", error);
-      res.status(500).json({ error: "Internal server error" });
+    if (scopedIdempotencyKey) {
+      try {
+        const cached = await getIdempotentResponse<any>(rawIdempotencyKey, requestHash, owner);
+        if (cached) {
+          res.status(200).json(cached);
+          return;
+        }
+      } catch (err) {
+        if (err instanceof IdempotencyConflictError) {
+          res.status(409).json({ error: "Idempotency key conflict" });
+          return;
+        }
+        next(err);
+        return;
+      }
+    }
+
+    try {
+      // Execute atomically using a Serializable transaction
+      const search = await getPrisma().$transaction(async (tx) => {
+        const currentCount = await tx.orgVaultSearch.count({
+          where: { orgId }
+        });
+
+        if (currentCount >= MAX_SEARCHES_PER_ORG) {
+          const error = new Error(`Org has reached the maximum of ${MAX_SEARCHES_PER_ORG} saved searches`);
+          (error as any).status = 422;
+          throw error;
+        }
+
+        return tx.orgVaultSearch.create({
+          data: {
+            orgId,
+            name: name.trim(),
+            queryDefinition: validation.sanitized as any,
+            alertsEnabled: alertsOn,
+            alertRecipient: alertsOn ? (alert_recipient as string).trim() : null,
+            alertFrequencyMs: alertsOn
+              ? alert_frequency_ms !== undefined
+                ? Number(alert_frequency_ms)
+                : MIN_ALERT_FREQUENCY_MS
+              : MIN_ALERT_FREQUENCY_MS,
+            createdBy: userId,
+          }
+        });
+      }, {
+        isolationLevel: 'Serializable'
+      });
+
+      const responseBody = {
+        search: {
+          id: search.id,
+          org_id: search.orgId,
+          name: search.name,
+          query_definition: search.queryDefinition,
+          alerts_enabled: search.alertsEnabled,
+          alert_recipient: search.alertRecipient,
+          alert_frequency_ms: search.alertFrequencyMs,
+          last_evaluated_at: search.lastEvaluatedAt,
+          last_result_hash: search.lastResultHash,
+          created_by: search.createdBy,
+          created_at: search.createdAt,
+          updated_at: search.updatedAt
+        }
+      };
+
+      if (scopedIdempotencyKey) {
+        await saveIdempotentResponse(rawIdempotencyKey, requestHash, search.id, responseBody, owner);
+      }
+
+      res.status(201).json(responseBody);
+    } catch (error: any) {
+      if (scopedIdempotencyKey) {
+        failPendingIdempotentResponse(rawIdempotencyKey, requestHash, error, owner);
+      }
+      if (error.status === 422) {
+        res.status(422).json({ error: error.message });
+      } else {
+        console.error("Error creating saved search:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
     }
   },
 );
@@ -475,9 +523,25 @@ orgVaultsRouter.get(
     const { orgId } = req.params;
 
     try {
-      const searches: OrgVaultSearch[] = await db("org_vault_searches")
-        .where({ org_id: orgId })
-        .orderBy("created_at", "desc");
+      const rows = await getPrisma().orgVaultSearch.findMany({
+        where: { orgId },
+        orderBy: { createdAt: 'desc' }
+      });
+
+      const searches = rows.map(r => ({
+        id: r.id,
+        org_id: r.orgId,
+        name: r.name,
+        query_definition: r.queryDefinition,
+        alerts_enabled: r.alertsEnabled,
+        alert_recipient: r.alertRecipient,
+        alert_frequency_ms: r.alertFrequencyMs,
+        last_evaluated_at: r.lastEvaluatedAt,
+        last_result_hash: r.lastResultHash,
+        created_by: r.createdBy,
+        created_at: r.createdAt,
+        updated_at: r.updatedAt
+      }));
 
       res.json({ searches });
     } catch (error) {
@@ -498,16 +562,31 @@ orgVaultsRouter.get(
     const { orgId, searchId } = req.params;
 
     try {
-      const search: OrgVaultSearch | undefined = await db("org_vault_searches")
-        .where({ id: searchId, org_id: orgId })
-        .first();
+      const search = await getPrisma().orgVaultSearch.findFirst({
+        where: { id: searchId, orgId }
+      });
 
       if (!search) {
         res.status(404).json({ error: "Saved search not found" });
         return;
       }
 
-      res.json({ search });
+      res.json({
+        search: {
+          id: search.id,
+          org_id: search.orgId,
+          name: search.name,
+          query_definition: search.queryDefinition,
+          alerts_enabled: search.alertsEnabled,
+          alert_recipient: search.alertRecipient,
+          alert_frequency_ms: search.alertFrequencyMs,
+          last_evaluated_at: search.lastEvaluatedAt,
+          last_result_hash: search.lastResultHash,
+          created_by: search.createdBy,
+          created_at: search.createdAt,
+          updated_at: search.updatedAt
+        }
+      });
     } catch (error) {
       console.error("Error fetching saved search:", error);
       res.status(500).json({ error: "Internal server error" });
@@ -526,14 +605,18 @@ orgVaultsRouter.delete(
     const { orgId, searchId } = req.params;
 
     try {
-      const deleted = await db("org_vault_searches")
-        .where({ id: searchId, org_id: orgId })
-        .delete();
+      const search = await getPrisma().orgVaultSearch.findFirst({
+        where: { id: searchId, orgId }
+      });
 
-      if (deleted === 0) {
+      if (!search) {
         res.status(404).json({ error: "Saved search not found" });
         return;
       }
+
+      await getPrisma().orgVaultSearch.delete({
+        where: { id: searchId }
+      });
 
       res.status(204).end();
     } catch (error) {
@@ -543,24 +626,8 @@ orgVaultsRouter.delete(
   },
 );
 
-/**
- * GET /api/orgs/:orgId/vaults/search
- *
- * Org-scoped vault search with full-text matching and structured filters.
- * Results are cursor-paginated for stable, consistent paging.
- *
- * Query parameters:
- *   q            - Full-text search term (matches creator + verifier via tsvector/GIN index,
- *                  falls back to ILIKE when the DB has no tsvector column yet)
- *   status       - Exact status filter: draft | active | completed | failed | cancelled
- *   verifier     - Exact verifier address filter
- *   amount_min   - Minimum vault amount (inclusive)
- *   amount_max   - Maximum vault amount (inclusive)
- *   date_from    - Minimum created_at (ISO 8601 inclusive)
- *   date_to      - Maximum created_at (ISO 8601 inclusive)
- *   cursor       - Opaque pagination cursor from a previous response
- *   limit        - Page size (1–100, default 20)
- */
+// ─── GET /api/orgs/:orgId/vaults/search ──────────────────────────────────────
+
 orgVaultsRouter.get(
   "/:orgId/vaults/search",
   authenticate,
@@ -580,14 +647,9 @@ orgVaultsRouter.get(
   async (req: Request, res: Response): Promise<void> => {
     const { orgId } = req.params;
 
-    // ── Raw search term ─────────────────────────────────────────────────────
-    // Strip to plain text — no special characters that could be meaningful
-    // to tsvector/ILIKE beyond the literal token.
     const rawQ = typeof req.query.q === "string" ? req.query.q.trim() : "";
-    // Sanitise: keep only alphanumeric, spaces, dots, hyphens, underscores
     const q = rawQ.replace(/[^\w\s.\-]/g, "").substring(0, 200);
 
-    // ── Pagination ──────────────────────────────────────────────────────────
     const limit = Math.min(
       100,
       Math.max(1, parseInt(String(req.query.limit ?? "20"))),
@@ -596,19 +658,14 @@ orgVaultsRouter.get(
       typeof req.query.cursor === "string" ? req.query.cursor : undefined;
 
     try {
-      // ── Base query — always scoped to the org and not soft-deleted ────────
       let query = db("vaults")
         .where("organization_id", orgId)
         .whereNull("deleted_at");
 
-      // ── Full-text search ─────────────────────────────────────────────────
       if (q) {
-        // Check whether the tsvector column exists (migration may not have run yet).
-        // Result is cached for the lifetime of the process — see hasFtsColumn().
         const ftsAvailable = await hasFtsColumn();
 
         if (ftsAvailable) {
-          // GIN index path — injection-safe: q is bound via knex parameterisation
           query = query.whereRaw(`search_vector @@ to_tsquery('simple', ?)`, [
             q
               .split(/\s+/)
@@ -617,7 +674,6 @@ orgVaultsRouter.get(
               .join(" & "),
           ]);
         } else {
-          // Fallback ILIKE path (slower, but safe until migration runs)
           query = query.where(function () {
             this.where("creator", "ilike", `%${q}%`).orWhere(
               "verifier",
@@ -628,7 +684,6 @@ orgVaultsRouter.get(
         }
       }
 
-      // ── Structured filters ───────────────────────────────────────────────
       const filters = req.filters ?? {};
 
       if (filters.status) {
@@ -673,8 +728,6 @@ orgVaultsRouter.get(
         query = query.where("created_at", "<=", new Date(to));
       }
 
-      // ── Cursor pagination ────────────────────────────────────────────────
-      // Stable sort: (created_at DESC, id DESC) — matches encodeCursor/decodeCursor contract
       if (rawCursor) {
         try {
           const { timestamp, id } = decodeCursor(rawCursor);
@@ -689,24 +742,10 @@ orgVaultsRouter.get(
         }
       }
 
-      // Enforce stable ordering
       query = query.orderBy("created_at", "desc").orderBy("id", "desc");
 
-      // Fetch limit + 1 to detect whether a next page exists
-      const rows = await query
-        .limit(limit + 1)
-        .select(
-          "id",
-          "creator",
-          "verifier",
-          "amount",
-          "status",
-          "organization_id",
-          "start_date",
-          "end_date",
-          "created_at",
-          "updated_at",
-        );
+      const { sql, bindings } = query.limit(limit + 1).toSQL().toNative();
+      const rows = await getPrisma().$queryRawUnsafe<any[]>(sql, ...bindings);
 
       const hasMore = rows.length > limit;
       const results = rows.slice(0, limit);
