@@ -282,6 +282,58 @@ describe('Concurrent quota enforcement', () => {
   })
 })
 
+describe('POST /me quota recovery on enqueue failure', () => {
+  const makeReq = (userId = 'user-recovery-1') =>
+    ({
+      query: { format: 'json', scope: 'vaults' },
+      user: { userId, role: 'USER' },
+      header: () => undefined,
+    }) as unknown as Request
+
+  it('does not consume quota when job enqueue fails, allowing a retry', async () => {
+    const failingJobSystem = {
+      enqueue: jest.fn().mockRejectedValue(new Error('queue down')),
+    }
+    const { handle } = getHandler('/me', 'post', failingJobSystem as never)
+    const { getEnv } = await import('../config/index.js')
+    const env = getEnv()
+    const original = env.EXPORT_DAILY_QUOTA_LIMIT
+    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = 1
+
+    const res1 = mockRes()
+    await handle(makeReq('user-recovery-1'), res1 as unknown as Response)
+    expect(res1.statusCode).toBe(500)
+
+    const res2 = mockRes()
+    await handle(makeReq('user-recovery-1'), res2 as unknown as Response)
+    expect(res2.statusCode).toBe(202)
+
+    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = original
+  })
+
+  it('rejects concurrent duplicate submissions exactly once when quota limit is 1', async () => {
+    const { handle } = getHandler('/me', 'post', createMockJobSystem())
+    const { getEnv } = await import('../config/index.js')
+    const env = getEnv()
+    const original = env.EXPORT_DAILY_QUOTA_LIMIT
+    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = 1
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => {
+        const res = mockRes()
+        return handle(makeReq('user-duplicate'), res as unknown as Response).then(() => res)
+      }),
+    )
+
+    const accepted = results.filter((r) => r.statusCode === 202).length
+    const rejected = results.filter((r) => r.statusCode === 429).length
+    expect(accepted).toBe(1)
+    expect(rejected).toBe(4)
+
+    ;(env as any).EXPORT_DAILY_QUOTA_LIMIT = original
+  })
+})
+
 // ══════════════════════════════════════════════════════════════════════════
 // 3. Route integration: POST /me quota enforcement
 // ══════════════════════════════════════════════════════════════════════════
