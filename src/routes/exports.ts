@@ -18,7 +18,7 @@ import {
   type ExportScope,
   ALLOWED_COLUMNS,
 } from '../services/exportQueue.js'
-import { checkAndIncrementExportQuota } from '../services/exportQuota.js'
+import { checkAndIncrementExportQuota, releaseExportQuota } from '../services/exportQuota.js'
 import { getEnv } from '../config/index.js'
 import { resolveS3Config, getExportSignedUrl } from '../services/exportS3.js'
 import { createAuditLog } from '../lib/audit-logs.js'
@@ -171,7 +171,13 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
 
       res.status(202).json(buildAcceptedResponse(job.id))
     } catch (error) {
+      await releaseExportQuota(resolveOrgId(req))
       if (isExportIdempotencyConflictError(error)) {
+        const existingJobId = (error as any).jobId
+        if (existingJobId) {
+          res.status(202).json(buildAcceptedResponse(existingJobId))
+          return
+        }
         res.status(409).json({ error: error.message })
         return
       }
@@ -218,7 +224,13 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
 
       res.status(202).json(buildAcceptedResponse(job.id))
     } catch (error) {
+      await releaseExportQuota(resolveOrgId(req))
       if (isExportIdempotencyConflictError(error)) {
+        const existingJobId = (error as any).jobId
+        if (existingJobId) {
+          res.status(202).json(buildAcceptedResponse(existingJobId))
+          return
+        }
         res.status(409).json({ error: error.message })
         return
       }
@@ -242,7 +254,10 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
       return
     }
 
-    if (req.user!.role !== 'ADMIN' && job.userId !== req.user!.userId) {
+    const callerOrgId = resolveOrgId(req)
+    const jobOrgId = job.orgId ?? job.userId
+    const isMember = await isOrgMember(jobOrgId, req.user!.userId)
+    if (req.user!.role !== 'ADMIN' && job.userId !== req.user!.userId && !isMember) {
       res.status(403).json({ error: 'Access denied' })
       return
     }
@@ -330,7 +345,8 @@ export function createExportRouter(jobSystem: BackgroundJobSystem): Router {
 
     const callerOrgId = resolveOrgId(req)
     const jobOrgId = job.orgId ?? job.userId
-    const isOwner = (jobOrgId === callerOrgId) || (job.userId === req.user!.userId) || isOrgMember(jobOrgId, req.user!.userId)
+    const isMember = await isOrgMember(jobOrgId, req.user!.userId)
+    const isOwner = (jobOrgId === callerOrgId) || (job.userId === req.user!.userId) || isMember
 
     if (!isOwner && req.user!.role !== 'ADMIN') {
       res.status(403).json({ error: 'Forbidden: Cross-organization export download rejected' })
