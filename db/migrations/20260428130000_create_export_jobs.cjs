@@ -9,7 +9,7 @@ exports.up = async function up(knex) {
     table.string('status', 16).notNullable().defaultTo('pending')
     table.integer('attempts').notNullable().defaultTo(0)
     table.integer('max_attempts').notNullable().defaultTo(3)
-    table.string('idempotency_key', 255).nullable()
+    table.string(''idempotency_key', 255).nullable()
     table.string('request_hash', 64).notNullable()
     table.text('error').nullable()
     table.binary('result_data').nullable()
