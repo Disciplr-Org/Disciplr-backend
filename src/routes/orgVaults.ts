@@ -57,25 +57,7 @@ orgVaultsRouter.get(
   }),
   async (req: Request, res: Response) => {
     const { orgId } = req.params
-    const dbVaults = await db('vaults')
-      .where({ organization_id: orgId })
-      .whereNull('deleted_at')
-      .select('*')
-    
-    // Map DB fields to the expected Vault shape
-    let result = dbVaults.map(v => ({
-      id: v.id,
-      creator: v.creator,
-      amount: v.amount,
-      status: v.status,
-      startTimestamp: normalizeTimestamp(v.start_date),
-      endTimestamp: normalizeTimestamp(v.end_date),
-      successDestination: v.success_destination,
-      failureDestination: v.failure_destination,
-      verifier: v.verifier,
-      createdAt: normalizeTimestamp(v.created_at),
-      orgId: v.organization_id
-    }))
+    const start = process.hrtime.bigint();
 
     try {
       const rows = await db("vaults")
@@ -115,10 +97,22 @@ orgVaultsRouter.get(
         result = applySort(result, req.sort);
       }
 
-      const paginatedResult = paginateArray(result, req.pagination!);
+      const paginatedResult = paginateArray(result, {
+        ...req.pagination!,
+        limit: Math.min(req.pagination?.limit ?? 50, 100),
+      });
+      const durationMs = Number(process.hrtime.bigint() - start) / 1_000_000;
+      console.info(JSON.stringify({ event: "org.vaults.list.success", orgId, durationMs }));
       res.json(paginatedResult);
     } catch (error) {
-      console.error("Error listing org vaults:", error);
+      const durationMs = Number(process.hrtime.bigint() - start) / 1_000_000;
+      console.error(JSON.stringify({
+        event: "org.vaults.list.error",
+        orgId,
+        message: error instanceof Error ? error.message : "Unknown error",
+        durationMs,
+        timestamp: new Date().toISOString(),
+      }));
       res.status(500).json({ error: "Internal server error" });
     }
   },
