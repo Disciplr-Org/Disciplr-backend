@@ -16,8 +16,6 @@ jest.unstable_mockModule('../middleware/auth.js', () => ({
 
 const { requireOrgAccess } = await import('../middleware/orgAuth.js')
 const { AppError } = await import('../middleware/errorHandler.js')
-
-const { requireOrgAccess } = await import('../middleware/orgAuth.js');
 const db = (await import('../db/index.js')).default;
 const { getAuthenticatedUserId } = await import('../middleware/auth.js');
 
