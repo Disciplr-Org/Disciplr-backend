@@ -10,6 +10,31 @@ jest.unstable_mockModule('../db/index.js', () => ({
   default: mockDb,
 }))
 
+jest.unstable_mockModule('../lib/prismaScope.js', () => ({
+  getPrisma: () => ({
+    organization: {
+      findUnique: async (args: any) => {
+        return mockDb('organizations').where({ id: args.where.id }).first()
+      }
+    },
+    membership: {
+      findFirst: async (args: any) => {
+        const tbl = args.where.teamId ? 'team_members' : 'org_members'
+        return mockDb(tbl).where().first()
+      }
+    },
+    team: {
+      findUnique: async (args: any) => {
+        return mockDb('teams').where({ id: args.where.id }).first()
+      }
+    }
+  }),
+  prismaStorage: {
+    getStore: () => undefined,
+    run: (ctx: any, cb: any) => cb()
+  }
+}))
+
 jest.unstable_mockModule('../middleware/auth.js', () => ({
   getAuthenticatedUserId: mockGetAuthenticatedUserId,
 }))

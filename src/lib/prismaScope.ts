@@ -2,7 +2,10 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { PrismaClient } from '@prisma/client'
 import { prisma as singletonPrisma } from './prisma.js'
 
-export type PrismaScope = { prisma: PrismaClient }
+export type PrismaScope = {
+  prisma: PrismaClient
+  orgId?: string
+}
 
 export const prismaStorage = new AsyncLocalStorage<PrismaScope>()
 

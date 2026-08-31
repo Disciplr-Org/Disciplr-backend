@@ -59,6 +59,7 @@ deletedAt  DateTime?  @map("deleted_at")
   id                 String      @id @default(uuid())
   creatorId          String      @map("creator_id")
   creator            User        @relation(fields: [creatorId], references: [id])
+  organizationId     String?     @map("organization_id") @db.Uuid
   amount             String
   startDate          DateTime    @default(now()) @map("start_date")
   endDate            DateTime    @map("end_date")
@@ -73,6 +74,65 @@ deletedAt  DateTime?  @map("deleted_at")
   @@index([status])
   @@index([endDate])
   @@map("vaults")
+}
+
+model Organization {
+  id          String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String
+  slug        String       @unique
+  metadata    Json?
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @default(now()) @map("updated_at") @updatedAt
+  memberships Membership[]
+  teams       Team[]
+
+  @@map("organizations")
+}
+
+model Team {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name           String
+  slug           String
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  metadata       Json?
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @default(now()) @map("updated_at") @updatedAt
+  memberships    Membership[]
+
+  @@unique([organizationId, slug])
+  @@map("teams")
+}
+
+model Membership {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId         String       @map("user_id")
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  teamId         String?      @map("team_id") @db.Uuid
+  team           Team?        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  role           String       @default("member")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@unique([userId, organizationId, teamId])
+  @@map("memberships")
+}
+
+model OrgVaultSearch {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId            String    @map("org_id")
+  name             String
+  queryDefinition  Json      @map("query_definition")
+  alertsEnabled    Boolean   @default(false) @map("alerts_enabled")
+  alertRecipient   String?   @map("alert_recipient")
+  alertFrequencyMs Int       @default(3600000) @map("alert_frequency_ms")
+  lastEvaluatedAt  DateTime? @map("last_evaluated_at")
+  lastResultHash   String?   @map("last_result_hash")
+  createdBy        String    @map("created_by")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @default(now()) @map("updated_at") @updatedAt
+
+  @@map("org_vault_searches")
 }
 
 model Notification {

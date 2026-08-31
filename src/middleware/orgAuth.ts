@@ -2,13 +2,13 @@ import { Request, Response, NextFunction } from "express";
 import { AuthenticatedRequest, getAuthenticatedUserId } from "./auth.js";
 import { AppError } from "./errorHandler.js";
 import type { OrgRole } from "../models/organizations.js";
-import db from "../db/index.js";
+import { getPrisma, prismaStorage } from "../lib/prismaScope.js";
 
 export type { OrgRole } from "../models/organizations.js";
 
 /**
  * DB-backed org access middleware.
- * Checks org existence and membership via the organizations and org_members tables.
+ * Checks org existence and membership via the organizations and memberships tables.
  */
 export function requireOrgAccess(...allowedRoles: (OrgRole | string)[]) {
   return async (
@@ -25,16 +25,22 @@ export function requireOrgAccess(...allowedRoles: (OrgRole | string)[]) {
     }
 
     try {
-      const org = await db("organizations").where({ id: orgId }).first();
+      const org = await getPrisma().organization.findUnique({
+        where: { id: orgId },
+      });
       if (!org) {
         next(AppError.notFound("Organization not found"));
         return;
       }
       (req as any).orgId = orgId;
 
-      const membership = await db("org_members")
-        .where({ org_id: orgId, user_id: userId })
-        .first();
+      const membership = await getPrisma().membership.findFirst({
+        where: {
+          organizationId: orgId,
+          userId: userId,
+          teamId: null,
+        },
+      });
 
       if (!membership) {
         next(
@@ -52,7 +58,13 @@ export function requireOrgAccess(...allowedRoles: (OrgRole | string)[]) {
         return;
       }
 
-      next();
+      const store = prismaStorage.getStore();
+      if (store) {
+        store.orgId = orgId;
+        next();
+      } else {
+        prismaStorage.run({ prisma: getPrisma(), orgId }, next);
+      }
     } catch (err) {
       next(err);
     }
@@ -80,15 +92,21 @@ export const requireOrgRole = (roles: (OrgRole | string)[]) => {
       // Prove the target org exists before looking up membership, so a
       // cross-organization reference cannot be mistaken for an authorization
       // denial (or leak existence only as a 403).
-      const org = await db("organizations").where({ id: orgId }).first();
+      const org = await getPrisma().organization.findUnique({
+        where: { id: orgId },
+      });
       if (!org) {
         res.status(404).json({ error: "Organization not found" });
         return;
       }
 
-      const membership = await db("org_members")
-        .where({ org_id: orgId, user_id: userId })
-        .first();
+      const membership = await getPrisma().membership.findFirst({
+        where: {
+          organizationId: orgId,
+          userId: userId,
+          teamId: null,
+        },
+      });
       // Missing membership is a normal no-row result (does not throw) → 403.
       if (!membership || !roles.includes(membership.role)) {
         res
@@ -98,7 +116,14 @@ export const requireOrgRole = (roles: (OrgRole | string)[]) => {
           });
         return;
       }
-      next();
+
+      const store = prismaStorage.getStore();
+      if (store) {
+        store.orgId = orgId;
+        next();
+      } else {
+        prismaStorage.run({ prisma: getPrisma(), orgId }, next);
+      }
     } catch (err) {
       // Unexpected DB/infra failures must not look like authorization denials.
       next(err);
@@ -124,15 +149,20 @@ export const requireTeamRole = (roles: (OrgRole | string)[]) => {
     }
 
     try {
-      const team = await db("teams").where({ id: teamId }).first();
+      const team = await getPrisma().team.findUnique({
+        where: { id: teamId },
+      });
       if (!team) {
         res.status(404).json({ error: "Team not found" });
         return;
       }
 
-      const membership = await db("team_members")
-        .where({ team_id: teamId, user_id: userId })
-        .first();
+      const membership = await getPrisma().membership.findFirst({
+        where: {
+          teamId: teamId,
+          userId: userId,
+        },
+      });
       // Missing membership is a normal no-row result (does not throw) → 403.
       if (!membership || !roles.includes(membership.role)) {
         res
@@ -142,7 +172,14 @@ export const requireTeamRole = (roles: (OrgRole | string)[]) => {
           });
         return;
       }
-      next();
+
+      const store = prismaStorage.getStore();
+      if (store) {
+        store.orgId = team.organizationId;
+        next();
+      } else {
+        prismaStorage.run({ prisma: getPrisma(), orgId: team.organizationId }, next);
+      }
     } catch (err) {
       // Unexpected DB/infra failures must not look like authorization denials.
       next(err);
