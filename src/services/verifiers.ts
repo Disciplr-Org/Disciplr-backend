@@ -744,7 +744,7 @@ export const getMilestoneApprovalProgress = async (
       )
     }
   }
-  // ─────────────────────────────────────────────────────────────────────────
+  const safeThreshold = Math.max(1, Math.floor(Number(approvalThreshold)))
 
   const approvals = await getMilestoneApprovals(milestoneId, trx)
   const approved = approvals.approved.length

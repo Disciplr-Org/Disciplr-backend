@@ -191,7 +191,7 @@ export const transitionMilestone = (
     const action = to === 'settled' ? 'approve' : 'validate'
     // A replay must be acknowledged before checking the now-advanced state.
     if (!opts.idempotencyKey || !appliedIdempotencyKeys[id]?.has(opts.idempotencyKey)) {
-      assertVerifierLifecycleTransition(milestone, opts.actor, action, from, to)
+      assertVerifierLifecycleTransition(milestone, opts.actor, action, from, to as any)
     }
   }
 

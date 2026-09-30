@@ -9,16 +9,47 @@ import { authRateLimiter } from '../middleware/rateLimiter.js'
 import { getEnv } from '../config/index.js'
 import type { ApiScope } from '../types/auth.js'
 import { requestTelemetry } from '../middleware/telemetry.js'
-import { requireJson } from '../middleware/requireJson.js'
 
 export const oauthRouter = Router()
-oauthRouter.use(requestTelemetry);
+oauthRouter.use(requestTelemetry)
 
 const TOKEN_TTL_SECONDS = Number(process.env.OAUTH_TOKEN_TTL_SECONDS ?? 3600)
 const MAX_SCOPES_PER_REQUEST = 20
 const MAX_SCOPE_LENGTH = 64
 
 const oauthJson = requireJson({ maxBytes: 16384 })
+
+export const getNetworkId = (): string | null => {
+  try {
+    return (
+      getEnv().STELLAR_NETWORK_PASSPHRASE ??
+      getEnv().SOROBAN_NETWORK_PASSPHRASE ??
+      null
+    )
+  } catch {
+    return (
+      process.env.STELLAR_NETWORK_PASSPHRASE ??
+      process.env.SOROBAN_NETWORK_PASSPHRASE ??
+      null
+    )
+  }
+}
+
+const NETWORK_ID = getNetworkId()
+
+export const oauthTokenRequestSchema = z.object({
+  grant_type: z.literal('client_credentials'),
+  client_id: z.string().uuid('client_id must be a valid UUID.'),
+  client_secret: z
+    .string()
+    .min(1, 'client_secret is required.')
+    .max(1024, 'client_secret exceeds the maximum permitted length.'),
+  scope: z
+    .string()
+    .trim()
+    .max(256, 'scope exceeds the maximum permitted length.')
+    .optional(),
+})
 
 /** Non-blocking audit log helper — failures are logged but never propagate. */
 const auditLog = (entry: Parameters<typeof createAuditLog>[0]): void => {
@@ -37,7 +68,8 @@ const oauthError = (res: Response, status: number, error: string, description: s
 }
 
 oauthRouter.post('/token', oauthJson, authRateLimiter, async (req: Request, res: Response): Promise<void> => {
-  const { grant_type, client_id, client_secret, scope } = req.body ?? {}
+  const body: unknown = req.body
+  const rawBody = (body ?? {}) as Record<string, unknown>
 
   // RFC 6749 §5.2 — an unsupported/missing grant_type is reported distinctly.
   if (rawBody.grant_type !== 'client_credentials') {

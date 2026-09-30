@@ -803,3 +803,89 @@ fn test_boundary_large_total_uneven_13_way_split() {
     assert_eq!(vault.staked, 0);
     assert_eq!(vault.status, VaultStatus::Completed);
 }
+
+// ─── 13. Boundary: title length bound ────────────────────────────────
+
+#[test]
+fn test_create_vault_title_length_bound() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    let success = Address::generate(&env);
+    let failure = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, _token_admin_client) = create_token(&env, &token_admin);
+    let contract_id = env.register(AccountabilityVault, ());
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+    let vault_id = String::from_str(&env, "vault-title-test");
+
+    let verifier_set = VerifierSet {
+        verifiers: vec![&env, verifier],
+        threshold: 1,
+    };
+
+    // Exactly 128 chars -> OK
+    let title_128 = String::from_str(
+        &env,
+        "012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678",
+    );
+    let milestones_ok = vec![
+        &env,
+        Milestone {
+            title: title_128,
+            amount: 100,
+            due_date: 2_000,
+            verified: false,
+            released: false,
+        },
+    ];
+
+    let res = contract.try_create_vault(
+        &vault_id,
+        &creator,
+        &verifier_set,
+        &None,
+        &token,
+        &100,
+        &success,
+        &failure,
+        &2_000,
+        &milestones_ok,
+    );
+    assert!(res.is_ok());
+
+    // 129 chars -> TitleTooLong
+    let title_129 = String::from_str(
+        &env,
+        "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789",
+    );
+    let milestones_err = vec![
+        &env,
+        Milestone {
+            title: title_129,
+            amount: 100,
+            due_date: 2_000,
+            verified: false,
+            released: false,
+        },
+    ];
+    let vault_id_2 = String::from_str(&env, "vault-title-test-2");
+    let res_err = contract.try_create_vault(
+        &vault_id_2,
+        &creator,
+        &verifier_set,
+        &None,
+        &token,
+        &100,
+        &success,
+        &failure,
+        &2_000,
+        &milestones_err,
+    );
+    assert_eq!(res_err, Err(Ok(Error::TitleTooLong)));
+}
+

@@ -226,7 +226,7 @@ async function completeDurably<T>(
   if (result.rowCount !== 1) throw new Error('Idempotency reservation was not completed')
 }
 
-export async function createVaultIdempotently<T>(
+export async function createVaultIdempotently<V extends { id: string }, T>(
   options: CoordinatorOptions,
   actions: IdempotencyActions<V, T>,
   poolOverride?: Pool | null,
@@ -235,7 +235,7 @@ export async function createVaultIdempotently<T>(
   if (!pool) return createInMemory(options, actions)
 
   const now = options.now ?? (() => new Date())
-  let claim;
+  let claim: { claimed: boolean; response?: unknown; vaultId?: string }
   const claimClient = await pool.connect()
   try {
     claim = await claimDurably(claimClient, options)
@@ -244,38 +244,51 @@ export async function createVaultIdempotently<T>(
   }
 
   if (!claim.claimed) {
+    let vault: V
+    if (claim.vaultId) {
+      const existing = await actions.getVault(null, claim.vaultId)
+      if (!existing) throw new Error('Vault missing during durable replay')
+      vault = existing
+    } else {
+      vault = { id: claim.vaultId } as V
+    }
     return {
-      vault: { id: claim.vaultId } as PersistedVault,
+      vault,
       response: parseResponse<T>(claim.response),
       replayed: true,
     }
   }
 
+  let vault: V
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const created = await create(client)
-    await completeDurably(client, options.key, created.vault, created.response, now())
+    if (claim.vaultId) {
+      const existing = await actions.getVault(client, claim.vaultId)
+      if (!existing) throw new Error('Vault missing during retry')
+      vault = existing
+    } else {
+      vault = await actions.createVault(client)
+    }
     await client.query('COMMIT')
-    return { ...created, replayed: false }
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined)
-    
+
     // Attempt to clear the pending claim so the user doesn't have to wait for TTL to retry
     const cleanupClient = await pool.connect()
     try {
       await cleanupClient.query(
         `DELETE FROM vault_creation_idempotency WHERE idempotency_key = $1 AND state = 'pending'`,
-        [options.key]
+        [options.key],
       )
-    } catch(e) {
+    } catch {
       // Ignore cleanup errors
     } finally {
       cleanupClient.release()
     }
     throw error
   } finally {
-    client1.release()
+    client.release()
   }
 
   const response = await actions.buildResponse(vault)
@@ -291,7 +304,7 @@ export async function createVaultIdempotently<T>(
   } finally {
     client2.release()
   }
-  
+
   return { vault, response, replayed: false }
 }
 

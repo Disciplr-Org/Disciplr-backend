@@ -47,6 +47,9 @@ use soroban_sdk::{
 /// indefinitely and keeps analytics meaningful.
 const MAX_DEADLINE_HORIZON: u64 = 5 * 365 * 24 * 60 * 60;
 
+/// Maximum allowed length in bytes for a milestone title.
+pub const MAX_TITLE_LEN: usize = 128;
+
 /// Storage keys for the contract.
 #[contracttype]
 #[derive(Clone)]
@@ -212,6 +215,8 @@ pub enum Error {
     PartiallyReleased = 28,
     /// The requested milestone has already been released.
     MilestoneAlreadyReleased = 29,
+    /// Milestone title exceeds the maximum allowed length (128 bytes).
+    TitleTooLong = 30,
 }
 
 /// Accountability vault contract entry point.
@@ -275,6 +280,9 @@ impl AccountabilityVault {
 
         let mut sum: i128 = 0;
         for m in milestones.iter() {
+            if m.title.len() > MAX_TITLE_LEN as u32 {
+                return Err(Error::TitleTooLong);
+            }
             if m.amount <= 0 {
                 return Err(Error::InvalidAmount);
             }
