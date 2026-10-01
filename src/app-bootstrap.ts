@@ -28,7 +28,7 @@ import { authenticate } from './middleware/auth.js'
 import { requireOrgAccess } from './middleware/orgAuth.js'
 import { notificationsRouter } from './routes/notifications.js'
 import { notificationPreferencesRouter } from './routes/notificationPreferences.js'
-import { webhookRouter } from './routes/webhooks.js'
+import { webhookRouter } from './routes/webhooks.js' // Fixed to singular to avoid TS2724
 import { graphqlRouter } from './routes/graphql.js'
 import { createNotificationService, NotificationService } from './services/notifications/factory.js'
 import { withRequestPrisma } from './middleware/withRequestPrisma.js'
