@@ -3,15 +3,20 @@ import type { Knex } from "knex";
 
 /**
  * A single row from the vault_cohort_retention materialized view.
+ *
+ * NOTE: the view (see db/migrations/*_create_vault_cohort_retention_view.cjs)
+ * exposes `cohort_month`, `total`, `completed`, `failed`, `active` and
+ * `median_days_to_complete`. The API contract below uses different names, so
+ * the query aliases the view columns onto those names — keep the two in sync.
  */
 export interface CohortRetentionRow {
-  /** The cohort period label, e.g. "2024-01" */
+  /** The cohort period label, e.g. "2024-01" (view: cohort_month) */
   cohort_period: string;
-  /** Number of users/vaults that entered the cohort */
+  /** Number of users/vaults that entered the cohort (view: total) */
   cohort_size: number;
-  /** Number still active / retained */
+  /** Number that completed out of the cohort (view: completed) */
   retained_count: number;
-  /** Retention rate as a fraction [0, 1] */
+  /** Retention rate as a fraction [0, 1] — completed / total */
   retention_rate: number;
 }
 
@@ -38,14 +43,19 @@ export const getCohortRetention = async (
   const limitClause =
     typeof range === "number" && range > 0 ? `LIMIT ${range}` : "";
 
+  // The view's real columns are cohort_month / total / completed. Selecting the
+  // API-facing names (cohort_period / cohort_size / retained_count /
+  // retention_rate) directly raised `column ... does not exist`, so alias the
+  // view columns onto the contract instead. Keep this list in sync with the
+  // migration that creates vault_cohort_retention.
   const sql = `
     SELECT
-      cohort_period,
-      cohort_size,
-      retained_count,
-      retention_rate
+      to_char(cohort_month, 'YYYY-MM') AS cohort_period,
+      total AS cohort_size,
+      completed AS retained_count,
+      CASE WHEN total > 0 THEN completed::float / total ELSE 0 END AS retention_rate
     FROM vault_cohort_retention
-    ORDER BY cohort_period DESC
+    ORDER BY cohort_month DESC
     ${limitClause}
   `;
 

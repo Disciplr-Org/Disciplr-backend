@@ -21,6 +21,7 @@ export type WebhookVerifyOutcome =
   | 'replay'
   | 'payload_too_large'
   | 'invalid_json'
+  | 'invalid_body'
   | 'body_read_error'
   | 'bad_signature'
 
@@ -229,20 +230,6 @@ async function ensureWebhookMetrics(): Promise<void> {
   })()
   return metricsPromise
 }
-
-/** Outcome labels for inbound verification telemetry (no sensitive material). */
-export type WebhookVerifyOutcome =
-  | 'success'
-  | 'no_secret'
-  | 'missing_headers'
-  | 'invalid_timestamp'
-  | 'outside_window'
-  | 'replay'
-  | 'payload_too_large'
-  | 'invalid_json'
-  | 'invalid_body'
-  | 'body_read_error'
-  | 'bad_signature'
 
 function emitTelemetry(outcome: WebhookVerifyOutcome, durationMs: number): void {
   // Fire-and-forget; never throws and never surfaces secret material.

@@ -171,4 +171,58 @@ describe('audit log integrity chain', () => {
       setAuditLogWriterForTests(null)
     }
   })
+
+  it('preserves the hash chain when createAuditLog uses a caller transaction', async () => {
+    setAuditLogWriterForTests(null)
+
+    let firstId: string | undefined
+    let secondId: string | undefined
+
+    try {
+      await db.transaction(async (trx) => {
+        const first = await createAuditLog(
+          {
+            actor_user_id: 'user-transaction-1',
+            organization_id: organizationId,
+            action: 'member.joined',
+            target_type: 'member',
+            target_id: 'member-transaction-1',
+            metadata: { role: 'USER' },
+          },
+          trx,
+        )
+
+        const second = await createAuditLog(
+          {
+            actor_user_id: 'user-transaction-2',
+            organization_id: organizationId,
+            action: 'member.role_changed',
+            target_type: 'member',
+            target_id: 'member-transaction-1',
+            metadata: { old_role: 'USER', new_role: 'ADMIN' },
+          },
+          trx,
+        )
+
+        firstId = first.id
+        secondId = second.id
+
+        expect(first.prev_hash).toBe(AUDIT_LOG_GENESIS_HASH)
+        expect(second.prev_hash).toBe(first.row_hash)
+        expect(second.row_hash).toBe(computeAuditLogHash(second, first.row_hash!))
+      })
+
+      const persisted = await db('audit_logs')
+        .whereIn('id', [firstId!, secondId!])
+        .orderBy('created_at', 'asc')
+        .orderBy('id', 'asc')
+
+      expect(persisted).toHaveLength(2)
+      expect(persisted[0].prev_hash).toBe(AUDIT_LOG_GENESIS_HASH)
+      expect(persisted[1].prev_hash).toBe(persisted[0].row_hash)
+    } finally {
+      setAuditLogWriterForTests(null)
+    }
+  })
+
 })

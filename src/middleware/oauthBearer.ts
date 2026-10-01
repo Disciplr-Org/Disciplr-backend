@@ -22,7 +22,7 @@ export interface OAuthTokenPayload {
  * `net` claim are only accepted when it matches, preventing cross-network
  * (e.g. testnet→mainnet) token replay. `null` when undeclared.
  */
-const getNetworkId = (): string | null => {
+export const getNetworkId = (): string | null => {
   try {
     return (
       getEnv().STELLAR_NETWORK_PASSPHRASE ??

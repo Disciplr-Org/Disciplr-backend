@@ -6,7 +6,7 @@ import {
   type QueueDepthReport,
   type SweepResult,
 } from './queue.js'
-import { type EnqueueOptions, type JobPayloadByType, type JobType } from './types.js'
+import type { EnqueueOptions, JobHandler, JobPayloadByType, JobType } from './types.js'
 import { recoverPendingExportJobs } from '../services/exportQueue.js'
 import { listOrganizations } from '../services/organization.js'
 import {
@@ -231,7 +231,7 @@ export class BackgroundJobSystem {
       if (!handler) {
         throw new Error(`Missing handler for job type: ${jobType}`)
       }
-      this.queue.registerHandler(jobType, handler)
+      this.queue.registerHandler<JobType>(jobType, handler as JobHandler<JobType>)
     }
   }
 

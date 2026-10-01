@@ -143,6 +143,23 @@ describe('getCohortRetention (service)', () => {
     expect(getSql()).toMatch(/vault_cohort_retention/i)
   })
 
+  // Regression for #1606: the view exposes cohort_month / total / completed,
+  // while the API contract uses cohort_period / cohort_size / retained_count.
+  // Selecting the API names straight off the view made Postgres fail with
+  // `column "cohort_period" does not exist`, so the query must alias instead.
+  it('aliases the view columns onto the API contract (#1606)', async () => {
+    const { runner, getSql } = makeCapturingQueryRunner({ rows: [] })
+
+    await getCohortRetention(runner)
+
+    const sql = getSql() ?? ''
+    expect(sql).toMatch(/cohort_month[\s\S]*?AS\s+cohort_period/i)
+    expect(sql).toMatch(/\btotal\s+AS\s+cohort_size/i)
+    expect(sql).toMatch(/\bcompleted\s+AS\s+retained_count/i)
+    expect(sql).toMatch(/AS\s+retention_rate/i)
+    expect(sql).toMatch(/ORDER BY\s+cohort_month\s+DESC/i)
+  })
+
   it('coerces string numbers from DB to correct JS types', async () => {
     const stringRows: Record<string, string | number>[] = [
       {

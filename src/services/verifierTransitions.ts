@@ -48,8 +48,14 @@ export class VerifierAuthorizationError extends Error {
 }
 
 const thresholdFor = (item: VerifierQueueItem): number => {
-  const threshold = Number(item.approvalThreshold ?? 1)
-  return Number.isSafeInteger(threshold) && threshold > 0 ? threshold : 1
+  const threshold = item.approvalThreshold
+  // Only a well-formed numeric threshold may widen a queue item to M-of-N
+  // approval. Anything else (undefined, zero, negatives, fractions, NaN, or a
+  // stringified number) stays single-verifier work so malformed data can never
+  // bypass the assignment check.
+  return typeof threshold === 'number' && Number.isSafeInteger(threshold) && threshold > 0
+    ? threshold
+    : 1
 }
 
 /**

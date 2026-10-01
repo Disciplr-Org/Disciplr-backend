@@ -44,7 +44,19 @@ const mockPrisma = {
       mockUsers.set(where.id, updated)
       return cloneSelectedUser(updated, select)
     }),
+    updateMany: jest.fn(
+      async ({ where, data }: { where: { id: string; role?: UserRole }; data: Partial<PersistedUser> }) => {
+        const existing = mockUsers.get(where.id)
+        if (!existing || (where.role !== undefined && existing.role !== where.role)) {
+          return { count: 0 }
+        }
+        mockUsers.set(where.id, { ...existing, ...data })
+        return { count: 1 }
+      },
+    ),
   },
+  // The role-change route performs its read-check-write inside a transaction.
+  $transaction: jest.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback(mockPrisma)),
 }
 
 const mockAuthService = {

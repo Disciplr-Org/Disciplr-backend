@@ -13,99 +13,43 @@ components:
       bearerFormat: JWT
   schemas:
     PaginationCursor:
-      def:
-        type: object
-        shape:
-          limit:
-            def:
-              type: number
-              checks: []
-            type: number
-            minValue: -.inf
-            maxValue: .inf
-            isInt: false
-            isFinite: true
-            format: null
-          cursor:
-            def:
-              type: optional
-              innerType:
-                def:
-                  type: string
-                type: string
-                format: null
-                minLength: null
-                maxLength: null
-            type: optional
-          next_cursor:
-            def:
-              type: optional
-              innerType:
-                def:
-                  type: string
-                type: string
-                format: null
-                minLength: null
-                maxLength: null
-            type: optional
-          has_more:
-            def:
-              type: boolean
-            type: boolean
-          count:
-            def:
-              type: number
-              checks: []
-            type: number
-            minValue: -.inf
-            maxValue: .inf
-            isInt: false
-            isFinite: true
-            format: null
       type: object
+      properties:
+        limit:
+          type: number
+        cursor:
+          type: string
+        next_cursor:
+          type: string
+        has_more:
+          type: boolean
+        count:
+          type: number
+      required:
+        - limit
+        - has_more
+        - count
     ErrorEnvelope:
-      def:
-        type: object
-        shape:
-          error:
-            def:
-              type: object
-              shape:
-                code:
-                  def:
-                    type: string
-                  type: string
-                  format: null
-                  minLength: null
-                  maxLength: null
-                message:
-                  def:
-                    type: string
-                  type: string
-                  format: null
-                  minLength: null
-                  maxLength: null
-                details:
-                  def:
-                    type: optional
-                    innerType:
-                      def:
-                        type: unknown
-                      type: unknown
-                  type: optional
-                requestId:
-                  def:
-                    type: optional
-                    innerType:
-                      def:
-                        type: string
-                      type: string
-                      format: null
-                      minLength: null
-                      maxLength: null
-                  type: optional
-            type: object
       type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: VALIDATION_ERROR
+            message:
+              type: string
+              example: Invalid request parameters
+            details: {}
+            requestId:
+              type: string
+              example: req_123
+          required:
+            - code
+            - message
+      required:
+        - error
     Vault:
       type: object
       properties:

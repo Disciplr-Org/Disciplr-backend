@@ -64,6 +64,28 @@ jobs:
         env:
           NODE_ENV: test
 
+  openapi-typecheck:
+    name: OpenAPI docs typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # Runs as its own job so a type error in src/docs/ always fails its own
+      # required check, independently of the full `npm run build` step (which
+      # type-checks the whole application tree).
+      - name: Typecheck OpenAPI docs
+        run: npm run openapi:typecheck
+
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest

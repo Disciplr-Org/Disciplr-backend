@@ -175,10 +175,12 @@ describe('Veto math — getMilestoneApprovalProgress(id, M, N)', () => {
     expect(p.isComplete).toBe(false)
   })
 
-  it('threshold > pool: maxPossible=N < M → vetoed even with no votes', async () => {
-    // M=4, N=3: approved=0, remaining=3, maxPossible=3 < 4
-    const p = await getMilestoneApprovalProgress(mid, 4, 3)
-    expect(p.isRejected).toBe(true)
+  it('threshold > pool: M > N is a rejected quorum configuration', async () => {
+    // M=4, N=3 can never be satisfied, so the invariant guard rejects it
+    // instead of reporting a permanently-vetoed milestone.
+    await expect(getMilestoneApprovalProgress(mid, 4, 3)).rejects.toThrow(
+      /totalVerifiers.*approvalThreshold/i,
+    )
   })
 
   it('late vote after veto: progress still shows vetoed', async () => {
@@ -376,51 +378,52 @@ describe('recordMilestoneApproval — hostile-input boundary', () => {
 
 // ---------------------------------------------------------------------------
 // Hostile-input boundary — getMilestoneApprovalProgress
+//
+// Malformed quorum input is rejected by the invariant guard (see
+// src/tests/verifiers.service.quorum.test.ts, #1529) instead of being silently
+// clamped, so callers can never persist a milestone whose threshold or pool
+// never matched what was requested.
 // ---------------------------------------------------------------------------
 describe('getMilestoneApprovalProgress — hostile-input boundary', () => {
   const mid = 'boundary-ms'
   beforeEach(reset)
 
-  it('clamps zero threshold to 1', async () => {
+  it('rejects a zero threshold', async () => {
     await vote(mid, 'v1', 'approved')
-    const p = await getMilestoneApprovalProgress(mid, 0)
-    // threshold should be clamped to 1
-    expect(p.required).toBe(1)
-    expect(p.isComplete).toBe(true)
+    await expect(getMilestoneApprovalProgress(mid, 0)).rejects.toThrow(
+      /approvalThreshold.*positive integer/i,
+    )
   })
 
-  it('clamps negative threshold to 1', async () => {
+  it('rejects a negative threshold', async () => {
     await vote(mid, 'v1', 'approved')
-    const p = await getMilestoneApprovalProgress(mid, -5)
-    expect(p.required).toBe(1)
-    expect(p.isComplete).toBe(true)
+    await expect(getMilestoneApprovalProgress(mid, -5)).rejects.toThrow(
+      /approvalThreshold.*positive integer/i,
+    )
   })
 
-  it('clamps non-numeric threshold to 1', async () => {
+  it('rejects a non-numeric / non-integer threshold', async () => {
     await vote(mid, 'v1', 'approved')
-    const p = await getMilestoneApprovalProgress(mid, NaN as any)
-    expect(p.required).toBe(1)
-    expect(p.isComplete).toBe(true)
+    await expect(getMilestoneApprovalProgress(mid, NaN as any)).rejects.toThrow(
+      /approvalThreshold.*positive integer/i,
+    )
+    await expect(getMilestoneApprovalProgress(mid, 1.5 as any)).rejects.toThrow(
+      /approvalThreshold.*positive integer/i,
+    )
   })
 
-  it('clamps negative totalVerifiers to 1 (treated as unknown)', async () => {
-    // With N provided but negative, the function should treat it as
-    // unknown (legacy mode: any rejection vetoes).
+  it('rejects a negative totalVerifiers', async () => {
     await vote(mid, 'v1', 'approved')
     await vote(mid, 'v2', 'rejected')
-    const p = await getMilestoneApprovalProgress(mid, 2, -3 as any)
-    // safeTotal = undefined (negative → clamped to 1, but 1 > 0 so it's used)
-    // Actually with N=-3, floor(-3) = -3, max(1, -3) = 1, so safeTotal=1
-    // approved=1, rejected=1, totalVoted=2, remaining=1-2=-1, maxPossible=1+0=1
-    // 1 < 2 → isRejected=true
-    expect(p.isRejected).toBe(true)
+    await expect(getMilestoneApprovalProgress(mid, 2, -3 as any)).rejects.toThrow(
+      /totalVerifiers.*positive integer/i,
+    )
   })
 
-  it('clamps zero totalVerifiers to 1', async () => {
+  it('rejects a zero totalVerifiers', async () => {
     await vote(mid, 'v1', 'approved')
-    const p = await getMilestoneApprovalProgress(mid, 2, 0)
-    // safeTotal = 0 → 0 > 0 is false → safeTotal = undefined (legacy mode)
-    // With legacy mode and no rejections, isRejected=false
-    expect(p.isRejected).toBe(false)
+    await expect(getMilestoneApprovalProgress(mid, 2, 0)).rejects.toThrow(
+      /totalVerifiers.*positive integer/i,
+    )
   })
 })

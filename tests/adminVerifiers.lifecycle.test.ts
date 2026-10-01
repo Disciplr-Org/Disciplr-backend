@@ -7,6 +7,9 @@ const mockTransitionVerifier = jest.fn()
 const mockCreateOrGetVerifierProfile = jest.fn()
 const mockCreateOrTransitionVerifier = jest.fn()
 const mockGetVerifierStats = jest.fn()
+const mockGetVerifierStatsBatch = jest.fn(async (userIds: string[]) =>
+  new Map(await Promise.all(userIds.map(async (id) => [id, await mockGetVerifierStats(id)] as const))),
+)
 const mockCreateVerifierProfile = jest.fn()
 const mockIsValidStellarAddress = jest.fn()
 const mockUpdateVerifierProfile = jest.fn()
@@ -39,6 +42,7 @@ jest.unstable_mockModule('../src/services/verifiers.js', () => ({
   createOrTransitionVerifier: mockCreateOrTransitionVerifier,
   createOrGetVerifierProfile: mockCreateOrGetVerifierProfile,
   getVerifierStats: mockGetVerifierStats,
+  getVerifierStatsBatch: mockGetVerifierStatsBatch,
   createVerifierProfile: mockCreateVerifierProfile,
   updateVerifierProfile: mockUpdateVerifierProfile,
   deleteVerifierProfile: mockDeleteVerifierProfile,
@@ -137,7 +141,8 @@ describe('Admin Verifiers Lifecycle - Suspend/Reinstate', () => {
 
   describe('POST /:userId/suspend', () => {
     it('should suspend an approved verifier', async () => {
-      mockCreateOrTransitionVerifier.mockResolvedValue({
+      mockGetVerifierProfile.mockResolvedValue(approvedVerifier)
+      mockTransitionVerifier.mockResolvedValue({
         before: approvedVerifier,
         after: { ...approvedVerifier, status: 'suspended', suspendedAt: '2026-02-01T00:00:00.000Z' },
         changedFields: ['status'],
@@ -152,29 +157,29 @@ describe('Admin Verifiers Lifecycle - Suspend/Reinstate', () => {
       expect(res.body.profile.status).toBe('suspended')
       expect(res.body.auditLogId).toBe('audit-1')
       expect(res.body.changedFields).toContain('status')
-      expect(mockCreateOrTransitionVerifier).toHaveBeenCalledWith(
+      expect(mockTransitionVerifier).toHaveBeenCalledWith(
         'verifier-approved',
         'suspended',
         expect.objectContaining({ actorUserId: 'admin-user' }),
       )
     })
 
-    it('should create a pending profile then return 409 when trying to suspend (pending -> suspended invalid)', async () => {
-      const newProfile = { ...pendingVerifier, userId: 'new-verifier' }
-      mockCreateOrTransitionVerifier.mockRejectedValue(
+    it('should return 409 when suspending a pending verifier (pending -> suspended invalid)', async () => {
+      mockGetVerifierProfile.mockResolvedValue(pendingVerifier)
+      mockTransitionVerifier.mockRejectedValue(
         new InvalidVerifierStatusTransitionError('pending', 'suspended'),
       )
 
       const res = await request(app)
-        .post('/api/admin/verifiers/new-verifier/suspend')
+        .post('/api/admin/verifiers/verifier-pending/suspend')
         .send()
 
       expect(res.status).toBe(409)
       expect(res.body.error).toContain('Invalid verifier status transition')
     })
 
-    it('should return 500 when createOrGetVerifierProfile fails', async () => {
-      mockCreateOrTransitionVerifier.mockRejectedValue(new Error('db error'))
+    it('should return 500 when loading the verifier profile fails', async () => {
+      mockGetVerifierProfile.mockRejectedValue(new Error('db error'))
 
       const res = await request(app)
         .post('/api/admin/verifiers/db-error/suspend')
@@ -184,7 +189,8 @@ describe('Admin Verifiers Lifecycle - Suspend/Reinstate', () => {
     })
 
     it('should return 500 on transition error', async () => {
-      mockCreateOrTransitionVerifier.mockRejectedValue(new Error('db error'))
+      mockGetVerifierProfile.mockResolvedValue(approvedVerifier)
+      mockTransitionVerifier.mockRejectedValue(new Error('db error'))
 
       const res = await request(app)
         .post('/api/admin/verifiers/verifier-approved/suspend')
@@ -345,7 +351,8 @@ describe('Admin Verifiers Lifecycle - Suspend/Reinstate', () => {
 
   describe('Edge Cases', () => {
     it('should succeed (no-op) when suspending an already-suspended verifier', async () => {
-      mockCreateOrTransitionVerifier.mockResolvedValue({
+      mockGetVerifierProfile.mockResolvedValue(suspendedVerifier)
+      mockTransitionVerifier.mockResolvedValue({
         before: suspendedVerifier,
         after: suspendedVerifier,
         changedFields: [],
@@ -404,7 +411,8 @@ describe('Admin Verifiers Lifecycle - Suspend/Reinstate', () => {
 
   describe('Audit Log Completeness', () => {
     it('should include audit log ID in suspend response', async () => {
-      mockCreateOrTransitionVerifier.mockResolvedValue({
+      mockGetVerifierProfile.mockResolvedValue(approvedVerifier)
+      mockTransitionVerifier.mockResolvedValue({
         before: approvedVerifier,
         after: { ...approvedVerifier, status: 'suspended' },
         changedFields: ['status'],
@@ -456,7 +464,8 @@ describe('Admin Verifiers Lifecycle - Suspend/Reinstate', () => {
 
   describe('Integration - Verifier Status and Milestone Approval Gating', () => {
     it('should return changedFields for suspend transition', async () => {
-      mockCreateOrTransitionVerifier.mockResolvedValue({
+      mockGetVerifierProfile.mockResolvedValue(approvedVerifier)
+      mockTransitionVerifier.mockResolvedValue({
         before: approvedVerifier,
         after: { ...approvedVerifier, status: 'suspended' },
         changedFields: ['status'],
@@ -472,7 +481,8 @@ describe('Admin Verifiers Lifecycle - Suspend/Reinstate', () => {
     })
 
     it('should return stats with suspend response', async () => {
-      mockCreateOrTransitionVerifier.mockResolvedValue({
+      mockGetVerifierProfile.mockResolvedValue(approvedVerifier)
+      mockTransitionVerifier.mockResolvedValue({
         before: approvedVerifier,
         after: { ...approvedVerifier, status: 'suspended' },
         changedFields: ['status'],

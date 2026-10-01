@@ -106,7 +106,7 @@ transactionsRouter.get(
           res.status(400).json({ error: `Invalid transaction type filter: "${req.filters.type}"` })
           return
         }
-        if (req.filters.vault_id && !isValidUUID(req.filters.vault_id)) {
+        if (req.filters.vault_id && !isValidUUID(Array.isArray(req.filters.vault_id) ? req.filters.vault_id[0] : req.filters.vault_id)) {
           res.status(400).json({ error: 'vault_id filter must be a valid UUID' })
           return
         }

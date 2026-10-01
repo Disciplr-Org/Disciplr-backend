@@ -7,6 +7,7 @@ import { encodeCursor } from '../utils/pagination.js';
 describe('TransactionRepository', () => {
   let mockDb: any;
   let repo: TransactionRepository;
+  let queueRows: (rows: unknown[]) => void;
 
   beforeEach(() => {
     // Mock the query builder for typical chaining
@@ -26,6 +27,19 @@ describe('TransactionRepository', () => {
       clone: jest.fn<any>().mockReturnThis(),
     };
 
+    // The repository chains builder calls (`where(...).orderBy(...).limit()`)
+    // and then awaits the builder itself. Keep the builder thenable so the
+    // chain survives and `await query` still resolves to the queued rows.
+    const queuedRows: unknown[][] = [];
+    mockQueryBuilder.then = (
+      onFulfilled?: (rows: unknown[]) => unknown,
+      onRejected?: (error: unknown) => unknown,
+    ) => Promise.resolve(queuedRows.shift() ?? []).then(onFulfilled, onRejected);
+
+    queueRows = (rows: unknown[]) => {
+      queuedRows.push(rows);
+    };
+
     const dbCallable: any = jest.fn<any>().mockReturnValue(mockQueryBuilder);
     dbCallable.fn = { now: jest.fn().mockReturnValue('now()') };
 
@@ -38,7 +52,7 @@ describe('TransactionRepository', () => {
 
   describe('create', () => {
     it('should successfully insert a new transaction', async () => {
-      const tx = { tx_hash: 'hash-1', user_id: 'user-1' };
+      const tx = { tx_hash: 'hash-1', user_id: 'user-1', vault_id: 'vault-1', type: 'creation' as const };
       const result = await repo.create(tx);
       expect(result).toEqual({ id: 'tx-1', tx_hash: 'hash-1' });
       
@@ -52,7 +66,7 @@ describe('TransactionRepository', () => {
       // simulate .returning() returning empty array due to .ignore()
       mockDb().returning.mockResolvedValueOnce([]);
       
-      const tx = { tx_hash: 'hash-1', user_id: 'user-1' };
+      const tx = { tx_hash: 'hash-1', user_id: 'user-1', vault_id: 'vault-1', type: 'creation' as const };
       const result = await repo.create(tx);
       
       expect(result).toEqual({ id: 'tx-1', tx_hash: 'hash-1' });
@@ -66,7 +80,7 @@ describe('TransactionRepository', () => {
       mockDb().returning.mockResolvedValueOnce([]);
       mockDb().first.mockResolvedValueOnce(undefined);
       
-      const tx = { tx_hash: 'hash-unknown' };
+      const tx = { tx_hash: 'hash-unknown', user_id: 'user-1', vault_id: 'vault-1', type: 'creation' as const };
       await expect(repo.create(tx)).rejects.toThrow(/Failed to create or retrieve/);
     });
   });
@@ -87,7 +101,7 @@ describe('TransactionRepository', () => {
 
   describe('listWithCursor', () => {
     it('should list transactions without filters', async () => {
-      mockDb().limit.mockResolvedValueOnce([
+      queueRows([
         { id: 'tx-2', stellar_timestamp: new Date('2023-01-02T00:00:00Z') },
         { id: 'tx-1', stellar_timestamp: new Date('2023-01-01T00:00:00Z') }
       ]);
@@ -99,7 +113,7 @@ describe('TransactionRepository', () => {
     });
 
     it('should handle pagination when there are more items', async () => {
-      mockDb().limit.mockResolvedValueOnce([
+      queueRows([
         { id: 'tx-2', stellar_timestamp: new Date('2023-01-02T00:00:00Z') },
         { id: 'tx-1', stellar_timestamp: new Date('2023-01-01T00:00:00Z') }
       ]);
@@ -111,7 +125,7 @@ describe('TransactionRepository', () => {
     });
     
     it('should apply all filters correctly', async () => {
-      mockDb().limit.mockResolvedValueOnce([]);
+      queueRows([]);
       const filters: TransactionFilters = {
         vaultId: 'vault-1',
         type: 'creation',
@@ -131,7 +145,7 @@ describe('TransactionRepository', () => {
     });
 
     it('should apply cursor query when provided', async () => {
-      mockDb().limit.mockResolvedValueOnce([]);
+      queueRows([]);
       const cursor = encodeCursor(new Date('2023-01-02T00:00:00Z'), 'tx-2');
       await repo.listWithCursor('user-1', 10, cursor);
       

@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, type NextFunction, type Request, type Response } from 'express'
 import express from 'express'
 import { z } from 'zod'
 import { authenticate } from '../middleware/auth.js'
@@ -16,6 +16,8 @@ import {
 import { formatValidationError } from '../lib/validation.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { ApiScope } from '../types/auth.js'
+import { getOrganizationById } from '../services/organization.js'
+import { getOrgMembership } from '../services/membership.js'
 import db from '../db/index.js'
 
 export const apiKeysRouter = Router()
@@ -28,15 +30,31 @@ const DEFAULT_LIST_LIMIT = 50
 const MAX_LIST_LIMIT = 100
 const MAX_LABEL_LENGTH = 100
 const MAX_SCOPES_COUNT = 20
-const MAX_SCOPE_LENGTH = 64
 
 const apiKeysJson = requireJson({ maxBytes: 16 * 1024 })
 
 const createApiKeySchema = z.object({
-  label: z.string().trim().min(1, 'label is required.').max(MAX_LABEL_LENGTH, `label must be at most ${MAX_LABEL_LENGTH} characters.`),
-  scopes: z.array(z.string().trim().min(1, 'scope must be a non-empty string.').max(MAX_SCOPE_LENGTH, `scope must be at most ${MAX_SCOPE_LENGTH} characters.`)).max(MAX_SCOPES_COUNT, `scopes must have at most ${MAX_SCOPES_COUNT} items.`),
-  orgId: z.string().trim().optional(),
+  label: z
+    .string()
+    .trim()
+    .min(1, 'label is required.')
+    .max(MAX_LABEL_LENGTH, `label must be at most ${MAX_LABEL_LENGTH} characters.`),
+  scopes: z
+    .array(z.nativeEnum(ApiScope))
+    .min(1, 'At least one scope is required.')
+    .max(MAX_SCOPES_COUNT, `scopes must have at most ${MAX_SCOPES_COUNT} items.`)
+    .refine((scopes) => new Set(scopes).size === scopes.length, 'scopes must not contain duplicates.'),
+  orgId: z.string().trim().uuid('orgId must be a UUID.').optional(),
 })
+
+const apiKeyIdParamSchema = z.object({
+  id: z.string().trim().uuid('id must be a UUID.'),
+})
+
+const orgIdParamSchema = z.object({
+  orgId: z.string().trim().uuid('orgId must be a UUID.'),
+})
+
 
 const parsePagination = (query: Record<string, unknown>): { limit: number; offset: number } => {
   const rawLimit = typeof query.limit === 'string' ? query.limit : undefined
@@ -72,7 +90,7 @@ apiKeysRouter.post('/', apiKeysJson, apiKeyRateLimiter, async (req, res, next) =
   // The key may only be bound to an org the caller actually belongs to.
   if (orgId) {
     try {
-      const org = await getOrgById(orgId)
+      const org = await getOrganizationById(orgId)
       if (!org) {
         res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Organization not found.' } })
         return
@@ -181,7 +199,7 @@ export const getApiKeyUsageHandler = async (req: Request, res: Response, next: N
   const orgId = paramsResult.data.orgId
 
   try {
-    const org = await getOrgById(orgId)
+    const org = await getOrganizationById(orgId)
     if (!org) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Organization not found.' } })
       return

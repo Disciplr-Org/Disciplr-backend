@@ -8,11 +8,13 @@ import { enterpriseGuard } from '../middleware/enterpriseGuard.js';
 const debug = (msg: string, ...args: unknown[]) => { if (process.env.DEBUG) console.debug(msg, ...args) };
 const router = Router();
 
+router.use(authenticate, enterpriseGuard);
+
 /**
  * @route GET /api/v1/enterprise/vaults/:id
  * @desc Fetches a vault by ID with strict exposure audit applied.
  */
-router.get('/vaults/:id', authenticate, enterpriseGuard, async (req: Request, res: Response) => {
+router.get('/vaults/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
   
   try {
@@ -39,7 +41,7 @@ router.get('/vaults/:id', authenticate, enterpriseGuard, async (req: Request, re
  * @route GET /api/v1/enterprise/vaults/:id/milestones
  * @desc Fetches milestones for a vault with strict exposure audit.
  */
-router.get('/vaults/:id/milestones', authenticate, enterpriseGuard, async (req: Request, res: Response) => {
+router.get('/vaults/:id/milestones', async (req: Request, res: Response) => {
   const { id } = req.params;
   
   try {

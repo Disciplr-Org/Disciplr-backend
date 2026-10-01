@@ -132,6 +132,27 @@ export const listOrgMemberships = async (
   return { members, total, page, pageSize }
 }
 
+/**
+ * Look up the org-membership row binding a user to an organization.
+ *
+ * Authorization decisions on org-scoped resources (e.g. binding an API key to
+ * an organization) must be derived from this server-side row — never from
+ * client-supplied state. Uses the `org_members` table, the same membership
+ * source the org-access middleware authorizes against.
+ *
+ * @returns The membership row, or `null` when the user is not a member.
+ */
+export const getOrgMembership = async (
+  orgId: string,
+  userId: string,
+): Promise<Membership | null> => {
+  const membership = await db('org_members')
+    .where({ org_id: orgId, user_id: userId })
+    .first()
+
+  return membership ?? null
+}
+
 export const getUserOrganizationRole = async (
   userId: string,
   organizationId: string,

@@ -246,8 +246,10 @@ export class OTLPExporter implements SpanExporter {
       spanId: s.spanId,
       name: s.name,
       kind: 1, // SPAN_KIND_INTERNAL
-      startTimeUnixNano: BigInt(s.startTime) * 1_000_000n,
-      endTimeUnixNano: BigInt(s.endTime ?? s.startTime) * 1_000_000n,
+      // OTLP/JSON encodes 64-bit integers as strings; JSON.stringify cannot
+      // serialize BigInt values at all, so convert them explicitly.
+      startTimeUnixNano: (BigInt(s.startTime) * 1_000_000n).toString(),
+      endTimeUnixNano: (BigInt(s.endTime ?? s.startTime) * 1_000_000n).toString(),
       status: {
         code: s.status.code === 'OK' ? 1 : 2,
         message:
@@ -259,7 +261,7 @@ export class OTLPExporter implements SpanExporter {
       })),
       events: s.events.map((e) => ({
         name: e.name,
-        timeUnixNano: BigInt(e.time) * 1_000_000n,
+        timeUnixNano: (BigInt(e.time) * 1_000_000n).toString(),
         attributes: e.attributes
           ? Object.entries(e.attributes).map(([key, value]) => ({
               key,

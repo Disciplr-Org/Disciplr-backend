@@ -421,6 +421,54 @@ export const getVerifierStats = async (userId: string) => {
   }
 }
 
+export const getVerifierStatsBatch = async (userIds: string[]) => {
+  if (userIds.length === 0) {
+    return new Map()
+  }
+
+  const raw = await db.raw<{
+    rows: Array<{
+      verifier_user_id: string
+      total: string
+      approvals: string
+      rejections: string
+      disputes: string
+    }>
+  }>(
+    `SELECT
+       verifier_user_id,
+       COUNT(*)                                          AS total,
+       COUNT(*) FILTER (WHERE result = 'approved')      AS approvals,
+       COUNT(*) FILTER (WHERE result = 'rejected')      AS rejections,
+       COUNT(*) FILTER (WHERE disputed = TRUE)          AS disputes
+     FROM verifications
+     WHERE verifier_user_id = ANY(?)
+     GROUP BY verifier_user_id`,
+    [userIds],
+  )
+
+  const stats = new Map()
+
+  for (const row of raw.rows) {
+    const total = Number(row.total ?? 0)
+    const approvals = Number(row.approvals ?? 0)
+    const rejections = Number(row.rejections ?? 0)
+    const disputes = Number(row.disputes ?? 0)
+
+    stats.set(row.verifier_user_id, {
+      totalVerifications: total,
+      approvals,
+      rejections,
+      disputes,
+      approvalRatio: total === 0 ? 0 : approvals / total,
+      rejectionRatio: total === 0 ? 0 : rejections / total,
+      disputeRate: total === 0 ? 0 : disputes / total,
+    })
+  }
+
+  return stats
+}
+
 export const resetVerifiers = async (): Promise<void> => {
   await db('verifications').del()
   await db('verifiers').del()
@@ -744,7 +792,7 @@ export const getMilestoneApprovalProgress = async (
       )
     }
   }
-  const safeThreshold = Math.max(1, Math.floor(Number(approvalThreshold)))
+  // ─────────────────────────────────────────────────────────────────────────
 
   const approvals = await getMilestoneApprovals(milestoneId, trx)
   const approved = approvals.approved.length
@@ -758,6 +806,11 @@ export const getMilestoneApprovalProgress = async (
     totalVerifiers !== undefined && totalVerifiers > 0
       ? Math.max(1, Math.floor(Number(totalVerifiers)))
       : undefined
+
+  // The threshold is validated as a positive integer by the caller; clamp it
+  // defensively anyway so malformed input can never produce NaN/degenerate
+  // comparisons in the veto math below.
+  const safeThreshold = Math.max(1, Math.floor(Number(approvalThreshold)))
 
   // Veto math: can we still reach threshold?
   let isRejected: boolean

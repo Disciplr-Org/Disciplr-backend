@@ -12,7 +12,9 @@ const mockCreateOrTransitionVerifier = jest.fn()
 const mockDeleteVerifierProfile = jest.fn()
 const mockGetVerifierProfile = jest.fn()
 const mockGetVerifierStats = jest.fn()
-const mockDeleteVerifierProfile = jest.fn()
+const mockGetVerifierStatsBatch = jest.fn(async (userIds: string[]) =>
+  new Map(await Promise.all(userIds.map(async (id) => [id, await mockGetVerifierStats(id)] as const))),
+)
 const mockUpdateVerifierProfile = jest.fn()
 const mockListVerifierProfiles = jest.fn()
 const mockCreateOrGetVerifierProfile = jest.fn()
@@ -24,7 +26,7 @@ jest.unstable_mockModule('../services/verifiers.js', () => ({
   deleteVerifierProfile: mockDeleteVerifierProfile,
   getVerifierProfile: mockGetVerifierProfile,
   getVerifierStats: mockGetVerifierStats,
-  deleteVerifierProfile: mockDeleteVerifierProfile,
+  getVerifierStatsBatch: mockGetVerifierStatsBatch,
   updateVerifierProfile: mockUpdateVerifierProfile,
   listVerifierProfiles: mockListVerifierProfiles,
   createOrGetVerifierProfile: mockCreateOrGetVerifierProfile,
@@ -71,7 +73,8 @@ describe('adminVerifiers', () => {
   })
 
   it('allows ADMIN to transition verifier status and passes reason', async () => {
-    mockCreateOrTransitionVerifier.mockResolvedValue({
+    mockGetVerifierProfile.mockResolvedValue({ userId: 'user-1', status: 'pending' })
+    mockTransitionVerifier.mockResolvedValue({
       after: { userId: 'user-1', status: 'approved' },
       changedFields: ['status'],
       auditLog: { id: 'audit-1' }
@@ -84,7 +87,7 @@ describe('adminVerifiers', () => {
       .send({ reason: 'Looks good' })
 
     expect(res.status).toBe(200)
-    expect(mockCreateOrTransitionVerifier).toHaveBeenCalledWith(
+    expect(mockTransitionVerifier).toHaveBeenCalledWith(
       'user-1',
       'approved',
       { actorUserId: 'admin-1', reason: 'Looks good' }
@@ -104,7 +107,8 @@ describe('adminVerifiers', () => {
     // Require dynamic import to get the mocked error class
     const { InvalidVerifierStatusTransitionError } = await import('../services/verifiers.js')
     
-    mockCreateOrTransitionVerifier.mockRejectedValue(new InvalidVerifierStatusTransitionError('pending', 'suspended'))
+    mockGetVerifierProfile.mockResolvedValue({ userId: 'user-1', status: 'pending' })
+    mockTransitionVerifier.mockRejectedValue(new InvalidVerifierStatusTransitionError('pending', 'suspended'))
 
     const res = await request(app)
       .post('/api/admin/verifiers/user-1/suspend')
@@ -115,9 +119,10 @@ describe('adminVerifiers', () => {
   })
 
   it('creates verifier with initial status if not exists', async () => {
-    mockCreateOrTransitionVerifier.mockResolvedValue({
+    mockGetVerifierProfile.mockResolvedValue(undefined)
+    mockCreateVerifierProfile.mockResolvedValue({
       after: { userId: 'user-2', status: 'approved' },
-      changedFields: ['status'],
+      changedFields: ['user_id', 'status'],
       auditLog: { id: 'audit-2' }
     })
     mockGetVerifierStats.mockResolvedValue({ totalVerifications: 0 })
@@ -128,9 +133,9 @@ describe('adminVerifiers', () => {
       .send({ reason: 'Pre-approved' })
 
     expect(res.status).toBe(200)
-    expect(mockCreateOrTransitionVerifier).toHaveBeenCalledWith(
+    expect(mockCreateVerifierProfile).toHaveBeenCalledWith(
       'user-2',
-      'approved',
+      { status: 'approved' },
       { actorUserId: 'admin-1', reason: 'Pre-approved' }
     )
   })

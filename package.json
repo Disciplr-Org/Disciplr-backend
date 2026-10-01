@@ -54,7 +54,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@asteasolutions/zod-to-openapi": "^8.5.0",
+    "@asteasolutions/zod-to-openapi": "^9.1.0",
     "@eslint/js": "^9.39.5",
     "@redocly/cli": "^2.40.0",
     "@types/bcryptjs": "^2.4.6",

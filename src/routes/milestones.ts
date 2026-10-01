@@ -23,7 +23,6 @@ import {
 import { transitionVaultStatus } from '../services/vaultTransitions.js'
 import { getVaultById } from '../services/vaultStore.js'
 import { AppError } from '../middleware/errorHandler.js'
-import { randomUUID } from 'node:crypto'
 import db from '../db/index.js'
 import { MilestoneRepositoryEnhanced } from '../repositories/milestoneRepositoryEnhanced.js'
 import {
@@ -240,7 +239,7 @@ milestonesRouter.post('/', authenticate, requireWalletIdentity, requireUser, req
 })
 
 // GET /api/vaults/:vaultId/milestones
-milestonesRouter.get('/', authenticate, requireValidVaultId, async (req: Request, res: Response, next: NextFunction) => {
+milestonesRouter.get('/', authenticate, requireUser, requireValidVaultId, async (req: Request, res: Response, next: NextFunction) => {
   const { vaultId } = req.params
   const vault = await getVaultById(vaultId)
 
@@ -544,7 +543,7 @@ milestonesRouter.post('/:id/approve', authenticate, requireWalletIdentity, requi
 
 // GET /api/vaults/:vaultId/milestones/:id/approval-status
 // Get detailed approval status for a milestone (requires authentication)
-milestonesRouter.get('/:id/approval-status', authenticate, requireValidVaultId, requireValidMilestoneId, async (req: Request, res: Response, next: NextFunction) => {
+milestonesRouter.get('/:id/approval-status', authenticate, requireUser, requireValidVaultId, requireValidMilestoneId, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { vaultId, id } = req.params
 

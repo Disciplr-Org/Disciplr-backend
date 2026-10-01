@@ -54,7 +54,6 @@ jest.unstable_mockModule('../services/vaultStore.js', () => ({
     status: 'active',
     creator: 'user-1',
     verifier: 'GBBM6BKZPEHWYO3E3YKREDPQXMS4VK35YLNU7NFBRI26RAN7GI5POFBB',
-    creator: 'user-1',
   }),
 }))
 
@@ -86,6 +85,11 @@ jest.unstable_mockModule('../services/milestones.js', () => ({
   allMilestonesVerified: jest.fn<any>().mockReturnValue(false),
   getMilestonesByVaultId: jest.fn<any>().mockReturnValue([]),
   allMilestonesMetThreshold: jest.fn<any>().mockReturnValue(false),
+  validateMilestoneMultiVerifier: jest.fn<any>().mockReturnValue({
+    success: true,
+    milestone: { id: 'ms-12345-abcdefg', verified: true },
+  }),
+  addMilestoneEvent: jest.fn<any>().mockReturnValue({ id: 'evt-1' }),
 }))
 
 jest.unstable_mockModule('../services/vaultTransitions.js', () => ({
@@ -133,13 +137,6 @@ const WALLET_HEADERS = {
 const app = express()
 app.use(express.json())
 app.use('/api/vaults/:vaultId/milestones', milestonesRouter)
-
-// requireWalletIdentity (defined in milestones.ts) demands a connected-wallet
-// identity on POST routes: a 0x-prefixed wallet address + a network identifier.
-const WALLET_HEADERS = {
-  'x-wallet-address': '0x' + 'a'.repeat(40),
-  'x-network-id': 'testnet',
-}
 
 function setupHappyPath() {
   mockValidateIdempotencyKey.mockImplementation((key: string) =>

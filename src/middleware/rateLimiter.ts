@@ -1,4 +1,4 @@
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
+import rateLimit, { ipKeyGenerator, type RateLimitInfo } from 'express-rate-limit'
 import type { Request, Response, NextFunction } from 'express'
 import { redactApiKeyForLogs } from '../services/apiKeys.js'
 import { getEnv } from '../config/index.js'
@@ -76,8 +76,9 @@ const createRateLimiter = (config: Partial<RateLimitConfig> = {}) => {
     skipSuccessfulRequests: config.skipSuccessfulRequests ?? false,
     handler: (req, res, _next, options) => {
       logRateLimitBreached(req)
-      if (req.rateLimit?.resetTime) {
-        const resetMs = req.rateLimit.resetTime.getTime() - Date.now()
+      const resetTime = (req as Request & { rateLimit?: RateLimitInfo }).rateLimit?.resetTime
+      if (resetTime) {
+        const resetMs = resetTime.getTime() - Date.now()
         const retryAfterSeconds = Math.max(0, Math.ceil(resetMs / 1000))
         res.setHeader('Retry-After', retryAfterSeconds.toString())
       }

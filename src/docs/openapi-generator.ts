@@ -3,18 +3,11 @@ import {
   OpenAPIRegistry,
   extendZodWithOpenApi,
 } from '@asteasolutions/zod-to-openapi'
-import { z, type ZodTypeAny } from 'zod'
+import { z } from 'zod'
 import { registerSchema, loginSchema } from '../lib/validation.js'
 import { UserRole } from '../types/user.js'
 
 extendZodWithOpenApi(z)
-
-// The current zod-to-openapi typings are stricter than the installed Zod v4 schema
-// surface, so we use this narrow bridge at the registry boundary to keep the
-// generator type-safe without changing runtime behavior.
-function asOpenApiSchema(schema: ZodTypeAny): any {
-  return schema as any
-}
 
 // ==================== EXPORT SCHEMAS ====================
 
@@ -51,22 +44,22 @@ registry.registerComponent('securitySchemes', 'bearerAuth', {
 })
 
 // --- Shared Schemas ---
-const PaginationCursor = registry.registerComponent('schemas', 'PaginationCursor', asOpenApiSchema(z.object({
+const PaginationCursor = registry.register('PaginationCursor', z.object({
   limit: z.number(),
   cursor: z.string().optional(),
   next_cursor: z.string().optional(),
   has_more: z.boolean(),
   count: z.number(),
-})))
+}))
 
-const ErrorEnvelope = registry.registerComponent('schemas', 'ErrorEnvelope', asOpenApiSchema(z.object({
+const ErrorEnvelope = registry.register('ErrorEnvelope', z.object({
   error: z.object({
     code: z.string().openapi({ example: 'VALIDATION_ERROR' }),
     message: z.string().openapi({ example: 'Invalid request parameters' }),
     details: z.unknown().optional(),
     requestId: z.string().optional().openapi({ example: 'req_123' }),
   }),
-})))
+}))
 
 const VaultSchema = registry.register(
   'Vault',
@@ -627,9 +620,9 @@ registry.registerPath({
     body: {
       content: {
         'application/json': {
-          schema: asOpenApiSchema(z.object({
+          schema: z.object({
             role: z.enum(['USER', 'VERIFIER', 'ADMIN']),
-          })),
+          }),
         },
       },
     },
@@ -660,9 +653,9 @@ registry.registerPath({
     body: {
       content: {
         'application/json': {
-          schema: asOpenApiSchema(z.object({
+          schema: z.object({
             status: z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED']),
-          })),
+          }),
         },
       },
     },
@@ -812,7 +805,7 @@ registry.registerPath({
     body: {
       content: {
         'application/json': {
-          schema: asOpenApiSchema(z.object({
+          schema: z.object({
             reasonCode: z.enum([
               'USER_REQUEST',
               'FRAUD_DETECTED',
@@ -825,7 +818,7 @@ registry.registerPath({
             reason: z.string().optional(),
             idempotencyKey: z.string().optional(),
             details: z.string().optional(),
-          })),
+          }),
         },
       },
     },
