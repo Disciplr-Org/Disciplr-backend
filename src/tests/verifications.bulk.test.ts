@@ -1,6 +1,7 @@
 import express from 'express'
 import request from 'supertest'
 import { jest } from '@jest/globals'
+import { AppError } from '../middleware/errorHandler.js'
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -297,6 +298,29 @@ describe('verifications bulk endpoint', () => {
       expect(res.body.results[0].error).toMatchObject({
         code: 'VALIDATION_ERROR',
         message: 'Signed object-storage URL has already expired',
+      })
+    })
+
+    test('surfaces correct code for 400/409 AppError thrown inside the bulk loop', async () => {
+      mockRecordVerification
+        .mockRejectedValueOnce(AppError.badRequest('some validation failed'))
+        .mockRejectedValueOnce(AppError.conflict('some conflict occurred'))
+
+      const items = [
+        createValidItem({ targetId: 'milestone-1' }),
+        createValidItem({ targetId: 'milestone-2' }),
+      ]
+      const res = await request(app).post('/api/verifications/bulk').send(items)
+      expect(res.status).toBe(200)
+      expect(res.body.results[0].success).toBe(false)
+      expect(res.body.results[0].error).toMatchObject({
+        code: 'BAD_REQUEST',
+        message: 'some validation failed',
+      })
+      expect(res.body.results[1].success).toBe(false)
+      expect(res.body.results[1].error).toMatchObject({
+        code: 'CONFLICT',
+        message: 'some conflict occurred',
       })
     })
   })
