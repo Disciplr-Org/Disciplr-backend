@@ -12,6 +12,7 @@ import { requestTelemetry } from '../middleware/telemetry.js'
 import { getNetworkId } from '../middleware/oauthBearer.js'
 
 export const oauthRouter = Router()
+oauthRouter.use(requestTelemetry)
 
 const DEFAULT_TOKEN_TTL_SECONDS = 3600
 const MIN_TOKEN_TTL_SECONDS = 60

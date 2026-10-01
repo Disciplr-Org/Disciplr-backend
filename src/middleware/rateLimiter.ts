@@ -1,4 +1,4 @@
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
+import rateLimit, { ipKeyGenerator, type RateLimitInfo } from 'express-rate-limit'
 import type { Request, Response, NextFunction } from 'express'
 import { redactApiKeyForLogs } from '../services/apiKeys.js'
 import { getEnv } from '../config/index.js'
@@ -10,7 +10,7 @@ export interface RateLimitConfig {
   max: number
   message?: string
   prefix?: string
-  standardHeaders?: boolean
+  standardHeaders?: boolean | 'draft-6' | 'draft-7'
   legacyHeaders?: boolean
   skipSuccessfulRequests?: boolean
   keyGenerator?: (req: Request) => string
@@ -71,9 +71,23 @@ const createRateLimiter = (config: Partial<RateLimitConfig> = {}) => {
     windowMs,
     max,
     store: redisClient ? new RedisStore(redisClient, `rl:${prefix}`) : undefined,
-    standardHeaders: config.standardHeaders ?? true,
+    standardHeaders: config.standardHeaders ?? 'draft-7',
     legacyHeaders: config.legacyHeaders ?? false,
     skipSuccessfulRequests: config.skipSuccessfulRequests ?? false,
+    handler: (req, res, _next, options) => {
+      logRateLimitBreached(req)
+      const resetTime = (req as Request & { rateLimit?: RateLimitInfo }).rateLimit?.resetTime
+      if (resetTime) {
+        const resetMs = resetTime.getTime() - Date.now()
+        const retryAfterSeconds = Math.max(0, Math.ceil(resetMs / 1000))
+        res.setHeader('Retry-After', retryAfterSeconds.toString())
+      }
+      if (config.handler) {
+        config.handler(req, res)
+      } else {
+        res.status(options.statusCode).send(config.message ?? options.message)
+      }
+    },
     keyGenerator: config.keyGenerator ?? ((req) => {
       const apiKey = req.headers['x-api-key'] as string | undefined
       const orgId = (req as any).orgId
