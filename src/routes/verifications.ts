@@ -401,7 +401,7 @@ verificationsRouter.post('/bulk', authenticate, requireVerifier, async (req: Req
           message: error.message,
         }
       } else {
-        const status: number | undefined = error?.status ?? error?.statusCode
+        const status: number | undefined = error?.status
         let code = 'INTERNAL_ERROR'
         if (status === 400) {
           code = error?.code && typeof error.code === 'string' ? error.code : 'BAD_REQUEST'
