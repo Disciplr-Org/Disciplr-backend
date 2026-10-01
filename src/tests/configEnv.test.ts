@@ -50,6 +50,12 @@ describe('Environment Loader', () => {
         validateEnv({ ...BASE_ENV, NOTIFICATION_PROVIDER: 'smtp' }),
       ).toThrow(/NOTIFICATION_PROVIDER/);
     });
+
+    it('rejects an empty string with a validation error (regression)', () => {
+      expect(() =>
+        validateEnv({ ...BASE_ENV, NOTIFICATION_PROVIDER: '' }),
+      ).toThrow(/NOTIFICATION_PROVIDER/);
+    });
   });
 
   describe('DOWNLOAD_SECRET', () => {
