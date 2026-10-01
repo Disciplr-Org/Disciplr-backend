@@ -13,7 +13,7 @@ import { createHandler } from 'graphql-http/lib/use/express'
 import depthLimit from 'graphql-depth-limit'
 import DataLoader from 'dataloader'
 import { requireOrgAccess } from '../middleware/orgAuth.js'
-import { getVaultById, listVaultsByOrg, listVaultIdsByOrg } from '../services/vaultStore.js'
+import { getVaultById, listVaultsByOrg } from '../services/vaultStore.js'
 import { getAnalyticsByPeriod } from '../services/analytics.service.js'
 import { listVerifications, VerificationRecord } from '../services/verifiers.js'
 import { authenticate } from '../middleware/auth.js'
@@ -221,14 +221,19 @@ graphqlRouter.use(
         })
       }
 
-      // Fetch the org's vault IDs (vask) to seed the DataLoader scope.
-      // Org-scoped and paginated, so this never full-scans the vaults table.
-      // Milestone IDs are registered lazily via the vault resolver instead.
+      // Fetch the org's vault IDs (and their milestone IDs) to seed DataLoader
+      // scope — org-scoped, so no full-table scan. We collect all pages to
+      // ensure the verificationsLoader is correctly scoped even for large orgs.
       const orgVaultIds = new Set<string>()
       let pageCursor: string | undefined
       do {
-        const page = await listVaultIdsByOrg(orgId, 500, pageCursor)
-        for (const id of page.vaultIds) orgVaultIds.add(id)
+        const page = await listVaultsByOrg(orgId, 100, pageCursor)
+        for (const v of page.vaults) {
+          orgVaultIds.add(v.id)
+          // Also register milestone IDs so the DataLoader can surface
+          // verifications whose targetId is a milestone in this org.
+          for (const m of v.milestones) orgVaultIds.add(m.id)
+        }
         pageCursor = page.nextCursor ?? undefined
       } while (pageCursor && orgVaultIds.size < MAX_ORG_VAULT_IDS)
 
