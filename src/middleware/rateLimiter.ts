@@ -2,6 +2,7 @@ import rateLimit, { ipKeyGenerator, type RateLimitInfo } from 'express-rate-limi
 import type { Request, Response, NextFunction } from 'express'
 import { redactApiKeyForLogs } from '../services/apiKeys.js'
 import { getEnv } from '../config/index.js'
+// Use named import for NodeNext module resolution (fixes TS2709, TS2351)
 import { Redis } from 'ioredis'
 import { RedisStore } from './rateLimitStore.js'
 
