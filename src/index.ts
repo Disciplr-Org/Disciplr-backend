@@ -42,7 +42,7 @@ initTracing();
 initializeDatabase();
 
 const notificationService = createNotificationService(
-  env.NOTIFICATION_PROVIDER,
+  env.NOTIFICATION_PROVIDER ?? "console",
 );
 const { jobSystem } = bootstrapApp({ notificationService });
 
