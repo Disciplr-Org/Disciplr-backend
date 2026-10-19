@@ -12,7 +12,8 @@ import { AppError } from '../middleware/errorHandler.js'
 import { prisma } from '../lib/prisma.js'
 import { UserRole } from '../types/user.js'
 import { requestTelemetry } from '../middleware/telemetry.js'
-import { authRateLimiter } from '../middleware/rateLimiter.js'
+import { authRateLimiter, accountLoginLimiter } from '../middleware/rateLimiter.js'
+import { getEnv } from '../config/env.js'
 
 export const authRouter = Router();
 authRouter.use(requestTelemetry);
@@ -50,12 +51,20 @@ const webauthnAssertSchema = z.object({
 
 /**
  * The userId-only login path is a development/testing helper that impersonates
- * a user by id without credentials. It must never be reachable in production,
- * where authentication must always be credential-based.
+ * a user by id without credentials. It must be explicitly enabled via
+ * ENABLE_MOCK_LOGIN=true and is forbidden in production (the env validation
+ * will fail startup if both NODE_ENV=production and ENABLE_MOCK_LOGIN=true).
  */
 const isMockLoginAllowed = (): boolean => {
-  const nodeEnv = process.env.NODE_ENV ?? 'development'
-  return nodeEnv !== 'production'
+  try {
+    const env = getEnv()
+    return env.ENABLE_MOCK_LOGIN === true
+  } catch {
+    // If env not initialised, fall back to checking the raw env var (tests)
+    const raw = process.env.ENABLE_MOCK_LOGIN
+    if (!raw) return false
+    return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase())
+  }
 }
 
 const authUserSelect = {
@@ -96,10 +105,10 @@ authRouter.post('/register', authJson, authRateLimiter, async (req, res, next) =
     }
 })
 
-authRouter.post('/login', authJson, async (req, res, next) => {
+authRouter.post('/login', authJson, authRateLimiter, accountLoginLimiter, async (req, res, next) => {
     if (req.body.userId && !req.body.email && !req.body.password) {
         if (!isMockLoginAllowed()) {
-            return next(AppError.forbidden('Mock login is disabled outside development environments'))
+            return next(AppError.forbidden('Mock login is disabled'))
         }
 
         const result = userIdOnlyLoginSchema.safeParse(req.body)
@@ -123,7 +132,7 @@ authRouter.post('/login', authJson, async (req, res, next) => {
 
         const auditLog = await createAuditLog({
           actor_user_id: updatedUser.id,
-          action: "auth.login",
+          action: "auth.mock_login_used",
           target_type: "user",
           target_id: updatedUser.id,
           metadata: {
@@ -150,6 +159,9 @@ authRouter.post('/login', authJson, async (req, res, next) => {
         res.json(data)
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Invalid credentials'
+        // Mark the response for the account limiter: a failed login should NOT
+        // skip the account rate limit (only successful logins are skipped via
+        // skipSuccessfulRequests: true in the limiter config)
         return next(AppError.unauthorized(message))
     }
 })
