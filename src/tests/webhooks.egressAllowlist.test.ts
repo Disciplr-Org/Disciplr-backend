@@ -59,6 +59,7 @@ jest.unstable_mockModule('../db/index.js', () => {
       _table: table,
       _filters: {} as Record<string, any>,
       _data: null as any,
+      _limit: undefined as number | undefined,
 
       where(filter: Record<string, any>) {
         Object.assign(q._filters, filter)
@@ -66,6 +67,7 @@ jest.unstable_mockModule('../db/index.js', () => {
       },
       select() { return q },
       orderBy() { return q },
+      limit(value: number) { q._limit = value; return q },
 
       // INSERT … ON CONFLICT … MERGE … RETURNING
       insert(data: any) {
@@ -100,6 +102,15 @@ jest.unstable_mockModule('../db/index.js', () => {
 
       // For plain insert (no .returning()) e.g. dead_letters
       then(resolve: (v: any) => any, reject?: (e: any) => any) {
+        if (q._table === 'webhook_dead_letters') {
+          return Promise.resolve([{
+            id: 'dead-letter-window-1',
+            subscriber_id: q._filters.subscriber_id,
+            event_id: 'event-window-1',
+            payload: PAYLOAD,
+            failed_at: new Date('2026-06-27T00:00:00.000Z'),
+          }]).then(resolve, reject)
+        }
         if (q._table === 'org_webhook_egress_allowlists') {
           const orgId = q._filters.organization_id
           const rows = getAllowlistHosts(orgId).map((host) => ({
@@ -218,6 +229,7 @@ const {
   removeEgressAllowlistEntry,
   dispatchWebhookEvent,
   replayDeadLetter,
+  replayWindow,
   resetSubscribers,
   resetBreakerCache,
 } = await import('../services/webhooks.js')
@@ -379,5 +391,19 @@ describe('egress allowlist — replayDeadLetter enforcement', () => {
     const { isUrlAllowedForOrg } = await import('../services/webhooks.js')
     const check = await isUrlAllowedForOrg(ORG, 'https://hooks.example.com/cb')
     expect(check.allowed).toBe(true)
+  })
+
+  it('blocks replayWindow after the subscriber host is removed from the allowlist', async () => {
+    await addEgressAllowlistEntry(ORG, 'hooks.example.com')
+    await addEgressAllowlistEntry(ORG, 'other.example.com')
+    const sub = await addSubscriber(ORG, 'https://hooks.example.com/cb', 'a-valid-secret-key', ['vault_created'])
+    await removeEgressAllowlistEntry(ORG, 'hooks.example.com')
+
+    // A replayWindow must re-evaluate current policy rather than trusting the
+    // historical subscriber URL saved with its dead-letter payload.
+    const result = await replayWindow(sub.id, '2026-06-26T00:00:00.000Z', '2026-06-28T00:00:00.000Z')
+
+    expect(result.failureCount).toBeGreaterThan(0)
+    expect(mockFetchPinnedTarget).not.toHaveBeenCalled()
   })
 })

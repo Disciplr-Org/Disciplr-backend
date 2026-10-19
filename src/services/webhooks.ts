@@ -1047,6 +1047,13 @@ export const replayWindow = async (
   const errors: Array<{ eventId: string; error: string }> = []
 
   for (const dl of deadLetters) {
+    const check = await isUrlAllowedForOrg(subscriber.organizationId, subscriber.url)
+    if (!check.allowed) {
+      failureCount++
+      errors.push({ eventId: dl.event_id, error: check.reason ?? 'Webhook URL not permitted' })
+      continue
+    }
+
     try {
       await deliverOnce(subscriber, dl.payload)
       await db('webhook_dead_letters').where({ id: dl.id }).update({ replayed_at: new Date().toISOString() })

@@ -89,12 +89,15 @@ const IPV6_BLOCKED_CIDRS: ReadonlyArray<string> = [
   'fc00::/7', // unique-local
   'fe80::/10', // link-local
   'ff00::/8', // multicast
+  '2001::/23', // IETF protocol assignments (includes Teredo)
   '2001:db8::/32', // documentation
+  '3fff::/20', // documentation
   '2001:2::/48', // benchmarking
   '2001:10::/28', // ORCHID (deprecated)
   '2001:20::/28', // ORCHIDv2
   '64:ff9b::/96', // IPv4/IPv6 translation
   '64:ff9b:1::/48', // IPv4/IPv6 translation
+  '2002::/16', // 6to4
 ]
 
 type IpVersion = 4 | 6
@@ -221,6 +224,10 @@ export function isPublicAddress(ip: string): boolean {
       const embedded = Number(ipv6 & 0xffffffffn) >>> 0
       return !IPV4_BLOCKED_CIDRS.some((cidr) => ipv4CidrMatches(embedded, cidr))
     }
+    // Only global-unicast space is eligible for public egress. This rejects
+    // deprecated site-local, benchmarking, and currently unallocated ranges
+    // outside 2000::/3 even if they are not individually listed below.
+    if (!ipv6CidrMatches(ipv6, '2000::/3')) return false
     return !IPV6_BLOCKED_CIDRS.some((cidr) => ipv6CidrMatches(ipv6, cidr))
   }
 
@@ -261,9 +268,11 @@ async function lookupWithTimeout(
   })
 
   try {
-    // A timed-out lookup may still complete in the background; its result is
-    // discarded so it can never trigger a connection.
-    return (await Promise.race([lookup(hostname, { all: true }), timeout])) as Array<{
+    const lookupPromise = lookup(hostname, { all: true })
+    // Attach a rejection handler even if timeout wins the race; the resolver
+    // operation itself cannot be cancelled through dns/promises.lookup().
+    void lookupPromise.catch(() => {})
+    return (await Promise.race([lookupPromise, timeout])) as Array<{
       address: string
       family: IpVersion
     }>
@@ -397,6 +406,8 @@ export interface PinnedFetchInit {
   headers: Record<string, string>
   body?: string | null
   timeoutMs?: number
+  /** Maximum response size in bytes; larger responses are aborted. */
+  maxResponseBytes?: number
   /** Optional CA certificate(s) used to verify TLS (verification stays enabled). */
   ca?: string | Buffer | Array<string | Buffer>
 }
@@ -410,6 +421,7 @@ export interface PinnedFetchResponse {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
+const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576
 
 /**
  * Performs an outbound HTTP/HTTPS request whose socket is pinned to the IP
@@ -436,6 +448,7 @@ export async function fetchPinnedTarget(
 
   return new Promise<PinnedFetchResponse>((resolve, reject) => {
     const timeoutMs = init.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+    const maxResponseBytes = init.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
 
@@ -484,9 +497,19 @@ export async function fetchPinnedTarget(
         ...(init.ca !== undefined ? { ca: init.ca } : {}),
       },
       (res) => {
-        let body = ''
-        res.on('data', (chunk: string) => {
-          body += chunk
+        const chunks: Buffer[] = []
+        let responseBytes = 0
+        res.on('data', (chunk: Buffer | string) => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+          responseBytes += buffer.length
+          if (responseBytes > maxResponseBytes) {
+            const error = new Error(`Response exceeded ${maxResponseBytes} bytes`)
+            settle(error)
+            res.destroy(error)
+            req.destroy(error)
+            return
+          }
+          chunks.push(buffer)
         })
         res.on('end', () => {
           res.destroy()
@@ -494,7 +517,7 @@ export async function fetchPinnedTarget(
             statusCode: res.statusCode ?? 0,
             statusMessage: res.statusMessage ?? '',
             headers: res.headers,
-            body,
+            body: Buffer.concat(chunks).toString('utf8'),
             ok: res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 300,
           })
         })

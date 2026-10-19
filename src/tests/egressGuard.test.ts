@@ -9,7 +9,7 @@
  *    second uncontrolled DNS lookup is used at connect time.
  *  - TLS verification: certificate validation uses the original hostname, not the pinned IP.
  */
-import { jest, describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from '@jest/globals'
+import { jest, describe, it, expect, beforeEach, beforeAll, afterAll } from '@jest/globals'
 import { createServer as createHttpServer } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
 import { readFileSync } from 'node:fs'
@@ -76,6 +76,10 @@ describe('isPublicAddress — IP classification', () => {
     ['ff02::1', false],
     ['ff00::1', false],
     ['2001:db8::1', false],
+    ['2001::1', false],
+    ['2002::1', false],
+    ['3fff::1', false],
+    ['4000::1', false],
     ['2001:2::1', false],
     ['2001:10::1', false],
     ['2001:20::1', false],
@@ -340,6 +344,31 @@ describe('fetchPinnedTarget — socket is pinned to the validated address', () =
       expect(response.statusCode).toBe(302)
     } finally {
       await new Promise<void>((resolve) => redirectServer.close(resolve))
+    }
+  })
+
+  it('aborts responses that exceed the configured byte limit', async () => {
+    const largeServer = createHttpServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      res.end('response larger than the configured cap')
+    })
+    await new Promise<void>((resolve) => largeServer.listen(0, '127.0.0.1', resolve))
+    const largePort = (largeServer.address() as AddressInfo).port
+
+    try {
+      const target = {
+        url: 'http://large.example.com/',
+        hostname: 'large.example.com',
+        path: '/',
+        port: largePort,
+        address: '127.0.0.1',
+        family: 4 as const,
+      }
+      await expect(
+        fetchPinnedTarget(target, { method: 'GET', headers: {}, maxResponseBytes: 8 }),
+      ).rejects.toThrow(/exceeded 8 bytes/)
+    } finally {
+      await new Promise<void>((resolve) => largeServer.close(resolve))
     }
   })
 })
