@@ -269,6 +269,11 @@ export const envSchema = z
     WEBHOOK_CIRCUIT_BREAKER_THRESHOLD: positiveInt(5),
     WEBHOOK_CIRCUIT_BREAKER_WINDOW_MS: positiveInt(60_000),
     WEBHOOK_CIRCUIT_BREAKER_HALF_OPEN_TIMEOUT_MS: positiveInt(30_000),
+    // When "true", permits loopback/private egress destinations for webhooks
+    // and evidence fetching. Intended for tests and local development only.
+    // The default (unset) is fail-closed: private destinations are blocked.
+    // Refusing to start in production with this flag enabled is enforced below.
+    WEBHOOK_ALLOW_PRIVATE: z.string().optional(),
 
     // ── Export S3 ───────────────────────────────────────────
     EXPORT_S3_BUCKET: z.string().optional(),
@@ -350,6 +355,16 @@ export const envSchema = z
     }
 
     // Additional validation for JWT_KEYS could be added here if needed
+
+    // WEBHOOK_ALLOW_PRIVATE must never be enabled in production: private
+    // egress destinations must remain blocked. Fail fast at startup.
+    if (data.NODE_ENV === "production" && data.WEBHOOK_ALLOW_PRIVATE === "true") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["WEBHOOK_ALLOW_PRIVATE"],
+        message: 'WEBHOOK_ALLOW_PRIVATE cannot be enabled in production environment',
+      });
+    }
   });
 
 export type Env = z.infer<typeof envSchema>;
