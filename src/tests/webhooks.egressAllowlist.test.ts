@@ -14,6 +14,36 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import { randomUUID } from 'node:crypto'
 import type { WebhookSubscriber, WebhookDeliveryPayload } from '../services/webhooks.js'
 
+// ── DNS mock so hostnames resolve to public IPs ──────────────────────────────
+jest.unstable_mockModule('node:dns/promises', () => ({
+  lookup: jest.fn(async (_hostname: string, _options?: any) => [
+    { address: '8.8.8.8', family: 4 },
+  ]),
+}))
+
+// ── HTTP delivery mock: webhooks now uses fetchPinnedTarget (pinned sockets) ──
+const mockFetchPinnedTarget = jest.fn()
+const mockResolvePublicTarget = jest.fn(async (url: string) => {
+  const parsed = new URL(url)
+  if (/^(?:localhost|127\.|10\.|192\.168\.|169\.254\.)/i.test(parsed.hostname)) {
+    throw new Error('Destination resolves to a non-public address')
+  }
+  return {
+    url: parsed.href,
+    hostname: parsed.hostname,
+    path: parsed.pathname + parsed.search,
+    port: Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80)),
+    address: '8.8.8.8',
+    family: 4,
+  }
+})
+jest.unstable_mockModule('../security/egressGuard.js', () => ({
+  EgressBlockedError: class EgressBlockedError extends Error {},
+  fetchPinnedTarget: mockFetchPinnedTarget,
+  isPrivateOverrideEnabled: () => false,
+  resolvePublicTarget: mockResolvePublicTarget,
+}))
+
 // ── In-memory egress allowlist store ────────────────────────────────────────
 
 const egressAllowlists = new Map<string, Set<string>>()
@@ -29,6 +59,7 @@ jest.unstable_mockModule('../db/index.js', () => {
       _table: table,
       _filters: {} as Record<string, any>,
       _data: null as any,
+      _limit: undefined as number | undefined,
 
       where(filter: Record<string, any>) {
         Object.assign(q._filters, filter)
@@ -36,6 +67,7 @@ jest.unstable_mockModule('../db/index.js', () => {
       },
       select() { return q },
       orderBy() { return q },
+      limit(value: number) { q._limit = value; return q },
 
       // INSERT … ON CONFLICT … MERGE … RETURNING
       insert(data: any) {
@@ -70,6 +102,15 @@ jest.unstable_mockModule('../db/index.js', () => {
 
       // For plain insert (no .returning()) e.g. dead_letters
       then(resolve: (v: any) => any, reject?: (e: any) => any) {
+        if (q._table === 'webhook_dead_letters') {
+          return Promise.resolve([{
+            id: 'dead-letter-window-1',
+            subscriber_id: q._filters.subscriber_id,
+            event_id: 'event-window-1',
+            payload: PAYLOAD,
+            failed_at: new Date('2026-06-27T00:00:00.000Z'),
+          }]).then(resolve, reject)
+        }
         if (q._table === 'org_webhook_egress_allowlists') {
           const orgId = q._filters.organization_id
           const rows = getAllowlistHosts(orgId).map((host) => ({
@@ -188,6 +229,7 @@ const {
   removeEgressAllowlistEntry,
   dispatchWebhookEvent,
   replayDeadLetter,
+  replayWindow,
   resetSubscribers,
   resetBreakerCache,
 } = await import('../services/webhooks.js')
@@ -207,6 +249,7 @@ beforeEach(async () => {
   mockSubscribers.length = 0
   egressAllowlists.clear()
   resetBreakerCache()
+  mockFetchPinnedTarget.mockReset()
   jest.spyOn(console, 'error').mockImplementation(() => undefined)
 })
 
@@ -273,24 +316,23 @@ describe('egress allowlist — delivery-time enforcement', () => {
     // Remove the subscriber's host — allowlist still exists (other.example.com remains)
     await removeEgressAllowlistEntry(ORG, 'hooks.example.com')
 
-    const fetchMock = jest.fn<typeof fetch>()
-    global.fetch = fetchMock as any
-
     const results = await dispatchWebhookEvent(PAYLOAD)
 
     expect(results).toHaveLength(1)
     expect(results[0].success).toBe(false)
     expect(results[0].error).toMatch(/egress allowlist/i)
     // No HTTP request should have been made
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(mockFetchPinnedTarget).not.toHaveBeenCalled()
   })
 
   it('delivers when org has no allowlist (baseline behaviour)', async () => {
-    const fetchMock = jest.fn<typeof fetch>().mockResolvedValue({
-      status: 200,
-      headers: new Headers(),
-    } as Response)
-    global.fetch = fetchMock as any
+    mockFetchPinnedTarget.mockResolvedValue({
+      statusCode: 200,
+      statusMessage: 'OK',
+      headers: {},
+      body: '',
+      ok: true,
+    } as any)
 
     await addSubscriber(OTHER_ORG, 'https://hooks.example.com/cb', 'a-valid-secret-key', ['vault_created'])
 
@@ -298,7 +340,7 @@ describe('egress allowlist — delivery-time enforcement', () => {
 
     expect(results).toHaveLength(1)
     expect(results[0].success).toBe(true)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(mockFetchPinnedTarget).toHaveBeenCalledTimes(1)
   })
 
   it('baseline SSRF guard applies even during delivery with an allowlist', async () => {
@@ -318,14 +360,11 @@ describe('egress allowlist — delivery-time enforcement', () => {
     })
     await addEgressAllowlistEntry(ORG, '169.254.169.254')
 
-    const fetchMock = jest.fn<typeof fetch>()
-    global.fetch = fetchMock as any
-
     const results = await dispatchWebhookEvent(PAYLOAD)
 
     expect(results[0].success).toBe(false)
-    expect(results[0].error).toMatch(/not permitted/i)
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(results[0].error).toMatch(/egress_blocked/i)
+    expect(mockFetchPinnedTarget).not.toHaveBeenCalled()
   })
 })
 
@@ -352,5 +391,19 @@ describe('egress allowlist — replayDeadLetter enforcement', () => {
     const { isUrlAllowedForOrg } = await import('../services/webhooks.js')
     const check = await isUrlAllowedForOrg(ORG, 'https://hooks.example.com/cb')
     expect(check.allowed).toBe(true)
+  })
+
+  it('blocks replayWindow after the subscriber host is removed from the allowlist', async () => {
+    await addEgressAllowlistEntry(ORG, 'hooks.example.com')
+    await addEgressAllowlistEntry(ORG, 'other.example.com')
+    const sub = await addSubscriber(ORG, 'https://hooks.example.com/cb', 'a-valid-secret-key', ['vault_created'])
+    await removeEgressAllowlistEntry(ORG, 'hooks.example.com')
+
+    // A replayWindow must re-evaluate current policy rather than trusting the
+    // historical subscriber URL saved with its dead-letter payload.
+    const result = await replayWindow(sub.id, '2026-06-26T00:00:00.000Z', '2026-06-28T00:00:00.000Z')
+
+    expect(result.failureCount).toBeGreaterThan(0)
+    expect(mockFetchPinnedTarget).not.toHaveBeenCalled()
   })
 })
