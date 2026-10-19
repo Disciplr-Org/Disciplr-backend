@@ -61,10 +61,12 @@ pub const MAX_TITLE_LEN: usize = 128;
 pub enum DataKey {
     /// The vault configuration and current state.
     Vault(String),
-    /// Per-milestone check-in timestamp (set when the milestone reaches the approval threshold).
-    CheckIn(u32),
-    /// Per-milestone list of addresses that have approved, used for M-of-N tracking.
-    MilestoneApprovals(u32),
+    /// Per-vault, per-milestone check-in timestamp (vault_id, milestone_index).
+    /// Stored in persistent storage with TTL management.
+    CheckIn(String, u32),
+    /// Per-vault, per-milestone list of addresses that have approved (vault_id, milestone_index).
+    /// Used for M-of-N tracking. Stored in persistent storage with TTL management.
+    MilestoneApprovals(String, u32),
     DisputeWindow,
 }
 
@@ -502,10 +504,11 @@ impl AccountabilityVault {
         }
 
         // M-of-N approval tracking: load or initialize the per-milestone approval list.
-        let approvals_key = DataKey::MilestoneApprovals(milestone_index);
+        // Key now includes vault_id to scope approvals per vault.
+        let approvals_key = DataKey::MilestoneApprovals(vault_id.clone(), milestone_index);
         let mut approvals: Vec<Address> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&approvals_key)
             .unwrap_or_else(|| Vec::new(&env));
 
@@ -515,16 +518,28 @@ impl AccountabilityVault {
         }
 
         approvals.push_back(caller.clone());
-        env.storage().instance().set(&approvals_key, &approvals);
+        env.storage().persistent().set(&approvals_key, &approvals);
+        Self::extend_ttl(&env, &approvals_key);
 
         // Flip the milestone verified and record the timestamp once the threshold is reached.
-        if approvals.len() >= vault.approval_threshold {
+        // Only count approvals from addresses that are currently in the verifier set or are the oracle.
+        let valid_approvals: u32 = approvals
+            .iter()
+            .filter(|addr| {
+                vault.verifiers.iter().any(|v| v == *addr)
+                    || vault.oracle.as_ref().map(|o| o == *addr).unwrap_or(false)
+            })
+            .count() as u32;
+
+        if valid_approvals >= vault.approval_threshold {
             milestone.verified = true;
             vault.milestones.set(milestone_index, milestone);
-            env.storage().instance().set(
-                &DataKey::CheckIn(milestone_index),
+            let checkin_key = DataKey::CheckIn(vault_id.clone(), milestone_index);
+            env.storage().persistent().set(
+                &checkin_key,
                 &(env.ledger().timestamp(), evidence_hash.clone()),
             );
+            Self::extend_ttl(&env, &checkin_key);
             let key = DataKey::Vault(vault_id.clone());
             env.storage().persistent().set(&key, &vault);
             Self::extend_ttl(&env, &key);
@@ -1080,11 +1095,12 @@ impl AccountabilityVault {
             .instance()
             .get(&DataKey::DisputeWindow)
             .unwrap_or(86400);
-        let verified_at: u64 = env
+        let checkin_data: (u64, BytesN<32>) = env
             .storage()
-            .instance()
-            .get(&DataKey::CheckIn(index))
-            .unwrap_or(0);
+            .persistent()
+            .get(&DataKey::CheckIn(vault_id.clone(), index))
+            .unwrap_or((0, BytesN::from_array(&env, &[0u8; 32])));
+        let verified_at = checkin_data.0;
 
         if env.ledger().timestamp() > verified_at + dispute_window {
             return Err(Error::DeadlinePassed);
