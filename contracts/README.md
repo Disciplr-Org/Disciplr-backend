@@ -24,9 +24,10 @@ Implements the vault lifecycle that the backend models off-chain in
 
 | Function | Purpose |
 |---|---|
-| `create_vault` | Create a `Draft` vault with milestones, verifiers, success/failure destinations, and a distinct guardian address. Validates amount, deadline, that milestone amounts sum to the total, that guardian is distinct from creator/success_destination and not sole verifier, and rejects degenerate parameters. |
+| `create_vault` | Create a `Draft` vault with milestones, verifiers, success/failure destinations, and `VaultOptions` (`oracle`, distinct `guardian`, and per-vault `dispute_window` bounded to `[1 hour, 30 days]`). Validates amount, deadline, that milestone amounts sum to the total, that guardian is distinct from creator/success_destination and not sole verifier, that `dispute_window` is within `[MIN_DISPUTE_WINDOW, MAX_DISPUTE_WINDOW]`, and rejects degenerate parameters. |
 | `stake` | Creator transfers the SEP-41 token into the contract; `Draft` -> `Active`. |
 | `check_in` | Designated verifier confirms a milestone before its `due_date`. |
+| `dispute_milestone` | Creator disputes a verified milestone within the vault's configured `dispute_window` (`verified_at.checked_add(vault.dispute_window)`), reverting `verified` to `false`. Requires an existing `CheckIn` record. |
 | `slash_on_miss` | After the deadline with unverified milestones, slash funds to `failure_destination`; `Active` -> `Failed`. Bounded pause/dispute stops blocking once expired. |
 | `claim` | When all milestones are verified, release funds to `success_destination`; `Active` -> `Completed`. Blocked if paused. |
 | `claim_milestone` | Release funds for an individual verified milestone; blocked if paused, enforces CEI (state persisted before external transfer). |
