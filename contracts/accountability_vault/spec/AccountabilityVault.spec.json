@@ -7,14 +7,13 @@
                 "String",
                 "Address",
                 "VerifierSet",
-                "Option<Address>",
                 "Address",
                 "i128",
                 "Address",
                 "Address",
                 "u64",
                 "Vec<Milestone>",
-                "Address"
+                "VaultOptions"
             ],
             "result": "Result<(), Error>"
         },
@@ -142,13 +141,6 @@
                 "Address"
             ],
             "result": "Result<(), Error>"
-        },
-        {
-            "name": "configure_window",
-            "params": [
-                "u64"
-            ],
-            "result": "()"
         },
         {
             "name": "dispute_milestone",

@@ -1,4 +1,9 @@
 #![no_std]
+#![allow(
+    missing_docs,
+    clippy::too_many_arguments,
+    clippy::lint_groups_priority
+)]
 //! Disciplr Accountability Vault
 //!
 //! A Soroban smart contract implementing programmable time-locked capital vaults
@@ -52,6 +57,12 @@ const MAX_DEADLINE_HORIZON: u64 = 5 * 365 * 24 * 60 * 60;
 /// or keep it in dispute.
 pub const MAX_PAUSE_DURATION: u64 = 14 * 24 * 60 * 60;
 
+/// Minimum allowed dispute window duration (1 hour in seconds).
+pub const MIN_DISPUTE_WINDOW: u64 = 60 * 60;
+
+/// Maximum allowed dispute window duration (30 days in seconds).
+pub const MAX_DISPUTE_WINDOW: u64 = 30 * 24 * 60 * 60;
+
 /// Maximum allowed length in bytes for a milestone title.
 pub const MAX_TITLE_LEN: usize = 128;
 
@@ -65,7 +76,6 @@ pub enum DataKey {
     CheckIn(u32),
     /// Per-milestone list of addresses that have approved, used for M-of-N tracking.
     MilestoneApprovals(u32),
-    DisputeWindow,
 }
 
 /// Lifecycle state of the vault, mirroring the backend `PersistedVault.status`.
@@ -99,6 +109,19 @@ pub struct VerifierSet {
     pub verifiers: Vec<Address>,
     /// Minimum number of distinct approvals required to verify a milestone.
     pub threshold: u32,
+}
+
+/// Additional vault configuration parameters grouped to keep `create_vault`
+/// within Soroban's 10-parameter limit.
+#[contracttype]
+#[derive(Clone)]
+pub struct VaultOptions {
+    /// Optional oracle address that may confirm milestones alongside the verifier set.
+    pub oracle: Option<Address>,
+    /// Explicit emergency guardian address (distinct from creator, success destination, and sole verifier).
+    pub guardian: Address,
+    /// Per-vault dispute window in seconds, bounded to `[MIN_DISPUTE_WINDOW, MAX_DISPUTE_WINDOW]`.
+    pub dispute_window: u64,
 }
 
 /// A single accountability milestone within a vault.
@@ -151,6 +174,8 @@ pub struct Vault {
     pub milestones: Vec<Milestone>,
     /// Address authorized to pause and unpause this vault in emergencies.
     pub guardian: Address,
+    /// Per-vault dispute window in seconds during which the creator may dispute a verified milestone.
+    pub dispute_window: u64,
     /// When true, `slash_on_miss`, `claim`, and active `withdraw` are blocked.
     pub paused: bool,
     /// Timestamp until which the pause is active.
@@ -228,6 +253,8 @@ pub enum Error {
     TitleTooLong = 30,
     /// Guardian cannot be the creator, success destination, or the sole verifier.
     InvalidGuardian = 31,
+    /// Dispute window is outside the `[MIN_DISPUTE_WINDOW, MAX_DISPUTE_WINDOW]` bounds.
+    InvalidDisputeWindow = 32,
 }
 
 /// Accountability vault contract entry point.
@@ -238,28 +265,28 @@ pub enum Error {
 pub struct AccountabilityVault;
 
 #[contractimpl]
+#[allow(deprecated)]
 impl AccountabilityVault {
     /// Creates a new accountability vault in `Draft` state.
     ///
     /// `verifiers` is the set of addresses authorized to confirm milestones via
     /// `check_in`. `approval_threshold` is the minimum distinct approvals needed
     /// to mark a milestone verified (M-of-N; must be >= 1 and <= verifiers.len()).
-    /// `oracle` is an optional address that may confirm milestones in addition to
-    /// the verifier set. Pass `None` for human-only verification.
-    /// `guardian` is an explicit, distinct emergency administrator address.
+    /// `options` groups `oracle`, `guardian`, and `dispute_window` (bounded to
+    /// `[MIN_DISPUTE_WINDOW, MAX_DISPUTE_WINDOW]`) to stay within Soroban's
+    /// 10-parameter limit.
     pub fn create_vault(
         env: Env,
         vault_id: String,
         creator: Address,
         verifier_set: VerifierSet,
-        oracle: Option<Address>,
         token: Address,
         amount: i128,
         success_destination: Address,
         failure_destination: Address,
         end_timestamp: u64,
         milestones: Vec<Milestone>,
-        guardian: Address,
+        options: VaultOptions,
     ) -> Result<(), Error> {
         creator.require_auth();
 
@@ -278,10 +305,11 @@ impl AccountabilityVault {
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
-        if end_timestamp <= env.ledger().timestamp() {
+        let now = env.ledger().timestamp();
+        if end_timestamp <= now {
             return Err(Error::InvalidDeadline);
         }
-        if end_timestamp > env.ledger().timestamp() + MAX_DEADLINE_HORIZON {
+        if end_timestamp > now.saturating_add(MAX_DEADLINE_HORIZON) {
             return Err(Error::InvalidDeadline);
         }
         if milestones.is_empty() {
@@ -290,11 +318,19 @@ impl AccountabilityVault {
         if failure_destination == creator {
             return Err(Error::InvalidFailureDestination);
         }
+        let VaultOptions {
+            oracle,
+            guardian,
+            dispute_window,
+        } = options;
         if guardian == creator
             || guardian == success_destination
-            || (verifiers.len() == 1 && verifiers.get(0).map_or(false, |v| v == guardian))
+            || (verifiers.len() == 1 && verifiers.get(0).is_some_and(|v| v == guardian))
         {
             return Err(Error::InvalidGuardian);
+        }
+        if !(MIN_DISPUTE_WINDOW..=MAX_DISPUTE_WINDOW).contains(&dispute_window) {
+            return Err(Error::InvalidDisputeWindow);
         }
 
         let mut sum: i128 = 0;
@@ -340,6 +376,7 @@ impl AccountabilityVault {
             status: VaultStatus::Draft,
             milestones: init_milestones,
             guardian,
+            dispute_window,
             paused: false,
             paused_until: 0,
             disputed_until: 0,
@@ -1046,14 +1083,11 @@ impl AccountabilityVault {
         Ok(())
     }
 
-    // ── internal helpers ────────────────────────────────────────────────
-
-    pub fn configure_window(env: Env, window: u64) {
-        env.storage()
-            .instance()
-            .set(&DataKey::DisputeWindow, &window);
-    }
-
+    /// Disputes a verified milestone within the vault's configured `dispute_window`.
+    ///
+    /// Only the vault creator may dispute a milestone. Requires a recorded `CheckIn`
+    /// timestamp for the milestone and rejects the call with `Error::DeadlinePassed`
+    /// once `verified_at + vault.dispute_window` has elapsed.
     pub fn dispute_milestone(
         env: Env,
         vault_id: String,
@@ -1070,23 +1104,24 @@ impl AccountabilityVault {
             return Err(Error::MilestoneIndexOutOfRange);
         }
 
-        let mut milestone = vault.milestones.get(index).unwrap();
+        let mut milestone = vault
+            .milestones
+            .get(index)
+            .ok_or(Error::MilestoneIndexOutOfRange)?;
         if !milestone.verified {
             return Err(Error::MilestonesIncomplete);
         }
 
-        let dispute_window: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::DisputeWindow)
-            .unwrap_or(86400);
-        let verified_at: u64 = env
+        let (verified_at, _): (u64, BytesN<32>) = env
             .storage()
             .instance()
             .get(&DataKey::CheckIn(index))
-            .unwrap_or(0);
+            .ok_or(Error::MilestonesIncomplete)?;
 
-        if env.ledger().timestamp() > verified_at + dispute_window {
+        let window_end = verified_at
+            .checked_add(vault.dispute_window)
+            .ok_or(Error::InvalidDeadline)?;
+        if env.ledger().timestamp() > window_end {
             return Err(Error::DeadlinePassed);
         }
 
@@ -1103,6 +1138,9 @@ impl AccountabilityVault {
 
         Ok(())
     }
+
+    // ── internal helpers ────────────────────────────────────────────────
+
     fn load(env: &Env, vault_id: &String) -> Result<Vault, Error> {
         let key = DataKey::Vault(vault_id.clone());
         let vault = env
