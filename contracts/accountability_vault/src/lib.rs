@@ -349,8 +349,10 @@ impl AccountabilityVault {
         env.storage().persistent().set(&key, &vault);
         Self::extend_ttl(&env, &key);
 
-        env.events()
-            .publish((Symbol::new(&env, "vault_created"), creator), amount);
+        env.events().publish(
+            (Symbol::new(&env, "vault_created"), vault_id),
+            amount,
+        );
         Ok(())
     }
 
@@ -386,12 +388,14 @@ impl AccountabilityVault {
 
         vault.staked = received;
         vault.status = VaultStatus::Active;
-        let key = DataKey::Vault(vault_id);
+        let key = DataKey::Vault(vault_id.clone());
         env.storage().persistent().set(&key, &vault);
         Self::extend_ttl(&env, &key);
 
-        env.events()
-            .publish((Symbol::new(&env, "vault_staked"), from), vault.staked);
+        env.events().publish(
+            (Symbol::new(&env, "vault_staked"), vault_id),
+            vault.staked,
+        );
         Ok(())
     }
 
@@ -445,12 +449,14 @@ impl AccountabilityVault {
 
         vault.staked = received;
         vault.status = VaultStatus::Active;
-        let key = DataKey::Vault(vault_id);
+        let key = DataKey::Vault(vault_id.clone());
         env.storage().persistent().set(&key, &vault);
         Self::extend_ttl(&env, &key);
 
-        env.events()
-            .publish((Symbol::new(&env, "vault_staked"), from), vault.staked);
+        env.events().publish(
+            (Symbol::new(&env, "vault_staked"), vault_id),
+            vault.staked,
+        );
         Ok(())
     }
 
@@ -551,8 +557,8 @@ impl AccountabilityVault {
             symbol_short!("verifier")
         };
         env.events().publish(
-            (Symbol::new(&env, "milestone_checked_in"), caller, source),
-            (milestone_index, evidence_hash),
+            (Symbol::new(&env, "milestone_checked_in"), vault_id, caller, source),
+            (milestone_index, evidence_hash, milestone.verified),
         );
         Ok(())
     }
@@ -602,12 +608,12 @@ impl AccountabilityVault {
 
         let old_end = vault.end_timestamp;
         vault.end_timestamp = new_end_timestamp;
-        let key = DataKey::Vault(vault_id);
+        let key = DataKey::Vault(vault_id.clone());
         env.storage().persistent().set(&key, &vault);
         Self::extend_ttl(&env, &key);
 
         env.events().publish(
-            (Symbol::new(&env, "deadline_extended"), creator),
+            (Symbol::new(&env, "deadline_extended"), vault_id),
             (old_end, new_end_timestamp),
         );
         Ok(())
@@ -662,7 +668,7 @@ impl AccountabilityVault {
         );
 
         env.events().publish(
-            (Symbol::new(&env, "vault_slashed"), failure_destination),
+            (Symbol::new(&env, "vault_slashed"), vault_id),
             slashed,
         );
         Ok(())
@@ -724,7 +730,7 @@ impl AccountabilityVault {
         );
 
         env.events().publish(
-            (Symbol::new(&env, "vault_completed"), success_destination),
+            (Symbol::new(&env, "vault_completed"), vault_id),
             released,
         );
         Ok(())
@@ -804,19 +810,13 @@ impl AccountabilityVault {
         );
 
         env.events().publish(
-            (
-                Symbol::new(&env, "milestone_claimed"),
-                vault.success_destination.clone(),
-            ),
+            (Symbol::new(&env, "milestone_claimed"), vault_id.clone()),
             (index, payout),
         );
 
         if completed {
             env.events().publish(
-                (
-                    Symbol::new(&env, "vault_completed"),
-                    vault.success_destination.clone(),
-                ),
+                (Symbol::new(&env, "vault_completed"), vault_id),
                 vault.amount,
             );
         }
@@ -835,22 +835,26 @@ impl AccountabilityVault {
         }
         if vault.status == VaultStatus::Draft {
             vault.status = VaultStatus::Cancelled;
-            let key = DataKey::Vault(vault_id);
+            let key = DataKey::Vault(vault_id.clone());
             env.storage().persistent().set(&key, &vault);
             Self::extend_ttl(&env, &key);
 
-            env.events()
-                .publish((Symbol::new(&env, "vault_cancelled"), creator), 0i128);
+            env.events().publish(
+                (Symbol::new(&env, "vault_cancelled"), vault_id),
+                0i128,
+            );
             return Ok(());
         }
 
         vault.status = VaultStatus::Cancelled;
-        let key = DataKey::Vault(vault_id);
+        let key = DataKey::Vault(vault_id.clone());
         env.storage().persistent().set(&key, &vault);
         Self::extend_ttl(&env, &key);
 
-        env.events()
-            .publish((String::from_str(&env, "vault_cancelled"), creator), 0i128);
+        env.events().publish(
+            (Symbol::new(&env, "vault_cancelled"), vault_id),
+            0i128,
+        );
         Ok(())
     }
 
@@ -893,8 +897,10 @@ impl AccountabilityVault {
             &refunded,
         );
 
-        env.events()
-            .publish((Symbol::new(&env, "vault_withdrawn"), creator), refunded);
+        env.events().publish(
+            (Symbol::new(&env, "vault_withdrawn"), vault_id),
+            refunded,
+        );
         Ok(())
     }
 
@@ -927,12 +933,14 @@ impl AccountabilityVault {
         };
         vault.status = VaultStatus::Disputed;
         vault.disputed_until = now.saturating_add(effective_duration);
-        let key = DataKey::Vault(vault_id);
+        let key = DataKey::Vault(vault_id.clone());
         env.storage().persistent().set(&key, &vault);
         Self::extend_ttl(&env, &key);
 
-        env.events()
-            .publish((String::from_str(&env, "vault_disputed"), admin), ());
+        env.events().publish(
+            (Symbol::new(&env, "vault_disputed"), vault_id),
+            (),
+        );
         Ok(())
     }
 
@@ -968,12 +976,12 @@ impl AccountabilityVault {
 
         vault.status = target;
         vault.disputed_until = 0;
-        let key = DataKey::Vault(vault_id);
+        let key = DataKey::Vault(vault_id.clone());
         env.storage().persistent().set(&key, &vault);
         Self::extend_ttl(&env, &key);
 
         env.events().publish(
-            (String::from_str(&env, "vault_dispute_resolved"), admin),
+            (Symbol::new(&env, "vault_dispute_resolved"), vault_id),
             target as u32,
         );
         Ok(())
@@ -1006,8 +1014,10 @@ impl AccountabilityVault {
         let key = DataKey::Vault(vault_id.clone());
         env.storage().persistent().set(&key, &vault);
         Self::extend_ttl(&env, &key);
-        env.events()
-            .publish((Symbol::new(&env, "vault_paused"), guardian), true);
+        env.events().publish(
+            (Symbol::new(&env, "vault_paused"), vault_id),
+            true,
+        );
         Ok(())
     }
 
@@ -1026,8 +1036,10 @@ impl AccountabilityVault {
         let key = DataKey::Vault(vault_id.clone());
         env.storage().persistent().set(&key, &vault);
         Self::extend_ttl(&env, &key);
-        env.events()
-            .publish((Symbol::new(&env, "vault_unpaused"), guardian), false);
+        env.events().publish(
+            (Symbol::new(&env, "vault_unpaused"), vault_id),
+            false,
+        );
         Ok(())
     }
 
@@ -1114,8 +1126,10 @@ impl AccountabilityVault {
         env.storage().persistent().set(&key, &vault);
         Self::extend_ttl(&env, &key);
 
-        let event_name = soroban_sdk::Symbol::new(&env, "milestone_disputed");
-        env.events().publish((event_name, creator), index);
+        env.events().publish(
+            (Symbol::new(&env, "milestone_disputed"), vault_id),
+            index,
+        );
 
         Ok(())
     }
