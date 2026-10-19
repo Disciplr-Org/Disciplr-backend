@@ -12,6 +12,8 @@
 //! Funds movement is modeled via the SEP-41 token client (`stake`, `stake_from`,
 //! `claim`, `slash_on_miss`, `withdraw`). The contract enforces the state machine,
 //! authorization, and deadline rules on-chain.
+//! An active vault may only be refunded by `withdraw` through the first 24 hours
+//! after staking, before its deadline, and before any milestone is verified.
 //!
 //! Security invariants:
 //! - Checks-Effects-Interactions: vault state (status, staked, milestones) is persisted to
@@ -47,6 +49,10 @@ use soroban_sdk::{
 /// 5 years in seconds. Prevents vaults from locking storage TTL guarantees
 /// indefinitely and keeps analytics meaningful.
 const MAX_DEADLINE_HORIZON: u64 = 5 * 365 * 24 * 60 * 60;
+
+/// Grace period after staking during which the creator may withdraw an
+/// unverified, active vault (24 hours in seconds).
+pub const WITHDRAW_GRACE_SECS: u64 = 24 * 60 * 60;
 
 /// Maximum duration (14 days in seconds) that a guardian can pause a vault
 /// or keep it in dispute.
@@ -139,6 +145,8 @@ pub struct Vault {
     /// Actual amount received by the contract via `stake` or `stake_from`,
     /// measured as the balance delta to handle fee-on-transfer tokens correctly.
     pub staked: i128,
+    /// UNIX timestamp (seconds) when the vault was funded.
+    pub staked_at: u64,
     /// Destination for released funds on success.
     pub success_destination: Address,
     /// Destination for slashed funds on a missed deadline.
@@ -192,7 +200,7 @@ pub enum Error {
     MilestoneIndexOutOfRange = 10,
     /// Milestone has already reached the verification threshold.
     MilestoneAlreadyVerified = 11,
-    /// Current time is past the milestone or vault deadline.
+    /// Current time has reached the milestone or vault deadline.
     DeadlinePassed = 12,
     /// Current time has not yet reached the vault deadline.
     DeadlineNotReached = 13,
@@ -228,6 +236,10 @@ pub enum Error {
     TitleTooLong = 30,
     /// Guardian cannot be the creator, success destination, or the sole verifier.
     InvalidGuardian = 31,
+    /// The active vault's refund grace period has expired.
+    WithdrawWindowClosed = 32,
+    /// An active vault cannot be withdrawn after any milestone has been verified.
+    WithdrawBlockedByVerifiedMilestone = 33,
 }
 
 /// Accountability vault contract entry point.
@@ -334,6 +346,7 @@ impl AccountabilityVault {
             token,
             amount,
             staked: 0,
+            staked_at: 0,
             success_destination,
             failure_destination,
             end_timestamp,
@@ -383,6 +396,7 @@ impl AccountabilityVault {
         }
 
         vault.staked = received;
+        vault.staked_at = env.ledger().timestamp();
         vault.status = VaultStatus::Active;
         let key = DataKey::Vault(vault_id);
         env.storage().persistent().set(&key, &vault);
@@ -442,6 +456,7 @@ impl AccountabilityVault {
         }
 
         vault.staked = received;
+        vault.staked_at = env.ledger().timestamp();
         vault.status = VaultStatus::Active;
         let key = DataKey::Vault(vault_id);
         env.storage().persistent().set(&key, &vault);
@@ -839,9 +854,11 @@ impl AccountabilityVault {
         Ok(())
     }
 
-    /// Refunds the creator for an `Active` vault that was never checked-in.
-    /// This function is restricted to `Active` refund cases; callers that wish
-    /// to cancel a Draft should call `cancel_vault` instead.
+    /// Refunds the creator for an `Active` vault within 24 hours of staking,
+    /// before its deadline and before any milestone is verified. The grace
+    /// period boundary is inclusive; a refund is rejected only after it passes.
+    /// A vault at or past its deadline cannot be withdrawn, so it remains
+    /// eligible for `slash_on_miss`. Call `cancel_vault` to cancel a Draft.
     pub fn withdraw(env: Env, vault_id: String, creator: Address) -> Result<(), Error> {
         creator.require_auth();
         let mut vault: Vault = Self::load(&env, &vault_id)?;
@@ -856,8 +873,14 @@ impl AccountabilityVault {
         if Self::is_paused(&vault, now) {
             return Err(Error::Paused);
         }
+        if now >= vault.end_timestamp {
+            return Err(Error::DeadlinePassed);
+        }
         if Self::any_verified(&vault) {
-            return Err(Error::Unauthorized);
+            return Err(Error::WithdrawBlockedByVerifiedMilestone);
+        }
+        if now > vault.staked_at.saturating_add(WITHDRAW_GRACE_SECS) {
+            return Err(Error::WithdrawWindowClosed);
         }
         if vault.staked == 0 {
             return Err(Error::NothingToWithdraw);

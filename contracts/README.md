@@ -26,13 +26,14 @@ Implements the vault lifecycle that the backend models off-chain in
 |---|---|
 | `create_vault` | Create a `Draft` vault with milestones, verifiers, success/failure destinations, and a distinct guardian address. Validates amount, deadline, that milestone amounts sum to the total, that guardian is distinct from creator/success_destination and not sole verifier, and rejects degenerate parameters. |
 | `stake` | Creator transfers the SEP-41 token into the contract; `Draft` -> `Active`. |
+| `stake_from` | Pull the creator's SEP-41 token using an authorized spender's allowance; `Draft` -> `Active`. |
 | `check_in` | Designated verifier confirms a milestone before its `due_date`. |
 | `slash_on_miss` | After the deadline with unverified milestones, slash funds to `failure_destination`; `Active` -> `Failed`. Bounded pause/dispute stops blocking once expired. |
 | `claim` | When all milestones are verified, release funds to `success_destination`; `Active` -> `Completed`. Blocked if paused. |
 | `claim_milestone` | Release funds for an individual verified milestone; blocked if paused, enforces CEI (state persisted before external transfer). |
 | `emergency_pause` | Guardian halts settlements for up to 14 days (`MAX_PAUSE_DURATION`). |
 | `admin_dispute` | Guardian enters administrative hold for up to 14 days (`MAX_PAUSE_DURATION`). |
-| `withdraw` | Cancel/refund an unfunded or unstarted vault to the creator; -> `Cancelled`. Blocked if paused. |
+| `withdraw` | Refund an `Active` vault to its creator only during the inclusive 24-hour window after staking, before its deadline, and while no milestone is verified; -> `Cancelled`. Blocked if paused. |
 | `get_vault` | Read-only accessor for the current vault record. |
 | `get_unverified_milestone_indices` | Returns `Vec<u32>` of indices for milestones that have not yet been verified, in ascending order. Used by the keeper job (`src/jobs/handlers.ts`) to determine slash targets without loading and filtering the full vault client-side. |
 
@@ -42,6 +43,7 @@ Implements the vault lifecycle that the backend models off-chain in
 2. **Checks-Effects-Interactions (CEI)**: Vault state (including milestones, staked amount, and terminal status) is updated and persisted to persistent storage *before* invoking downstream token transfers (`token::Client::transfer`). This applies to `claim`, `claim_milestone`, `slash_on_miss`, and `withdraw`.
 3. **Time-Bounded Pause & Dispute**: Emergency pauses (`emergency_pause`) and administrative disputes (`admin_dispute`) are strictly bounded to at most 14 days (`MAX_PAUSE_DURATION = 14 * 86400`). When ledger time advances past the pause or dispute expiry, `slash_on_miss` and claims proceed normally without being blocked indefinitely.
 4. **Emergency Pause Enforcement**: When a vault is paused, milestone payouts (`claim_milestone`) as well as full claims (`claim`), slashes (`slash_on_miss`), and refunds (`withdraw`) are strictly blocked (`Error::Paused`), ensuring payouts cannot be drained during an active emergency.
+5. **Bounded Active Refunds**: `withdraw` is only available through the exact 24-hour boundary after staking and before `end_timestamp`. At or after the deadline it returns `Error::DeadlinePassed`, preserving the full stake for `slash_on_miss`; after the grace period it returns `Error::WithdrawWindowClosed`. Any verified milestone also blocks a refund.
 
 ### Token allowlist policy
 
@@ -259,4 +261,3 @@ soroban-sdk = "=23.0.1"
 1. **Deliberate upgrades only**: Never use caret (`^`) or generic major-only ranges (`"23"`) for key core compiler/SDK crates like `soroban-sdk`.
 2. **Review release changelogs**: Ensure you review Soroban SDK changelogs before upgrading to check for changes in host functions, resource budgets, or gas/memory metering.
 3. **Regenerate lockfile**: When changing the pinned version, run `cargo update` inside the `contracts` directory to strictly lock dependencies and refresh `contracts/Cargo.lock`.
-
