@@ -56,11 +56,12 @@ removed. Removing a token only blocks future vault creation; existing vault
 records retain their configured token so already-created vaults can continue
 their lifecycle.
 
-The `VaultStatus` enum (`Draft`/`Active`/`Completed`/`Failed`/`Cancelled`)
+The `VaultStatus` enum (`Draft`/`Active`/`Completed`/`Failed`/`Cancelled`/`Disputed`)
 mirrors `PersistedVault.status` in `src/types/vaults.ts`. Emitted events
 (`vault_created`, `vault_staked`, `vault_funded`, `milestone_checked_in`, `vault_slashed`,
-`vault_completed`, `vault_cancelled`, `vault_withdrawn`) align with the topics
-consumed by the backend event parser.
+`vault_completed`, `vault_cancelled`, `vault_withdrawn`, `vault_disputed`, `vault_dispute_resolved`,
+`vault_paused`, `vault_unpaused`) align with the topics consumed by the backend event parser.
+All event topics strictly use `Symbol` rather than `String` for consistent, gas-efficient on-chain indexing.
 
 ### Error Handling & Precise Deadline Errors
 To allow the backend to render precise, unambiguous user-facing errors:
@@ -169,6 +170,10 @@ cargo build --profile release-with-logs --target wasm32-unknown-unknown
 ```
 
 ### Migration: API change (cancel_vault vs withdraw)
+
+- **`cancel_vault`**: Strictly restricted to `Draft` (unfunded) vaults. If called on any non-`Draft` status (`Active`, `Completed`, `Failed`, `Cancelled`, `Disputed`), it immediately fails with `Error::NotDraft` without mutating vault status or transferring token balances. This guarantees funded stakes cannot be locked forever and creators cannot evade `slash_on_miss`. Emits `Symbol("vault_cancelled")`.
+- **`withdraw`**: Used for refunding/withdrawing capital from eligible vaults under creator authorization, respecting active emergency pauses.
+- **Event topic standardization**: `vault_cancelled`, `vault_disputed`, and `vault_dispute_resolved` now emit `Symbol` topics instead of `String` values.
 
 Deployment
 # Build
