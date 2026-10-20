@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(missing_docs, deprecated, clippy::too_many_arguments)]
 //! Disciplr Accountability Vault
 //!
 //! A Soroban smart contract implementing programmable time-locked capital vaults
@@ -65,6 +66,7 @@ pub enum DataKey {
     CheckIn(u32),
     /// Per-milestone list of addresses that have approved, used for M-of-N tracking.
     MilestoneApprovals(u32),
+    /// Window during which disputes may be initiated.
     DisputeWindow,
 }
 
@@ -86,6 +88,19 @@ pub enum VaultStatus {
     /// `slash_on_miss` and `claim` until the admin resolves the dispute
     /// back to `Active`, or directly to `Completed` or `Failed`.
     Disputed = 5,
+}
+
+/// Destination addresses for vault settlement outcomes.
+///
+/// Grouping these two destinations into a single parameter keeps `create_vault`
+/// within Soroban's 10-parameter limit while preserving readable call sites.
+#[contracttype]
+#[derive(Clone)]
+pub struct Destinations {
+    /// Destination for released funds on success.
+    pub success: Address,
+    /// Destination for slashed funds on a missed deadline.
+    pub failure: Address,
 }
 
 /// Verifier configuration for M-of-N milestone approval.
@@ -255,8 +270,7 @@ impl AccountabilityVault {
         oracle: Option<Address>,
         token: Address,
         amount: i128,
-        success_destination: Address,
-        failure_destination: Address,
+        destinations: Destinations,
         end_timestamp: u64,
         milestones: Vec<Milestone>,
         guardian: Address,
@@ -287,12 +301,12 @@ impl AccountabilityVault {
         if milestones.is_empty() {
             return Err(Error::NoMilestones);
         }
-        if failure_destination == creator {
+        if destinations.failure == creator {
             return Err(Error::InvalidFailureDestination);
         }
         if guardian == creator
-            || guardian == success_destination
-            || (verifiers.len() == 1 && verifiers.get(0).map_or(false, |v| v == guardian))
+            || guardian == destinations.success
+            || (verifiers.len() == 1 && verifiers.get(0) == Some(guardian.clone()))
         {
             return Err(Error::InvalidGuardian);
         }
@@ -334,8 +348,8 @@ impl AccountabilityVault {
             token,
             amount,
             staked: 0,
-            success_destination,
-            failure_destination,
+            success_destination: destinations.success,
+            failure_destination: destinations.failure,
             end_timestamp,
             status: VaultStatus::Draft,
             milestones: init_milestones,
@@ -818,15 +832,8 @@ impl AccountabilityVault {
         if creator != vault.creator {
             return Err(Error::Unauthorized);
         }
-        if vault.status == VaultStatus::Draft {
-            vault.status = VaultStatus::Cancelled;
-            let key = DataKey::Vault(vault_id);
-            env.storage().persistent().set(&key, &vault);
-            Self::extend_ttl(&env, &key);
-
-            env.events()
-                .publish((Symbol::new(&env, "vault_cancelled"), creator), 0i128);
-            return Ok(());
+        if vault.status != VaultStatus::Draft {
+            return Err(Error::NotDraft);
         }
 
         vault.status = VaultStatus::Cancelled;
@@ -835,7 +842,7 @@ impl AccountabilityVault {
         Self::extend_ttl(&env, &key);
 
         env.events()
-            .publish((String::from_str(&env, "vault_cancelled"), creator), 0i128);
+            .publish((Symbol::new(&env, "vault_cancelled"), creator), 0i128);
         Ok(())
     }
 
@@ -917,7 +924,7 @@ impl AccountabilityVault {
         Self::extend_ttl(&env, &key);
 
         env.events()
-            .publish((String::from_str(&env, "vault_disputed"), admin), ());
+            .publish((Symbol::new(&env, "vault_disputed"), admin), ());
         Ok(())
     }
 
@@ -958,7 +965,7 @@ impl AccountabilityVault {
         Self::extend_ttl(&env, &key);
 
         env.events().publish(
-            (String::from_str(&env, "vault_dispute_resolved"), admin),
+            (Symbol::new(&env, "vault_dispute_resolved"), admin),
             target as u32,
         );
         Ok(())
@@ -1048,12 +1055,14 @@ impl AccountabilityVault {
 
     // ── internal helpers ────────────────────────────────────────────────
 
+    /// Configures the dispute window duration in seconds.
     pub fn configure_window(env: Env, window: u64) {
         env.storage()
             .instance()
             .set(&DataKey::DisputeWindow, &window);
     }
 
+    /// Allows the creator to dispute a verified milestone within the dispute window.
     pub fn dispute_milestone(
         env: Env,
         vault_id: String,
