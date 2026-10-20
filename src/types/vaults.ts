@@ -59,6 +59,9 @@ export interface PersistedVault {
   /** Grace window in seconds after a milestone dueDate during which check-in is still accepted. Bounded by vault endDate. */
   lateCheckInWindowSecs: number
   orgId?: string
+  organization_id?: string
+  deletedAt?: string | null
+  deleted_at?: string | null
 }
 
 export interface StakeInput {
