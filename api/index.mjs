@@ -7,6 +7,7 @@ import { checkReadiness, isDatabaseUnavailable } from '../apilib/store-bootstrap
 import { OPENAPI } from '../apilib/openapi.mjs'
 import { OnchainError, isEnabled, getConfig, getServer, buildCreateVaultTx, buildStakeTx, verifySignedTx, txHashOf, submitAndWait, validateForChain } from '../apilib/soroban.mjs'
 import { safeCompare, expireOverdueVaults } from '../apilib/expiry.mjs'
+import { encodeCursor, decodeCursor, parseLimit } from '../apilib/pagination.mjs'
 
 export function createApp(getStore = defaultGetStore) {
   const app = express()
@@ -38,16 +39,37 @@ export function createApp(getStore = defaultGetStore) {
   router.get('/openapi.json', (_req, res) => res.json(OPENAPI))
 
   router.get('/vaults', wrap(async (req, res) => {
+    const limitParam = req.query.limit
+    const limit = limitParam !== undefined ? parseLimit(limitParam) : 25
+    if (limit === null) return bad(res, 'limit must be an integer between 1 and 100')
+    
+    const cursorParam = req.query.cursor
+    let cursor = null
+    if (cursorParam) {
+      cursor = decodeCursor(cursorParam)
+      if (!cursor) return bad(res, 'Invalid cursor')
+    }
+    
     const s = await getStore()
-    const vaults = await s.listVaults({ creator: req.query.creator, status: req.query.status })
-    res.json({ data: vaults, count: vaults.length })
+    const result = await s.listVaults({ creator: req.query.creator, status: req.query.status, limit, cursor })
+    
+    const nextCursor = result.hasMore && result.lastItem
+      ? encodeCursor(result.lastItem.created_at || result.lastItem.createdAt, result.lastItem.id)
+      : null
+    
+    res.json({
+      data: result.items,
+      count: result.items.length,
+      page: { limit, nextCursor },
+    })
   }))
 
   router.get('/vaults/:id', wrap(async (req, res) => {
     const s = await getStore()
     const v = await s.getVault(req.params.id)
     if (!v) return bad(res, 'Vault not found', 404)
-    res.json({ data: { ...v, activity: await s.listActivity({ vaultId: v.id }) } })
+    const activityResult = await s.listActivity({ vaultId: v.id })
+    res.json({ data: { ...v, activity: activityResult.items || activityResult } })
   }))
 
   router.post('/vaults', wrap(async (req, res) => {
@@ -142,6 +164,54 @@ export function createApp(getStore = defaultGetStore) {
     res.status(422).json({ error: `${r.error.name}: ${r.error.message}`, data: v, activity: act })
   }))
 
+  // Creator submits evidence for a milestone: URL + SHA-256 hash + optional note
+  router.post('/vaults/:id/milestones/:mid/evidence', wrap(async (req, res) => {
+    const s = await getStore()
+    const v = await s.getVault(req.params.id)
+    if (!v) return bad(res, 'Vault not found', 404)
+    if (v.status !== 'active') return bad(res, `Vault is ${v.status}`, 409)
+    const m = v.milestones.find((x) => x.id === req.params.mid)
+    if (!m) return bad(res, 'Milestone not found', 404)
+    if (m.status === 'completed') return bad(res, 'Milestone already completed', 409)
+    if (m.status === 'failed' || m.status === 'cancelled') return bad(res, `Milestone is ${m.status}`, 409)
+
+    const b = req.body || {}
+    const errs = []
+    if (b.submitter !== v.creator) errs.push('Only the vault creator may submit evidence')
+    const url = String(b.url || '').trim()
+    if (!url.startsWith('https://')) errs.push('url must be an HTTPS URL')
+    if (url.length > 2048) errs.push('url must be at most 2048 characters')
+    const sha256 = String(b.sha256 || '').trim().toLowerCase()
+    if (!/^[0-9a-f]{64}$/.test(sha256)) errs.push('sha256 must be 64 lowercase hexadecimal characters')
+    const note = b.note ? String(b.note).trim() : null
+    if (note && note.length > 1000) errs.push('note must be at most 1000 characters')
+    if (errs.length) return res.status(b.submitter !== v.creator ? 403 : 400).json({ error: 'Validation failed', details: errs })
+
+    const evidence = await s.addMilestoneEvidence({
+      id: randomUUID(),
+      vaultId: v.id,
+      milestoneId: m.id,
+      url,
+      sha256,
+      note,
+      submittedBy: b.submitter,
+      verified: false,
+    })
+
+    await s.addActivity({
+      id: randomUUID(),
+      type: 'evidence',
+      vaultId: v.id,
+      amount: m.amount,
+      status: 'simulated',
+      hash: hex(32),
+      memo: `Evidence submitted for: ${m.title}`,
+      createdAt: new Date().toISOString(),
+    })
+
+    res.status(201).json({ data: evidence })
+  }))
+
   // Verifier validates a milestone. When every milestone is validated the vault completes and funds release.
   router.post('/vaults/:id/milestones/:mid/validate', wrap(async (req, res) => {
     const s = await getStore()
@@ -204,9 +274,29 @@ export function createApp(getStore = defaultGetStore) {
   }))
 
   router.get('/transactions', wrap(async (req, res) => {
+    const limitParam = req.query.limit
+    const limit = limitParam !== undefined ? parseLimit(limitParam) : 25
+    if (limit === null) return bad(res, 'limit must be an integer between 1 and 100')
+    
+    const cursorParam = req.query.cursor
+    let cursor = null
+    if (cursorParam) {
+      cursor = decodeCursor(cursorParam)
+      if (!cursor) return bad(res, 'Invalid cursor')
+    }
+    
     const s = await getStore()
-    const data = await s.listActivity({ vaultId: req.query.vaultId })
-    res.json({ data, count: data.length })
+    const result = await s.listActivity({ vaultId: req.query.vaultId, limit, cursor })
+    
+    const nextCursor = result.hasMore && result.lastItem
+      ? encodeCursor(result.lastItem.created_at || result.lastItem.createdAt, result.lastItem.id)
+      : null
+    
+    res.json({
+      data: result.items,
+      count: result.items.length,
+      page: { limit, nextCursor },
+    })
   }))
 
   router.get('/stats', wrap(async (req, res) => {
