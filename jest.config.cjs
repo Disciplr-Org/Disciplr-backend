@@ -69,6 +69,7 @@ module.exports = {
     "<rootDir>/api/__tests__/fail.test.mjs",
     "<rootDir>/apilib/__tests__/openapi.spec.test.mjs",
     "<rootDir>/api/__tests__/health.test.mjs",
+    "<rootDir>/api/__tests__/lifecycle.snapshot.test.mjs",
     "<rootDir>/api/__tests__/stats.test.mjs",
     "<rootDir>/api/__tests__/transactions.test.mjs",
     "<rootDir>/api/__tests__/validate.deadline.test.mjs",
