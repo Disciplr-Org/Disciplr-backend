@@ -142,6 +142,54 @@ export function createApp(getStore = defaultGetStore) {
     res.status(422).json({ error: `${r.error.name}: ${r.error.message}`, data: v, activity: act })
   }))
 
+  // Creator submits evidence for a milestone: URL + SHA-256 hash + optional note
+  router.post('/vaults/:id/milestones/:mid/evidence', wrap(async (req, res) => {
+    const s = await getStore()
+    const v = await s.getVault(req.params.id)
+    if (!v) return bad(res, 'Vault not found', 404)
+    if (v.status !== 'active') return bad(res, `Vault is ${v.status}`, 409)
+    const m = v.milestones.find((x) => x.id === req.params.mid)
+    if (!m) return bad(res, 'Milestone not found', 404)
+    if (m.status === 'completed') return bad(res, 'Milestone already completed', 409)
+    if (m.status === 'failed' || m.status === 'cancelled') return bad(res, `Milestone is ${m.status}`, 409)
+
+    const b = req.body || {}
+    const errs = []
+    if (b.submitter !== v.creator) errs.push('Only the vault creator may submit evidence')
+    const url = String(b.url || '').trim()
+    if (!url.startsWith('https://')) errs.push('url must be an HTTPS URL')
+    if (url.length > 2048) errs.push('url must be at most 2048 characters')
+    const sha256 = String(b.sha256 || '').trim().toLowerCase()
+    if (!/^[0-9a-f]{64}$/.test(sha256)) errs.push('sha256 must be 64 lowercase hexadecimal characters')
+    const note = b.note ? String(b.note).trim() : null
+    if (note && note.length > 1000) errs.push('note must be at most 1000 characters')
+    if (errs.length) return res.status(b.submitter !== v.creator ? 403 : 400).json({ error: 'Validation failed', details: errs })
+
+    const evidence = await s.addMilestoneEvidence({
+      id: randomUUID(),
+      vaultId: v.id,
+      milestoneId: m.id,
+      url,
+      sha256,
+      note,
+      submittedBy: b.submitter,
+      verified: false,
+    })
+
+    await s.addActivity({
+      id: randomUUID(),
+      type: 'evidence',
+      vaultId: v.id,
+      amount: m.amount,
+      status: 'simulated',
+      hash: hex(32),
+      memo: `Evidence submitted for: ${m.title}`,
+      createdAt: new Date().toISOString(),
+    })
+
+    res.status(201).json({ data: evidence })
+  }))
+
   // Verifier validates a milestone. When every milestone is validated the vault completes and funds release.
   router.post('/vaults/:id/milestones/:mid/validate', wrap(async (req, res) => {
     const s = await getStore()

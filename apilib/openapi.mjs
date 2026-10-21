@@ -345,6 +345,56 @@ export const OPENAPI = {
         },
       },
     },
+    '/vaults/{id}/milestones/{mid}/evidence': {
+      post: {
+        operationId: 'submitMilestoneEvidence',
+        summary: 'Creator submits evidence for a milestone: URL + SHA-256 hash + optional note',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Unique vault ID' },
+          { name: 'mid', in: 'path', required: true, schema: { type: 'string' }, description: 'Milestone ID' },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/SubmitEvidenceRequest' },
+              example: {
+                submitter: 'GBVAQKGA5P4TIZSZJBS5AW3XNJOTYG6I3Y5CLIGCBBUZDHMVF7YE7XCQ',
+                url: 'https://example.com/proof.pdf',
+                sha256: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+                note: 'MVP deployed to production',
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: 'Evidence submitted successfully',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/EvidenceEnvelope' },
+                example: {
+                  data: {
+                    id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+                    url: 'https://example.com/proof.pdf',
+                    sha256: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+                    note: 'MVP deployed to production',
+                    submittedBy: 'GBVAQKGA5P4TIZSZJBS5AW3XNJOTYG6I3Y5CLIGCBBUZDHMVF7YE7XCQ',
+                    verified: false,
+                    createdAt: '2026-04-15T12:00:00.000Z',
+                  },
+                },
+              },
+            },
+          },
+          400: err,
+          403: err,
+          404: err,
+          409: err,
+          503: unavailable,
+        },
+      },
+    },
     '/vaults/{id}/fail': {
       post: {
         operationId: 'failVault',
@@ -580,6 +630,26 @@ export const OPENAPI = {
           amount: { $ref: '#/components/schemas/Amount' },
           dueDate: { type: 'string', format: 'date-time', example: '2026-04-30T12:00:00.000Z' },
           status: { type: 'string', enum: ['pending', 'completed', 'failed'], example: 'pending' },
+          evidence: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/Evidence' },
+            description: 'Evidence submissions for this milestone (max 10, most recent first)',
+          },
+          latestEvidenceHash: { type: 'string', nullable: true, example: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08', description: 'SHA-256 hash of the most recent evidence submission' },
+        },
+      },
+      Evidence: {
+        type: 'object',
+        required: ['id', 'url', 'sha256', 'submittedBy', 'verified', 'createdAt'],
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', example: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' },
+          url: { type: 'string', format: 'uri', example: 'https://example.com/proof.pdf' },
+          sha256: { type: 'string', pattern: '^[0-9a-f]{64}$', example: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08' },
+          note: { type: 'string', nullable: true, example: 'MVP deployed to production' },
+          submittedBy: { $ref: '#/components/schemas/StellarAddress' },
+          verified: { type: 'boolean', example: false },
+          createdAt: { type: 'string', format: 'date-time', example: '2026-04-15T12:00:00.000Z' },
         },
       },
       Vault: {
@@ -626,7 +696,7 @@ export const OPENAPI = {
         additionalProperties: false,
         properties: {
           id: { type: 'string', example: 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11' },
-          type: { type: 'string', enum: ['create', 'validate', 'release', 'redirect', 'stake'], example: 'create' },
+          type: { type: 'string', enum: ['create', 'validate', 'release', 'redirect', 'stake', 'evidence'], example: 'create' },
           vaultId: { type: 'string', example: 'vault-demo-001' },
           amount: { $ref: '#/components/schemas/Amount' },
           status: { type: 'string', enum: ['pending', 'confirmed', 'failed', 'simulated'], example: 'confirmed' },
@@ -810,6 +880,25 @@ export const OPENAPI = {
         additionalProperties: false,
         properties: {
           verifier: { $ref: '#/components/schemas/StellarAddress' },
+        },
+      },
+      SubmitEvidenceRequest: {
+        type: 'object',
+        required: ['submitter', 'url', 'sha256'],
+        additionalProperties: false,
+        properties: {
+          submitter: { $ref: '#/components/schemas/StellarAddress' },
+          url: { type: 'string', format: 'uri', pattern: '^https://', maxLength: 2048, example: 'https://example.com/proof.pdf' },
+          sha256: { type: 'string', pattern: '^[0-9a-f]{64}$', example: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08' },
+          note: { type: 'string', maxLength: 1000, example: 'MVP deployed to production' },
+        },
+      },
+      EvidenceEnvelope: {
+        type: 'object',
+        required: ['data'],
+        additionalProperties: false,
+        properties: {
+          data: { $ref: '#/components/schemas/Evidence' },
         },
       },
     },

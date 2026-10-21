@@ -38,13 +38,33 @@ function applyTransition(current, result) {
 
 export class MemoryStore {
   kind = 'memory'
-  constructor() { const s = seed(); this.vaults = s.vaults; this.activity = s.activity; this.transitionLocks = new Map() }
+  constructor() { const s = seed(); this.vaults = s.vaults; this.activity = s.activity; this.transitionLocks = new Map(); this.evidence = [] }
   async init() {}
   async listVaults({ creator, status } = {}) {
     return this.vaults.filter((v) => (!creator || v.creator === creator) && (!status || v.status === status))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map((v) => this._attachEvidence(v))
   }
-  async getVault(id) { return this.vaults.find((v) => v.id === id) || null }
+  async getVault(id) {
+    const v = this.vaults.find((v) => v.id === id)
+    return v ? this._attachEvidence(v) : null
+  }
+  _attachEvidence(vault) {
+    const vaultEvidence = this.evidence.filter((e) => e.vaultId === vault.id)
+    return {
+      ...vault,
+      milestones: vault.milestones.map((m) => {
+        const mEvidence = vaultEvidence.filter((e) => e.milestoneId === m.id)
+          .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+          .slice(0, 10)
+        return {
+          ...m,
+          evidence: mEvidence,
+          latestEvidenceHash: mEvidence.length > 0 ? mEvidence[0].sha256 : null,
+        }
+      }),
+    }
+  }
   async createVault(v) { this.vaults.push(v); return v }
   async saveVault(v) { v.updatedAt = iso(Date.now()); return v }
   async addActivity(a) { this.activity.push(a); return a }
@@ -109,6 +129,21 @@ export class MemoryStore {
     const remaining = overdue.length - batch.length
     return { processed: batch.length, remaining: Math.max(0, remaining) }
   }
+  async addMilestoneEvidence({ id, vaultId, milestoneId, url, sha256, note, submittedBy, verified = false }) {
+    const evidence = {
+      id,
+      vaultId,
+      milestoneId,
+      url,
+      sha256,
+      note: note || null,
+      submittedBy,
+      verified,
+      createdAt: iso(Date.now()),
+    }
+    this.evidence.push(evidence)
+    return evidence
+  }
 }
 
 export class PgStore {
@@ -118,14 +153,37 @@ export class PgStore {
     await this.pool.query('SELECT 1')
   }
 
-  rowToVault(r, ms) {
+  rowToVault(r, ms, evidence = []) {
+    const milestones = ms.filter((m) => m.vault_id === r.id).sort((a, b) => a.sort_order - b.sort_order)
+      .map((m) => {
+        const mEvidence = evidence.filter((e) => e.milestone_id === m.id)
+          .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+          .slice(0, 10)
+          .map((e) => ({
+            id: e.id,
+            url: e.url,
+            sha256: e.sha256,
+            note: e.note || null,
+            submittedBy: e.submitted_by,
+            verified: e.verified || false,
+            createdAt: iso(e.created_at),
+          }))
+        return {
+          id: m.id,
+          title: m.title,
+          amount: String(Number(m.amount)),
+          dueDate: iso(m.due_date || m.deadline),
+          status: m.status,
+          evidence: mEvidence,
+          latestEvidenceHash: mEvidence.length > 0 ? mEvidence[0].sha256 : null,
+        }
+      })
     return {
       id: r.id, name: r.name || `Vault ${r.id}`, creator: r.creator, amount: String(Number(r.amount)), status: r.status, startDate: iso(r.start_date), endDate: iso(r.end_date),
       verifier: r.verifier, successDestination: r.success_destination, failureDestination: r.failure_destination,
       onchainStatus: r.onchain_status || null,
       createdAt: iso(r.created_at), updatedAt: iso(r.updated_at),
-      milestones: ms.filter((m) => m.vault_id === r.id).sort((a, b) => a.sort_order - b.sort_order)
-        .map((m) => ({ id: m.id, title: m.title, amount: String(Number(m.amount)), dueDate: iso(m.due_date || m.deadline), status: m.status })),
+      milestones,
     }
   }
   async listVaults({ creator, status } = {}) {
@@ -134,14 +192,17 @@ export class PgStore {
     if (status) { p.push(status); w.push(`status = $${p.length}::vault_status`) }
     const { rows } = await this.pool.query(`SELECT * FROM vaults WHERE ${w.join(' AND ')} ORDER BY created_at DESC LIMIT 200`, p)
     if (!rows.length) return []
-    const ms = (await this.pool.query('SELECT * FROM milestones WHERE vault_id = ANY($1) AND deleted_at IS NULL', [rows.map((r) => r.id)])).rows
-    return rows.map((r) => this.rowToVault(r, ms))
+    const vaultIds = rows.map((r) => r.id)
+    const ms = (await this.pool.query('SELECT * FROM milestones WHERE vault_id = ANY($1) AND deleted_at IS NULL', [vaultIds])).rows
+    const evidence = (await this.pool.query('SELECT * FROM milestone_evidence WHERE vault_id = ANY($1)', [vaultIds])).rows
+    return rows.map((r) => this.rowToVault(r, ms, evidence))
   }
   async getVault(id) {
     const { rows } = await this.pool.query('SELECT * FROM vaults WHERE id = $1 AND deleted_at IS NULL', [id])
     if (!rows[0]) return null
     const ms = (await this.pool.query('SELECT * FROM milestones WHERE vault_id = $1 AND deleted_at IS NULL', [id])).rows
-    return this.rowToVault(rows[0], ms)
+    const evidence = (await this.pool.query('SELECT * FROM milestone_evidence WHERE vault_id = $1', [id])).rows
+    return this.rowToVault(rows[0], ms, evidence)
   }
   async createVault(v) {
     const c = await this.pool.connect()
@@ -289,6 +350,23 @@ export class PgStore {
       throw err
     } finally {
       client.release()
+    }
+  }
+  async addMilestoneEvidence({ id, vaultId, milestoneId, url, sha256, note, submittedBy, verified = false }) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO milestone_evidence (id, vault_id, milestone_id, url, sha256, note, submitted_by, verified, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+       RETURNING *`,
+      [id, vaultId, milestoneId, url, sha256, note || null, submittedBy, verified]
+    )
+    return {
+      id: rows[0].id,
+      url: rows[0].url,
+      sha256: rows[0].sha256,
+      note: rows[0].note || null,
+      submittedBy: rows[0].submitted_by,
+      verified: rows[0].verified || false,
+      createdAt: iso(rows[0].created_at),
     }
   }
 }
