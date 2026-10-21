@@ -109,10 +109,12 @@ export const OPENAPI = {
     '/vaults': {
       get: {
         operationId: 'listVaults',
-        summary: 'List vaults',
+        summary: 'List vaults with cursor pagination',
         parameters: [
           { name: 'creator', in: 'query', schema: { $ref: '#/components/schemas/StellarAddress' }, description: 'Filter by creator Stellar address' },
           { name: 'status', in: 'query', schema: { type: 'string', enum: ['active', 'completed', 'failed'] }, description: 'Filter by vault status' },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 }, description: 'Page size (1-100, default 25)' },
+          { name: 'cursor', in: 'query', schema: { type: 'string' }, description: 'Opaque pagination cursor from previous response' },
         ],
         responses: {
           200: {
@@ -504,9 +506,11 @@ export const OPENAPI = {
     '/transactions': {
       get: {
         operationId: 'listTransactions',
-        summary: 'Activity feed (create / validate / release / redirect)',
+        summary: 'Activity feed with cursor pagination',
         parameters: [
           { name: 'vaultId', in: 'query', schema: { type: 'string' }, description: 'Filter activity by vault ID' },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 }, description: 'Page size (1-100, default 25)' },
+          { name: 'cursor', in: 'query', schema: { type: 'string' }, description: 'Opaque pagination cursor from previous response' },
         ],
         responses: {
           200: {
@@ -791,26 +795,37 @@ export const OPENAPI = {
       },
       VaultList: {
         type: 'object',
-        required: ['data', 'count'],
+        required: ['data', 'count', 'page'],
         additionalProperties: false,
         properties: {
           data: {
             type: 'array',
             items: { $ref: '#/components/schemas/Vault' },
           },
-          count: { type: 'integer', example: 1 },
+          count: { type: 'integer', example: 1, description: 'Number of items in this page' },
+          page: { $ref: '#/components/schemas/PageInfo' },
         },
       },
       ActivityList: {
         type: 'object',
-        required: ['data', 'count'],
+        required: ['data', 'count', 'page'],
         additionalProperties: false,
         properties: {
           data: {
             type: 'array',
             items: { $ref: '#/components/schemas/Activity' },
           },
-          count: { type: 'integer', example: 1 },
+          count: { type: 'integer', example: 1, description: 'Number of items in this page' },
+          page: { $ref: '#/components/schemas/PageInfo' },
+        },
+      },
+      PageInfo: {
+        type: 'object',
+        required: ['limit', 'nextCursor'],
+        additionalProperties: false,
+        properties: {
+          limit: { type: 'integer', example: 25, description: 'Page size limit' },
+          nextCursor: { type: 'string', nullable: true, example: 'eyJjcmVhdGVkQXQiOiIyMDI2LTA0LTAxVDAwOjAwOjAwLjAwMFoiLCJpZCI6InZhdWx0LTAwMSJ9', description: 'Opaque cursor for the next page; null if this is the last page' },
         },
       },
       StatsEnvelope: {

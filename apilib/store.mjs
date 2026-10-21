@@ -40,10 +40,34 @@ export class MemoryStore {
   kind = 'memory'
   constructor() { const s = seed(); this.vaults = s.vaults; this.activity = s.activity; this.transitionLocks = new Map(); this.evidence = [] }
   async init() {}
-  async listVaults({ creator, status } = {}) {
-    return this.vaults.filter((v) => (!creator || v.creator === creator) && (!status || v.status === status))
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .map((v) => this._attachEvidence(v))
+  async listVaults({ creator, status, limit, cursor } = {}) {
+    let filtered = this.vaults.filter((v) => (!creator || v.creator === creator) && (!status || v.status === status))
+    
+    // Apply cursor filter
+    if (cursor) {
+      filtered = filtered.filter((v) => {
+        const cmp = v.createdAt.localeCompare(cursor.timestamp)
+        return cmp < 0 || (cmp === 0 && v.id < cursor.id)
+      })
+    }
+    
+    // Sort by (created_at DESC, id DESC)
+    filtered.sort((a, b) => {
+      const cmp = b.createdAt.localeCompare(a.createdAt)
+      return cmp !== 0 ? cmp : b.id.localeCompare(a.id)
+    })
+    
+    // Apply limit + 1 to check for next page
+    const pageSize = limit || 25
+    const page = filtered.slice(0, pageSize + 1)
+    const hasMore = page.length > pageSize
+    const items = hasMore ? page.slice(0, pageSize) : page
+    
+    return {
+      items: items.map((v) => this._attachEvidence(v)),
+      hasMore,
+      lastItem: items.length > 0 ? items[items.length - 1] : null,
+    }
   }
   async getVault(id) {
     const v = this.vaults.find((v) => v.id === id)
@@ -94,8 +118,34 @@ export class MemoryStore {
       if (this.transitionLocks.get(vaultId) === mine) this.transitionLocks.delete(vaultId)
     }
   }
-  async listActivity({ vaultId } = {}) {
-    return this.activity.filter((a) => !vaultId || a.vaultId === vaultId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  async listActivity({ vaultId, limit, cursor } = {}) {
+    let filtered = this.activity.filter((a) => !vaultId || a.vaultId === vaultId)
+    
+    // Apply cursor filter
+    if (cursor) {
+      filtered = filtered.filter((a) => {
+        const cmp = a.createdAt.localeCompare(cursor.timestamp)
+        return cmp < 0 || (cmp === 0 && a.id < cursor.id)
+      })
+    }
+    
+    // Sort by (created_at DESC, id DESC)
+    filtered.sort((a, b) => {
+      const cmp = b.createdAt.localeCompare(a.createdAt)
+      return cmp !== 0 ? cmp : b.id.localeCompare(a.id)
+    })
+    
+    // Apply limit + 1 to check for next page
+    const pageSize = limit || 25
+    const page = filtered.slice(0, pageSize + 1)
+    const hasMore = page.length > pageSize
+    const items = hasMore ? page.slice(0, pageSize) : page
+    
+    return {
+      items,
+      hasMore,
+      lastItem: items.length > 0 ? items[items.length - 1] : null,
+    }
   }
   async getActivityByHash(hash) { return this.activity.find((a) => a.hash === hash) || null }
   async saveActivity(a) { return a }
@@ -186,16 +236,40 @@ export class PgStore {
       milestones,
     }
   }
-  async listVaults({ creator, status } = {}) {
+  async listVaults({ creator, status, limit, cursor } = {}) {
     const w = ['deleted_at IS NULL']; const p = []
     if (creator) { p.push(creator); w.push(`creator = $${p.length}`) }
     if (status) { p.push(status); w.push(`status = $${p.length}::vault_status`) }
-    const { rows } = await this.pool.query(`SELECT * FROM vaults WHERE ${w.join(' AND ')} ORDER BY created_at DESC LIMIT 200`, p)
-    if (!rows.length) return []
-    const vaultIds = rows.map((r) => r.id)
+    
+    // Apply cursor WHERE clause for keyset pagination
+    if (cursor) {
+      p.push(cursor.timestamp, cursor.id)
+      w.push(`(created_at, id) < ($${p.length - 1}, $${p.length})`)
+    }
+    
+    const pageSize = limit || 25
+    p.push(pageSize + 1)
+    
+    const { rows } = await this.pool.query(
+      `SELECT * FROM vaults WHERE ${w.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT $${p.length}`,
+      p
+    )
+    
+    const hasMore = rows.length > pageSize
+    const items = hasMore ? rows.slice(0, pageSize) : rows
+    
+    if (!items.length) return { items: [], hasMore: false, lastItem: null }
+    
+    const vaultIds = items.map((r) => r.id)
     const ms = (await this.pool.query('SELECT * FROM milestones WHERE vault_id = ANY($1) AND deleted_at IS NULL', [vaultIds])).rows
     const evidence = (await this.pool.query('SELECT * FROM milestone_evidence WHERE vault_id = ANY($1)', [vaultIds])).rows
-    return rows.map((r) => this.rowToVault(r, ms, evidence))
+    
+    const vaults = items.map((r) => this.rowToVault(r, ms, evidence))
+    return {
+      items: vaults,
+      hasMore,
+      lastItem: items.length > 0 ? items[items.length - 1] : null,
+    }
   }
   async getVault(id) {
     const { rows } = await this.pool.query('SELECT * FROM vaults WHERE id = $1 AND deleted_at IS NULL', [id])
@@ -275,11 +349,33 @@ export class PgStore {
     await this.pool.query('UPDATE activity_log SET status=$2, memo=$3, ledger=$4 WHERE id=$1', [a.id, a.status, a.memo, a.ledger ?? null])
     return a
   }
-  async listActivity({ vaultId } = {}) {
-    const { rows } = vaultId
-      ? await this.pool.query('SELECT * FROM activity_log WHERE vault_id=$1 ORDER BY created_at DESC LIMIT 200', [vaultId])
-      : await this.pool.query('SELECT * FROM activity_log ORDER BY created_at DESC LIMIT 200')
-    return rows.map((r) => this.actRow(r))
+  async listActivity({ vaultId, limit, cursor } = {}) {
+    const w = []; const p = []
+    if (vaultId) { p.push(vaultId); w.push(`vault_id = $${p.length}`) }
+    
+    // Apply cursor WHERE clause for keyset pagination
+    if (cursor) {
+      p.push(cursor.timestamp, cursor.id)
+      w.push(`(created_at, id) < ($${p.length - 1}, $${p.length})`)
+    }
+    
+    const pageSize = limit || 25
+    p.push(pageSize + 1)
+    
+    const whereClause = w.length > 0 ? `WHERE ${w.join(' AND ')}` : ''
+    const { rows } = await this.pool.query(
+      `SELECT * FROM activity_log ${whereClause} ORDER BY created_at DESC, id DESC LIMIT $${p.length}`,
+      p
+    )
+    
+    const hasMore = rows.length > pageSize
+    const items = hasMore ? rows.slice(0, pageSize) : rows
+    
+    return {
+      items: items.map((r) => this.actRow(r)),
+      hasMore,
+      lastItem: items.length > 0 ? items[items.length - 1] : null,
+    }
   }
   async expireOverdueVaults({ now = new Date(), batchSize = 100 } = {}) {
     const client = await this.pool.connect()

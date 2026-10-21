@@ -7,6 +7,7 @@ import { checkReadiness, isDatabaseUnavailable } from '../apilib/store-bootstrap
 import { OPENAPI } from '../apilib/openapi.mjs'
 import { OnchainError, isEnabled, getConfig, getServer, buildCreateVaultTx, buildStakeTx, verifySignedTx, txHashOf, submitAndWait, validateForChain } from '../apilib/soroban.mjs'
 import { safeCompare, expireOverdueVaults } from '../apilib/expiry.mjs'
+import { encodeCursor, decodeCursor, parseLimit } from '../apilib/pagination.mjs'
 
 export function createApp(getStore = defaultGetStore) {
   const app = express()
@@ -38,16 +39,37 @@ export function createApp(getStore = defaultGetStore) {
   router.get('/openapi.json', (_req, res) => res.json(OPENAPI))
 
   router.get('/vaults', wrap(async (req, res) => {
+    const limitParam = req.query.limit
+    const limit = limitParam !== undefined ? parseLimit(limitParam) : 25
+    if (limit === null) return bad(res, 'limit must be an integer between 1 and 100')
+    
+    const cursorParam = req.query.cursor
+    let cursor = null
+    if (cursorParam) {
+      cursor = decodeCursor(cursorParam)
+      if (!cursor) return bad(res, 'Invalid cursor')
+    }
+    
     const s = await getStore()
-    const vaults = await s.listVaults({ creator: req.query.creator, status: req.query.status })
-    res.json({ data: vaults, count: vaults.length })
+    const result = await s.listVaults({ creator: req.query.creator, status: req.query.status, limit, cursor })
+    
+    const nextCursor = result.hasMore && result.lastItem
+      ? encodeCursor(result.lastItem.created_at || result.lastItem.createdAt, result.lastItem.id)
+      : null
+    
+    res.json({
+      data: result.items,
+      count: result.items.length,
+      page: { limit, nextCursor },
+    })
   }))
 
   router.get('/vaults/:id', wrap(async (req, res) => {
     const s = await getStore()
     const v = await s.getVault(req.params.id)
     if (!v) return bad(res, 'Vault not found', 404)
-    res.json({ data: { ...v, activity: await s.listActivity({ vaultId: v.id }) } })
+    const activityResult = await s.listActivity({ vaultId: v.id })
+    res.json({ data: { ...v, activity: activityResult.items || activityResult } })
   }))
 
   router.post('/vaults', wrap(async (req, res) => {
@@ -252,9 +274,29 @@ export function createApp(getStore = defaultGetStore) {
   }))
 
   router.get('/transactions', wrap(async (req, res) => {
+    const limitParam = req.query.limit
+    const limit = limitParam !== undefined ? parseLimit(limitParam) : 25
+    if (limit === null) return bad(res, 'limit must be an integer between 1 and 100')
+    
+    const cursorParam = req.query.cursor
+    let cursor = null
+    if (cursorParam) {
+      cursor = decodeCursor(cursorParam)
+      if (!cursor) return bad(res, 'Invalid cursor')
+    }
+    
     const s = await getStore()
-    const data = await s.listActivity({ vaultId: req.query.vaultId })
-    res.json({ data, count: data.length })
+    const result = await s.listActivity({ vaultId: req.query.vaultId, limit, cursor })
+    
+    const nextCursor = result.hasMore && result.lastItem
+      ? encodeCursor(result.lastItem.created_at || result.lastItem.createdAt, result.lastItem.id)
+      : null
+    
+    res.json({
+      data: result.items,
+      count: result.items.length,
+      page: { limit, nextCursor },
+    })
   }))
 
   router.get('/stats', wrap(async (req, res) => {
