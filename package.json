@@ -16,7 +16,7 @@
     "test:vault-validation": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/services/vaultValidation.test.ts",
     "test:vaults-integration": "tsx --test src/routes/vaults.test.ts",
     "test:smoke": "tsx --test src/tests/smoke/api.smoke.test.ts",
-    "test:api": "node --test --test-concurrency=1 api/__tests__/concurrency.test.mjs api/__tests__/contract.test.mjs api/__tests__/expiry.test.mjs api/__tests__/fail.test.mjs api/__tests__/health.test.mjs api/__tests__/stats.test.mjs api/__tests__/transactions.test.mjs api/__tests__/validate.deadline.test.mjs api/__tests__/validate.test.mjs api/__tests__/vaults.test.mjs",
+    "test:api": "node --test --test-concurrency=1 api/__tests__/concurrency.test.mjs api/__tests__/contract.test.mjs api/__tests__/expiry.test.mjs api/__tests__/fail.test.mjs api/__tests__/health.test.mjs api/__tests__/lifecycle.snapshot.test.mjs api/__tests__/stats.test.mjs api/__tests__/transactions.test.mjs api/__tests__/validate.deadline.test.mjs api/__tests__/validate.test.mjs api/__tests__/vaults.test.mjs shared/__tests__/vaultMachine.test.mjs shared/__tests__/vaultMachine.property.test.mjs",
     "migrate:make": "knex migrate:make --knexfile knexfile.cjs --migrations-directory db/migrations --extension cjs",
     "migrate:latest": "knex migrate:latest --knexfile knexfile.cjs",
     "migrate:rollback": "knex migrate:rollback --knexfile knexfile.cjs",

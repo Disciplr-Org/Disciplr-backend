@@ -1,0 +1,415 @@
+{
+  "validate-lifecycle": [
+    {
+      "step": "unknown vault",
+      "response": {
+        "status": 404,
+        "body": {
+          "error": "Vault not found"
+        }
+      }
+    },
+    {
+      "step": "unknown milestone",
+      "response": {
+        "status": 404,
+        "body": {
+          "error": "Milestone not found"
+        }
+      }
+    },
+    {
+      "step": "wrong verifier",
+      "response": {
+        "status": 403,
+        "body": {
+          "error": "Only the vault verifier may validate milestones"
+        }
+      }
+    },
+    {
+      "step": "missing verifier",
+      "response": {
+        "status": 403,
+        "body": {
+          "error": "Only the vault verifier may validate milestones"
+        }
+      }
+    },
+    {
+      "step": "validate first milestone",
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {
+            "amount": "1000",
+            "createdAt": "<timestamp>",
+            "creator": "<stellar-address>",
+            "endDate": "<timestamp>",
+            "failureDestination": "<stellar-address>",
+            "id": "<vault-id>",
+            "milestones": [
+              {
+                "amount": "500",
+                "dueDate": "<timestamp>",
+                "id": "<milestone-1>",
+                "status": "completed",
+                "title": "Task 1"
+              },
+              {
+                "amount": "500",
+                "dueDate": "<timestamp>",
+                "id": "<milestone-2>",
+                "status": "pending",
+                "title": "Task 2"
+              }
+            ],
+            "name": "Test Commitment Vault",
+            "onchainStatus": null,
+            "startDate": "<timestamp>",
+            "status": "active",
+            "successDestination": "<stellar-address>",
+            "updatedAt": "<timestamp>",
+            "verifier": "<stellar-address>"
+          }
+        }
+      }
+    },
+    {
+      "step": "validate first milestone again",
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "Milestone already validated"
+        }
+      }
+    },
+    {
+      "step": "validate final milestone",
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {
+            "amount": "1000",
+            "createdAt": "<timestamp>",
+            "creator": "<stellar-address>",
+            "endDate": "<timestamp>",
+            "failureDestination": "<stellar-address>",
+            "id": "<vault-id>",
+            "milestones": [
+              {
+                "amount": "500",
+                "dueDate": "<timestamp>",
+                "id": "<milestone-1>",
+                "status": "completed",
+                "title": "Task 1"
+              },
+              {
+                "amount": "500",
+                "dueDate": "<timestamp>",
+                "id": "<milestone-2>",
+                "status": "completed",
+                "title": "Task 2"
+              }
+            ],
+            "name": "Test Commitment Vault",
+            "onchainStatus": null,
+            "startDate": "<timestamp>",
+            "status": "completed",
+            "successDestination": "<stellar-address>",
+            "updatedAt": "<timestamp>",
+            "verifier": "<stellar-address>"
+          }
+        }
+      }
+    },
+    {
+      "step": "validate on completed vault",
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "Vault is completed"
+        }
+      }
+    },
+    {
+      "step": "activity rows",
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {
+            "activity": [
+              {
+                "amount": "1000",
+                "createdAt": "<timestamp>",
+                "hash": "<hash>",
+                "id": "<uuid>",
+                "memo": "Funds released to success destination",
+                "status": "simulated",
+                "type": "release",
+                "vaultId": "<vault-id>"
+              },
+              {
+                "amount": "500",
+                "createdAt": "<timestamp>",
+                "hash": "<hash>",
+                "id": "<uuid>",
+                "memo": "Milestone validated: Task 2",
+                "status": "simulated",
+                "type": "validate",
+                "vaultId": "<vault-id>"
+              },
+              {
+                "amount": "500",
+                "createdAt": "<timestamp>",
+                "hash": "<hash>",
+                "id": "<uuid>",
+                "memo": "Milestone validated: Task 1",
+                "status": "simulated",
+                "type": "validate",
+                "vaultId": "<vault-id>"
+              },
+              {
+                "amount": "1000",
+                "createdAt": "<timestamp>",
+                "hash": "<hash>",
+                "id": "<uuid>",
+                "memo": "Vault created",
+                "status": "simulated",
+                "type": "create",
+                "vaultId": "<vault-id>"
+              }
+            ],
+            "amount": "1000",
+            "createdAt": "<timestamp>",
+            "creator": "<stellar-address>",
+            "endDate": "<timestamp>",
+            "failureDestination": "<stellar-address>",
+            "id": "<vault-id>",
+            "milestones": [
+              {
+                "amount": "500",
+                "dueDate": "<timestamp>",
+                "id": "<milestone-1>",
+                "status": "completed",
+                "title": "Task 1"
+              },
+              {
+                "amount": "500",
+                "dueDate": "<timestamp>",
+                "id": "<milestone-2>",
+                "status": "completed",
+                "title": "Task 2"
+              }
+            ],
+            "name": "Test Commitment Vault",
+            "onchainStatus": null,
+            "startDate": "<timestamp>",
+            "status": "completed",
+            "successDestination": "<stellar-address>",
+            "updatedAt": "<timestamp>",
+            "verifier": "<stellar-address>"
+          }
+        }
+      }
+    }
+  ],
+  "fail-lifecycle": [
+    {
+      "step": "unknown vault",
+      "response": {
+        "status": 404,
+        "body": {
+          "error": "Vault not found"
+        }
+      }
+    },
+    {
+      "step": "wrong verifier",
+      "response": {
+        "status": 403,
+        "body": {
+          "error": "Only the vault verifier may fail a vault"
+        }
+      }
+    },
+    {
+      "step": "validate first milestone",
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {
+            "amount": "1000",
+            "createdAt": "<timestamp>",
+            "creator": "<stellar-address>",
+            "endDate": "<timestamp>",
+            "failureDestination": "<stellar-address>",
+            "id": "<vault-id>",
+            "milestones": [
+              {
+                "amount": "500",
+                "dueDate": "<timestamp>",
+                "id": "<milestone-1>",
+                "status": "completed",
+                "title": "Step 1"
+              },
+              {
+                "amount": "500",
+                "dueDate": "<timestamp>",
+                "id": "<milestone-2>",
+                "status": "pending",
+                "title": "Step 2"
+              }
+            ],
+            "name": "Test Commitment Vault",
+            "onchainStatus": null,
+            "startDate": "<timestamp>",
+            "status": "active",
+            "successDestination": "<stellar-address>",
+            "updatedAt": "<timestamp>",
+            "verifier": "<stellar-address>"
+          }
+        }
+      }
+    },
+    {
+      "step": "fail vault",
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {
+            "amount": "1000",
+            "createdAt": "<timestamp>",
+            "creator": "<stellar-address>",
+            "endDate": "<timestamp>",
+            "failureDestination": "<stellar-address>",
+            "id": "<vault-id>",
+            "milestones": [
+              {
+                "amount": "500",
+                "dueDate": "<timestamp>",
+                "id": "<milestone-1>",
+                "status": "completed",
+                "title": "Step 1"
+              },
+              {
+                "amount": "500",
+                "dueDate": "<timestamp>",
+                "id": "<milestone-2>",
+                "status": "failed",
+                "title": "Step 2"
+              }
+            ],
+            "name": "Test Commitment Vault",
+            "onchainStatus": null,
+            "startDate": "<timestamp>",
+            "status": "failed",
+            "successDestination": "<stellar-address>",
+            "updatedAt": "<timestamp>",
+            "verifier": "<stellar-address>"
+          }
+        }
+      }
+    },
+    {
+      "step": "fail vault again",
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "Vault is failed"
+        }
+      }
+    },
+    {
+      "step": "activity rows",
+      "response": {
+        "status": 200,
+        "body": {
+          "data": {
+            "activity": [
+              {
+                "amount": "1000",
+                "createdAt": "<timestamp>",
+                "hash": "<hash>",
+                "id": "<uuid>",
+                "memo": "Funds redirected to failure destination",
+                "status": "simulated",
+                "type": "redirect",
+                "vaultId": "<vault-id>"
+              },
+              {
+                "amount": "500",
+                "createdAt": "<timestamp>",
+                "hash": "<hash>",
+                "id": "<uuid>",
+                "memo": "Milestone validated: Step 1",
+                "status": "simulated",
+                "type": "validate",
+                "vaultId": "<vault-id>"
+              },
+              {
+                "amount": "1000",
+                "createdAt": "<timestamp>",
+                "hash": "<hash>",
+                "id": "<uuid>",
+                "memo": "Vault created",
+                "status": "simulated",
+                "type": "create",
+                "vaultId": "<vault-id>"
+              }
+            ],
+            "amount": "1000",
+            "createdAt": "<timestamp>",
+            "creator": "<stellar-address>",
+            "endDate": "<timestamp>",
+            "failureDestination": "<stellar-address>",
+            "id": "<vault-id>",
+            "milestones": [
+              {
+                "amount": "500",
+                "dueDate": "<timestamp>",
+                "id": "<milestone-1>",
+                "status": "completed",
+                "title": "Step 1"
+              },
+              {
+                "amount": "500",
+                "dueDate": "<timestamp>",
+                "id": "<milestone-2>",
+                "status": "failed",
+                "title": "Step 2"
+              }
+            ],
+            "name": "Test Commitment Vault",
+            "onchainStatus": null,
+            "startDate": "<timestamp>",
+            "status": "failed",
+            "successDestination": "<stellar-address>",
+            "updatedAt": "<timestamp>",
+            "verifier": "<stellar-address>"
+          }
+        }
+      }
+    }
+  ],
+  "deadline-responses": [
+    {
+      "step": "vault deadline passed",
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "Vault deadline has passed"
+        }
+      }
+    },
+    {
+      "step": "milestone due date passed",
+      "response": {
+        "status": 409,
+        "body": {
+          "error": "Milestone due date has passed"
+        }
+      }
+    }
+  ]
+}
