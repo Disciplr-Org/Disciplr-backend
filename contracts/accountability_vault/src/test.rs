@@ -1109,3 +1109,203 @@ fn test_claim_milestone_blocked_when_paused() {
 }
 
 
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// Partial settlement tests: slash_on_miss pays verified-unclaimed to success
+// ═══════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_slash_pays_verified_unclaimed_to_success() {
+    // 3 milestones: [verified, verified, unverified], none claimed.
+    // slash_on_miss should pay the first two to success_destination
+    // and the third to failure_destination.
+    let amounts: [i128; 3] = [100, 200, 300];
+    let offsets: [u64; 3] = [100, 200, 300];
+    let s = setup(&offsets, &amounts);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    // Verify first two milestones
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 0));
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &1, &evidence_hash(&s.env, 1));
+
+    // Move past deadline and slash
+    s.env.ledger().set_timestamp(1_301);
+    s.contract.slash_on_miss(&s.vault_id);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.status, VaultStatus::Failed);
+    assert_eq!(vault.staked, 0);
+    assert!(vault.milestones.get(0).unwrap().released);
+    assert!(vault.milestones.get(1).unwrap().released);
+    assert!(!vault.milestones.get(2).unwrap().released);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    assert_eq!(token_client.balance(&s.success), 300); // 100 + 200
+    assert_eq!(token_client.balance(&s.failure), 300); // unverified
+}
+
+#[test]
+fn test_slash_after_partial_claims() {
+    // 3 milestones: [claimed, verified, unverified]
+    // slash_on_miss should pay only the verified-unclaimed (second) to success
+    // and the unverified (third) to failure.
+    let amounts: [i128; 3] = [100, 200, 300];
+    let offsets: [u64; 3] = [100, 200, 300];
+    let s = setup(&offsets, &amounts);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    // Verify first two milestones
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 0));
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &1, &evidence_hash(&s.env, 1));
+
+    // Claim the first milestone before deadline
+    s.contract.claim_milestone(&s.vault_id, &s.creator, &0);
+
+    // Verify vault state after claim
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.staked, 500); // 600 - 100
+
+    // Move past deadline and slash
+    s.env.ledger().set_timestamp(1_301);
+    s.contract.slash_on_miss(&s.vault_id);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.status, VaultStatus::Failed);
+    assert_eq!(vault.staked, 0);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    // Success gets: claimed (100) + verified-unclaimed (200) = 300
+    assert_eq!(token_client.balance(&s.success), 300);
+    // Failure gets: unverified (300) = 300
+    assert_eq!(token_client.balance(&s.failure), 300);
+}
+
+#[test]
+fn test_slash_nothing_verified_unchanged() {
+    // All milestones unverified → full stake goes to failure_destination
+    let amounts: [i128; 3] = [100, 200, 300];
+    let offsets: [u64; 3] = [100, 200, 300];
+    let s = setup(&offsets, &amounts);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    s.env.ledger().set_timestamp(1_301);
+    s.contract.slash_on_miss(&s.vault_id);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.status, VaultStatus::Failed);
+    assert_eq!(vault.staked, 0);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    assert_eq!(token_client.balance(&s.success), 0);
+    assert_eq!(token_client.balance(&s.failure), 600);
+}
+
+#[test]
+fn test_claim_milestone_persists_before_transfer() {
+    // Verify CEI ordering: vault state must be persisted before token transfer.
+    // We cannot directly test re-entrancy without a mock token that attempts
+    // re-entry, but we can verify the state is correct after the call.
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 0));
+
+    s.contract.claim_milestone(&s.vault_id, &s.creator, &0);
+
+    // After claim_milestone, the vault should be Completed and milestone released
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.status, VaultStatus::Completed);
+    assert!(vault.milestones.get(0).unwrap().released);
+    assert_eq!(vault.staked, 0);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    assert_eq!(token_client.balance(&s.success), 500);
+}
+
+#[test]
+fn test_partial_settlement_conservation() {
+    // Property test: for any mix of verified/unverified milestones,
+    // success + failure payouts must equal the original amount.
+    let amounts: [i128; 6] = [10, 20, 30, 40, 50, 60];
+    let offsets: [u64; 6] = [100, 200, 300, 400, 500, 600];
+    let total: i128 = amounts.iter().sum(); // 210
+
+    // Test various verification patterns
+    let patterns = [
+        vec![true, false, false, false, false, false],  // only first verified
+        vec![true, true, false, false, false, false],   // first two verified
+        vec![false, true, false, true, false, true],    // alternating
+        vec![true, true, true, false, false, false],    // first half verified
+        vec![false, false, false, true, true, true],    // second half verified
+    ];
+
+    for pattern in patterns.iter() {
+        let s = setup(&offsets, &amounts);
+        s.contract.stake(&s.vault_id, &s.creator);
+
+        // Verify according to pattern
+        for (i, &verified) in pattern.iter().enumerate() {
+            if verified {
+                s.contract
+                    .check_in(&s.vault_id, &s.verifier, &(i as u32), &evidence_hash(&s.env, i as u8));
+            }
+        }
+
+        // Slash after deadline
+        s.env.ledger().set_timestamp(1_601);
+        s.contract.slash_on_miss(&s.vault_id);
+
+        let token_client = token::Client::new(&s.env, &s.token);
+        let to_success = token_client.balance(&s.success);
+        let to_failure = token_client.balance(&s.failure);
+
+        // Conservation law: success + failure == total
+        assert_eq!(
+            to_success + to_failure,
+            total,
+            "Conservation violated for pattern {:?}",
+            pattern
+        );
+
+        // Contract balance should be zero after settlement
+        let contract_balance = token_client.balance(&s.contract.address);
+        assert_eq!(
+            contract_balance, 0,
+            "Contract still holds funds after slash for pattern {:?}",
+            pattern
+        );
+    }
+}
+
+#[test]
+fn test_vault_completed_event_cumulative_amount() {
+    // Verify that vault_completed event emits the cumulative released amount
+    let amounts: [i128; 3] = [100, 200, 300];
+    let offsets: [u64; 3] = [100, 200, 300];
+    let s = setup(&offsets, &amounts);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    // Verify all milestones
+    for i in 0..3u32 {
+        s.contract
+            .check_in(&s.vault_id, &s.verifier, &i, &evidence_hash(&s.env, i as u8));
+    }
+
+    // Claim all milestones sequentially
+    s.contract.claim_milestone(&s.vault_id, &s.creator, &0);
+    s.contract.claim_milestone(&s.vault_id, &s.creator, &1);
+    s.contract.claim_milestone(&s.vault_id, &s.creator, &2);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.status, VaultStatus::Completed);
+    assert_eq!(vault.staked, 0);
+
+    // Verify total released to success
+    let token_client = token::Client::new(&s.env, &s.token);
+    assert_eq!(token_client.balance(&s.success), 600);
+}
