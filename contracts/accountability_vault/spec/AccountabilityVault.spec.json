@@ -136,14 +136,6 @@
             "result": "Result<Vault, Error>"
         },
         {
-            "name": "reclaim_after_settlement",
-            "params": [
-                "String",
-                "Address"
-            ],
-            "result": "Result<(), Error>"
-        },
-        {
             "name": "configure_window",
             "params": [
                 "u64"

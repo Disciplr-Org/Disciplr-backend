@@ -1021,30 +1021,6 @@ impl AccountabilityVault {
         Self::load(&env, &vault_id)
     }
 
-    /// Sweeps any residual token balance held by the contract to the vault creator
-    /// after a terminal settlement. Only the creator may call this, and only once
-    /// `staked` has been zeroed by `claim`, `slash_on_miss`, or `withdraw`.
-    pub fn reclaim_after_settlement(
-        env: Env,
-        vault_id: String,
-        token_address: Address,
-    ) -> Result<(), Error> {
-        let vault: Vault = Self::load(&env, &vault_id)?;
-        vault.creator.require_auth();
-
-        // Only sweep after the vault has no outstanding stake.
-        if vault.staked != 0 {
-            return Err(Error::StakedRemaining);
-        }
-
-        let contract_addr = env.current_contract_address();
-        let client = token::Client::new(&env, &token_address);
-        let bal = client.balance(&contract_addr);
-        if bal > 0 {
-            client.transfer(&contract_addr, &vault.creator, &bal);
-        }
-        Ok(())
-    }
 
     // ── internal helpers ────────────────────────────────────────────────
 
