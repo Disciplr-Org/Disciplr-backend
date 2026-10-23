@@ -17,7 +17,9 @@ use soroban_sdk::{
     token, vec, Address, Env, String,
 };
 
-use accountability_vault::{AccountabilityVault, AccountabilityVaultClient, Milestone, VerifierSet};
+use accountability_vault::{
+    AccountabilityVault, AccountabilityVaultClient, Destinations, Milestone, VerifierSet,
+};
 
 /// Compact fuzzer-controlled input that covers all `create_vault` invariant checks.
 #[derive(Debug, arbitrary::Arbitrary)]
@@ -103,6 +105,11 @@ fuzz_target!(|input: FuzzInput| {
 
     // The only assertion: the call must not panic. Either Ok(()) or a typed Error
     // is acceptable. Panics surface as fuzzer crashes.
+    let destinations = Destinations {
+        success,
+        failure,
+    };
+
     let _ = client.try_create_vault(
         &vault_id,
         &creator,
@@ -110,8 +117,7 @@ fuzz_target!(|input: FuzzInput| {
         &None,
         &token_addr,
         &input.amount,
-        &success,
-        &failure,
+        &destinations,
         &end_timestamp,
         &milestones,
         &guardian,

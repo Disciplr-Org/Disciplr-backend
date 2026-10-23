@@ -78,6 +78,11 @@ fn setup_with_oracle(
         threshold: 1,
     };
 
+    let destinations = Destinations {
+        success: success.clone(),
+        failure: failure.clone(),
+    };
+
     contract.create_vault(
         &vault_id,
         &creator,
@@ -85,8 +90,7 @@ fn setup_with_oracle(
         &oracle,
         &token,
         &total,
-        &success,
-        &failure,
+        &destinations,
         &end,
         &milestones,
         &guardian,
@@ -259,8 +263,12 @@ fn claim_all_milestones_sequentially(offsets: &[u64], amounts: &[i128]) -> Vault
 
     // Verify every milestone.
     for i in 0..amounts.len() {
-        s.contract
-            .check_in(&s.vault_id, &s.verifier, &(i as u32), &evidence_hash(&s.env, i as u8));
+        s.contract.check_in(
+            &s.vault_id,
+            &s.verifier,
+            &(i as u32),
+            &evidence_hash(&s.env, i as u8),
+        );
     }
 
     // Claim milestones one at a time and assert intermediate solvency.
@@ -270,7 +278,8 @@ fn claim_all_milestones_sequentially(offsets: &[u64], amounts: &[i128]) -> Vault
 
     let mut released_so_far: i128 = 0;
     for i in 0..amounts.len() {
-        s.contract.claim_milestone(&s.vault_id, &s.creator, &(i as u32));
+        s.contract
+            .claim_milestone(&s.vault_id, &s.creator, &(i as u32));
         released_so_far += amounts[i];
 
         let vault = s.contract.get_vault(&s.vault_id);
@@ -324,8 +333,8 @@ fn test_boundary_single_milestone_large_amount() {
 fn test_boundary_two_milestones_sum_near_max() {
     // Two milestones whose sum is close to i128::MAX.
     // i128::MAX = 170_141_183_460_469_231_731_687_303_715_884_105_727
-    let half = i128::MAX / 2;            // 85_070_591_730_234_615_865_843_651_857_942_052_863
-    let other_half = i128::MAX - half;   // 85_070_591_730_234_615_865_843_651_857_942_052_864
+    let half = i128::MAX / 2; // 85_070_591_730_234_615_865_843_651_857_942_052_863
+    let other_half = i128::MAX - half; // 85_070_591_730_234_615_865_843_651_857_942_052_864
     assert_eq!(half + other_half, i128::MAX);
 
     let s = setup(&[100, 200], &[half, other_half]);
@@ -352,7 +361,9 @@ fn test_boundary_uneven_three_way_split() {
 fn test_boundary_uneven_seven_way_split() {
     // 1_000_000 across 7 milestones. 1_000_000 / 7 = 142_857 rem 1.
     // Distribute as: 6 × 142_857 + 1 × 142_858 = 1_000_000.
-    let amounts: [i128; 7] = [142_857, 142_857, 142_857, 142_857, 142_857, 142_857, 142_858];
+    let amounts: [i128; 7] = [
+        142_857, 142_857, 142_857, 142_857, 142_857, 142_857, 142_858,
+    ];
     let offsets: [u64; 7] = [10, 20, 30, 40, 50, 60, 70];
     assert_eq!(amounts.iter().sum::<i128>(), 1_000_000);
 
@@ -532,6 +543,11 @@ fn test_boundary_zero_amount_milestone_rejected() {
 
     let guardian = Address::generate(&env);
 
+    let destinations = Destinations {
+        success: success.clone(),
+        failure: failure.clone(),
+    };
+
     let result = contract.try_create_vault(
         &vault_id,
         &creator,
@@ -539,8 +555,7 @@ fn test_boundary_zero_amount_milestone_rejected() {
         &None::<Address>,
         &token,
         &100,
-        &success,
-        &failure,
+        &destinations,
         &1_100u64,
         &milestones,
         &guardian,
@@ -590,6 +605,11 @@ fn test_boundary_negative_amount_milestone_rejected() {
         threshold: 1,
     };
 
+    let destinations = Destinations {
+        success: success.clone(),
+        failure: failure.clone(),
+    };
+
     let result = contract.try_create_vault(
         &vault_id,
         &creator,
@@ -597,8 +617,7 @@ fn test_boundary_negative_amount_milestone_rejected() {
         &None::<Address>,
         &token,
         &100,
-        &success,
-        &failure,
+        &destinations,
         &1_100u64,
         &milestones,
         &guardian,
@@ -649,6 +668,11 @@ fn test_boundary_milestone_sum_mismatch_rejected() {
         threshold: 1,
     };
 
+    let destinations = Destinations {
+        success: success.clone(),
+        failure: failure.clone(),
+    };
+
     let result = contract.try_create_vault(
         &vault_id,
         &creator,
@@ -656,8 +680,7 @@ fn test_boundary_milestone_sum_mismatch_rejected() {
         &None::<Address>,
         &token,
         &100,
-        &success,
-        &failure,
+        &destinations,
         &1_100u64,
         &milestones,
         &guardian,
@@ -679,8 +702,12 @@ fn test_boundary_partial_claim_then_bulk_claim_rejected() {
 
     // Verify all milestones.
     for i in 0..3u32 {
-        s.contract
-            .check_in(&s.vault_id, &s.verifier, &i, &evidence_hash(&s.env, i as u8));
+        s.contract.check_in(
+            &s.vault_id,
+            &s.verifier,
+            &i,
+            &evidence_hash(&s.env, i as u8),
+        );
     }
 
     // Claim only the first milestone.
@@ -705,9 +732,7 @@ fn test_boundary_double_claim_milestone_rejected() {
 
     s.contract.claim_milestone(&s.vault_id, &s.creator, &0);
 
-    let result = s
-        .contract
-        .try_claim_milestone(&s.vault_id, &s.creator, &0);
+    let result = s.contract.try_claim_milestone(&s.vault_id, &s.creator, &0);
     // Second claim should fail because vault is now Completed (single milestone).
     assert!(result.is_err());
 }
@@ -726,8 +751,12 @@ fn test_boundary_reverse_order_claim() {
     s.contract.stake(&s.vault_id, &s.creator);
 
     for i in 0..4u32 {
-        s.contract
-            .check_in(&s.vault_id, &s.verifier, &i, &evidence_hash(&s.env, i as u8));
+        s.contract.check_in(
+            &s.vault_id,
+            &s.verifier,
+            &i,
+            &evidence_hash(&s.env, i as u8),
+        );
     }
 
     let mut released: i128 = 0;
@@ -760,8 +789,12 @@ fn test_boundary_interleaved_claim_order() {
     s.contract.stake(&s.vault_id, &s.creator);
 
     for i in 0..5u32 {
-        s.contract
-            .check_in(&s.vault_id, &s.verifier, &i, &evidence_hash(&s.env, i as u8));
+        s.contract.check_in(
+            &s.vault_id,
+            &s.verifier,
+            &i,
+            &evidence_hash(&s.env, i as u8),
+        );
     }
 
     let claim_order: [u32; 5] = [2, 0, 4, 1, 3];
@@ -792,7 +825,7 @@ fn test_boundary_interleaved_claim_order() {
 fn test_boundary_twenty_milestones_amount_one() {
     let n = 20;
     let amounts = [1i128; 20];
-    let offsets: Vec<u64> = (1..=n).map(|i| i as u64 * 10).collect();
+    let offsets: std::vec::Vec<u64> = (1..=n).map(|i| i as u64 * 10).collect();
 
     let vault = claim_all_milestones_sequentially(&offsets, &amounts);
     assert_eq!(vault.staked, 0);
@@ -811,7 +844,7 @@ fn test_boundary_large_total_uneven_13_way_split() {
     let total: i128 = amounts.iter().sum();
     assert_eq!(total, 1_000_000_000_000_000_000i128);
 
-    let offsets: Vec<u64> = (1..=13).map(|i| i as u64 * 10).collect();
+    let offsets: std::vec::Vec<u64> = (1..=13).map(|i| i as u64 * 10).collect();
     let vault = claim_all_milestones_sequentially(&offsets, &amounts);
     assert_eq!(vault.staked, 0);
     assert_eq!(vault.status, VaultStatus::Completed);
@@ -846,7 +879,7 @@ fn test_create_vault_title_length_bound() {
     // Exactly 128 chars -> OK
     let title_128 = String::from_str(
         &env,
-        "012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678",
+        "01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567",
     );
     let milestones_ok = vec![
         &env,
@@ -859,6 +892,11 @@ fn test_create_vault_title_length_bound() {
         },
     ];
 
+    let destinations = Destinations {
+        success: success.clone(),
+        failure: failure.clone(),
+    };
+
     let res = contract.try_create_vault(
         &vault_id,
         &creator,
@@ -866,8 +904,7 @@ fn test_create_vault_title_length_bound() {
         &None,
         &token,
         &100,
-        &success,
-        &failure,
+        &destinations,
         &2_000,
         &milestones_ok,
         &guardian,
@@ -897,8 +934,7 @@ fn test_create_vault_title_length_bound() {
         &None,
         &token,
         &100,
-        &success,
-        &failure,
+        &destinations,
         &2_000,
         &milestones_err,
         &guardian,
@@ -941,6 +977,11 @@ fn test_guardian_must_differ_from_creator() {
         },
     ];
 
+    let destinations = Destinations {
+        success: success.clone(),
+        failure: failure.clone(),
+    };
+
     // Case 1: guardian == creator -> InvalidGuardian
     let res = contract.try_create_vault(
         &vault_id,
@@ -949,8 +990,7 @@ fn test_guardian_must_differ_from_creator() {
         &None,
         &token,
         &100,
-        &success,
-        &failure,
+        &destinations,
         &2_000,
         &milestones,
         &creator, // guardian is creator
@@ -965,8 +1005,7 @@ fn test_guardian_must_differ_from_creator() {
         &None,
         &token,
         &100,
-        &success,
-        &failure,
+        &destinations,
         &2_000,
         &milestones,
         &success, // guardian is success destination
@@ -981,8 +1020,7 @@ fn test_guardian_must_differ_from_creator() {
         &None,
         &token,
         &100,
-        &success,
-        &failure,
+        &destinations,
         &2_000,
         &milestones,
         &verifier, // guardian is the only verifier
@@ -998,8 +1036,7 @@ fn test_guardian_must_differ_from_creator() {
         &None,
         &token,
         &100,
-        &success,
-        &failure,
+        &destinations,
         &2_000,
         &milestones,
         &guardian,
@@ -1013,15 +1050,21 @@ fn test_creator_cannot_pause_or_dispute() {
     s.contract.stake(&s.vault_id, &s.creator);
 
     // Creator calling emergency_pause -> Unauthorized
-    let res_pause = s.contract.try_emergency_pause(&s.vault_id, &s.creator, &86_400);
+    let res_pause = s
+        .contract
+        .try_emergency_pause(&s.vault_id, &s.creator, &86_400);
     assert_eq!(res_pause, Err(Ok(Error::Unauthorized)));
 
     // Creator calling admin_dispute -> Unauthorized
-    let res_dispute = s.contract.try_admin_dispute(&s.vault_id, &s.creator, &86_400);
+    let res_dispute = s
+        .contract
+        .try_admin_dispute(&s.vault_id, &s.creator, &86_400);
     assert_eq!(res_dispute, Err(Ok(Error::Unauthorized)));
 
     // Guardian calling emergency_pause -> Ok
-    let res_guard_pause = s.contract.try_emergency_pause(&s.vault_id, &s.guardian, &86_400);
+    let res_guard_pause = s
+        .contract
+        .try_emergency_pause(&s.vault_id, &s.guardian, &86_400);
     assert!(res_guard_pause.is_ok());
 }
 
@@ -1050,8 +1093,9 @@ fn test_pause_expires_and_slash_proceeds() {
     // Pause has expired! slash_on_miss proceeds to slash to failure address.
     let slash_res = s.contract.try_slash_on_miss(&s.vault_id);
     assert!(slash_res.is_ok());
-    assert_eq!(s.token.balance(&s.failure), 100);
-    assert_eq!(s.token.balance(&s.contract.address), 0);
+    let token_client = token::Client::new(&s.env, &s.token);
+    assert_eq!(token_client.balance(&s.failure), 100);
+    assert_eq!(token_client.balance(&s.contract.address), 0);
 }
 
 #[test]
@@ -1063,18 +1107,19 @@ fn test_dispute_expires_and_slash_proceeds() {
     // Guardian puts vault into dispute for 100 seconds: disputed_until = 1_100.
     s.contract.admin_dispute(&s.vault_id, &s.guardian, &100);
 
-    // Advance to 1_050: status is Disputed -> StatusNotActive
+    // Advance to 1_050: status is Disputed -> VaultDisputed
     s.env.ledger().set_timestamp(1_050);
     let res_slash_early = s.contract.try_slash_on_miss(&s.vault_id);
-    assert_eq!(res_slash_early, Err(Ok(Error::StatusNotActive)));
+    assert_eq!(res_slash_early, Err(Ok(Error::VaultDisputed)));
 
     // Advance past disputed_until and past end_date (e.g. 1_101)
     s.env.ledger().set_timestamp(1_101);
     // Dispute expired! It should automatically resume / allow slash_on_miss.
     let slash_res = s.contract.try_slash_on_miss(&s.vault_id);
     assert!(slash_res.is_ok());
-    assert_eq!(s.token.balance(&s.failure), 100);
-    assert_eq!(s.token.balance(&s.contract.address), 0);
+    let token_client = token::Client::new(&s.env, &s.token);
+    assert_eq!(token_client.balance(&s.failure), 100);
+    assert_eq!(token_client.balance(&s.contract.address), 0);
 }
 
 #[test]
@@ -1083,29 +1128,313 @@ fn test_claim_milestone_blocked_when_paused() {
     s.contract.stake(&s.vault_id, &s.creator);
 
     // Verifier verifies milestone 0
-    s.contract.verify_milestone(&s.vault_id, &0, &s.verifier);
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 1));
 
     // Guardian pauses the vault
-    s.contract.emergency_pause(&s.vault_id, &s.guardian, &86_400);
+    s.contract
+        .emergency_pause(&s.vault_id, &s.guardian, &86_400);
 
-    let pre_creator_bal = s.token.balance(&s.creator);
-    let pre_contract_bal = s.token.balance(&s.contract.address);
+    let token_client = token::Client::new(&s.env, &s.token);
+    let pre_success_bal = token_client.balance(&s.success);
+    let pre_contract_bal = token_client.balance(&s.contract.address);
 
     // Attempt to claim milestone while paused -> Error::Paused
-    let claim_res = s.contract.try_claim_milestone(&s.vault_id, &0, &s.creator);
+    let claim_res = s.contract.try_claim_milestone(&s.vault_id, &s.creator, &0);
     assert_eq!(claim_res, Err(Ok(Error::Paused)));
 
     // Assert NO balance changes occurred
-    assert_eq!(s.token.balance(&s.creator), pre_creator_bal);
-    assert_eq!(s.token.balance(&s.contract.address), pre_contract_bal);
+    assert_eq!(token_client.balance(&s.success), pre_success_bal);
+    assert_eq!(token_client.balance(&s.contract.address), pre_contract_bal);
 
     // Guardian unpauses
     s.contract.emergency_unpause(&s.vault_id, &s.guardian);
 
     // Now claim_milestone succeeds
-    let claim_res2 = s.contract.try_claim_milestone(&s.vault_id, &0, &s.creator);
+    let claim_res2 = s.contract.try_claim_milestone(&s.vault_id, &s.creator, &0);
     assert!(claim_res2.is_ok());
-    assert_eq!(s.token.balance(&s.creator), pre_creator_bal + 50);
+    assert_eq!(token_client.balance(&s.success), pre_success_bal + 50);
 }
 
+// ─── 15. dispute_milestone tests (2-of-3 setup) ────────────────────
 
+#[allow(dead_code)]
+struct Setup2Of3 {
+    env: Env,
+    contract: AccountabilityVaultClient<'static>,
+    token: Address,
+    creator: Address,
+    verifiers: [Address; 3],
+    failure: Address,
+    success: Address,
+    guardian: Address,
+    vault_id: String,
+}
+
+fn setup_2_of_3(amounts: &[i128], milestone_due_offsets: &[u64]) -> Setup2Of3 {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let verifiers = [
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    ];
+    let failure = Address::generate(&env);
+    let success = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, token_admin_client) = create_token(&env, &token_admin);
+    let total: i128 = amounts.iter().sum();
+    token_admin_client.mint(&creator, &total);
+
+    let contract_id = env.register(AccountabilityVault, ());
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+    let vault_id = String::from_str(&env, "vault-2of3");
+
+    let mut milestones = vec![&env];
+    for (i, due) in milestone_due_offsets.iter().enumerate() {
+        milestones.push_back(Milestone {
+            title: String::from_str(&env, "m"),
+            amount: amounts[i],
+            due_date: 1_000 + due,
+            verified: false,
+            released: false,
+        });
+    }
+
+    let end = 1_000 + milestone_due_offsets.iter().max().copied().unwrap_or(0);
+    let verifier_set = VerifierSet {
+        verifiers: vec![
+            &env,
+            verifiers[0].clone(),
+            verifiers[1].clone(),
+            verifiers[2].clone(),
+        ],
+        threshold: 2,
+    };
+
+    let destinations = Destinations {
+        success: success.clone(),
+        failure: failure.clone(),
+    };
+
+    contract.create_vault(
+        &vault_id,
+        &creator,
+        &verifier_set,
+        &None,
+        &token,
+        &total,
+        &destinations,
+        &end,
+        &milestones,
+        &guardian,
+    );
+
+    Setup2Of3 {
+        env,
+        contract,
+        token,
+        creator,
+        verifiers,
+        failure,
+        success,
+        guardian,
+        vault_id,
+    }
+}
+
+#[test]
+fn test_dispute_then_reverify() {
+    let s = setup_2_of_3(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    // Verifier 0 checks in -> not yet verified (threshold 2)
+    s.contract
+        .check_in(&s.vault_id, &s.verifiers[0], &0, &evidence_hash(&s.env, 1));
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert!(!vault.milestones.get(0).unwrap().verified);
+
+    // Verifier 1 checks in -> milestone 0 is now verified
+    s.contract
+        .check_in(&s.vault_id, &s.verifiers[1], &0, &evidence_hash(&s.env, 2));
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert!(vault.milestones.get(0).unwrap().verified);
+
+    // Creator disputes milestone 0
+    let res = s
+        .contract
+        .try_dispute_milestone(&s.vault_id, &s.creator, &0);
+    assert!(res.is_ok());
+
+    let vault_after = s.contract.get_vault(&s.vault_id);
+    assert!(!vault_after.milestones.get(0).unwrap().verified);
+
+    // Verifiers can approve again without hitting AlreadyApproved
+    s.contract
+        .check_in(&s.vault_id, &s.verifiers[0], &0, &evidence_hash(&s.env, 3));
+    s.contract
+        .check_in(&s.vault_id, &s.verifiers[1], &0, &evidence_hash(&s.env, 4));
+
+    let vault_reverified = s.contract.get_vault(&s.vault_id);
+    assert!(vault_reverified.milestones.get(0).unwrap().verified);
+
+    // Now claim_milestone succeeds
+    let token_client = token::Client::new(&s.env, &s.token);
+    let pre_success_bal = token_client.balance(&s.success);
+    let claim_res = s.contract.try_claim_milestone(&s.vault_id, &s.creator, &0);
+    assert!(claim_res.is_ok());
+    assert_eq!(token_client.balance(&s.success), pre_success_bal + 100);
+}
+
+#[test]
+fn test_dispute_released_milestone_rejected() {
+    let s = setup_2_of_3(&[50, 50], &[500, 600]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    s.contract
+        .check_in(&s.vault_id, &s.verifiers[0], &0, &evidence_hash(&s.env, 1));
+    s.contract
+        .check_in(&s.vault_id, &s.verifiers[1], &0, &evidence_hash(&s.env, 2));
+
+    s.contract.claim_milestone(&s.vault_id, &s.creator, &0);
+
+    let res = s
+        .contract
+        .try_dispute_milestone(&s.vault_id, &s.creator, &0);
+    assert_eq!(res, Err(Ok(Error::MilestoneAlreadyReleased)));
+}
+
+#[test]
+fn test_dispute_on_terminal_vault_rejected() {
+    // 1. Draft vault (before stake)
+    let s_draft = setup_2_of_3(&[100], &[500]);
+    let res_draft = s_draft
+        .contract
+        .try_dispute_milestone(&s_draft.vault_id, &s_draft.creator, &0);
+    assert_eq!(res_draft, Err(Ok(Error::NotActive)));
+
+    // 2. Disputed vault (admin hold)
+    let s_disputed = setup_2_of_3(&[100], &[500]);
+    s_disputed
+        .contract
+        .stake(&s_disputed.vault_id, &s_disputed.creator);
+    s_disputed.contract.check_in(
+        &s_disputed.vault_id,
+        &s_disputed.verifiers[0],
+        &0,
+        &evidence_hash(&s_disputed.env, 1),
+    );
+    s_disputed.contract.check_in(
+        &s_disputed.vault_id,
+        &s_disputed.verifiers[1],
+        &0,
+        &evidence_hash(&s_disputed.env, 2),
+    );
+    s_disputed
+        .contract
+        .admin_dispute(&s_disputed.vault_id, &s_disputed.guardian, &100);
+    let res_disputed =
+        s_disputed
+            .contract
+            .try_dispute_milestone(&s_disputed.vault_id, &s_disputed.creator, &0);
+    assert_eq!(res_disputed, Err(Ok(Error::NotActive)));
+
+    // 3. Cancelled vault (withdraw before check-in)
+    let s_cancelled = setup_2_of_3(&[100], &[500]);
+    s_cancelled
+        .contract
+        .stake(&s_cancelled.vault_id, &s_cancelled.creator);
+    s_cancelled
+        .contract
+        .withdraw(&s_cancelled.vault_id, &s_cancelled.creator);
+    let res_cancelled =
+        s_cancelled
+            .contract
+            .try_dispute_milestone(&s_cancelled.vault_id, &s_cancelled.creator, &0);
+    assert_eq!(res_cancelled, Err(Ok(Error::NotActive)));
+
+    // 4. Failed vault (slashed on miss)
+    let s_failed = setup_2_of_3(&[100], &[500]);
+    s_failed
+        .contract
+        .stake(&s_failed.vault_id, &s_failed.creator);
+    s_failed.env.ledger().set_timestamp(1_501);
+    s_failed.contract.slash_on_miss(&s_failed.vault_id);
+    let res_failed =
+        s_failed
+            .contract
+            .try_dispute_milestone(&s_failed.vault_id, &s_failed.creator, &0);
+    assert_eq!(res_failed, Err(Ok(Error::NotActive)));
+
+    // 5. Completed vault
+    let s_completed = setup_2_of_3(&[100], &[500]);
+    s_completed
+        .contract
+        .stake(&s_completed.vault_id, &s_completed.creator);
+    s_completed.contract.check_in(
+        &s_completed.vault_id,
+        &s_completed.verifiers[0],
+        &0,
+        &evidence_hash(&s_completed.env, 1),
+    );
+    s_completed.contract.check_in(
+        &s_completed.vault_id,
+        &s_completed.verifiers[1],
+        &0,
+        &evidence_hash(&s_completed.env, 2),
+    );
+    s_completed
+        .contract
+        .claim(&s_completed.vault_id, &s_completed.creator);
+    let res_completed =
+        s_completed
+            .contract
+            .try_dispute_milestone(&s_completed.vault_id, &s_completed.creator, &0);
+    assert_eq!(res_completed, Err(Ok(Error::NotActive)));
+}
+
+#[test]
+fn test_dispute_when_paused_rejected() {
+    let s = setup_2_of_3(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    s.contract
+        .check_in(&s.vault_id, &s.verifiers[0], &0, &evidence_hash(&s.env, 1));
+    s.contract
+        .check_in(&s.vault_id, &s.verifiers[1], &0, &evidence_hash(&s.env, 2));
+
+    s.contract
+        .emergency_pause(&s.vault_id, &s.guardian, &86_400);
+
+    let res = s
+        .contract
+        .try_dispute_milestone(&s.vault_id, &s.creator, &0);
+    assert_eq!(res, Err(Ok(Error::Paused)));
+}
+
+#[test]
+fn test_dispute_without_checkin_record_rejected() {
+    let s = setup_2_of_3(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    // Verify milestone through normal check-in
+    s.contract
+        .check_in(&s.vault_id, &s.verifiers[0], &0, &evidence_hash(&s.env, 1));
+    s.contract
+        .check_in(&s.vault_id, &s.verifiers[1], &0, &evidence_hash(&s.env, 2));
+
+    // Remove the CheckIn(0) record from instance storage to simulate missing check-in record
+    s.env.as_contract(&s.contract.address, || {
+        s.env.storage().instance().remove(&DataKey::CheckIn(0));
+    });
+
+    let res = s
+        .contract
+        .try_dispute_milestone(&s.vault_id, &s.creator, &0);
+    assert_eq!(res, Err(Ok(Error::MilestoneNotDisputable)));
+}
