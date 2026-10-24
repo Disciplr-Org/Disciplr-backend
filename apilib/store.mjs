@@ -6,6 +6,7 @@
 import { randomUUID, randomBytes } from 'node:crypto'
 import { createStoreProvider } from './store-bootstrap.mjs'
 import { seed } from './demo-data.mjs'
+import { wrapPoolForTiming } from './log.mjs'
 const iso = (d) => new Date(d).toISOString()
 const hex = (n) => randomBytes(n).toString('hex')
 
@@ -294,7 +295,10 @@ export class PgStore {
 }
 
 const makeProvider = () => createStoreProvider({
-  makePool: async (config) => new (await import('pg')).default.Pool(config),
+  makePool: async (config) => {
+    const pool = new (await import('pg')).default.Pool(config)
+    return wrapPoolForTiming(pool)
+  },
   makePostgres: (pool) => new PgStore(pool),
   makeMemory: () => new MemoryStore(),
 })
