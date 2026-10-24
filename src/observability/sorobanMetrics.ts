@@ -30,3 +30,13 @@ export function recordSorobanTransaction(method: string, outcome: Outcome, durat
   transactionsTotal.inc(labels)
   transactionDuration.observe(labels, Math.max(0, durationMs) / 1000)
 }
+
+const submitLaneDepth = new client.Gauge({
+  name: 'disciplr_soroban_submit_lane_depth',
+  help: 'Soroban submissions currently running or queued across all per-account submit lanes.',
+  registers: [register],
+})
+
+export function setSorobanLaneDepth(depth: number): void {
+  submitLaneDepth.set(Math.max(0, depth))
+}

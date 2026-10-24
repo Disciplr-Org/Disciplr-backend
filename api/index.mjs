@@ -8,6 +8,7 @@ import { OPENAPI } from '../apilib/openapi.mjs'
 import { OnchainError, isEnabled, getConfig, getServer, buildCreateVaultTx, buildStakeTx, verifySignedTx, txHashOf, submitAndWait, validateForChain } from '../apilib/soroban.mjs'
 import { safeCompare, expireOverdueVaults } from '../apilib/expiry.mjs'
 import { buildCorsOptions, parseAllowedOrigins, isOriginAllowed, helmetOptions } from '../apilib/cors.mjs'
+import { createRateLimiter } from '../apilib/rateLimit.mjs'
 
 export function createApp(getStore = defaultGetStore, env = process.env) {
   const app = express()
@@ -43,6 +44,7 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
   })
 
   app.use(express.json({ limit: '100kb' }))
+  app.use(createRateLimiter({ getStore }))
 
   const STELLAR = /^G[A-Z2-7]{55}$/
   const hex = (n) => randomBytes(n).toString('hex')
@@ -241,19 +243,23 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
 
   router.get('/stats', wrap(async (req, res) => {
     const s = await getStore()
-    const vaults = await s.listVaults({ creator: req.query.creator })
-    const sum = (f) => vaults.filter(f).reduce((a, v) => a + Number(v.amount), 0)
-    const done = vaults.filter((v) => v.status !== 'active')
+    // Use aggregateStats if available (Postgres or Memory store)
+    const stats = typeof s.aggregateStats === 'function'
+      ? await s.aggregateStats({ creator: req.query.creator, verifier: req.query.verifier })
+      : { totalVaults: 0, active: 0, completed: 0, failed: 0, totalLocked: 0, totalReleased: 0, totalRedirected: 0 }
+    const { totalVaults, active, completed, failed, totalLocked, totalReleased, totalRedirected } = stats
+    const done = completed + failed
+    const successRate = done ? Math.round((completed / done) * 100) : null
     res.json({
       data: {
-        totalVaults: vaults.length,
-        active: vaults.filter((v) => v.status === 'active').length,
-        completed: vaults.filter((v) => v.status === 'completed').length,
-        failed: vaults.filter((v) => v.status === 'failed').length,
-        totalLocked: sum((v) => v.status === 'active'),
-        totalReleased: sum((v) => v.status === 'completed'),
-        totalRedirected: sum((v) => v.status === 'failed'),
-        successRate: done.length ? Math.round((vaults.filter((v) => v.status === 'completed').length / done.length) * 100) : null,
+        totalVaults,
+        active,
+        completed,
+        failed,
+        totalLocked,
+        totalReleased,
+        totalRedirected,
+        successRate,
       },
     })
   }))
