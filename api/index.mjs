@@ -7,12 +7,14 @@ import { checkReadiness, isDatabaseUnavailable } from '../apilib/store-bootstrap
 import { OPENAPI } from '../apilib/openapi.mjs'
 import { OnchainError, isEnabled, getConfig, getServer, buildCreateVaultTx, buildStakeTx, verifySignedTx, txHashOf, submitAndWait, validateForChain } from '../apilib/soroban.mjs'
 import { safeCompare, expireOverdueVaults } from '../apilib/expiry.mjs'
+import { createRateLimiter } from '../apilib/rateLimit.mjs'
 
 export function createApp(getStore = defaultGetStore) {
   const app = express()
   app.disable('x-powered-by')
   app.use(cors())
   app.use(express.json({ limit: '100kb' }))
+  app.use(createRateLimiter({ getStore }))
 
   const STELLAR = /^G[A-Z2-7]{55}$/
   const hex = (n) => randomBytes(n).toString('hex')
