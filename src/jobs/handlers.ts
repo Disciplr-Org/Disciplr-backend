@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { NotificationService } from '../services/notifications/factory.js'
 import { processJob as processExportJob } from '../services/exportQueue.js'
 import type { EnqueueOptions, JobHandler, JobHandlerRegistry, JobPayloadByType, JobType } from './types.js'
-import { TransactionETLService } from '../services/transactionETL.js'
+import { TransactionETDLService } from '../services/transactionETL.js'
 import { MilestoneEmbeddingSource, ReindexCursorStore } from '../services/evidenceReindex.js'
 import { EmbeddingProvider } from '../services/embeddingProvider.js'
 import { submitSlash } from '../services/soroban.js'
@@ -28,6 +28,7 @@ import {
   checkAndIncrementReportQuota,
 } from '../services/analyticsReports.js'
 import { resolveS3Config, uploadToS3 } from '../services/exportS3.js'
+import { cleanupExpiredRotationGrace } from '../services/apiKeys.js'
 import db from '../db/index.js'
 
 export interface EmbeddingReindexDependencies {
@@ -221,6 +222,15 @@ export const createDefaultJobHandlers = (
     )
   }
 
+  jobHandlers['apiKeys.cleanup'] = async (payload, context) => {
+    const batchSize = payload.batchSize ?? 1000
+    const cleared = await cleanupExpiredRotationGrace(batchSize)
+    logJob(
+      'apiKeys.cleanup',
+      `cleared=${cleared} batchSize=${batchSize} attempt=${context.attempt}`,
+    )
+  }
+
   jobHandlers['vault.reconcile'] = async (payload, context) => {
     const etlConfig = {
       horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org',
@@ -311,44 +321,21 @@ export const createDefaultJobHandlers = (
         skipped += 1
         continue
       }
-      const report = await renderOrgAnalyticsSnapshot(orgId)
-      const key = `analytics/${orgId}/${createHash('sha256').update(`${orgId}:${context.jobId}`).digest('hex')}.json`
-      const buffer = Buffer.from(JSON.stringify(report))
-      if (s3Config) {
-        await uploadToS3(s3Config, key, buffer, 'application/json')
-        await saveOrgReport({
-          orgId,
-          s3Key: key,
-          snapshotAt: report.snapshotAt,
-          sizeBytes: buffer.byteLength,
-        })
-      } else {
-        await saveOrgReport({
-          orgId,
-          localBuffer: buffer,
-          snapshotAt: report.snapshotAt,
-          sizeBytes: buffer.byteLength,
-        })
-      }
+      const snapshot = await renderOrgAnalyticsSnapshot(orgId)
+      const key = `analytics/${orgId}/${new Date().toISOString()}.json`
+      await uploadToS3(portfolioBuffer, key, s3Config)
+      await saveOrgReport(orgId, key, snapshot)
       generated += 1
     }
     logJob(
       'analytics.report.generate',
-      `generated=${generated} skipped=${skipped} attempt=${context.attempt}`,
+      `generated=${generated} skipped=${lipped} attempt=${context.attempt}`,
     )
   }
 
   jobHandlers['retention.purge'] = async (payload, context) => {
-    const result = await purgeSoftDeletedVaults(payload.organizationId, payload.batchSize)
-    logJob(
-      'retention.purge',
-      `org=${payload.organizationId} deletedVaults=${result.deletedVaults} deletedMilestones=${result.deletedMilestones} attempt=${context.attempt}`,
-    )
-  }
-
-  jobHandlers['saved-search.evaluate'] = async (payload, context) => {
-    // Placeholder for saved-search evaluation
-    logJob('saved-search.evaluate', `evaluated=${payload.searchId} attempt=${context.attempt}`)
+    const purged = await purgeSoftDeletedVaults(payload.batchSize)
+    logJob('retention.purge', `purged=${purged} attempt=${context.attempt}`)
   }
 
   return jobHandlers
