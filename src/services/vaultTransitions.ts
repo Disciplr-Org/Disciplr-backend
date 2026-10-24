@@ -3,6 +3,7 @@ import { type Knex } from 'knex';
 import { UserRole } from '../types/user.js';
 import { getEnv } from '../config/index.js'
 import { toUTCDate } from '../utils/timestamps.js'
+import { VAULT_TRANSITIONS } from '../../shared/vaultMachine.mjs'
 
 type TerminalStatus = 'completed' | 'failed' | 'cancelled';
 
@@ -30,14 +31,10 @@ export interface TransitionResult {
   error?: string;
 }
 
-export const ALLOWED_TRANSITIONS: Record<string, string[]> = {
-  draft: ['active', 'cancelled'],
-  active: ['completed', 'failed', 'cancelled', 'disputed'],
-  disputed: ['active', 'completed', 'failed'],
-  completed: [],
-  failed: [],
-  cancelled: [],
-};
+// The deployed API and this module share one transition table; re-exporting the
+// imported object (rather than copying it) keeps `ALLOWED_TRANSITIONS` identity-equal to
+// `shared/vaultMachine.mjs`.
+export const ALLOWED_TRANSITIONS: typeof VAULT_TRANSITIONS = VAULT_TRANSITIONS;
 
 // Utility function for exhaustive type checking
 function assertNever(x: never): never {
@@ -165,7 +162,7 @@ export const getVaultState = (vaultId: string) => {
 export const getAllowedNextStates = (vaultId: string): string[] => {
   const vault = findVault(vaultId);
   if (!vault) return [];
-  return ALLOWED_TRANSITIONS[vault.status] || [];
+  return [...(ALLOWED_TRANSITIONS[vault.status] ?? [])];
 };
 
 export const transitionVaultStatus = async (
