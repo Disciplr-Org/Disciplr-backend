@@ -28,7 +28,7 @@ Implements the vault lifecycle that the backend models off-chain in
 | `stake` | Creator transfers the SEP-41 token into the contract; `Draft` -> `Active`. |
 | `stake_from` | Pull the creator's SEP-41 token using an authorized spender's allowance; `Draft` -> `Active`. |
 | `check_in` | Designated verifier confirms a milestone before its `due_date`. |
-| `dispute_milestone` | Creator disputes a verified milestone within the vault's configured `dispute_window` (`verified_at.checked_add(vault.dispute_window)`), reverting `verified` to `false`. Requires an existing `CheckIn` record. |
+| `dispute_milestone` | Creator disputes a mistaken milestone verification within the vault's configured `dispute_window` (`verified_at.checked_add(vault.dispute_window)`); reverts `verified` to `false` and clears approvals and the check-in record for a fresh M-of-N round. Requires an existing `CheckIn` record. Blocked if paused, not `Active`, or already released. |
 | `slash_on_miss` | After the deadline with unverified milestones, slash funds to `failure_destination`; `Active` -> `Failed`. Bounded pause/dispute stops blocking once expired. |
 | `claim` | When all milestones are verified, release funds to `success_destination`; `Active` -> `Completed`. Blocked if paused. |
 | `claim_milestone` | Release funds for an individual verified milestone; blocked if paused, enforces CEI (state persisted before external transfer). |
@@ -45,6 +45,29 @@ Implements the vault lifecycle that the backend models off-chain in
 3. **Time-Bounded Pause & Dispute**: Emergency pauses (`emergency_pause`) and administrative disputes (`admin_dispute`) are strictly bounded to at most 14 days (`MAX_PAUSE_DURATION = 14 * 86400`). When ledger time advances past the pause or dispute expiry, `slash_on_miss` and claims proceed normally without being blocked indefinitely.
 4. **Emergency Pause Enforcement**: When a vault is paused, milestone payouts (`claim_milestone`) as well as full claims (`claim`), slashes (`slash_on_miss`), and refunds (`withdraw`) are strictly blocked (`Error::Paused`), ensuring payouts cannot be drained during an active emergency.
 5. **Bounded Active Refunds**: `withdraw` is only available through the exact 24-hour boundary after staking and before `end_timestamp`. At or after the deadline it returns `Error::DeadlinePassed`, preserving the full stake for `slash_on_miss`; after the grace period it returns `Error::WithdrawWindowClosed`. Any verified milestone also blocks a refund.
+6. **Milestone Dispute Guards & State Reset**: `dispute_milestone` is strictly restricted to `Active` and unpaused vaults, rejecting already-released milestones (`MilestoneAlreadyReleased`) and milestones lacking check-in history (`MilestoneNotDisputable`). Disputing clears the per-milestone approvals list and check-in timestamp so verifiers can conduct a clean M-of-N re-review without encountering `AlreadyApproved`.
+
+### Milestone Disputes & Re-approval Flow
+
+The creator may dispute a verified milestone using `dispute_milestone` to correct mistaken verifications before funds are released. This reopens verification review rather than permanently locking the milestone or forcing an unfair slash.
+
+- **Preconditions**:
+  - Vault must be in `Active` status (calls on `Draft`, `Completed`, `Failed`, `Cancelled`, or `Disputed` return `Error::NotActive`).
+  - Vault must not be paused (returns `Error::Paused`).
+  - Milestone must be currently verified (`milestone.verified == true`), otherwise returns `Error::MilestonesIncomplete`.
+  - Milestone must not have already been released via `claim_milestone` (returns `Error::MilestoneAlreadyReleased`).
+  - Milestone must have an existing check-in record in storage (`CheckIn(vault_id, index)`); pre-verified milestones lacking a check-in record cannot be disputed and return `Error::MilestoneNotDisputable`.
+  - Ledger timestamp must be within the dispute window: `now <= verified_at + vault.dispute_window` (inclusive window rule; timestamps strictly greater than `verified_at + vault.dispute_window` return `Error::DeadlinePassed`).
+- **Reset & Re-approval**:
+  - The per-milestone approval list (`MilestoneApprovals(vault_id, index)`) and check-in record (`CheckIn(vault_id, index)`) are deleted from storage.
+  - `milestone.verified` is set back to `false`.
+  - Verifiers can then re-submit approvals via `check_in`. Because previous approvals were cleared, verifiers will not be blocked by `Error::AlreadyApproved`.
+  - Once the M-of-N threshold is satisfied again, `milestone.verified` transitions back to `true`, and milestone payout can proceed through `claim_milestone`.
+  - Emits a `milestone_disputed` event with topics `(Symbol, vault_id)` and data `(index, cleared_approvals_count)`.
+- **Dispute Capping Decision**:
+  - Adding a dispute counter to `Milestone` was evaluated to cap repeated disputes per milestone. However, altering the `Milestone` struct changes on-chain storage serialization and breaks existing vault records. Furthermore, disputing does not extend milestone `due_date` or vault `end_timestamp`: if a creator repeatedly disputes, time continues elapsing towards the deadline and the vault will be slashed if not reverified in time. Capping disputes per milestone via a counter is therefore deferred to a future storage-migration release.
+- **Storage Scoping**:
+  - Approvals and check-in records are keyed per vault (`MilestoneApprovals(vault_id, index)`, `CheckIn(vault_id, index)`) in persistent storage; the reset removes only the disputed vault's keys.
 
 ### Token allowlist policy
 

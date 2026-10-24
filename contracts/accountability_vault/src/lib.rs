@@ -292,6 +292,8 @@ pub enum Error {
     WithdrawBlockedByVerifiedMilestone = 33,
     /// Dispute window is outside the `[MIN_DISPUTE_WINDOW, MAX_DISPUTE_WINDOW]` bounds.
     InvalidDisputeWindow = 34,
+    /// Milestone has no check-in record and cannot be disputed.
+    MilestoneNotDisputable = 35,
 }
 
 /// Accountability vault contract entry point.
@@ -1192,11 +1194,12 @@ impl AccountabilityVault {
     }
 
 
-    /// Disputes a verified milestone within the vault's configured `dispute_window`.
+    /// Disputes a previously verified milestone within the vault's configured `dispute_window`.
     ///
-    /// Only the vault creator may dispute a milestone. Requires a recorded `CheckIn`
-    /// timestamp for the milestone and rejects the call with `Error::DeadlinePassed`
-    /// once `verified_at + vault.dispute_window` has elapsed.
+    /// Allows the vault creator to dispute a verified milestone on an `Active`,
+    /// unpaused vault before it is released, resetting approvals and the check-in
+    /// record so verifiers can conduct a fresh verification round. Rejects the call
+    /// with `Error::DeadlinePassed` once `verified_at + vault.dispute_window` has elapsed.
     pub fn dispute_milestone(
         env: Env,
         vault_id: String,
@@ -1205,9 +1208,16 @@ impl AccountabilityVault {
     ) -> Result<(), Error> {
         creator.require_auth();
         let mut vault: Vault = Self::load(&env, &vault_id)?;
+        let now = env.ledger().timestamp();
 
         if vault.creator != creator {
             return Err(Error::Unauthorized);
+        }
+        if vault.status != VaultStatus::Active {
+            return Err(Error::NotActive);
+        }
+        if Self::is_paused(&vault, now) {
+            return Err(Error::Paused);
         }
         if index >= vault.milestones.len() {
             return Err(Error::MilestoneIndexOutOfRange);
@@ -1217,6 +1227,9 @@ impl AccountabilityVault {
             .milestones
             .get(index)
             .ok_or(Error::MilestoneIndexOutOfRange)?;
+        if milestone.released {
+            return Err(Error::MilestoneAlreadyReleased);
+        }
         if !milestone.verified {
             return Err(Error::MilestonesIncomplete);
         }
@@ -1225,12 +1238,12 @@ impl AccountabilityVault {
             .storage()
             .persistent()
             .get(&DataKey::CheckIn(vault_id.clone(), index))
-            .ok_or(Error::MilestonesIncomplete)?;
+            .ok_or(Error::MilestoneNotDisputable)?;
 
         let window_end = verified_at
             .checked_add(vault.dispute_window)
             .ok_or(Error::InvalidDeadline)?;
-        if env.ledger().timestamp() > window_end {
+        if now > window_end {
             return Err(Error::DeadlinePassed);
         }
 
@@ -1242,9 +1255,22 @@ impl AccountabilityVault {
         env.storage().persistent().set(&key, &vault);
         Self::extend_ttl(&env, &key);
 
+        // Reset per-milestone approvals and check-in record so verifiers can re-approve.
+        let approvals_key = DataKey::MilestoneApprovals(vault_id.clone(), index);
+        let check_in_key = DataKey::CheckIn(vault_id.clone(), index);
+        let cleared_count: u32 = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<Address>>(&approvals_key)
+            .map(|a| a.len())
+            .unwrap_or(0);
+
+        env.storage().persistent().remove(&approvals_key);
+        env.storage().persistent().remove(&check_in_key);
+
         env.events().publish(
             (Symbol::new(&env, "milestone_disputed"), vault_id),
-            index,
+            (index, cleared_count),
         );
 
         Ok(())
