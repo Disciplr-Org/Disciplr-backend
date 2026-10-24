@@ -176,6 +176,9 @@ authRouter.post('/refresh', authJson, authRateLimiter, async (req, res, next) =>
         const data = await AuthService.refresh(result.data.refreshToken)
         res.json(data)
     } catch (error) {
+        if (error instanceof AppError) {
+            return next(error)
+        }
         return next(AppError.unauthorized(error instanceof Error ? error.message : 'Invalid refresh token'))
     }
 })

@@ -5,6 +5,7 @@ import { createAuditLog } from '../lib/audit-logs.js'
 import { RegisterInput, LoginInput } from '../lib/validation.js'
 import { UserRole } from '../types/user.js'
 import { randomUUID } from 'node:crypto'
+import { AppError } from '../middleware/errorHandler.js'
 import { recordSession, revokeAllUserSessions } from './session.js'
 import * as bcrypt from 'bcrypt'
 
@@ -78,17 +79,27 @@ export class AuthService {
         throw new Error('Password rejected')
     }
 
-    private static async revokeRefreshTokenFamily(userId: string, token: string) {
+    private static async revokeRefreshTokenFamily(userId: string, token: string, familyId?: string | null, tx?: any) {
         const tokenHash = hashToken(token)
+        const client = tx ?? getPrisma()
         const now = new Date()
-        await getPrisma().refreshToken.updateMany({
-            where: { userId },
-            data: { revokedAt: now },
-        })
-        await revokeAllUserSessions(userId)
+
+        if (familyId) {
+            await client.refreshToken.updateMany({
+                where: { familyId, revokedAt: null },
+                data: { revokedAt: now },
+            })
+        } else {
+            await client.refreshToken.updateMany({
+                where: { token: tokenHash, revokedAt: null },
+                data: { revokedAt: now },
+            })
+        }
+
         await this.emitSecurityAudit('auth.refresh_token_reuse_detected', 'refresh_token', userId, {
             reason: 'refresh_token_reuse',
             tokenFingerprint: tokenHash.slice(0, 12),
+            ...(familyId ? { familyId } : {}),
         }, userId)
     }
 
@@ -187,10 +198,12 @@ export class AuthService {
                 VALUES (${sessionId}, ${user.id}, ${jti}, ${accessExpiresAt})
             `
 
+            const familyId = randomUUID()
             await tx.refreshToken.create({
                 data: {
                     token: tokenHash,
                     userId: user.id,
+                    familyId,
                     expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
                 },
             })
@@ -211,65 +224,125 @@ export class AuthService {
     }
 
     static async refresh(token: string) {
+        let payload: any
         try {
-            const payload = verifyRefreshToken(token, getEnv())
+            payload = verifyRefreshToken(token, getEnv())
+        } catch {
+            throw new AppError(401, 'UNAUTHORIZED' as any, 'Invalid refresh token')
+        }
 
-            // Look up by hash — we never store the raw token
-            const tokenHash = hashToken(token)
-            const storedToken = await getPrisma().refreshToken.findUnique({
-                where: { token: tokenHash },
-                include: { user: true },
+        const tokenHash = hashToken(token)
+        const prisma = getPrisma()
+
+        try {
+            return await prisma.$transaction(async (tx: any) => {
+                const now = new Date()
+
+                // Atomic compare-and-set: revoke the token only if it is currently valid and unrevoked
+                const updateResult = await tx.refreshToken.updateMany({
+                    where: {
+                        token: tokenHash,
+                        revokedAt: null,
+                        expiresAt: { gt: now },
+                    },
+                    data: {
+                        revokedAt: now,
+                    },
+                })
+
+                if (updateResult.count === 0) {
+                    // Lost race, already used, or expired.
+                    const existingToken = await prisma.refreshToken.findUnique({
+                        where: { token: tokenHash },
+                        include: { user: true },
+                    })
+
+                    if (existingToken) {
+                        // Lost race, reuse, or expired: revoke this family plus emit security audit
+                        await this.revokeRefreshTokenFamily(
+                            existingToken.userId,
+                            token,
+                            existingToken.familyId,
+                        )
+                    }
+
+                    throw new AppError(401, 'UNAUTHORIZED' as any, 'Invalid refresh token')
+                }
+
+                // CAS succeeded! Fetch the rotated token details
+                const storedToken = await tx.refreshToken.findUnique({
+                    where: { token: tokenHash },
+                    include: { user: true },
+                })
+
+                if (!storedToken || !storedToken.user) {
+                    throw new AppError(401, 'UNAUTHORIZED' as any, 'Invalid refresh token')
+                }
+
+                const familyId = storedToken.familyId ?? randomUUID()
+                const jti = randomUUID()
+                const env = getEnv()
+                const newAccessToken = generateAccessToken(
+                    { userId: storedToken.user.id, role: storedToken.user.role, jti },
+                    env,
+                )
+                const newRefreshTokenValue = generateRefreshToken({ userId: storedToken.user.id, jti: randomUUID() }, env)
+                const newTokenHash = hashToken(newRefreshTokenValue)
+
+                // 1. Record session for new access token
+                const accessExpiresAt = new Date(Date.now() + 15 * 60 * 1000)
+                await recordSession(storedToken.user.id, jti, accessExpiresAt)
+
+                // 2. Create the successor refresh token in the same family
+                const newToken = await tx.refreshToken.create({
+                    data: {
+                        token: newTokenHash,
+                        userId: storedToken.user.id,
+                        familyId,
+                        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+                    },
+                })
+
+                // 3. Link rotated token to successor via replacedById
+                await tx.refreshToken.update({
+                    where: { id: storedToken.id },
+                    data: { replacedById: newToken.id },
+                })
+
+                return {
+                    accessToken: newAccessToken,
+                    refreshToken: newRefreshTokenValue,
+                }
             })
-
-            if (!storedToken) {
-                throw new Error('Invalid or expired refresh token')
-            }
-
-            if (storedToken.revokedAt || storedToken.expiresAt < new Date()) {
-                await this.revokeRefreshTokenFamily(storedToken.user.id, token)
-                throw new Error('Invalid refresh token')
-            }
-
-            // Revoke old token BEFORE issuing new ones (no dual-valid window)
-            await getPrisma().refreshToken.update({
-                where: { id: storedToken.id },
-                data: { revokedAt: new Date() },
-            })
-
-            const jti = randomUUID()
-            const env = getEnv()
-            const newAccessToken = generateAccessToken({ userId: storedToken.user.id, role: storedToken.user.role, jti }, env)
-            const newRefreshTokenValue = generateRefreshToken({ userId: storedToken.user.id }, env)
-
-            // 1. Record new session for access token
-            const accessExpiresAt = new Date(Date.now() + 15 * 60 * 1000)
-            await recordSession(storedToken.user.id, jti, accessExpiresAt)
-
-            // 2. Store hashed new refresh token
-            const newTokenHash = hashToken(newRefreshTokenValue)
-            await getPrisma().refreshToken.create({
-                data: {
-                    token: newTokenHash,
-                    userId: storedToken.user.id,
-                    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-                },
-            })
-
-            return {
-                accessToken: newAccessToken,
-                refreshToken: newRefreshTokenValue,
-            }
         } catch (error) {
-            throw new Error('Invalid refresh token')
+            if (error instanceof AppError) {
+                throw error
+            }
+            // Infrastructure or database failure rethrown as 503 Service Unavailable
+            throw new AppError(503, 'INTERNAL_ERROR' as any, 'Database operation failed')
         }
     }
 
     static async logout(token: string) {
         const tokenHash = hashToken(token)
-        await getPrisma().refreshToken.updateMany({
+        const prisma = getPrisma()
+        const existingToken = await prisma.refreshToken.findUnique({
             where: { token: tokenHash },
-            data: { revokedAt: new Date() },
         })
+
+        const now = new Date()
+        if (existingToken?.familyId) {
+            // Revoke the token's whole family
+            await prisma.refreshToken.updateMany({
+                where: { familyId: existingToken.familyId, revokedAt: null },
+                data: { revokedAt: now },
+            })
+        } else {
+            await prisma.refreshToken.updateMany({
+                where: { token: tokenHash, revokedAt: null },
+                data: { revokedAt: now },
+            })
+        }
     }
 
     /**

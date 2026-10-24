@@ -45,13 +45,19 @@ model User {
 }
 
 model RefreshToken {
-  id        String   @id @default(uuid())
-  token     String   @unique
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime
-  revokedAt DateTime?
-  createdAt DateTime @default(now())
+  id           String        @id @default(uuid())
+  token        String        @unique
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  familyId     String?       @map("family_id")
+  replacedById String?       @unique @map("replaced_by_id")
+  replacedBy   RefreshToken? @relation("TokenReplacement", fields: [replacedById], references: [id])
+  replaces     RefreshToken? @relation("TokenReplacement")
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime      @default(now())
+
+  @@index([familyId])
 }
 
 model Vault {
