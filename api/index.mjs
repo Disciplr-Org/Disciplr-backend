@@ -7,6 +7,7 @@ import { checkReadiness, isDatabaseUnavailable } from '../apilib/store-bootstrap
 import { OPENAPI } from '../apilib/openapi.mjs'
 import { OnchainError, isEnabled, getConfig, getServer, buildCreateVaultTx, buildStakeTx, verifySignedTx, txHashOf, submitAndWait, validateForChain } from '../apilib/soroban.mjs'
 import { safeCompare, expireOverdueVaults } from '../apilib/expiry.mjs'
+import { requestIdMiddleware } from '../apilib/log.mjs'
 import { QueryValidationError, validateStatus, validateCreator, validateVaultId } from '../apilib/query.mjs'
 import { parseAmount, formatAmount } from '../apilib/amount.mjs'
 import { encodeCursor, decodeCursor, parseLimit } from '../apilib/pagination.mjs'
@@ -22,6 +23,7 @@ const changedMilestones = (before, after) => after.milestones
 export function createApp(getStore = defaultGetStore, env = process.env) {
   const app = express()
   app.disable('x-powered-by')
+  app.use(requestIdMiddleware())
   app.use(helmet(helmetOptions))
 
   const allowedOrigins = parseAllowedOrigins(env)
@@ -464,8 +466,12 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
     if (err instanceof OnchainError) {
       return res.status(err.status).json({ error: err.message, ...(err.contractError && { contractError: err.contractError }) })
     }
-    console.error('API request failed')
-    return res.status(500).json({ error: 'Internal error' })
+    if (req?.log?.error) {
+      req.log.error({ err }, 'API request failed')
+    } else {
+      console.error('API request failed')
+    }
+    return res.status(500).json({ error: 'Internal error', ...(req?.id && { requestId: req.id }) })
   })
 
   return app

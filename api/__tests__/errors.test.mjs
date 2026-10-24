@@ -162,7 +162,7 @@ describe('Error Handling Middleware and Query Validation', () => {
       .expect(500)
 
     assert.equal(res.status, 500)
-    assert.deepEqual(res.body, { error: 'Internal error' })
+    assert.deepEqual({ ...res.body, requestId: undefined }, { error: 'Internal error', requestId: undefined })
   })
 
   test('Thrown Error inside handlers does not leak err.message in responses', async () => {
@@ -178,7 +178,7 @@ describe('Error Handling Middleware and Query Validation', () => {
       .expect(500)
 
     assert.equal(res.status, 500)
-    assert.deepEqual(res.body, { error: 'Internal error' })
+    assert.deepEqual({ ...res.body, requestId: undefined }, { error: 'Internal error', requestId: undefined })
   })
 
   test('Parametrised test: every route in OPENAPI.paths with garbage input asserts JSON content-type and status < 500', async () => {
