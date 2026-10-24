@@ -7,10 +7,12 @@ import { checkReadiness, isDatabaseUnavailable } from '../apilib/store-bootstrap
 import { OPENAPI } from '../apilib/openapi.mjs'
 import { OnchainError, isEnabled, getConfig, getServer, buildCreateVaultTx, buildStakeTx, verifySignedTx, txHashOf, submitAndWait, validateForChain } from '../apilib/soroban.mjs'
 import { safeCompare, expireOverdueVaults } from '../apilib/expiry.mjs'
+import { requestIdMiddleware } from '../apilib/log.mjs'
 
 export function createApp(getStore = defaultGetStore) {
   const app = express()
   app.disable('x-powered-by')
+  app.use(requestIdMiddleware())
   app.use(cors())
   app.use(express.json({ limit: '100kb' }))
 
@@ -23,8 +25,12 @@ export function createApp(getStore = defaultGetStore) {
     }
     if (e instanceof StoreConflictError) return res.status(409).json({ error: e.message })
     if (e instanceof OnchainError) return res.status(e.status).json({ error: e.message, ...(e.contractError && { contractError: e.contractError }) })
-    console.error('API request failed')
-    res.status(500).json({ error: 'Internal error' })
+    if (req?.log?.error) {
+      req.log.error({ err: e }, 'API request failed')
+    } else {
+      console.error('API request failed')
+    }
+    res.status(500).json({ error: 'Internal error', ...(req?.id && { requestId: req.id }) })
   })
 
   const router = express.Router()
