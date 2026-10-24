@@ -7,8 +7,14 @@ import { checkReadiness, isDatabaseUnavailable } from '../apilib/store-bootstrap
 import { OPENAPI } from '../apilib/openapi.mjs'
 import { OnchainError, isEnabled, getConfig, getServer, buildCreateVaultTx, buildStakeTx, verifySignedTx, txHashOf, submitAndWait, validateForChain } from '../apilib/soroban.mjs'
 import { safeCompare, expireOverdueVaults } from '../apilib/expiry.mjs'
+import { failVault, validateMilestone } from '../shared/vaultMachine.mjs'
 import { buildCorsOptions, parseAllowedOrigins, isOriginAllowed, helmetOptions } from '../apilib/cors.mjs'
 import { createRateLimiter } from '../apilib/rateLimit.mjs'
+
+// Milestone rows whose status the shared machine changed, in the shape store.transition() applies.
+const changedMilestones = (before, after) => after.milestones
+  .map((m, i) => (m.status !== before.milestones[i]?.status ? { id: m.id, status: m.status } : null))
+  .filter(Boolean)
 
 export function createApp(getStore = defaultGetStore, env = process.env) {
   const app = express()
@@ -197,20 +203,14 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
 
     // Re-check and apply under the store's per-vault transition (row locks in Postgres, a per-vault
     // queue in memory) so concurrent validate/fail requests cannot double-complete or double-release.
-    const now = currentTime.toISOString()
     const result = await s.transition(v.id, (live) => {
-      if (live.status !== 'active') return { conflict: true, error: `Vault is ${live.status}` }
-      const lm = live.milestones.find((x) => x.id === m.id)
-      if (!lm) return { conflict: true, error: 'Milestone not found' }
-      if (lm.status === 'completed') return { conflict: true, error: 'Milestone already validated' }
-      if (lm.status === 'failed' || lm.status === 'cancelled') return { conflict: true, error: `Milestone is ${lm.status}` }
-      const activities = [{ id: crypto.randomUUID(), type: 'validate', vaultId: live.id, amount: lm.amount, status: 'simulated', hash: hex(32), memo: `Milestone validated: ${lm.title}`, createdAt: now }]
-      let vaultStatus = live.status
-      if (live.milestones.every((x) => x.id === lm.id || x.status === 'completed')) {
-        vaultStatus = 'completed'
-        activities.push({ id: crypto.randomUUID(), type: 'release', vaultId: live.id, amount: live.amount, status: 'simulated', hash: hex(32), memo: 'Funds released to success destination', createdAt: new Date(Date.now() + 1).toISOString() })
+      const outcome = validateMilestone(live, req.params.mid, currentTime, { hash: () => hex(32) })
+      if (!outcome.ok) return { conflict: true, error: outcome.message }
+      return {
+        vaultStatus: outcome.vault.status,
+        milestoneUpdates: changedMilestones(live, outcome.vault),
+        activities: outcome.activities,
       }
-      return { vaultStatus, milestoneUpdates: [{ id: lm.id, status: 'completed' }], activities }
     })
     if (!result) return bad(res, 'Vault not found', 404)
     res.json({ data: result.vault })
@@ -223,12 +223,14 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
     if (!v) return bad(res, 'Vault not found', 404)
     if (v.status !== 'active') return bad(res, `Vault is ${v.status}`, 409)
     if (req.body?.verifier !== v.verifier) return bad(res, 'Only the vault verifier may fail a vault', 403)
+    const now = new Date()
     const result = await s.transition(v.id, (live) => {
-      if (live.status !== 'active') return { conflict: true, error: `Vault is ${live.status}` }
+      const outcome = failVault(live, now, { hash: () => hex(32) })
+      if (!outcome.ok) return { conflict: true, error: outcome.message }
       return {
-        vaultStatus: 'failed',
-        milestoneUpdates: live.milestones.filter((m) => m.status !== 'completed').map((m) => ({ id: m.id, status: 'failed' })),
-        activities: [{ id: crypto.randomUUID(), type: 'redirect', vaultId: live.id, amount: live.amount, status: 'simulated', hash: hex(32), memo: 'Funds redirected to failure destination', createdAt: new Date().toISOString() }],
+        vaultStatus: outcome.vault.status,
+        milestoneUpdates: changedMilestones(live, outcome.vault),
+        activities: outcome.activities,
       }
     })
     if (!result) return bad(res, 'Vault not found', 404)
