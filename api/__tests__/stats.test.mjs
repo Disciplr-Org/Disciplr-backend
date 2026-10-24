@@ -31,7 +31,12 @@ test('GET /stats - returns aggregate statistics with and without creator filter'
   assert.equal(valRes.status, 200)
 
   // Create failed vault for creatorB
-  const v3 = await request(app).post('/api/vaults').send(buildVaultPayload({ creator: creatorB, verifier, amount: 300 }))
+  const v3 = await request(app).post('/api/vaults').send(buildVaultPayload({
+    creator: creatorB,
+    verifier,
+    amount: 300,
+    milestones: [{ title: 'Single', amount: 300, dueDate: new Date(Date.now() + 86400000).toISOString() }],
+  }))
   assert.equal(v3.status, 201)
   const failRes = await request(app)
     .post(`/api/vaults/${v3.body.data.id}/fail`)
@@ -46,9 +51,9 @@ test('GET /stats - returns aggregate statistics with and without creator filter'
   assert.ok(statsAll.active >= 1)
   assert.ok(statsAll.completed >= 1)
   assert.ok(statsAll.failed >= 1)
-  assert.ok(statsAll.totalLocked >= 1000)
-  assert.ok(statsAll.totalReleased >= 500)
-  assert.ok(statsAll.totalRedirected >= 300)
+  assert.ok(Number(statsAll.totalLocked) >= 1000)
+  assert.ok(Number(statsAll.totalReleased) >= 500)
+  assert.ok(Number(statsAll.totalRedirected) >= 300)
 
   // Filtered by creatorA
   const resA = await request(app).get(`/api/stats?creator=${creatorA}`)
@@ -58,8 +63,8 @@ test('GET /stats - returns aggregate statistics with and without creator filter'
   assert.equal(statsA.active, 1)
   assert.equal(statsA.completed, 1)
   assert.equal(statsA.failed, 0)
-  assert.equal(statsA.totalLocked, 1000)
-  assert.equal(statsA.totalReleased, 500)
-  assert.equal(statsA.totalRedirected, 0)
+  assert.equal(statsA.totalLocked, '1000')
+  assert.equal(statsA.totalReleased, '500')
+  assert.equal(statsA.totalRedirected, '0')
   assert.equal(statsA.successRate, 100)
 })
