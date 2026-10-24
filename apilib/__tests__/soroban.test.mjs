@@ -1,6 +1,6 @@
 import { jest } from '@jest/globals'
 import { createRequire } from 'node:module'
-import { toStroops, createVaultArgs, stakeArgs, buildCreateVaultTx, verifySignedTx, submitAndWait, decodeContractError, OnchainError } from '../soroban.mjs'
+import { toStroops, createVaultArgs, stakeArgs, buildCreateVaultTx, verifySignedTx, submitAndWait, decodeContractError, OnchainError, buildInvocationArgs, prepareInvocation, submitSlash, submitClaim, submitClaimMilestone, submitWithdraw } from '../soroban.mjs'
 
 const sdk = createRequire(import.meta.url)('@stellar/stellar-sdk')
 const { Keypair, Account, Contract, TransactionBuilder, StrKey, scValToNative, xdr } = sdk
@@ -73,6 +73,103 @@ describe('create_vault arg encoding', () => {
   it('maps simulation contract errors to a 400', async () => {
     const server = { getAccount: async (k) => new Account(k, '1'), prepareTransaction: async () => { throw new Error('HostError: Error(Contract, #16)') } }
     await expect(buildCreateVaultTx(server, cfg, vault)).rejects.toMatchObject({ status: 400, message: expect.stringContaining('AmountMismatch') })
+  })
+})
+
+describe('buildInvocationArgs', () => {
+  const caller = Keypair.random().publicKey()
+  it('encodes slash_on_miss with exactly one string ScVal', () => {
+    const a = buildInvocationArgs('slash_on_miss', { vaultId: vault.id })
+    expect(a).toHaveLength(1)
+    expect(a[0].switch().name).toBe('scvString')
+    expect(scValToNative(a[0])).toBe(vault.id)
+  })
+  it('encodes claim with vaultId and caller address', () => {
+    const a = buildInvocationArgs('claim', { vaultId: vault.id, caller })
+    expect(a).toHaveLength(2)
+    expect(scValToNative(a[0])).toBe(vault.id)
+    expect(a[1].switch().name).toBe('scvAddress')
+    expect(scValToNative(a[1])).toBe(caller)
+  })
+  it('encodes claim_milestone with vaultId, caller and u32 index', () => {
+    const a = buildInvocationArgs('claim_milestone', { vaultId: vault.id, caller, index: 1 })
+    expect(a).toHaveLength(3)
+    expect(scValToNative(a[0])).toBe(vault.id)
+    expect(a[1].switch().name).toBe('scvAddress')
+    expect(scValToNative(a[1])).toBe(caller)
+    expect(a[2].switch().name).toBe('scvU32')
+    expect(scValToNative(a[2])).toBe(1)
+  })
+  it('encodes withdraw with vaultId and creator address', () => {
+    const a = buildInvocationArgs('withdraw', { vaultId: vault.id, creator })
+    expect(a).toHaveLength(2)
+    expect(scValToNative(a[0])).toBe(vault.id)
+    expect(a[1].switch().name).toBe('scvAddress')
+    expect(scValToNative(a[1])).toBe(creator)
+  })
+  it('rejects an invalid G-address before any RPC call', () => {
+    expect(() => buildInvocationArgs('claim', { vaultId: vault.id, caller: 'not-an-address' })).toThrow(OnchainError)
+    expect(() => buildInvocationArgs('withdraw', { vaultId: vault.id, creator: 'GINVALID' })).toThrow(OnchainError)
+  })
+  it('rejects muxed addresses', () => {
+    const muxed = 'MAAAAAAAAAAAAAB7BQ2L7E5NBWMXDUCMZSIPOBKRDSBYI7LWNQB2W5O46CXQH5ZQ5Q5Q5Q'
+    expect(() => buildInvocationArgs('claim', { vaultId: vault.id, caller: muxed })).toThrow(OnchainError)
+  })
+  it('builds a Contract.call with the right function name and arg count', () => {
+    const op = new Contract(cfg.contractId).call('withdraw', ...buildInvocationArgs('withdraw', { vaultId: vault.id, creator }))
+    const inv = op.func.invokeContract()
+    expect(inv.functionName().toString()).toBe('withdraw')
+    expect(inv.args()).toHaveLength(2)
+  })
+})
+
+describe('prepareInvocation and signing model', () => {
+  const caller = Keypair.random().publicKey()
+  const mockServer = () => ({ getAccount: jest.fn(async (k) => new Account(k, '1')), prepareTransaction: jest.fn(async (t) => t) })
+
+  it('withdraw returns unsigned build-mode XDR and never signs', async () => {
+    const server = mockServer()
+    const out = await prepareInvocation(server, cfg, 'withdraw', { vaultId: vault.id, creator: vault.creator }, vault.creator)
+    expect(out.mode).toBe('build')
+    const tx = TransactionBuilder.fromXDR(out.xdr, PASS)
+    expect(tx.operations).toHaveLength(1)
+    const inv = tx.operations[0].func.invokeContract()
+    expect(inv.functionName().toString()).toBe('withdraw')
+    expect(inv.args()).toHaveLength(2)
+    expect(tx.signatures).toHaveLength(0)
+    expect(server.prepareTransaction).toHaveBeenCalled()
+  })
+
+  it('submitWithdraw never signs with the backend key even if source equals creator', async () => {
+    const server = mockServer()
+    const out = await submitWithdraw(server, cfg, { vaultId: vault.id, creator: vault.creator }, { sourceAddress: vault.creator })
+    expect(out.mode).toBe('build')
+    const tx = TransactionBuilder.fromXDR(out.xdr, PASS)
+    expect(tx.signatures).toHaveLength(0)
+  })
+
+  it('slash is backend-signed and submitted', async () => {
+    const server = mockServer()
+    const out = await submitSlash(server, cfg, { vaultId: vault.id }, { secretKey: creatorKp.secret() })
+    expect(out.mode).toBe('submit')
+    expect(server.prepareTransaction).toHaveBeenCalled()
+  })
+
+  it('maps contract errors such as #13 to named errors', async () => {
+    const server = { getAccount: async (k) => new Account(k, '1'), prepareTransaction: async () => { throw new Error('HostError: Error(Contract, #13)') } }
+    await expect(submitSlash(server, cfg, { vaultId: vault.id }, { secretKey: creatorKp.secret() })).rejects.toMatchObject({ status: 400, message: expect.stringContaining('DeadlineNotReached') })
+  })
+
+  it('claim returns build mode when source is not a verifier', async () => {
+    const server = mockServer()
+    const out = await submitClaim(server, cfg, { vaultId: vault.id, caller }, { secretKey: creatorKp.secret(), verifiers: [] })
+    expect(out.mode).toBe('build')
+  })
+
+  it('claim_milestone is backend-signed when source is a verifier', async () => {
+    const server = mockServer()
+    const out = await submitClaimMilestone(server, cfg, { vaultId: vault.id, caller, index: 0 }, { secretKey: creatorKp.secret(), verifiers: [creatorKp.publicKey()] })
+    expect(out.mode).toBe('submit')
   })
 })
 

@@ -89,6 +89,20 @@ export class MemoryStore {
       }),
     }
   }
+
+  // Aggregate statistics for dashboard without loading all vaults.
+  async aggregateStats({ creator, verifier } = {}) {
+    const filtered = this.vaults.filter((v) => (!creator || v.creator === creator) && (!verifier || v.verifier === verifier))
+    const totalVaults = filtered.length
+    const active = filtered.filter(v => v.status === 'active').length
+    const completed = filtered.filter(v => v.status === 'completed').length
+    const failed = filtered.filter(v => v.status === 'failed').length
+    const totalLocked = filtered.filter(v => v.status === 'active').reduce((sum, v) => sum + Number(v.amount), 0)
+    const totalReleased = filtered.filter(v => v.status === 'completed').reduce((sum, v) => sum + Number(v.amount), 0)
+    const totalRedirected = filtered.filter(v => v.status === 'failed').reduce((sum, v) => sum + Number(v.amount), 0)
+    return { totalVaults, active, completed, failed, totalLocked, totalReleased, totalRedirected }
+  }
+
   async createVault(v) { this.vaults.push(v); return v }
   async saveVault(v) { v.updatedAt = iso(Date.now()); return v }
   async addActivity(a) { this.activity.push(a); return a }
@@ -269,6 +283,33 @@ export class PgStore {
       items: vaults,
       hasMore,
       lastItem: items.length > 0 ? items[items.length - 1] : null,
+    }
+  }
+
+  // Aggregate statistics for dashboard without loading all vaults.
+  async aggregateStats({ creator, verifier } = {}) {
+    const w = ['deleted_at IS NULL']; const p = []
+    if (creator) { p.push(creator); w.push(`creator = $${p.length}`) }
+    if (verifier) { p.push(verifier); w.push(`verifier = $${p.length}`) }
+    const q = `SELECT 
+      count(*) AS total_vaults,
+      count(*) FILTER (WHERE status = 'active'::vault_status) AS active,
+      count(*) FILTER (WHERE status = 'completed'::vault_status) AS completed,
+      count(*) FILTER (WHERE status = 'failed'::vault_status) AS failed,
+      COALESCE(sum(amount) FILTER (WHERE status = 'active'::vault_status), 0) AS total_locked,
+      COALESCE(sum(amount) FILTER (WHERE status = 'completed'::vault_status), 0) AS total_released,
+      COALESCE(sum(amount) FILTER (WHERE status = 'failed'::vault_status), 0) AS total_redirected
+    FROM vaults WHERE ${w.join(' AND ')}`
+    const { rows } = await this.pool.query(q, p)
+    const r = rows[0]
+    return {
+      totalVaults: Number(r.total_vaults),
+      active: Number(r.active),
+      completed: Number(r.completed),
+      failed: Number(r.failed),
+      totalLocked: Number(r.total_locked),
+      totalReleased: Number(r.total_released),
+      totalRedirected: Number(r.total_redirected),
     }
   }
   async getVault(id) {

@@ -1,6 +1,6 @@
-// Disciplr public API (Vercel serverless entry). Express app, JSON over HTTP.
 import express from 'express'
 import cors from 'cors'
+import helmet from 'helmet'
 import { randomBytes } from 'node:crypto'
 import { getStore as defaultGetStore, StoreConflictError } from '../apilib/store.mjs'
 import { checkReadiness, isDatabaseUnavailable } from '../apilib/store-bootstrap.mjs'
@@ -8,12 +8,50 @@ import { OPENAPI } from '../apilib/openapi.mjs'
 import { OnchainError, isEnabled, getConfig, getServer, buildCreateVaultTx, buildStakeTx, verifySignedTx, txHashOf, submitAndWait, validateForChain } from '../apilib/soroban.mjs'
 import { safeCompare, expireOverdueVaults } from '../apilib/expiry.mjs'
 import { encodeCursor, decodeCursor, parseLimit } from '../apilib/pagination.mjs'
+import { failVault, validateMilestone } from '../shared/vaultMachine.mjs'
+import { buildCorsOptions, parseAllowedOrigins, isOriginAllowed, helmetOptions } from '../apilib/cors.mjs'
+import { createRateLimiter } from '../apilib/rateLimit.mjs'
 
-export function createApp(getStore = defaultGetStore) {
+// Milestone rows whose status the shared machine changed, in the shape store.transition() applies.
+const changedMilestones = (before, after) => after.milestones
+  .map((m, i) => (m.status !== before.milestones[i]?.status ? { id: m.id, status: m.status } : null))
+  .filter(Boolean)
+
+export function createApp(getStore = defaultGetStore, env = process.env) {
   const app = express()
   app.disable('x-powered-by')
-  app.use(cors())
+  app.use(helmet(helmetOptions))
+
+  const allowedOrigins = parseAllowedOrigins(env)
+  const strictCors = cors(buildCorsOptions(env))
+
+  app.use((req, res, next) => {
+    // Permissive CORS for public GET (and HEAD) endpoints
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      return next()
+    }
+
+    // Strict CORS for OPTIONS preflight and state-changing requests
+    strictCors(req, res, () => {
+      if (req.method === 'OPTIONS') {
+        // Disallowed origins on preflight get no CORS headers and terminate with 204
+        return res.status(204).end()
+      }
+
+      if (req.method === 'POST') {
+        const origin = req.headers.origin
+        if (origin && !isOriginAllowed(origin, allowedOrigins)) {
+          return res.status(403).json({ error: 'Origin not allowed' })
+        }
+      }
+
+      next()
+    })
+  })
+
   app.use(express.json({ limit: '100kb' }))
+  app.use(createRateLimiter({ getStore }))
 
   const STELLAR = /^G[A-Z2-7]{55}$/
   const hex = (n) => randomBytes(n).toString('hex')
@@ -235,20 +273,14 @@ export function createApp(getStore = defaultGetStore) {
 
     // Re-check and apply under the store's per-vault transition (row locks in Postgres, a per-vault
     // queue in memory) so concurrent validate/fail requests cannot double-complete or double-release.
-    const now = currentTime.toISOString()
     const result = await s.transition(v.id, (live) => {
-      if (live.status !== 'active') return { conflict: true, error: `Vault is ${live.status}` }
-      const lm = live.milestones.find((x) => x.id === m.id)
-      if (!lm) return { conflict: true, error: 'Milestone not found' }
-      if (lm.status === 'completed') return { conflict: true, error: 'Milestone already validated' }
-      if (lm.status === 'failed' || lm.status === 'cancelled') return { conflict: true, error: `Milestone is ${lm.status}` }
-      const activities = [{ id: crypto.randomUUID(), type: 'validate', vaultId: live.id, amount: lm.amount, status: 'simulated', hash: hex(32), memo: `Milestone validated: ${lm.title}`, createdAt: now }]
-      let vaultStatus = live.status
-      if (live.milestones.every((x) => x.id === lm.id || x.status === 'completed')) {
-        vaultStatus = 'completed'
-        activities.push({ id: crypto.randomUUID(), type: 'release', vaultId: live.id, amount: live.amount, status: 'simulated', hash: hex(32), memo: 'Funds released to success destination', createdAt: new Date(Date.now() + 1).toISOString() })
+      const outcome = validateMilestone(live, req.params.mid, currentTime, { hash: () => hex(32) })
+      if (!outcome.ok) return { conflict: true, error: outcome.message }
+      return {
+        vaultStatus: outcome.vault.status,
+        milestoneUpdates: changedMilestones(live, outcome.vault),
+        activities: outcome.activities,
       }
-      return { vaultStatus, milestoneUpdates: [{ id: lm.id, status: 'completed' }], activities }
     })
     if (!result) return bad(res, 'Vault not found', 404)
     res.json({ data: result.vault })
@@ -261,12 +293,14 @@ export function createApp(getStore = defaultGetStore) {
     if (!v) return bad(res, 'Vault not found', 404)
     if (v.status !== 'active') return bad(res, `Vault is ${v.status}`, 409)
     if (req.body?.verifier !== v.verifier) return bad(res, 'Only the vault verifier may fail a vault', 403)
+    const now = new Date()
     const result = await s.transition(v.id, (live) => {
-      if (live.status !== 'active') return { conflict: true, error: `Vault is ${live.status}` }
+      const outcome = failVault(live, now, { hash: () => hex(32) })
+      if (!outcome.ok) return { conflict: true, error: outcome.message }
       return {
-        vaultStatus: 'failed',
-        milestoneUpdates: live.milestones.filter((m) => m.status !== 'completed').map((m) => ({ id: m.id, status: 'failed' })),
-        activities: [{ id: crypto.randomUUID(), type: 'redirect', vaultId: live.id, amount: live.amount, status: 'simulated', hash: hex(32), memo: 'Funds redirected to failure destination', createdAt: new Date().toISOString() }],
+        vaultStatus: outcome.vault.status,
+        milestoneUpdates: changedMilestones(live, outcome.vault),
+        activities: outcome.activities,
       }
     })
     if (!result) return bad(res, 'Vault not found', 404)
@@ -301,19 +335,23 @@ export function createApp(getStore = defaultGetStore) {
 
   router.get('/stats', wrap(async (req, res) => {
     const s = await getStore()
-    const vaults = await s.listVaults({ creator: req.query.creator })
-    const sum = (f) => vaults.filter(f).reduce((a, v) => a + Number(v.amount), 0)
-    const done = vaults.filter((v) => v.status !== 'active')
+    // Use aggregateStats if available (Postgres or Memory store)
+    const stats = typeof s.aggregateStats === 'function'
+      ? await s.aggregateStats({ creator: req.query.creator, verifier: req.query.verifier })
+      : { totalVaults: 0, active: 0, completed: 0, failed: 0, totalLocked: 0, totalReleased: 0, totalRedirected: 0 }
+    const { totalVaults, active, completed, failed, totalLocked, totalReleased, totalRedirected } = stats
+    const done = completed + failed
+    const successRate = done ? Math.round((completed / done) * 100) : null
     res.json({
       data: {
-        totalVaults: vaults.length,
-        active: vaults.filter((v) => v.status === 'active').length,
-        completed: vaults.filter((v) => v.status === 'completed').length,
-        failed: vaults.filter((v) => v.status === 'failed').length,
-        totalLocked: sum((v) => v.status === 'active'),
-        totalReleased: sum((v) => v.status === 'completed'),
-        totalRedirected: sum((v) => v.status === 'failed'),
-        successRate: done.length ? Math.round((vaults.filter((v) => v.status === 'completed').length / done.length) * 100) : null,
+        totalVaults,
+        active,
+        completed,
+        failed,
+        totalLocked,
+        totalReleased,
+        totalRedirected,
+        successRate,
       },
     })
   }))
@@ -341,6 +379,10 @@ export function createApp(getStore = defaultGetStore) {
 
   app.use(['/api/v1', '/api'], router)
   app.use((_req, res) => res.status(404).json({ error: 'Not found' }))
+  app.use((err, _req, res, _next) => {
+    console.error('API request error:', err)
+    res.status(500).json({ error: 'Internal error' })
+  })
 
   return app
 }
