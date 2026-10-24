@@ -106,6 +106,133 @@ fn setup_with_oracle(
 }
 
 #[test]
+fn test_withdraw_after_deadline_rejected_then_slash_succeeds() {
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    s.env.ledger().with_mut(|ledger| ledger.timestamp = 1_100);
+    let at_deadline = s.contract.try_withdraw(&s.vault_id, &s.creator);
+    assert_eq!(at_deadline, Err(Ok(Error::DeadlinePassed)));
+
+    s.env.ledger().with_mut(|ledger| ledger.timestamp = 1_101);
+    let after_deadline = s.contract.try_withdraw(&s.vault_id, &s.creator);
+    assert_eq!(after_deadline, Err(Ok(Error::DeadlinePassed)));
+
+    s.contract.slash_on_miss(&s.vault_id);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    assert_eq!(token_client.balance(&s.creator), 0);
+    assert_eq!(token_client.balance(&s.failure), 500);
+    assert_eq!(
+        s.contract.get_vault(&s.vault_id).status,
+        VaultStatus::Failed
+    );
+}
+
+#[test]
+fn test_withdraw_within_grace_refunds() {
+    let s = setup(&[WITHDRAW_GRACE_SECS + 1], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    let creator_balance_before = token_client.balance(&s.creator);
+    s.env
+        .ledger()
+        .with_mut(|ledger| ledger.timestamp = 1_000 + WITHDRAW_GRACE_SECS);
+
+    s.contract.withdraw(&s.vault_id, &s.creator);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(
+        token_client.balance(&s.creator),
+        creator_balance_before + 500
+    );
+    assert_eq!(vault.status, VaultStatus::Cancelled);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.staked_at, 1_000);
+}
+
+#[test]
+fn test_withdraw_after_grace_before_deadline_rejected() {
+    let s = setup(&[WITHDRAW_GRACE_SECS + 100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    let creator_balance_before = token_client.balance(&s.creator);
+    let contract_balance_before = token_client.balance(&s.contract.address);
+    s.env
+        .ledger()
+        .with_mut(|ledger| ledger.timestamp = 1_000 + WITHDRAW_GRACE_SECS + 1);
+
+    let result = s.contract.try_withdraw(&s.vault_id, &s.creator);
+
+    assert_eq!(result, Err(Ok(Error::WithdrawWindowClosed)));
+    assert_eq!(token_client.balance(&s.creator), creator_balance_before);
+    assert_eq!(
+        token_client.balance(&s.contract.address),
+        contract_balance_before
+    );
+    assert_eq!(
+        s.contract.get_vault(&s.vault_id).status,
+        VaultStatus::Active
+    );
+}
+
+#[test]
+fn test_withdraw_with_verified_milestone_rejected_specific_error() {
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 1));
+
+    let result = s.contract.try_withdraw(&s.vault_id, &s.creator);
+
+    assert_eq!(result, Err(Ok(Error::WithdrawBlockedByVerifiedMilestone)));
+}
+
+#[test]
+fn test_stake_from_sets_staked_at() {
+    let s = setup(&[100], &[500]);
+    let spender = Address::generate(&s.env);
+    token::Client::new(&s.env, &s.token).approve(&s.creator, &spender, &500, &100);
+
+    s.contract.stake_from(&s.vault_id, &s.creator, &spender);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.staked_at, 1_000);
+    assert_eq!(vault.staked, 500);
+}
+
+#[test]
+fn test_withdraw_blocked_when_paused_or_disputed() {
+    let paused = setup(&[100], &[500]);
+    paused.contract.stake(&paused.vault_id, &paused.creator);
+    paused
+        .contract
+        .emergency_pause(&paused.vault_id, &paused.guardian, &100);
+    let paused_result = paused
+        .contract
+        .try_withdraw(&paused.vault_id, &paused.creator);
+    assert_eq!(paused_result, Err(Ok(Error::Paused)));
+
+    let disputed = setup(&[100], &[500]);
+    disputed
+        .contract
+        .stake(&disputed.vault_id, &disputed.creator);
+    disputed
+        .contract
+        .admin_dispute(&disputed.vault_id, &disputed.guardian, &100);
+    let disputed_result = disputed
+        .contract
+        .try_withdraw(&disputed.vault_id, &disputed.creator);
+    assert_eq!(disputed_result, Err(Ok(Error::NotActive)));
+    assert_eq!(
+        disputed.contract.get_vault(&disputed.vault_id).status,
+        VaultStatus::Disputed
+    );
+}
+
+#[test]
 fn test_slash_before_deadline_fails() {
     let s = setup(&[100], &[500]);
     s.contract.stake(&s.vault_id, &s.creator);
@@ -1107,5 +1234,3 @@ fn test_claim_milestone_blocked_when_paused() {
     assert!(claim_res2.is_ok());
     assert_eq!(s.token.balance(&s.creator), pre_creator_bal + 50);
 }
-
-
