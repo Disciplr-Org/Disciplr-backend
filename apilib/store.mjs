@@ -131,7 +131,14 @@ export class PgStore {
   async listVaults({ creator, status } = {}) {
     const w = ['deleted_at IS NULL']; const p = []
     if (creator) { p.push(creator); w.push(`creator = $${p.length}`) }
-    if (status) { p.push(status); w.push(`status = $${p.length}::vault_status`) }
+    if (status) {
+      const validStatuses = new Set(['active', 'completed', 'failed'])
+      if (validStatuses.has(status)) {
+        p.push(status); w.push(`status = $${p.length}::vault_status`)
+      } else {
+        return []
+      }
+    }
     const { rows } = await this.pool.query(`SELECT * FROM vaults WHERE ${w.join(' AND ')} ORDER BY created_at DESC LIMIT 200`, p)
     if (!rows.length) return []
     const ms = (await this.pool.query('SELECT * FROM milestones WHERE vault_id = ANY($1) AND deleted_at IS NULL', [rows.map((r) => r.id)])).rows
