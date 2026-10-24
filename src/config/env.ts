@@ -168,6 +168,7 @@ export const envSchema = z
     SOROBAN_RPC_TIMEOUT_MS: positiveInt(30_000),
     SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS: positiveInt(5_000),
     SOROBAN_SUBMIT_TIMEOUT_MS: positiveInt(60_000),
+    SOROBAN_TX_TIMEOUT_SECS: positiveInt(30),
     STELLAR_NETWORK_PASSPHRASE: z.string().optional(),
 
     // ── Job system ───────────────────────────────────────────────
@@ -269,6 +270,11 @@ export const envSchema = z
     WEBHOOK_CIRCUIT_BREAKER_THRESHOLD: positiveInt(5),
     WEBHOOK_CIRCUIT_BREAKER_WINDOW_MS: positiveInt(60_000),
     WEBHOOK_CIRCUIT_BREAKER_HALF_OPEN_TIMEOUT_MS: positiveInt(30_000),
+    // When "true", permits loopback/private egress destinations for webhooks
+    // and evidence fetching. Intended for tests and local development only.
+    // The default (unset) is fail-closed: private destinations are blocked.
+    // Refusing to start in production with this flag enabled is enforced below.
+    WEBHOOK_ALLOW_PRIVATE: z.string().optional(),
 
     // ── Export S3 ───────────────────────────────────────────
     EXPORT_S3_BUCKET: z.string().optional(),
@@ -321,6 +327,19 @@ export const envSchema = z
       }),
     LOG_SLOW_THRESHOLD_MS: positiveInt(1000),
     LOG_ALWAYS_LOG_STATUS: z.string().default("500,502,503"),
+
+    // ── Mock login / Dev/Test utilities ────────────────────────────
+    // Explicit flag to enable credential-free userId login. This is a
+    // development/test helper that bypasses password checks. Default: false.
+    // SECURITY: Setting this to true in production is forbidden and will
+    // cause startup to fail.
+    ENABLE_MOCK_LOGIN: z
+      .string()
+      .optional()
+      .transform((v) => {
+        if (v === undefined || v === "") return false;
+        return ["1", "true", "yes", "on"].includes(v.trim().toLowerCase());
+      }),
   })
   .superRefine((data, ctx) => {
     // Existing CORS warning
@@ -329,6 +348,15 @@ export const envSchema = z
         code: z.ZodIssueCode.custom,
         path: ["CORS_ORIGINS"],
         message: 'CORS_ORIGINS cannot be "*" in production environment',
+      });
+    }
+
+    // Forbid mock login in production
+    if (data.NODE_ENV === "production" && data.ENABLE_MOCK_LOGIN === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["ENABLE_MOCK_LOGIN"],
+        message: "ENABLE_MOCK_LOGIN cannot be enabled in production environment",
       });
     }
 
@@ -350,6 +378,16 @@ export const envSchema = z
     }
 
     // Additional validation for JWT_KEYS could be added here if needed
+
+    // WEBHOOK_ALLOW_PRIVATE must never be enabled in production: private
+    // egress destinations must remain blocked. Fail fast at startup.
+    if (data.NODE_ENV === "production" && data.WEBHOOK_ALLOW_PRIVATE === "true") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["WEBHOOK_ALLOW_PRIVATE"],
+        message: 'WEBHOOK_ALLOW_PRIVATE cannot be enabled in production environment',
+      });
+    }
   });
 
 export type Env = z.infer<typeof envSchema>;

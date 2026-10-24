@@ -1,4 +1,5 @@
 #![cfg(test)]
+#![allow(deprecated)]
 
 extern crate std;
 
@@ -77,12 +78,16 @@ fn setup_with_oracle(
         verifiers: vec![&env, verifier.clone()],
         threshold: 1,
     };
+    let options = VaultOptions {
+        oracle,
+        guardian: guardian.clone(),
+        dispute_window: 86_400,
+    };
 
     contract.create_vault(
         &vault_id,
         &creator,
         &verifier_set,
-        &oracle,
         &token,
         &total,
         &Destinations {
@@ -91,7 +96,7 @@ fn setup_with_oracle(
         },
         &end,
         &milestones,
-        &guardian,
+        &options,
     );
 
     Setup {
@@ -105,6 +110,133 @@ fn setup_with_oracle(
         guardian,
         vault_id,
     }
+}
+
+#[test]
+fn test_withdraw_after_deadline_rejected_then_slash_succeeds() {
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    s.env.ledger().with_mut(|ledger| ledger.timestamp = 1_100);
+    let at_deadline = s.contract.try_withdraw(&s.vault_id, &s.creator);
+    assert_eq!(at_deadline, Err(Ok(Error::DeadlinePassed)));
+
+    s.env.ledger().with_mut(|ledger| ledger.timestamp = 1_101);
+    let after_deadline = s.contract.try_withdraw(&s.vault_id, &s.creator);
+    assert_eq!(after_deadline, Err(Ok(Error::DeadlinePassed)));
+
+    s.contract.slash_on_miss(&s.vault_id);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    assert_eq!(token_client.balance(&s.creator), 0);
+    assert_eq!(token_client.balance(&s.failure), 500);
+    assert_eq!(
+        s.contract.get_vault(&s.vault_id).status,
+        VaultStatus::Failed
+    );
+}
+
+#[test]
+fn test_withdraw_within_grace_refunds() {
+    let s = setup(&[WITHDRAW_GRACE_SECS + 1], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    let creator_balance_before = token_client.balance(&s.creator);
+    s.env
+        .ledger()
+        .with_mut(|ledger| ledger.timestamp = 1_000 + WITHDRAW_GRACE_SECS);
+
+    s.contract.withdraw(&s.vault_id, &s.creator);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(
+        token_client.balance(&s.creator),
+        creator_balance_before + 500
+    );
+    assert_eq!(vault.status, VaultStatus::Cancelled);
+    assert_eq!(vault.staked, 0);
+    assert_eq!(vault.staked_at, 1_000);
+}
+
+#[test]
+fn test_withdraw_after_grace_before_deadline_rejected() {
+    let s = setup(&[WITHDRAW_GRACE_SECS + 100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    let creator_balance_before = token_client.balance(&s.creator);
+    let contract_balance_before = token_client.balance(&s.contract.address);
+    s.env
+        .ledger()
+        .with_mut(|ledger| ledger.timestamp = 1_000 + WITHDRAW_GRACE_SECS + 1);
+
+    let result = s.contract.try_withdraw(&s.vault_id, &s.creator);
+
+    assert_eq!(result, Err(Ok(Error::WithdrawWindowClosed)));
+    assert_eq!(token_client.balance(&s.creator), creator_balance_before);
+    assert_eq!(
+        token_client.balance(&s.contract.address),
+        contract_balance_before
+    );
+    assert_eq!(
+        s.contract.get_vault(&s.vault_id).status,
+        VaultStatus::Active
+    );
+}
+
+#[test]
+fn test_withdraw_with_verified_milestone_rejected_specific_error() {
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 1));
+
+    let result = s.contract.try_withdraw(&s.vault_id, &s.creator);
+
+    assert_eq!(result, Err(Ok(Error::WithdrawBlockedByVerifiedMilestone)));
+}
+
+#[test]
+fn test_stake_from_sets_staked_at() {
+    let s = setup(&[100], &[500]);
+    let spender = Address::generate(&s.env);
+    token::Client::new(&s.env, &s.token).approve(&s.creator, &spender, &500, &100);
+
+    s.contract.stake_from(&s.vault_id, &s.creator, &spender);
+
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.staked_at, 1_000);
+    assert_eq!(vault.staked, 500);
+}
+
+#[test]
+fn test_withdraw_blocked_when_paused_or_disputed() {
+    let paused = setup(&[100], &[500]);
+    paused.contract.stake(&paused.vault_id, &paused.creator);
+    paused
+        .contract
+        .emergency_pause(&paused.vault_id, &paused.guardian, &100);
+    let paused_result = paused
+        .contract
+        .try_withdraw(&paused.vault_id, &paused.creator);
+    assert_eq!(paused_result, Err(Ok(Error::Paused)));
+
+    let disputed = setup(&[100], &[500]);
+    disputed
+        .contract
+        .stake(&disputed.vault_id, &disputed.creator);
+    disputed
+        .contract
+        .admin_dispute(&disputed.vault_id, &disputed.guardian, &100);
+    let disputed_result = disputed
+        .contract
+        .try_withdraw(&disputed.vault_id, &disputed.creator);
+    assert_eq!(disputed_result, Err(Ok(Error::NotActive)));
+    assert_eq!(
+        disputed.contract.get_vault(&disputed.vault_id).status,
+        VaultStatus::Disputed
+    );
 }
 
 #[test]
@@ -533,12 +665,16 @@ fn test_boundary_zero_amount_milestone_rejected() {
     };
 
     let guardian = Address::generate(&env);
+    let options = VaultOptions {
+        oracle: None,
+        guardian,
+        dispute_window: 86_400,
+    };
 
     let result = contract.try_create_vault(
         &vault_id,
         &creator,
         &verifier_set,
-        &None::<Address>,
         &token,
         &100,
         &Destinations {
@@ -547,7 +683,7 @@ fn test_boundary_zero_amount_milestone_rejected() {
         },
         &1_100u64,
         &milestones,
-        &guardian,
+        &options,
     );
     assert!(matches!(result, Err(Ok(Error::InvalidAmount))));
 }
@@ -593,12 +729,16 @@ fn test_boundary_negative_amount_milestone_rejected() {
         verifiers: vec![&env, verifier],
         threshold: 1,
     };
+    let options = VaultOptions {
+        oracle: None,
+        guardian,
+        dispute_window: 86_400,
+    };
 
     let result = contract.try_create_vault(
         &vault_id,
         &creator,
         &verifier_set,
-        &None::<Address>,
         &token,
         &100,
         &Destinations {
@@ -607,7 +747,7 @@ fn test_boundary_negative_amount_milestone_rejected() {
         },
         &1_100u64,
         &milestones,
-        &guardian,
+        &options,
     );
     assert!(matches!(result, Err(Ok(Error::InvalidAmount))));
 }
@@ -654,12 +794,16 @@ fn test_boundary_milestone_sum_mismatch_rejected() {
         verifiers: vec![&env, verifier],
         threshold: 1,
     };
+    let options = VaultOptions {
+        oracle: None,
+        guardian,
+        dispute_window: 86_400,
+    };
 
     let result = contract.try_create_vault(
         &vault_id,
         &creator,
         &verifier_set,
-        &None::<Address>,
         &token,
         &100,
         &Destinations {
@@ -668,7 +812,7 @@ fn test_boundary_milestone_sum_mismatch_rejected() {
         },
         &1_100u64,
         &milestones,
-        &guardian,
+        &options,
     );
     assert!(matches!(result, Err(Ok(Error::AmountMismatch))));
 }
@@ -850,6 +994,11 @@ fn test_create_vault_title_length_bound() {
         verifiers: vec![&env, verifier],
         threshold: 1,
     };
+    let options = VaultOptions {
+        oracle: None,
+        guardian,
+        dispute_window: 86_400,
+    };
 
     // Exactly 128 chars -> OK
     let title_128 = String::from_str(
@@ -871,7 +1020,6 @@ fn test_create_vault_title_length_bound() {
         &vault_id,
         &creator,
         &verifier_set,
-        &None,
         &token,
         &100,
         &Destinations {
@@ -880,7 +1028,7 @@ fn test_create_vault_title_length_bound() {
         },
         &2_000,
         &milestones_ok,
-        &guardian,
+        &options,
     );
     assert!(res.is_ok());
 
@@ -904,7 +1052,6 @@ fn test_create_vault_title_length_bound() {
         &vault_id_2,
         &creator,
         &verifier_set,
-        &None,
         &token,
         &100,
         &Destinations {
@@ -913,7 +1060,7 @@ fn test_create_vault_title_length_bound() {
         },
         &2_000,
         &milestones_err,
-        &guardian,
+        &options,
     );
     assert_eq!(res_err, Err(Ok(Error::TitleTooLong)));
 }
@@ -958,7 +1105,6 @@ fn test_guardian_must_differ_from_creator() {
         &vault_id,
         &creator,
         &verifier_set,
-        &None,
         &token,
         &100,
         &Destinations {
@@ -967,7 +1113,11 @@ fn test_guardian_must_differ_from_creator() {
         },
         &2_000,
         &milestones,
-        &creator, // guardian is creator
+        &VaultOptions {
+            oracle: None,
+            guardian: creator.clone(),
+            dispute_window: 86_400,
+        },
     );
     assert_eq!(res, Err(Ok(Error::InvalidGuardian)));
 
@@ -976,7 +1126,6 @@ fn test_guardian_must_differ_from_creator() {
         &vault_id,
         &creator,
         &verifier_set,
-        &None,
         &token,
         &100,
         &Destinations {
@@ -985,7 +1134,11 @@ fn test_guardian_must_differ_from_creator() {
         },
         &2_000,
         &milestones,
-        &success, // guardian is success destination
+        &VaultOptions {
+            oracle: None,
+            guardian: success.clone(),
+            dispute_window: 86_400,
+        },
     );
     assert_eq!(res_succ, Err(Ok(Error::InvalidGuardian)));
 
@@ -994,7 +1147,6 @@ fn test_guardian_must_differ_from_creator() {
         &vault_id,
         &creator,
         &verifier_set,
-        &None,
         &token,
         &100,
         &Destinations {
@@ -1003,7 +1155,11 @@ fn test_guardian_must_differ_from_creator() {
         },
         &2_000,
         &milestones,
-        &verifier, // guardian is the only verifier
+        &VaultOptions {
+            oracle: None,
+            guardian: verifier,
+            dispute_window: 86_400,
+        },
     );
     assert_eq!(res_sole_verifier, Err(Ok(Error::InvalidGuardian)));
 
@@ -1013,7 +1169,6 @@ fn test_guardian_must_differ_from_creator() {
         &vault_id,
         &creator,
         &verifier_set,
-        &None,
         &token,
         &100,
         &Destinations {
@@ -1022,7 +1177,11 @@ fn test_guardian_must_differ_from_creator() {
         },
         &2_000,
         &milestones,
-        &guardian,
+        &VaultOptions {
+            oracle: None,
+            guardian,
+            dispute_window: 86_400,
+        },
     );
     assert!(res_ok.is_ok());
 }
@@ -1106,7 +1265,7 @@ fn test_claim_milestone_blocked_when_paused() {
 
     // Verifier verifies milestone 0
     s.contract
-        .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 1));
+        .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 0));
 
     // Guardian pauses the vault
     s.contract.emergency_pause(&s.vault_id, &s.guardian, &86_400);
@@ -1308,4 +1467,417 @@ fn test_dispute_events_use_symbol_topics() {
     );
 }
 
+// ─── 15. Per-Vault Bounded Dispute Window Tests ─────────────────────
 
+#[test]
+fn test_dispute_window_bounds_on_create() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    let success = Address::generate(&env);
+    let failure = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token, _) = create_token(&env, &token_admin);
+
+    let contract_id = env.register(AccountabilityVault, ());
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+
+    let verifier_set = VerifierSet {
+        verifiers: vec![&env, verifier],
+        threshold: 1,
+    };
+    let milestones = vec![
+        &env,
+        Milestone {
+            title: String::from_str(&env, "m1"),
+            amount: 100,
+            due_date: 2_000,
+            verified: false,
+            released: false,
+        },
+    ];
+
+    // Below lower bound (0 and MIN_DISPUTE_WINDOW - 1) -> InvalidDisputeWindow
+    for invalid_low in [0u64, MIN_DISPUTE_WINDOW - 1] {
+        let res = contract.try_create_vault(
+            &String::from_str(&env, "vault-low"),
+            &creator,
+            &verifier_set,
+            &token,
+            &100,
+            &Destinations {
+                success: success.clone(),
+                failure: failure.clone(),
+            },
+            &2_000,
+            &milestones,
+            &VaultOptions {
+                oracle: None,
+                guardian: guardian.clone(),
+                dispute_window: invalid_low,
+            },
+        );
+        assert_eq!(res, Err(Ok(Error::InvalidDisputeWindow)));
+    }
+
+    // Above upper bound (MAX_DISPUTE_WINDOW + 1 and u64::MAX) -> InvalidDisputeWindow
+    for invalid_high in [MAX_DISPUTE_WINDOW + 1, u64::MAX] {
+        let res = contract.try_create_vault(
+            &String::from_str(&env, "vault-high"),
+            &creator,
+            &verifier_set,
+            &token,
+            &100,
+            &Destinations {
+                success: success.clone(),
+                failure: failure.clone(),
+            },
+            &2_000,
+            &milestones,
+            &VaultOptions {
+                oracle: None,
+                guardian: guardian.clone(),
+                dispute_window: invalid_high,
+            },
+        );
+        assert_eq!(res, Err(Ok(Error::InvalidDisputeWindow)));
+    }
+
+    // Exactly at lower bound (MIN_DISPUTE_WINDOW = 1h) -> Ok
+    let vault_min = String::from_str(&env, "vault-min");
+    let res_min = contract.try_create_vault(
+        &vault_min,
+        &creator,
+        &verifier_set,
+        &token,
+        &100,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
+        &2_000,
+        &milestones,
+        &VaultOptions {
+            oracle: None,
+            guardian: guardian.clone(),
+            dispute_window: MIN_DISPUTE_WINDOW,
+        },
+    );
+    assert!(res_min.is_ok());
+    assert_eq!(contract.get_vault(&vault_min).dispute_window, MIN_DISPUTE_WINDOW);
+
+    // Exactly at upper bound (MAX_DISPUTE_WINDOW = 30d) -> Ok
+    let vault_max = String::from_str(&env, "vault-max");
+    let res_max = contract.try_create_vault(
+        &vault_max,
+        &creator,
+        &verifier_set,
+        &token,
+        &100,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
+        &2_000,
+        &milestones,
+        &VaultOptions {
+            oracle: None,
+            guardian,
+            dispute_window: MAX_DISPUTE_WINDOW,
+        },
+    );
+    assert!(res_max.is_ok());
+    assert_eq!(contract.get_vault(&vault_max).dispute_window, MAX_DISPUTE_WINDOW);
+}
+
+#[test]
+fn test_dispute_within_and_after_window() {
+    let s = setup(&[10_000], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    // Check-in at t = 1_000; default setup dispute_window is 86_400 (window ends at 87_400).
+    s.contract
+        .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 1));
+    assert!(s.contract.get_vault(&s.vault_id).milestones.get(0).unwrap().verified);
+
+    // At exact boundary (t = 87_400), dispute succeeds.
+    s.env.ledger().set_timestamp(87_400);
+    let within = s.contract.try_dispute_milestone(&s.vault_id, &s.creator, &0);
+    assert!(within.is_ok());
+    assert!(!s.contract.get_vault(&s.vault_id).milestones.get(0).unwrap().verified);
+
+    // Create a second vault to test disputing after the window expires.
+    let vault_id_2 = String::from_str(&s.env, "vault-after-window");
+    let verifier2 = Address::generate(&s.env);
+    let token_admin = Address::generate(&s.env);
+    let (token2, token_admin_client2) = create_token(&s.env, &token_admin);
+    token_admin_client2.mint(&s.creator, &500);
+
+    let milestones2 = vec![
+        &s.env,
+        Milestone {
+            title: String::from_str(&s.env, "m1"),
+            amount: 500,
+            due_date: 100_000,
+            verified: false,
+            released: false,
+        },
+    ];
+    s.contract.create_vault(
+        &vault_id_2,
+        &s.creator,
+        &VerifierSet {
+            verifiers: vec![&s.env, verifier2.clone()],
+            threshold: 1,
+        },
+        &token2,
+        &500,
+        &Destinations {
+            success: s.success.clone(),
+            failure: s.failure.clone(),
+        },
+        &100_000,
+        &milestones2,
+        &VaultOptions {
+            oracle: None,
+            guardian: s.guardian.clone(),
+            dispute_window: MIN_DISPUTE_WINDOW,
+        },
+    );
+    s.contract.stake(&vault_id_2, &s.creator);
+
+    // Check-in at t = 87_400 with window = 3_600 -> window ends at 91_000.
+    s.contract
+        .check_in(&vault_id_2, &verifier2, &0, &evidence_hash(&s.env, 2));
+
+    // Advance 1 second past the window (t = 91_001) -> DeadlinePassed.
+    s.env.ledger().set_timestamp(91_001);
+    let after = s.contract.try_dispute_milestone(&vault_id_2, &s.creator, &0);
+    assert_eq!(after, Err(Ok(Error::DeadlinePassed)));
+    assert!(s.contract.get_vault(&vault_id_2).milestones.get(0).unwrap().verified);
+}
+
+#[test]
+fn test_dispute_windows_independent_per_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let verifier1 = Address::generate(&env);
+    let verifier2 = Address::generate(&env);
+    let success = Address::generate(&env);
+    let failure = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token, token_admin_client) = create_token(&env, &token_admin);
+    token_admin_client.mint(&creator, &1_000);
+
+    let contract_id = env.register(AccountabilityVault, ());
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+
+    let milestones = vec![
+        &env,
+        Milestone {
+            title: String::from_str(&env, "m1"),
+            amount: 500,
+            due_date: 50_000,
+            verified: false,
+            released: false,
+        },
+    ];
+
+    let vault_short = String::from_str(&env, "vault-short");
+    let vault_long = String::from_str(&env, "vault-long");
+
+    // Vault 1: 1 hour dispute window (3_600s)
+    contract.create_vault(
+        &vault_short,
+        &creator,
+        &VerifierSet {
+            verifiers: vec![&env, verifier1.clone()],
+            threshold: 1,
+        },
+        &token,
+        &500,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
+        &50_000,
+        &milestones,
+        &VaultOptions {
+            oracle: None,
+            guardian: guardian.clone(),
+            dispute_window: MIN_DISPUTE_WINDOW,
+        },
+    );
+
+    // Vault 2: 24 hour dispute window (86_400s)
+    contract.create_vault(
+        &vault_long,
+        &creator,
+        &VerifierSet {
+            verifiers: vec![&env, verifier2.clone()],
+            threshold: 1,
+        },
+        &token,
+        &500,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
+        &50_000,
+        &milestones,
+        &VaultOptions {
+            oracle: None,
+            guardian,
+            dispute_window: 86_400,
+        },
+    );
+
+    contract.stake(&vault_short, &creator);
+    contract.stake(&vault_long, &creator);
+
+    // Both checked in at t = 1_000.
+    contract.check_in(&vault_short, &verifier1, &0, &evidence_hash(&env, 1));
+    contract.check_in(&vault_long, &verifier2, &0, &evidence_hash(&env, 2));
+
+    // Advance to t = 5_000 (4_000s elapsed: past vault_short's 3_600s window, within vault_long's 86_400s window).
+    env.ledger().set_timestamp(5_000);
+
+    let res_short = contract.try_dispute_milestone(&vault_short, &creator, &0);
+    assert_eq!(res_short, Err(Ok(Error::DeadlinePassed)));
+    assert!(contract.get_vault(&vault_short).milestones.get(0).unwrap().verified);
+
+    let res_long = contract.try_dispute_milestone(&vault_long, &creator, &0);
+    assert!(res_long.is_ok());
+    assert!(!contract.get_vault(&vault_long).milestones.get(0).unwrap().verified);
+}
+
+#[test]
+fn test_dispute_without_checkin_record_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let creator = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    let success = Address::generate(&env);
+    let failure = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token, token_admin_client) = create_token(&env, &token_admin);
+    token_admin_client.mint(&creator, &500);
+
+    let contract_id = env.register(AccountabilityVault, ());
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+    let vault_id = String::from_str(&env, "vault-no-checkin");
+
+    // Milestone created with verified = true directly, so no DataKey::CheckIn(0) record exists.
+    let milestones = vec![
+        &env,
+        Milestone {
+            title: String::from_str(&env, "m1"),
+            amount: 500,
+            due_date: 2_000,
+            verified: true,
+            released: false,
+        },
+    ];
+
+    contract.create_vault(
+        &vault_id,
+        &creator,
+        &VerifierSet {
+            verifiers: vec![&env, verifier],
+            threshold: 1,
+        },
+        &token,
+        &500,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
+        &2_000,
+        &milestones,
+        &VaultOptions {
+            oracle: None,
+            guardian,
+            dispute_window: 86_400,
+        },
+    );
+    contract.stake(&vault_id, &creator);
+
+    // Must fail rather than defaulting verified_at to 0.
+    let res = contract.try_dispute_milestone(&vault_id, &creator, &0);
+    assert_eq!(res, Err(Ok(Error::MilestonesIncomplete)));
+}
+
+#[test]
+fn test_dispute_window_no_overflow_panic() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Set ledger time near u64::MAX - MAX_DISPUTE_WINDOW so that verified_at + MAX_DISPUTE_WINDOW overflows u64.
+    let near_max = u64::MAX - MAX_DISPUTE_WINDOW + 100;
+    env.ledger().set_timestamp(near_max);
+
+    let creator = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    let success = Address::generate(&env);
+    let failure = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token, token_admin_client) = create_token(&env, &token_admin);
+    token_admin_client.mint(&creator, &500);
+
+    let contract_id = env.register(AccountabilityVault, ());
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+    let vault_id = String::from_str(&env, "vault-overflow");
+
+    let milestones = vec![
+        &env,
+        Milestone {
+            title: String::from_str(&env, "m1"),
+            amount: 500,
+            due_date: u64::MAX,
+            verified: false,
+            released: false,
+        },
+    ];
+
+    contract.create_vault(
+        &vault_id,
+        &creator,
+        &VerifierSet {
+            verifiers: vec![&env, verifier.clone()],
+            threshold: 1,
+        },
+        &token,
+        &500,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
+        &u64::MAX,
+        &milestones,
+        &VaultOptions {
+            oracle: None,
+            guardian,
+            dispute_window: MAX_DISPUTE_WINDOW,
+        },
+    );
+    contract.stake(&vault_id, &creator);
+
+    // Check-in records verified_at = near_max (u64::MAX - MAX_DISPUTE_WINDOW + 100).
+    contract.check_in(&vault_id, &verifier, &0, &evidence_hash(&env, 9));
+
+    // verified_at.checked_add(MAX_DISPUTE_WINDOW) overflows u64 and returns a typed error, not a panic.
+    let res = contract.try_dispute_milestone(&vault_id, &creator, &0);
+    assert_eq!(res, Err(Ok(Error::InvalidDeadline)));
+}

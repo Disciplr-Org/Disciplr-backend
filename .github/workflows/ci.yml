@@ -78,3 +78,48 @@ jobs:
       - name: Run integration tests against in-memory store
         run: npm run test:api
 
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: disciplr_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Migration lint
+        run: npm run lint:migrations
+      - name: Unit test migration and schema scripts
+        run: npm run test:scripts
+      - name: Knex migrate:latest
+        run: npx knex migrate:latest --knexfile knexfile.cjs
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/disciplr_test
+      - name: Knex migrate:rollback --all
+        run: npx knex migrate:rollback --all --knexfile knexfile.cjs
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/disciplr_test
+      - name: Knex migrate:latest (re-apply)
+        run: npx knex migrate:latest --knexfile knexfile.cjs
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/disciplr_test
+      - name: Check schema
+        run: npm run check:schema
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/disciplr_test
+

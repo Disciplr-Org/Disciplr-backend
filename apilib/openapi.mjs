@@ -492,6 +492,7 @@ export const OPENAPI = {
         summary: 'Aggregate statistics',
         parameters: [
           { name: 'creator', in: 'query', schema: { $ref: '#/components/schemas/StellarAddress' }, description: 'Filter stats by creator Stellar address' },
+          { name: 'verifier', in: 'query', schema: { $ref: '#/components/schemas/StellarAddress' }, description: 'Filter stats by verifier Stellar address' },
         ],
         responses: {
           200: {
