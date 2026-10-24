@@ -1,5 +1,6 @@
 import { Vault, CreateVaultDTO, VaultStatus } from '../types/vault.js';
 import { pool, db } from '../db/index.js';
+import { listVaults } from './vaultStore.js';
 
 export interface TimelineItem {
   timestamp: string;
@@ -54,49 +55,61 @@ export class VaultService {
 
   static async getVaultsByUser(creator: string): Promise<Vault[]> {
     try {
-      const result = await pool.query(
-        'SELECT * FROM vaults WHERE creator = $1',
-        [creator],
-      );
-      return result.rows;
+      if (pool) {
+        const result = await pool.query(
+          'SELECT * FROM vaults WHERE creator = $1',
+          [creator],
+        );
+        if (result?.rows) return result.rows;
+      }
+    } catch {
+      // In-memory fallback
+    }
+    try {
+      const all = await listVaults();
+      return all.filter((v) => v.creator === creator) as any;
     } catch {
       return [];
     }
   }
 
   static async getVaultTimeline(id: string): Promise<TimelineItem[]> {
-    const [auditLogs, transactions] = await Promise.all([
-      db('audit_logs')
-        .where({ target_type: 'vault', target_id: id })
-        .select('action', 'created_at', 'actor_user_id', 'metadata'),
-      db('transactions')
-        .where({ vault_id: id })
-        .select('type', 'stellar_timestamp', 'tx_hash', 'amount', 'asset_code', 'from_account', 'to_account'),
-    ]);
+    try {
+      const [auditLogs, transactions] = await Promise.all([
+        db('audit_logs')
+          .where({ target_type: 'vault', target_id: id })
+          .select('action', 'created_at', 'actor_user_id', 'metadata'),
+        db('transactions')
+          .where({ vault_id: id })
+          .select('type', 'stellar_timestamp', 'tx_hash', 'amount', 'asset_code', 'from_account', 'to_account'),
+      ]);
 
-    const auditItems: TimelineItem[] = auditLogs.map((log) => ({
-      timestamp: new Date(log.created_at).toISOString(),
-      data: {
-        action: log.action,
-        actor_user_id: log.actor_user_id,
-        ...(log.metadata && typeof log.metadata === 'object' ? (log.metadata as Record<string, unknown>) : {}),
-      },
-    }));
+      const auditItems: TimelineItem[] = auditLogs.map((log) => ({
+        timestamp: new Date(log.created_at).toISOString(),
+        data: {
+          action: log.action,
+          actor_user_id: log.actor_user_id,
+          ...(log.metadata && typeof log.metadata === 'object' ? (log.metadata as Record<string, unknown>) : {}),
+        },
+      }));
 
-    const txItems: TimelineItem[] = transactions.map((tx) => ({
-      timestamp: new Date(tx.stellar_timestamp).toISOString(),
-      data: {
-        type: tx.type,
-        tx_hash: tx.tx_hash,
-        amount: tx.amount,
-        asset_code: tx.asset_code,
-        from_account: tx.from_account,
-        to_account: tx.to_account,
-      },
-    }));
+      const txItems: TimelineItem[] = transactions.map((tx) => ({
+        timestamp: new Date(tx.stellar_timestamp).toISOString(),
+        data: {
+          type: tx.type,
+          tx_hash: tx.tx_hash,
+          amount: tx.amount,
+          asset_code: tx.asset_code,
+          from_account: tx.from_account,
+          to_account: tx.to_account,
+        },
+      }));
 
-    return [...auditItems, ...txItems].sort((a, b) =>
-      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
+      return [...auditItems, ...txItems].sort((a, b) =>
+        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      );
+    } catch {
+      return [];
+    }
   }
 }
