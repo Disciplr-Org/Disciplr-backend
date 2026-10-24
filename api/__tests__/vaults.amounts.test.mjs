@@ -4,6 +4,10 @@ import request from 'supertest'
 import { createApp } from '../index.mjs'
 import { MemoryStore } from '../../apilib/store.mjs'
 
+// These suites create many vaults from one client; lift the write rate limits so they test amounts, not throttling.
+process.env.RATE_LIMIT_WRITE_IP_MAX ??= '1000'
+process.env.RATE_LIMIT_WRITE_ADDR_MAX ??= '1000'
+
 const STELLAR_CREATOR = 'GBVAQKGA5P4TIZSZJBS5AW3XNJOTYG6I3Y5CLIGCBBUZDHMVF7YE7XCQ'
 const STELLAR_VERIFIER = 'GDLYZ73G3GEF36HBLEBFXOXAP5IXJDRQCRG47JCKR4XAXNOFCU44NZT2'
 
