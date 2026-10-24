@@ -254,7 +254,11 @@ export class PgStore {
   async listVaults({ creator, status, limit, cursor } = {}) {
     const w = ['deleted_at IS NULL']; const p = []
     if (creator) { p.push(creator); w.push(`creator = $${p.length}`) }
-    if (status) { p.push(status); w.push(`status = $${p.length}::vault_status`) }
+    if (status) {
+      // Unknown statuses would make the ::vault_status cast throw; treat them as matching nothing.
+      if (!new Set(['active', 'completed', 'failed']).has(status)) return { items: [], hasMore: false, lastItem: null }
+      p.push(status); w.push(`status = $${p.length}::vault_status`)
+    }
     
     // Apply cursor WHERE clause for keyset pagination
     if (cursor) {
