@@ -7,6 +7,7 @@ import { checkReadiness, isDatabaseUnavailable } from '../apilib/store-bootstrap
 import { OPENAPI } from '../apilib/openapi.mjs'
 import { OnchainError, isEnabled, getConfig, getServer, buildCreateVaultTx, buildStakeTx, verifySignedTx, txHashOf, submitAndWait, validateForChain } from '../apilib/soroban.mjs'
 import { safeCompare, expireOverdueVaults } from '../apilib/expiry.mjs'
+import { QueryValidationError, validateStatus, validateCreator, validateVaultId } from '../apilib/query.mjs'
 
 export function createApp(getStore = defaultGetStore) {
   const app = express()
@@ -17,15 +18,7 @@ export function createApp(getStore = defaultGetStore) {
   const STELLAR = /^G[A-Z2-7]{55}$/
   const hex = (n) => randomBytes(n).toString('hex')
   const bad = (res, msg, code = 400) => res.status(code).json({ error: msg })
-  const wrap = (fn) => (req, res) => fn(req, res).catch((e) => {
-    if (isDatabaseUnavailable(e)) {
-      return res.set('Retry-After', '1').status(503).json({ error: 'Database unavailable' })
-    }
-    if (e instanceof StoreConflictError) return res.status(409).json({ error: e.message })
-    if (e instanceof OnchainError) return res.status(e.status).json({ error: e.message, ...(e.contractError && { contractError: e.contractError }) })
-    console.error('API request failed')
-    res.status(500).json({ error: 'Internal error' })
-  })
+  const wrap = (fn) => (req, res, next) => Promise.resolve().then(() => fn(req, res, next)).catch(next)
 
   const router = express.Router()
 
@@ -38,8 +31,10 @@ export function createApp(getStore = defaultGetStore) {
   router.get('/openapi.json', (_req, res) => res.json(OPENAPI))
 
   router.get('/vaults', wrap(async (req, res) => {
+    const creator = validateCreator(req.query.creator)
+    const status = validateStatus(req.query.status)
     const s = await getStore()
-    const vaults = await s.listVaults({ creator: req.query.creator, status: req.query.status })
+    const vaults = await s.listVaults({ creator, status })
     res.json({ data: vaults, count: vaults.length })
   }))
 
@@ -204,14 +199,16 @@ export function createApp(getStore = defaultGetStore) {
   }))
 
   router.get('/transactions', wrap(async (req, res) => {
+    const vaultId = validateVaultId(req.query.vaultId)
     const s = await getStore()
-    const data = await s.listActivity({ vaultId: req.query.vaultId })
+    const data = await s.listActivity({ vaultId })
     res.json({ data, count: data.length })
   }))
 
   router.get('/stats', wrap(async (req, res) => {
+    const creator = validateCreator(req.query.creator)
     const s = await getStore()
-    const vaults = await s.listVaults({ creator: req.query.creator })
+    const vaults = await s.listVaults({ creator })
     const sum = (f) => vaults.filter(f).reduce((a, v) => a + Number(v.amount), 0)
     const done = vaults.filter((v) => v.status !== 'active')
     res.json({
@@ -249,8 +246,70 @@ export function createApp(getStore = defaultGetStore) {
     res.json({ processed: result.processed, remaining: result.remaining })
   }))
 
+  app.use(['/api/v1', '/api'], (req, res, next) => {
+    if (req.method === 'POST' && !req.is('application/json')) {
+      return res.status(415).json({ error: 'Unsupported Media Type: Content-Type must be application/json' })
+    }
+    next()
+  })
+
   app.use(['/api/v1', '/api'], router)
+
+  // 405 Method Not Allowed for known API endpoints
+  const methodMap = [
+    { pattern: /^\/api(?:\/v1)?\/vaults\/?$/, allow: 'GET, POST' },
+    { pattern: /^\/api(?:\/v1)?\/vaults\/[^\/]+\/?$/, allow: 'GET' },
+    { pattern: /^\/api(?:\/v1)?\/vaults\/[^\/]+\/sign\/?$/, allow: 'POST' },
+    { pattern: /^\/api(?:\/v1)?\/vaults\/[^\/]+\/milestones\/[^\/]+\/validate\/?$/, allow: 'POST' },
+    { pattern: /^\/api(?:\/v1)?\/vaults\/[^\/]+\/fail\/?$/, allow: 'POST' },
+    { pattern: /^\/api(?:\/v1)?\/transactions\/?$/, allow: 'GET' },
+    { pattern: /^\/api(?:\/v1)?\/stats\/?$/, allow: 'GET' },
+    { pattern: /^\/api(?:\/v1)?\/health\/?$/, allow: 'GET' },
+    { pattern: /^\/api(?:\/v1)?\/ready\/?$/, allow: 'GET' },
+    { pattern: /^\/api(?:\/v1)?\/openapi\.json\/?$/, allow: 'GET' },
+    { pattern: /^\/api(?:\/v1)?\/cron\/expire-vaults\/?$/, allow: 'GET' },
+  ]
+  app.use((req, res, next) => {
+    const match = methodMap.find((m) => m.pattern.test(req.path))
+    if (match) {
+      res.setHeader('Allow', match.allow)
+      return res.status(405).json({ error: `Method Not Allowed: use ${match.allow}` })
+    }
+    next()
+  })
+
+  // 404 Fallback
   app.use((_req, res) => res.status(404).json({ error: 'Not found' }))
+
+  // Error-handling middleware (4 arguments required by Express)
+  // Maps Express entity.parse.failed -> 400, entity.too.large -> 413, charset/encoding -> 415,
+  // QueryValidationError -> 400, isDatabaseUnavailable -> 503, StoreConflictError -> 409,
+  // OnchainError -> e.status, and everything else -> safe 500 JSON without stack leak.
+  app.use((err, req, res, _next) => {
+    if (err?.type === 'entity.parse.failed') {
+      return res.status(400).json({ error: 'Malformed JSON body' })
+    }
+    if (err?.type === 'entity.too.large' || err?.status === 413) {
+      return res.status(413).json({ error: 'Payload Too Large' })
+    }
+    if (err?.type === 'charset.unsupported' || err?.type === 'encoding.unsupported' || err?.status === 415) {
+      return res.status(415).json({ error: 'Unsupported Media Type' })
+    }
+    if (err instanceof QueryValidationError) {
+      return res.status(err.status || 400).json({ error: err.message, ...(err.details && { details: err.details }) })
+    }
+    if (isDatabaseUnavailable(err)) {
+      return res.set('Retry-After', '1').status(503).json({ error: 'Database unavailable' })
+    }
+    if (err instanceof StoreConflictError) {
+      return res.status(409).json({ error: err.message })
+    }
+    if (err instanceof OnchainError) {
+      return res.status(err.status).json({ error: err.message, ...(err.contractError && { contractError: err.contractError }) })
+    }
+    console.error('API request failed')
+    return res.status(500).json({ error: 'Internal error' })
+  })
 
   return app
 }
