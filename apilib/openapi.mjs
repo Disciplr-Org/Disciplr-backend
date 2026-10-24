@@ -544,9 +544,23 @@ export const OPENAPI = {
           },
           details: {
             type: 'array',
-            items: { type: 'string' },
-            description: 'Detailed validation error messages',
-            example: ['amount must be a positive number'],
+            items: {
+              oneOf: [
+                { type: 'string' },
+                {
+                  type: 'object',
+                  required: ['field', 'code', 'message'],
+                  additionalProperties: true,
+                  properties: {
+                    field: { type: 'string', example: 'creator' },
+                    code: { type: 'string', example: 'invalid_address' },
+                    message: { type: 'string', example: 'creator must be a valid Stellar public key (G..., 56 characters with valid checksum)' },
+                  },
+                },
+              ],
+            },
+            description: 'Detailed validation error messages or structured field validation errors',
+            example: [{ field: 'creator', code: 'invalid_address', message: 'creator must be a valid Stellar public key (G..., 56 characters with valid checksum)' }],
           },
         },
       },
@@ -765,8 +779,8 @@ export const OPENAPI = {
         required: ['title', 'amount'],
         additionalProperties: false,
         properties: {
-          title: { type: 'string', example: 'Ship MVP' },
-          amount: { type: 'number', example: 1000 },
+          title: { type: 'string', maxLength: 128, example: 'Ship MVP' },
+          amount: { type: 'number', minimum: 0, example: 1000 },
           dueDate: { type: 'string', format: 'date-time', example: '2026-04-15T00:00:00.000Z' },
         },
       },
@@ -778,7 +792,7 @@ export const OPENAPI = {
           name: { type: 'string', example: 'Launch the MVP' },
           creator: { $ref: '#/components/schemas/StellarAddress' },
           verifier: { $ref: '#/components/schemas/StellarAddress' },
-          amount: { type: 'number', example: 2500 },
+          amount: { type: 'number', minimum: 0, maximum: 1000000000000, example: 2500 },
           startDate: { type: 'string', format: 'date-time', example: '2026-04-01T00:00:00.000Z' },
           endDate: { type: 'string', format: 'date-time', example: '2026-05-01T00:00:00.000Z' },
           successDestination: { $ref: '#/components/schemas/StellarAddress' },

@@ -19,6 +19,7 @@ test('Boundary tests for milestone validation deadline', async (t) => {
   await t.test('Validation before dueDate returns 200', async () => {
     const resCreate = await request(app)
       .post('/api/vaults')
+      .set('x-test-now', new Date(baseTime).toISOString())
       .send({
         name: 'Deadline Before Test',
         creator,
@@ -54,6 +55,7 @@ test('Boundary tests for milestone validation deadline', async (t) => {
   await t.test('Validation at exactly dueDate returns 200', async () => {
     const resCreate = await request(app)
       .post('/api/vaults')
+      .set('x-test-now', new Date(baseTime).toISOString())
       .send({
         name: 'Deadline Exact Test',
         creator,
@@ -88,6 +90,7 @@ test('Boundary tests for milestone validation deadline', async (t) => {
   await t.test('Validation 1ms after dueDate returns 409 and does not change state', async () => {
     const resCreate = await request(app)
       .post('/api/vaults')
+      .set('x-test-now', new Date(baseTime).toISOString())
       .send({
         name: 'Deadline After Test',
         creator,
@@ -124,6 +127,7 @@ test('Boundary tests for milestone validation deadline', async (t) => {
   await t.test('Validation after vault endDate returns 409 Vault deadline has passed', async () => {
     const resCreate = await request(app)
       .post('/api/vaults')
+      .set('x-test-now', new Date(baseTime).toISOString())
       .send({
         name: 'Vault EndDate Passed Test',
         creator,
@@ -135,7 +139,7 @@ test('Boundary tests for milestone validation deadline', async (t) => {
           {
             title: 'Milestone in window',
             amount: 1000,
-            dueDate: new Date('2026-07-05T00:00:00.000Z').toISOString(),
+            dueDate: milestoneDueDate,
           },
         ],
       })
