@@ -5,8 +5,8 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    token, vec, Address, BytesN, Env, String,
+    testutils::{Address as _, Events as _, Ledger},
+    token, vec, Address, BytesN, Env, String, Symbol, TryFromVal,
 };
 
 struct Setup {
@@ -90,8 +90,10 @@ fn setup_with_oracle(
         &verifier_set,
         &token,
         &total,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &end,
         &milestones,
         &options,
@@ -401,9 +403,9 @@ fn claim_all_milestones_sequentially(offsets: &[u64], amounts: &[i128]) -> Vault
     let total: i128 = amounts.iter().sum();
 
     let mut released_so_far: i128 = 0;
-    for i in 0..amounts.len() {
+    for (i, &amount) in amounts.iter().enumerate() {
         s.contract.claim_milestone(&s.vault_id, &s.creator, &(i as u32));
-        released_so_far += amounts[i];
+        released_so_far += amount;
 
         let vault = s.contract.get_vault(&s.vault_id);
         // Solvency: staked must equal what remains.
@@ -675,8 +677,10 @@ fn test_boundary_zero_amount_milestone_rejected() {
         &verifier_set,
         &token,
         &100,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &1_100u64,
         &milestones,
         &options,
@@ -737,8 +741,10 @@ fn test_boundary_negative_amount_milestone_rejected() {
         &verifier_set,
         &token,
         &100,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &1_100u64,
         &milestones,
         &options,
@@ -800,8 +806,10 @@ fn test_boundary_milestone_sum_mismatch_rejected() {
         &verifier_set,
         &token,
         &100,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &1_100u64,
         &milestones,
         &options,
@@ -1014,8 +1022,10 @@ fn test_create_vault_title_length_bound() {
         &verifier_set,
         &token,
         &100,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &2_000,
         &milestones_ok,
         &options,
@@ -1044,8 +1054,10 @@ fn test_create_vault_title_length_bound() {
         &verifier_set,
         &token,
         &100,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &2_000,
         &milestones_err,
         &options,
@@ -1095,8 +1107,10 @@ fn test_guardian_must_differ_from_creator() {
         &verifier_set,
         &token,
         &100,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &2_000,
         &milestones,
         &VaultOptions {
@@ -1114,8 +1128,10 @@ fn test_guardian_must_differ_from_creator() {
         &verifier_set,
         &token,
         &100,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &2_000,
         &milestones,
         &VaultOptions {
@@ -1133,8 +1149,10 @@ fn test_guardian_must_differ_from_creator() {
         &verifier_set,
         &token,
         &100,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &2_000,
         &milestones,
         &VaultOptions {
@@ -1153,8 +1171,10 @@ fn test_guardian_must_differ_from_creator() {
         &verifier_set,
         &token,
         &100,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &2_000,
         &milestones,
         &VaultOptions {
@@ -1271,6 +1291,182 @@ fn test_claim_milestone_blocked_when_paused() {
     assert_eq!(token_client.balance(&s.success), pre_success_bal + 50);
 }
 
+#[test]
+fn test_cancel_rejected_for_each_non_draft_status() {
+    // 1. Active status
+    {
+        let s = setup(&[100], &[500]);
+        s.contract.stake(&s.vault_id, &s.creator);
+        let token_client = token::Client::new(&s.env, &s.token);
+        let pre_contract_bal = token_client.balance(&s.contract.address);
+        let pre_creator_bal = token_client.balance(&s.creator);
+
+        let res = s.contract.try_cancel_vault(&s.vault_id, &s.creator);
+        assert_eq!(res, Err(Ok(Error::NotDraft)));
+        assert_eq!(s.contract.get_vault(&s.vault_id).status, VaultStatus::Active);
+        assert_eq!(token_client.balance(&s.contract.address), pre_contract_bal);
+        assert_eq!(token_client.balance(&s.creator), pre_creator_bal);
+    }
+
+    // 2. Completed status
+    {
+        let s = setup(&[100], &[500]);
+        s.contract.stake(&s.vault_id, &s.creator);
+        s.contract
+            .check_in(&s.vault_id, &s.verifier, &0, &evidence_hash(&s.env, 1));
+        s.contract.claim(&s.vault_id, &s.creator);
+        assert_eq!(
+            s.contract.get_vault(&s.vault_id).status,
+            VaultStatus::Completed
+        );
+        let token_client = token::Client::new(&s.env, &s.token);
+        let pre_contract_bal = token_client.balance(&s.contract.address);
+
+        let res = s.contract.try_cancel_vault(&s.vault_id, &s.creator);
+        assert_eq!(res, Err(Ok(Error::NotDraft)));
+        assert_eq!(
+            s.contract.get_vault(&s.vault_id).status,
+            VaultStatus::Completed
+        );
+        assert_eq!(token_client.balance(&s.contract.address), pre_contract_bal);
+    }
+
+    // 3. Failed status
+    {
+        let s = setup(&[100], &[500]);
+        s.contract.stake(&s.vault_id, &s.creator);
+        s.env.ledger().set_timestamp(1_101);
+        s.contract.slash_on_miss(&s.vault_id);
+        assert_eq!(s.contract.get_vault(&s.vault_id).status, VaultStatus::Failed);
+        let token_client = token::Client::new(&s.env, &s.token);
+        let pre_failure_bal = token_client.balance(&s.failure);
+
+        let res = s.contract.try_cancel_vault(&s.vault_id, &s.creator);
+        assert_eq!(res, Err(Ok(Error::NotDraft)));
+        assert_eq!(s.contract.get_vault(&s.vault_id).status, VaultStatus::Failed);
+        assert_eq!(token_client.balance(&s.failure), pre_failure_bal);
+    }
+
+    // 4. Cancelled status
+    {
+        let s = setup(&[100], &[500]);
+        s.contract.cancel_vault(&s.vault_id, &s.creator);
+        assert_eq!(
+            s.contract.get_vault(&s.vault_id).status,
+            VaultStatus::Cancelled
+        );
+
+        let res = s.contract.try_cancel_vault(&s.vault_id, &s.creator);
+        assert_eq!(res, Err(Ok(Error::NotDraft)));
+        assert_eq!(
+            s.contract.get_vault(&s.vault_id).status,
+            VaultStatus::Cancelled
+        );
+    }
+
+    // 5. Disputed status
+    {
+        let s = setup(&[100], &[500]);
+        s.contract.stake(&s.vault_id, &s.creator);
+        s.contract.admin_dispute(&s.vault_id, &s.guardian, &100);
+        assert_eq!(
+            s.contract.get_vault(&s.vault_id).status,
+            VaultStatus::Disputed
+        );
+        let token_client = token::Client::new(&s.env, &s.token);
+        let pre_contract_bal = token_client.balance(&s.contract.address);
+
+        let res = s.contract.try_cancel_vault(&s.vault_id, &s.creator);
+        assert_eq!(res, Err(Ok(Error::NotDraft)));
+        assert_eq!(
+            s.contract.get_vault(&s.vault_id).status,
+            VaultStatus::Disputed
+        );
+        assert_eq!(token_client.balance(&s.contract.address), pre_contract_bal);
+    }
+}
+
+#[test]
+fn test_cancel_cannot_block_slash() {
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    // Advance past deadline
+    s.env.ledger().set_timestamp(1_101);
+
+    // Creator attempts to cancel overdue vault to evade slash
+    let cancel_res = s.contract.try_cancel_vault(&s.vault_id, &s.creator);
+    assert_eq!(cancel_res, Err(Ok(Error::NotDraft)));
+
+    // Status remains Active
+    let vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(vault.status, VaultStatus::Active);
+
+    // Slashing proceeds and succeeds
+    let slash_res = s.contract.try_slash_on_miss(&s.vault_id);
+    assert!(slash_res.is_ok());
+
+    let slashed_vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(slashed_vault.status, VaultStatus::Failed);
+    assert_eq!(slashed_vault.staked, 0);
+
+    let token_client = token::Client::new(&s.env, &s.token);
+    assert_eq!(token_client.balance(&s.failure), 500);
+    assert_eq!(token_client.balance(&s.contract.address), 0);
+}
+
+#[test]
+fn test_cancel_draft_event_topic_is_symbol() {
+    let s = setup(&[100], &[500]);
+    s.contract.cancel_vault(&s.vault_id, &s.creator);
+
+    let events = s.env.events().all();
+    let (_, topics, _) = events.last().expect("expected event");
+    let topic_val = topics.get(0).expect("expected topic");
+
+    let topic_sym = Symbol::try_from_val(&s.env, &topic_val);
+    assert_eq!(topic_sym, Ok(Symbol::new(&s.env, "vault_cancelled")));
+
+    let topic_str = String::try_from_val(&s.env, &topic_val);
+    assert!(topic_str.is_err(), "topic must be Symbol, not String");
+}
+
+#[test]
+fn test_dispute_events_use_symbol_topics() {
+    let s = setup(&[100], &[500]);
+    s.contract.stake(&s.vault_id, &s.creator);
+
+    // 1. admin_dispute event
+    s.contract.admin_dispute(&s.vault_id, &s.guardian, &100);
+    let events = s.env.events().all();
+    let (_, dispute_topics, _) = events.last().expect("expected dispute event");
+    let dispute_topic_val = dispute_topics.get(0).expect("expected topic");
+
+    let dispute_sym = Symbol::try_from_val(&s.env, &dispute_topic_val);
+    assert_eq!(dispute_sym, Ok(Symbol::new(&s.env, "vault_disputed")));
+    assert!(
+        String::try_from_val(&s.env, &dispute_topic_val).is_err(),
+        "dispute topic must be Symbol, not String"
+    );
+
+    // 2. admin_resolve event
+    s.contract
+        .admin_resolve(&s.vault_id, &s.guardian, &VaultStatus::Active);
+    let events2 = s.env.events().all();
+    let (_, resolve_topics, _) = events2.last().expect("expected resolve event");
+    let resolve_topic_val = resolve_topics.get(0).expect("expected topic");
+
+    let resolve_sym = Symbol::try_from_val(&s.env, &resolve_topic_val);
+    assert_eq!(
+        resolve_sym,
+        Ok(Symbol::new(&s.env, "vault_dispute_resolved"))
+    );
+    assert!(
+        String::try_from_val(&s.env, &resolve_topic_val).is_err(),
+        "resolve topic must be Symbol, not String"
+    );
+}
+
 // ─── 15. Per-Vault Bounded Dispute Window Tests ─────────────────────
 
 #[test]
@@ -1313,8 +1509,10 @@ fn test_dispute_window_bounds_on_create() {
             &verifier_set,
             &token,
             &100,
-            &success,
-            &failure,
+            &Destinations {
+                success: success.clone(),
+                failure: failure.clone(),
+            },
             &2_000,
             &milestones,
             &VaultOptions {
@@ -1334,8 +1532,10 @@ fn test_dispute_window_bounds_on_create() {
             &verifier_set,
             &token,
             &100,
-            &success,
-            &failure,
+            &Destinations {
+                success: success.clone(),
+                failure: failure.clone(),
+            },
             &2_000,
             &milestones,
             &VaultOptions {
@@ -1355,8 +1555,10 @@ fn test_dispute_window_bounds_on_create() {
         &verifier_set,
         &token,
         &100,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &2_000,
         &milestones,
         &VaultOptions {
@@ -1376,8 +1578,10 @@ fn test_dispute_window_bounds_on_create() {
         &verifier_set,
         &token,
         &100,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &2_000,
         &milestones,
         &VaultOptions {
@@ -1432,8 +1636,10 @@ fn test_dispute_within_and_after_window() {
         },
         &token2,
         &500,
-        &s.success,
-        &s.failure,
+        &Destinations {
+            success: s.success.clone(),
+            failure: s.failure.clone(),
+        },
         &100_000,
         &milestones2,
         &VaultOptions {
@@ -1498,8 +1704,10 @@ fn test_dispute_windows_independent_per_vault() {
         },
         &token,
         &500,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &50_000,
         &milestones,
         &VaultOptions {
@@ -1519,8 +1727,10 @@ fn test_dispute_windows_independent_per_vault() {
         },
         &token,
         &500,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &50_000,
         &milestones,
         &VaultOptions {
@@ -1589,8 +1799,10 @@ fn test_dispute_without_checkin_record_fails() {
         },
         &token,
         &500,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &2_000,
         &milestones,
         &VaultOptions {
@@ -1648,8 +1860,10 @@ fn test_dispute_window_no_overflow_panic() {
         },
         &token,
         &500,
-        &success,
-        &failure,
+        &Destinations {
+            success: success.clone(),
+            failure: failure.clone(),
+        },
         &u64::MAX,
         &milestones,
         &VaultOptions {

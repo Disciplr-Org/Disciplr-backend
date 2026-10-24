@@ -9,8 +9,7 @@
                 "VerifierSet",
                 "Address",
                 "i128",
-                "Address",
-                "Address",
+                "Destinations",
                 "u64",
                 "Vec<Milestone>",
                 "VaultOptions"

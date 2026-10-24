@@ -1,6 +1,7 @@
 #![no_std]
 #![allow(
     missing_docs,
+    deprecated,
     clippy::too_many_arguments,
     clippy::lint_groups_priority
 )]
@@ -104,6 +105,19 @@ pub enum VaultStatus {
     /// `slash_on_miss` and `claim` until the admin resolves the dispute
     /// back to `Active`, or directly to `Completed` or `Failed`.
     Disputed = 5,
+}
+
+/// Destination addresses for vault settlement outcomes.
+///
+/// Grouping these two destinations into a single parameter keeps `create_vault`
+/// within Soroban's 10-parameter limit while preserving readable call sites.
+#[contracttype]
+#[derive(Clone)]
+pub struct Destinations {
+    /// Destination for released funds on success.
+    pub success: Address,
+    /// Destination for slashed funds on a missed deadline.
+    pub failure: Address,
 }
 
 /// Verifier configuration for M-of-N milestone approval.
@@ -296,8 +310,7 @@ impl AccountabilityVault {
         verifier_set: VerifierSet,
         token: Address,
         amount: i128,
-        success_destination: Address,
-        failure_destination: Address,
+        destinations: Destinations,
         end_timestamp: u64,
         milestones: Vec<Milestone>,
         options: VaultOptions,
@@ -329,7 +342,7 @@ impl AccountabilityVault {
         if milestones.is_empty() {
             return Err(Error::NoMilestones);
         }
-        if failure_destination == creator {
+        if destinations.failure == creator {
             return Err(Error::InvalidFailureDestination);
         }
         let VaultOptions {
@@ -338,7 +351,7 @@ impl AccountabilityVault {
             dispute_window,
         } = options;
         if guardian == creator
-            || guardian == success_destination
+            || guardian == destinations.success
             || (verifiers.len() == 1 && verifiers.get(0).is_some_and(|v| v == guardian))
         {
             return Err(Error::InvalidGuardian);
@@ -385,8 +398,8 @@ impl AccountabilityVault {
             amount,
             staked: 0,
             staked_at: 0,
-            success_destination,
-            failure_destination,
+            success_destination: destinations.success,
+            failure_destination: destinations.failure,
             end_timestamp,
             status: VaultStatus::Draft,
             milestones: init_milestones,
@@ -885,17 +898,8 @@ impl AccountabilityVault {
         if creator != vault.creator {
             return Err(Error::Unauthorized);
         }
-        if vault.status == VaultStatus::Draft {
-            vault.status = VaultStatus::Cancelled;
-            let key = DataKey::Vault(vault_id.clone());
-            env.storage().persistent().set(&key, &vault);
-            Self::extend_ttl(&env, &key);
-
-            env.events().publish(
-                (Symbol::new(&env, "vault_cancelled"), vault_id),
-                0i128,
-            );
-            return Ok(());
+        if vault.status != VaultStatus::Draft {
+            return Err(Error::NotDraft);
         }
 
         vault.status = VaultStatus::Cancelled;
