@@ -95,6 +95,7 @@ export const hashToken = (token: string): string => {
  *  If multiple active keys exist, the first one is used.
  */
 function getCurrentKey(keys: JwtKey[]): JwtKey | undefined {
+  if (!Array.isArray(keys)) return undefined;
   return keys.find((k) => !k.retiredAt);
 }
 
@@ -165,7 +166,7 @@ export const generateImpersonationToken = (impersonatorId: string, targetUserId:
   }, env);
 };
 
-export const generateRefreshToken = (payload: { userId: string }, env?: Env): string => {
+export const generateRefreshToken = (payload: { userId: string; jti?: string }, env?: Env): string => {
   let keys: JwtKey[] = [];
   try {
     const resolvedEnv = env ?? getEnv();
