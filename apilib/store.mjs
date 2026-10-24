@@ -6,6 +6,7 @@
 import { randomUUID, randomBytes } from 'node:crypto'
 import { createStoreProvider } from './store-bootstrap.mjs'
 import { seed } from './demo-data.mjs'
+import { parseAmount, formatAmount } from './amount.mjs'
 const iso = (d) => new Date(d).toISOString()
 const hex = (n) => randomBytes(n).toString('hex')
 
@@ -97,9 +98,9 @@ export class MemoryStore {
     const active = filtered.filter(v => v.status === 'active').length
     const completed = filtered.filter(v => v.status === 'completed').length
     const failed = filtered.filter(v => v.status === 'failed').length
-    const totalLocked = filtered.filter(v => v.status === 'active').reduce((sum, v) => sum + Number(v.amount), 0)
-    const totalReleased = filtered.filter(v => v.status === 'completed').reduce((sum, v) => sum + Number(v.amount), 0)
-    const totalRedirected = filtered.filter(v => v.status === 'failed').reduce((sum, v) => sum + Number(v.amount), 0)
+    const totalLocked = formatAmount(filtered.filter(v => v.status === 'active').reduce((sum, v) => sum + parseAmount(v.amount), 0n))
+    const totalReleased = formatAmount(filtered.filter(v => v.status === 'completed').reduce((sum, v) => sum + parseAmount(v.amount), 0n))
+    const totalRedirected = formatAmount(filtered.filter(v => v.status === 'failed').reduce((sum, v) => sum + parseAmount(v.amount), 0n))
     return { totalVaults, active, completed, failed, totalLocked, totalReleased, totalRedirected }
   }
 
@@ -235,7 +236,7 @@ export class PgStore {
         return {
           id: m.id,
           title: m.title,
-          amount: String(Number(m.amount)),
+          amount: formatAmount(parseAmount(m.amount)),
           dueDate: iso(m.due_date || m.deadline),
           status: m.status,
           evidence: mEvidence,
@@ -243,7 +244,7 @@ export class PgStore {
         }
       })
     return {
-      id: r.id, name: r.name || `Vault ${r.id}`, creator: r.creator, amount: String(Number(r.amount)), status: r.status, startDate: iso(r.start_date), endDate: iso(r.end_date),
+      id: r.id, name: r.name || `Vault ${r.id}`, creator: r.creator, amount: formatAmount(parseAmount(r.amount)), status: r.status, startDate: iso(r.start_date), endDate: iso(r.end_date),
       verifier: r.verifier, successDestination: r.success_destination, failureDestination: r.failure_destination,
       onchainStatus: r.onchain_status || null,
       createdAt: iso(r.created_at), updatedAt: iso(r.updated_at),
@@ -307,9 +308,9 @@ export class PgStore {
       active: Number(r.active),
       completed: Number(r.completed),
       failed: Number(r.failed),
-      totalLocked: Number(r.total_locked),
-      totalReleased: Number(r.total_released),
-      totalRedirected: Number(r.total_redirected),
+      totalLocked: formatAmount(parseAmount(String(r.total_locked))),
+      totalReleased: formatAmount(parseAmount(String(r.total_released))),
+      totalRedirected: formatAmount(parseAmount(String(r.total_redirected))),
     }
   }
   async getVault(id) {
@@ -381,7 +382,7 @@ export class PgStore {
       client.release()
     }
   }
-  actRow(r) { return { id: r.id, type: r.type, vaultId: r.vault_id, amount: String(Number(r.amount)), status: r.status, hash: r.hash, memo: r.memo, ledger: r.ledger == null ? null : Number(r.ledger), createdAt: iso(r.created_at) } }
+  actRow(r) { return { id: r.id, type: r.type, vaultId: r.vault_id, amount: formatAmount(parseAmount(r.amount)), status: r.status, hash: r.hash, memo: r.memo, ledger: r.ledger == null ? null : Number(r.ledger), createdAt: iso(r.created_at) } }
   async getActivityByHash(hash) {
     const { rows } = await this.pool.query('SELECT * FROM activity_log WHERE hash=$1 LIMIT 1', [hash])
     return rows[0] ? this.actRow(rows[0]) : null

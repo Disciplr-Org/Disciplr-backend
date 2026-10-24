@@ -7,6 +7,7 @@ import { checkReadiness, isDatabaseUnavailable } from '../apilib/store-bootstrap
 import { OPENAPI } from '../apilib/openapi.mjs'
 import { OnchainError, isEnabled, getConfig, getServer, buildCreateVaultTx, buildStakeTx, verifySignedTx, txHashOf, submitAndWait, validateForChain } from '../apilib/soroban.mjs'
 import { safeCompare, expireOverdueVaults } from '../apilib/expiry.mjs'
+import { parseAmount, formatAmount } from '../apilib/amount.mjs'
 import { encodeCursor, decodeCursor, parseLimit } from '../apilib/pagination.mjs'
 import { failVault, validateMilestone } from '../shared/vaultMachine.mjs'
 import { buildCorsOptions, parseAllowedOrigins, isOriginAllowed, helmetOptions } from '../apilib/cors.mjs'
@@ -115,29 +116,57 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
     const errs = []
     if (!STELLAR.test(b.creator || '')) errs.push('creator must be a Stellar public key (G..., 56 chars)')
     if (!STELLAR.test(b.verifier || '')) errs.push('verifier must be a Stellar public key')
-    const amount = Number(b.amount)
-    if (!Number.isFinite(amount) || amount <= 0 || amount > 1e12) errs.push('amount must be a positive number')
+    let vaultStroops = null
+    try {
+      vaultStroops = parseAmount(b.amount)
+      if (vaultStroops <= 0n) errs.push('amount must be a positive number')
+    } catch {
+      errs.push('amount must be a positive number')
+    }
     const end = new Date(b.endDate); const start = b.startDate ? new Date(b.startDate) : new Date()
     if (isNaN(end) || isNaN(start) || end <= start) errs.push('endDate must be a valid date after startDate')
     const ms = Array.isArray(b.milestones) ? b.milestones : []
     if (ms.length < 1 || ms.length > 20) errs.push('between 1 and 20 milestones are required')
-    const milestones = ms.map((m, i) => ({
-      id: '', title: String(m?.title || '').trim().slice(0, 200), amount: String(Number(m?.amount)),
-      dueDate: new Date(m?.dueDate || b.endDate).toISOString(), status: 'pending', _i: i,
-    }))
+    let milestoneSumStroops = 0n
+    let hasMilestoneAmountError = false
+    const milestones = ms.map((m, i) => {
+      let formattedAmount = ''
+      try {
+        const mStroops = parseAmount(m?.amount)
+        if (mStroops <= 0n) {
+          hasMilestoneAmountError = true
+          errs.push(`milestone ${i + 1}: amount must be > 0`)
+        } else {
+          milestoneSumStroops += mStroops
+        }
+        formattedAmount = formatAmount(mStroops)
+      } catch {
+        hasMilestoneAmountError = true
+        errs.push(`milestone ${i + 1}: amount must be a positive number`)
+      }
+      return {
+        id: '', title: String(m?.title || '').trim().slice(0, 200), amount: formattedAmount,
+        dueDate: new Date(m?.dueDate || b.endDate).toISOString(), status: 'pending', _i: i,
+      }
+    })
     milestones.forEach((m, i) => {
       if (!m.title) errs.push(`milestone ${i + 1}: title is required`)
-      if (!(Number(m.amount) >= 0)) errs.push(`milestone ${i + 1}: amount must be >= 0`)
       if (isNaN(new Date(m.dueDate))) errs.push(`milestone ${i + 1}: invalid dueDate`)
     })
+    if (!hasMilestoneAmountError && vaultStroops !== null && vaultStroops > 0n && ms.length > 0) {
+      if (milestoneSumStroops !== vaultStroops) {
+        errs.push('milestone amounts must sum to vault amount')
+      }
+    }
     if (errs.length) return res.status(400).json({ error: 'Validation failed', details: errs })
     const id = 'vault-' + hex(6)
     milestones.forEach((m, i) => { m.id = `${id}-m${i + 1}`; delete m._i })
     const now = new Date().toISOString()
     const s = await getStore()
     const chain = isEnabled()
+    const formattedVaultAmount = formatAmount(vaultStroops)
     const vault = {
-      id, name: String(b.name || '').trim().slice(0, 200) || `Vault ${amount}`, creator: b.creator, amount: String(amount), status: chain ? 'draft' : 'active', onchainStatus: chain ? 'pending_onchain' : null, startDate: start.toISOString(), endDate: end.toISOString(),
+      id, name: String(b.name || '').trim().slice(0, 200) || `Vault ${formattedVaultAmount}`, creator: b.creator, amount: formattedVaultAmount, status: chain ? 'draft' : 'active', onchainStatus: chain ? 'pending_onchain' : null, startDate: start.toISOString(), endDate: end.toISOString(),
       verifier: b.verifier, successDestination: STELLAR.test(b.successDestination || '') ? b.successDestination : b.creator,
       failureDestination: STELLAR.test(b.failureDestination || '') ? b.failureDestination : b.verifier,
       createdAt: now, updatedAt: now, milestones,
@@ -338,7 +367,7 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
     // Use aggregateStats if available (Postgres or Memory store)
     const stats = typeof s.aggregateStats === 'function'
       ? await s.aggregateStats({ creator: req.query.creator, verifier: req.query.verifier })
-      : { totalVaults: 0, active: 0, completed: 0, failed: 0, totalLocked: 0, totalReleased: 0, totalRedirected: 0 }
+      : { totalVaults: 0, active: 0, completed: 0, failed: 0, totalLocked: '0', totalReleased: '0', totalRedirected: '0' }
     const { totalVaults, active, completed, failed, totalLocked, totalReleased, totalRedirected } = stats
     const done = completed + failed
     const successRate = done ? Math.round((completed / done) * 100) : null
