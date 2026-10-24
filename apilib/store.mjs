@@ -6,6 +6,7 @@
 import { randomUUID, randomBytes } from 'node:crypto'
 import { createStoreProvider } from './store-bootstrap.mjs'
 import { seed } from './demo-data.mjs'
+import { parseAmount, formatAmount } from './amount.mjs'
 const iso = (d) => new Date(d).toISOString()
 const hex = (n) => randomBytes(n).toString('hex')
 
@@ -120,12 +121,12 @@ export class PgStore {
 
   rowToVault(r, ms) {
     return {
-      id: r.id, name: r.name || `Vault ${r.id}`, creator: r.creator, amount: String(Number(r.amount)), status: r.status, startDate: iso(r.start_date), endDate: iso(r.end_date),
+      id: r.id, name: r.name || `Vault ${r.id}`, creator: r.creator, amount: formatAmount(parseAmount(r.amount)), status: r.status, startDate: iso(r.start_date), endDate: iso(r.end_date),
       verifier: r.verifier, successDestination: r.success_destination, failureDestination: r.failure_destination,
       onchainStatus: r.onchain_status || null,
       createdAt: iso(r.created_at), updatedAt: iso(r.updated_at),
       milestones: ms.filter((m) => m.vault_id === r.id).sort((a, b) => a.sort_order - b.sort_order)
-        .map((m) => ({ id: m.id, title: m.title, amount: String(Number(m.amount)), dueDate: iso(m.due_date || m.deadline), status: m.status })),
+        .map((m) => ({ id: m.id, title: m.title, amount: formatAmount(parseAmount(m.amount)), dueDate: iso(m.due_date || m.deadline), status: m.status })),
     }
   }
   async listVaults({ creator, status } = {}) {
@@ -205,7 +206,7 @@ export class PgStore {
       client.release()
     }
   }
-  actRow(r) { return { id: r.id, type: r.type, vaultId: r.vault_id, amount: String(Number(r.amount)), status: r.status, hash: r.hash, memo: r.memo, ledger: r.ledger == null ? null : Number(r.ledger), createdAt: iso(r.created_at) } }
+  actRow(r) { return { id: r.id, type: r.type, vaultId: r.vault_id, amount: formatAmount(parseAmount(r.amount)), status: r.status, hash: r.hash, memo: r.memo, ledger: r.ledger == null ? null : Number(r.ledger), createdAt: iso(r.created_at) } }
   async getActivityByHash(hash) {
     const { rows } = await this.pool.query('SELECT * FROM activity_log WHERE hash=$1 LIMIT 1', [hash])
     return rows[0] ? this.actRow(rows[0]) : null
