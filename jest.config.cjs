@@ -79,6 +79,7 @@ module.exports = {
     "<rootDir>/api/__tests__/vaults.test.mjs",
     "<rootDir>/api/__tests__/concurrency.test.mjs",
     "<rootDir>/api/__tests__/rateLimit.test.mjs",
+    "<rootDir>/api/__tests__/cors.security.test.mjs",
     "<rootDir>/api/__tests__/vaults.amounts.test.mjs",
     "<rootDir>/api/__tests__/postgres.amounts.test.mjs",
     "<rootDir>/apilib/__tests__/amount.test.mjs",
