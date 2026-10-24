@@ -24,16 +24,17 @@ Implements the vault lifecycle that the backend models off-chain in
 
 | Function | Purpose |
 |---|---|
-| `create_vault` | Create a `Draft` vault with milestones, verifiers, success/failure destinations, and a distinct guardian address. Validates amount, deadline, that milestone amounts sum to the total, that guardian is distinct from creator/success_destination and not sole verifier, and rejects degenerate parameters. |
+| `create_vault` | Create a `Draft` vault with milestones, verifiers, success/failure destinations, and `VaultOptions` (`oracle`, distinct `guardian`, and per-vault `dispute_window` bounded to `[1 hour, 30 days]`). Validates amount, deadline, that milestone amounts sum to the total, that guardian is distinct from creator/success_destination and not sole verifier, that `dispute_window` is within `[MIN_DISPUTE_WINDOW, MAX_DISPUTE_WINDOW]`, and rejects degenerate parameters. |
 | `stake` | Creator transfers the SEP-41 token into the contract; `Draft` -> `Active`. |
+| `stake_from` | Pull the creator's SEP-41 token using an authorized spender's allowance; `Draft` -> `Active`. |
 | `check_in` | Designated verifier confirms a milestone before its `due_date`. |
+| `dispute_milestone` | Creator disputes a mistaken milestone verification within the vault's configured `dispute_window` (`verified_at.checked_add(vault.dispute_window)`); reverts `verified` to `false` and clears approvals and the check-in record for a fresh M-of-N round. Requires an existing `CheckIn` record. Blocked if paused, not `Active`, or already released. |
 | `slash_on_miss` | After the deadline with unverified milestones, slash funds to `failure_destination`; `Active` -> `Failed`. Bounded pause/dispute stops blocking once expired. |
 | `claim` | When all milestones are verified, release funds to `success_destination`; `Active` -> `Completed`. Blocked if paused. |
 | `claim_milestone` | Release funds for an individual verified milestone; blocked if paused, enforces CEI (state persisted before external transfer). |
 | `emergency_pause` | Guardian halts settlements for up to 14 days (`MAX_PAUSE_DURATION`). |
 | `admin_dispute` | Guardian enters administrative hold for up to 14 days (`MAX_PAUSE_DURATION`). |
-| `withdraw` | Cancel/refund an unfunded or unstarted vault to the creator; -> `Cancelled`. Blocked if paused. |
-| `dispute_milestone` | Creator disputes a mistaken milestone verification within the dispute window; resets verification and clears approvals for a fresh M-of-N round. Blocked if paused, unactive, or already released. |
+| `withdraw` | Refund an `Active` vault to its creator only during the inclusive 24-hour window after staking, before its deadline, and while no milestone is verified; -> `Cancelled`. Blocked if paused. |
 | `get_vault` | Read-only accessor for the current vault record. |
 | `get_unverified_milestone_indices` | Returns `Vec<u32>` of indices for milestones that have not yet been verified, in ascending order. Used by the keeper job (`src/jobs/handlers.ts`) to determine slash targets without loading and filtering the full vault client-side. |
 
@@ -43,7 +44,8 @@ Implements the vault lifecycle that the backend models off-chain in
 2. **Checks-Effects-Interactions (CEI)**: Vault state (including milestones, staked amount, and terminal status) is updated and persisted to persistent storage *before* invoking downstream token transfers (`token::Client::transfer`). This applies to `claim`, `claim_milestone`, `slash_on_miss`, and `withdraw`.
 3. **Time-Bounded Pause & Dispute**: Emergency pauses (`emergency_pause`) and administrative disputes (`admin_dispute`) are strictly bounded to at most 14 days (`MAX_PAUSE_DURATION = 14 * 86400`). When ledger time advances past the pause or dispute expiry, `slash_on_miss` and claims proceed normally without being blocked indefinitely.
 4. **Emergency Pause Enforcement**: When a vault is paused, milestone payouts (`claim_milestone`) as well as full claims (`claim`), slashes (`slash_on_miss`), and refunds (`withdraw`) are strictly blocked (`Error::Paused`), ensuring payouts cannot be drained during an active emergency.
-5. **Milestone Dispute Guards & State Reset**: `dispute_milestone` is strictly restricted to `Active` and unpaused vaults, rejecting already-released milestones (`MilestoneAlreadyReleased`) and milestones lacking check-in history (`MilestoneNotDisputable`). Disputing clears the per-milestone approvals list and check-in timestamp so verifiers can conduct a clean M-of-N re-review without encountering `AlreadyApproved`.
+5. **Bounded Active Refunds**: `withdraw` is only available through the exact 24-hour boundary after staking and before `end_timestamp`. At or after the deadline it returns `Error::DeadlinePassed`, preserving the full stake for `slash_on_miss`; after the grace period it returns `Error::WithdrawWindowClosed`. Any verified milestone also blocks a refund.
+6. **Milestone Dispute Guards & State Reset**: `dispute_milestone` is strictly restricted to `Active` and unpaused vaults, rejecting already-released milestones (`MilestoneAlreadyReleased`) and milestones lacking check-in history (`MilestoneNotDisputable`). Disputing clears the per-milestone approvals list and check-in timestamp so verifiers can conduct a clean M-of-N re-review without encountering `AlreadyApproved`.
 
 ### Milestone Disputes & Re-approval Flow
 
@@ -54,18 +56,18 @@ The creator may dispute a verified milestone using `dispute_milestone` to correc
   - Vault must not be paused (returns `Error::Paused`).
   - Milestone must be currently verified (`milestone.verified == true`), otherwise returns `Error::MilestonesIncomplete`.
   - Milestone must not have already been released via `claim_milestone` (returns `Error::MilestoneAlreadyReleased`).
-  - Milestone must have an existing check-in record in storage (`CheckIn(index)`); pre-verified milestones lacking a check-in record cannot be disputed and return `Error::MilestoneNotDisputable`.
-  - Ledger timestamp must be within the dispute window: `now <= verified_at + dispute_window` (inclusive window rule; timestamps strictly greater than `verified_at + dispute_window` return `Error::DeadlinePassed`).
+  - Milestone must have an existing check-in record in storage (`CheckIn(vault_id, index)`); pre-verified milestones lacking a check-in record cannot be disputed and return `Error::MilestoneNotDisputable`.
+  - Ledger timestamp must be within the dispute window: `now <= verified_at + vault.dispute_window` (inclusive window rule; timestamps strictly greater than `verified_at + vault.dispute_window` return `Error::DeadlinePassed`).
 - **Reset & Re-approval**:
-  - The per-milestone approval list (`MilestoneApprovals(index)`) and check-in record (`CheckIn(index)`) are deleted from storage.
+  - The per-milestone approval list (`MilestoneApprovals(vault_id, index)`) and check-in record (`CheckIn(vault_id, index)`) are deleted from storage.
   - `milestone.verified` is set back to `false`.
   - Verifiers can then re-submit approvals via `check_in`. Because previous approvals were cleared, verifiers will not be blocked by `Error::AlreadyApproved`.
   - Once the M-of-N threshold is satisfied again, `milestone.verified` transitions back to `true`, and milestone payout can proceed through `claim_milestone`.
-  - Emits a `milestone_disputed` event with topics `(Symbol, creator)` and data `(index, cleared_approvals_count)`.
+  - Emits a `milestone_disputed` event with topics `(Symbol, vault_id)` and data `(index, cleared_approvals_count)`.
 - **Dispute Capping Decision**:
   - Adding a dispute counter to `Milestone` was evaluated to cap repeated disputes per milestone. However, altering the `Milestone` struct changes on-chain storage serialization and breaks existing vault records. Furthermore, disputing does not extend milestone `due_date` or vault `end_timestamp`: if a creator repeatedly disputes, time continues elapsing towards the deadline and the vault will be slashed if not reverified in time. Capping disputes per milestone via a counter is therefore deferred to a future storage-migration release.
-- **Storage Scoping Compatibility**:
-  - Storage keys currently use `DataKey::MilestoneApprovals(index)` and `DataKey::CheckIn(index)`. The reset logic removes these keys cleanly and is designed to remain compatible with upcoming per-vault key scoping.
+- **Storage Scoping**:
+  - Approvals and check-in records are keyed per vault (`MilestoneApprovals(vault_id, index)`, `CheckIn(vault_id, index)`) in persistent storage; the reset removes only the disputed vault's keys.
 
 ### Token allowlist policy
 
@@ -80,11 +82,12 @@ removed. Removing a token only blocks future vault creation; existing vault
 records retain their configured token so already-created vaults can continue
 their lifecycle.
 
-The `VaultStatus` enum (`Draft`/`Active`/`Completed`/`Failed`/`Cancelled`)
+The `VaultStatus` enum (`Draft`/`Active`/`Completed`/`Failed`/`Cancelled`/`Disputed`)
 mirrors `PersistedVault.status` in `src/types/vaults.ts`. Emitted events
 (`vault_created`, `vault_staked`, `vault_funded`, `milestone_checked_in`, `vault_slashed`,
-`vault_completed`, `vault_cancelled`, `vault_withdrawn`) align with the topics
-consumed by the backend event parser.
+`vault_completed`, `vault_cancelled`, `vault_withdrawn`, `vault_disputed`, `vault_dispute_resolved`,
+`vault_paused`, `vault_unpaused`) align with the topics consumed by the backend event parser.
+All event topics strictly use `Symbol` rather than `String` for consistent, gas-efficient on-chain indexing.
 
 ### Error Handling & Precise Deadline Errors
 To allow the backend to render precise, unambiguous user-facing errors:
@@ -194,6 +197,10 @@ cargo build --profile release-with-logs --target wasm32-unknown-unknown
 
 ### Migration: API change (cancel_vault vs withdraw)
 
+- **`cancel_vault`**: Strictly restricted to `Draft` (unfunded) vaults. If called on any non-`Draft` status (`Active`, `Completed`, `Failed`, `Cancelled`, `Disputed`), it immediately fails with `Error::NotDraft` without mutating vault status or transferring token balances. This guarantees funded stakes cannot be locked forever and creators cannot evade `slash_on_miss`. Emits `Symbol("vault_cancelled")`.
+- **`withdraw`**: Used for refunding/withdrawing capital from eligible vaults under creator authorization, respecting active emergency pauses.
+- **Event topic standardization**: `vault_cancelled`, `vault_disputed`, and `vault_dispute_resolved` now emit `Symbol` topics instead of `String` values.
+
 Deployment
 # Build
 cargo build --target wasm32-unknown-unknown --release
@@ -283,4 +290,3 @@ soroban-sdk = "=23.0.1"
 1. **Deliberate upgrades only**: Never use caret (`^`) or generic major-only ranges (`"23"`) for key core compiler/SDK crates like `soroban-sdk`.
 2. **Review release changelogs**: Ensure you review Soroban SDK changelogs before upgrading to check for changes in host functions, resource budgets, or gas/memory metering.
 3. **Regenerate lockfile**: When changing the pinned version, run `cargo update` inside the `contracts` directory to strictly lock dependencies and refresh `contracts/Cargo.lock`.
-

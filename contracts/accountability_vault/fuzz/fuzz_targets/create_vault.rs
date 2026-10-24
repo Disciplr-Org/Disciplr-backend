@@ -18,7 +18,8 @@ use soroban_sdk::{
 };
 
 use accountability_vault::{
-    AccountabilityVault, AccountabilityVaultClient, Destinations, Milestone, VerifierSet,
+    AccountabilityVault, AccountabilityVaultClient, Destinations, Milestone, VaultOptions,
+    VerifierSet,
 };
 
 /// Compact fuzzer-controlled input that covers all `create_vault` invariant checks.
@@ -114,12 +115,15 @@ fuzz_target!(|input: FuzzInput| {
         &vault_id,
         &creator,
         &verifier_set,
-        &None,
         &token_addr,
         &input.amount,
         &destinations,
         &end_timestamp,
         &milestones,
-        &guardian,
+        &VaultOptions {
+            oracle: None,
+            guardian,
+            dispute_window: 86_400,
+        },
     );
 });

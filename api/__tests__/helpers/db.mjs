@@ -29,7 +29,9 @@ export async function truncateDb() {
   const pool = getTestPool()
   if (!pool) return
   // Truncate tables between tests to ensure clean state
-  await pool.query('TRUNCATE TABLE activity_log, milestones, vaults CASCADE')
+  await pool.query('TRUNCATE TABLE rate_limit_buckets, activity_log, milestones, vaults CASCADE').catch(() => {
+    return pool.query('TRUNCATE TABLE activity_log, milestones, vaults CASCADE')
+  })
 }
 
 export function randomStellarAddress() {

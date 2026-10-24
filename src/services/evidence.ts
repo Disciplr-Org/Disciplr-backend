@@ -1,5 +1,13 @@
+import { isIP } from 'node:net'
 import { prisma } from '../lib/prisma.js'
-import { isUrlAllowed } from './webhooks.js'
+import {
+  EgressBlockedError,
+  isPrivateOverrideEnabled,
+  isPublicAddress,
+  resolvePublicTarget,
+  fetchPinnedTarget,
+  type EgressTarget,
+} from '../security/egressGuard.js'
 import type { Knex } from 'knex'
 
 export class EvidenceReferenceValidationError extends Error {
@@ -45,16 +53,63 @@ function validateEvidenceUrlSafety(
   url: string,
   allowedHosts?: string[],
 ): void {
-  // Use EVIDENCE_ALLOWLIST if configured, else fall back to WEBHOOK_ALLOWED_HOSTS
-  const hosts = allowedHosts ?? (process.env.EVIDENCE_ALLOWLIST ?? '')
-    .split(',')
-    .map((h) => h.trim())
-    .filter(Boolean)
-
-  if (!isUrlAllowed(url, hosts)) {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
     // Do not log the URL to avoid leaking internal topology
     console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
     throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  // Never forward embedded credentials to an evidence host.
+  if (parsed.username !== '' || parsed.password !== '') {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  const hostname = parsed.hostname
+  if (hostname === '') {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  const lower = hostname.toLowerCase().replace(/\.$/, '')
+
+  // Block loopback/localtest.me by name (these never resolve to a public egress target).
+  if (
+    lower === 'localhost' ||
+    lower.endsWith('.localhost') ||
+    /(?:^|\.)localtest\.me$/.test(lower)
+  ) {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  // If the host is a literal IP, classify it with the shared guard. DNS
+  // hostnames are not resolved here (this validator is synchronous); they are
+  // resolved and pinned at fetch time by fetchEvidenceContent.
+  if (isIP(hostname) !== 0 && !isPublicAddress(hostname)) {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  // Use EVIDENCE_ALLOWLIST if configured, else fall back to WEBHOOK_ALLOWED_HOSTS
+  const hosts = allowedHosts ?? (process.env.EVIDENCE_ALLOWLIST ?? '')
+    .split(',')
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean)
+
+  if (hosts.length > 0) {
+    if (!hosts.some((h) => lower === h || lower.endsWith(`.${h}`))) {
+      console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+      throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+    }
   }
 }
 
@@ -251,21 +306,17 @@ function mapEvidenceReferenceRow(row: {
 /**
  * Fetches evidence content from a stored evidence reference URL.
  *
- * @security SSRF protected — the URL has already been validated during reference creation
- * (validateSignedObjectStorageUrl checks against private IPs, loopback, link-local, and
- * allowlist enforcement). This function serves as the access point for any code that needs
- * to retrieve evidence content, ensuring the security posture is maintained.
+ * @security SSRF protected — the URL is validated by the shared egress guard
+ * (resolve-validate-pin) before fetching. DNS is resolved once, every returned
+ * address is classified as public, and the socket is pinned to the validated
+ * IP so DNS rebinding cannot redirect the connection to an internal address.
  *
- * DNS rebinding attacks are mitigated by the underlying fetch implementation which resolves
- * DNS at request time, and isUrlAllowed performs hostname validation before resolution.
+ * Redirects are not followed: any 3xx response is refused.
  *
  * @param referenceUrl - The evidence URL to fetch from (assumed to be pre-validated)
  * @param timeoutMs - Optional timeout in milliseconds (default: 10000)
  * @returns The response body as text
- * @throws {Error} if the fetch fails or times out
- *
- * @internal This is a placeholder for future evidence retrieval logic.
- * Currently unused, but documented here for security audit completeness.
+ * @throws {Error} if the fetch fails, is blocked, or times out
  */
 export async function fetchEvidenceContent(
   referenceUrl: string,
@@ -274,29 +325,35 @@ export async function fetchEvidenceContent(
   // Validate URL safety again as a precaution (defense in depth)
   validateEvidenceUrlSafety(referenceUrl)
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-
+  // Resolve and pin the destination. DNS failures and unsafe resolved
+  // addresses fail closed here instead of reaching the socket.
+  let target: EgressTarget
   try {
-    const response = await fetch(referenceUrl, {
-      method: 'GET',
-      redirect: 'manual', // Do not follow redirects to prevent redirect-based SSRF
-      signal: controller.signal,
+    target = await resolvePublicTarget(referenceUrl, {
+      allowPrivate: isPrivateOverrideEnabled(),
     })
-
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location')
-      throw new Error(`Evidence fetch redirect refused${location ? ` (target: ${location})` : ''}`)
-    }
-
-    if (response.status >= 400) {
-      throw new Error(`Evidence fetch failed with HTTP ${response.status}`)
-    }
-
-    return await response.text()
-  } finally {
-    clearTimeout(timer)
+  } catch (err: any) {
+    throw new Error(
+      `Evidence fetch blocked: ${err instanceof EgressBlockedError ? err.message : err?.message ?? err}`,
+    )
   }
+
+  const response = await fetchPinnedTarget(target, {
+    method: 'GET',
+    headers: {},
+    timeoutMs,
+  })
+
+  if (response.statusCode >= 300 && response.statusCode < 400) {
+    const location = response.headers['location']
+    throw new Error(`Evidence fetch redirect refused${location ? ` (target: ${location})` : ''}`)
+  }
+
+  if (response.statusCode >= 400) {
+    throw new Error(`Evidence fetch failed with HTTP ${response.statusCode}`)
+  }
+
+  return response.body
 }
 
 export interface SimilarEvidenceResult {

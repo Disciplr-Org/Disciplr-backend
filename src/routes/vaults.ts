@@ -24,7 +24,8 @@ import { AppError } from '../middleware/errorHandler.js'
 import { queryParser } from '../middleware/queryParser.js'
 import { utcNow } from '../utils/timestamps.js'
 import { etagMatches } from '../utils/etag.js'
-import type { VaultCreateResponse } from '../types/vaults.js'
+import type { PersistedVault, VaultCreateResponse } from '../types/vaults.js'
+import { requireVaultReadAccess, resolveVaultActor } from '../services/vaultAccess.js'
 
 export const vaultsRouter = Router()
 
@@ -112,7 +113,9 @@ vaultsRouter.get(
   }),
   async (req: Request, res: Response) => {
     try {
-      let result = await listVaults()
+      const actor = resolveVaultActor(req)
+      const all = req.query.all === 'true'
+      let result = await listVaults({ actor, all })
 
       if (req.filters && applyFilters) result = applyFilters(result as any, req.filters, ['status'])
       if (req.sort && applySort) result = applySort(result as any, req.sort)
@@ -274,10 +277,10 @@ vaultsRouter.post('/', authenticate, async (req: Request, res: Response, next: N
 // GET /api/vaults/:id
 // Supports ETag-based HTTP caching via If-None-Match header
 // Returns 304 Not Modified if client holds current version
-vaultsRouter.get('/:id', authenticate, requireScopes(ApiScope.ReadVaults), requireValidVaultId, async (req: Request, res: Response) => {
+vaultsRouter.get('/:id', authenticate, requireScopes(ApiScope.ReadVaults), requireValidVaultId, requireVaultReadAccess, async (req: Request, res: Response) => {
   try {
-    // Use DB-backed store
-    const vault = await getVaultById(req.params.id)
+    // Use DB-backed store (loaded by requireVaultReadAccess)
+    const vault = (res.locals.vault as PersistedVault) ?? (await getVaultById(req.params.id))
     
     if (!vault) {
       res.status(404).json({ error: 'Vault not found' })
@@ -330,22 +333,10 @@ vaultsRouter.patch('/:id', authenticate, requireValidVaultId, async (req: Reques
 })
 
 // GET /api/vaults/:id/timeline
-vaultsRouter.get('/:id/timeline', authenticate, requireValidVaultId, async (req, res, next) => {
+vaultsRouter.get('/:id/timeline', authenticate, requireValidVaultId, requireVaultReadAccess, async (req, res, next) => {
   const { id } = req.params
-  const actorUserId = req.user!.userId
-  const actorRole = req.user!.role
 
   try {
-    const vault = await getVaultById(id)
-    if (!vault) {
-      return next(AppError.notFound('Vault not found'))
-    }
-
-    // Authorization: only vault creator or an admin can view the timeline
-    if (actorUserId !== vault.creator && actorRole !== UserRole.ADMIN) {
-      return next(AppError.forbidden('You do not have permission to view this vault timeline.'))
-    }
-
     const timeline = await VaultService.getVaultTimeline(id)
     res.json({ timeline })
   } catch (error) {
@@ -355,23 +346,81 @@ vaultsRouter.get('/:id/timeline', authenticate, requireValidVaultId, async (req,
 })
 
 // POST /api/vaults/:id/cancel
-vaultsRouter.post('/:id/cancel', authenticate, requireValidVaultId, async (req, res) => {
+vaultsRouter.post('/:id/cancel', authenticate, requireValidVaultId, async (req, res, next) => {
   const actorUserId = req.user!.userId
   const actorRole = req.user!.role
-
-  const existingVault = await VaultService.getVaultById(req.params.id)
-  if (!existingVault) return res.status(404).json({ error: 'Vault not found' })
-
-  if (actorUserId !== existingVault.creator && actorRole !== UserRole.ADMIN) {
-    return res.status(403).json({ error: 'Forbidden' })
-  }
+  const vaultId = req.params.id
 
   try {
-    await VaultService.updateVaultStatus(req.params.id, 'cancelled')
-  } catch (_err) { /* non-fatal */ }
+    const existingVault = await getVaultById(vaultId)
+    if (!existingVault) {
+      return next(AppError.notFound('Vault not found'))
+    }
 
-  updateAnalyticsSummary()
-  res.status(200).json({ message: 'Vault cancelled', id: req.params.id })
+    // Authorization: only creator or admin can cancel
+    if (actorUserId !== existingVault.creator && actorRole !== UserRole.ADMIN) {
+      return next(AppError.forbidden('Only the vault creator or an admin can cancel this vault'))
+    }
+
+    // Use the transactional cancelVaultById that enforces state machine
+    const cancelResult = await cancelVaultById(vaultId)
+
+    if ('error' in cancelResult) {
+      if (cancelResult.error === 'not_found') {
+        return next(AppError.notFound('Vault not found'))
+      }
+      if (cancelResult.error === 'already_cancelled') {
+        // Idempotent: already cancelled
+        await createAuditLog({
+          actor_user_id: actorUserId,
+          action: 'vault.cancelled',
+          target_type: 'vault',
+          target_id: vaultId,
+          metadata: { idempotent: true, previousStatus: cancelResult.currentStatus },
+        })
+        return res.status(200).json({
+          message: 'Vault cancelled',
+          id: vaultId,
+          idempotent: true,
+        })
+      }
+      if (cancelResult.error === 'not_cancellable') {
+        return next(AppError.conflict(
+          `Cannot cancel vault in status '${cancelResult.currentStatus}'. Only draft and active vaults can be cancelled.`,
+          { currentStatus: cancelResult.currentStatus }
+        ))
+      }
+    }
+
+    // Success: vault was cancelled
+    const { vault, previousStatus } = cancelResult as { vault: any; previousStatus: string }
+
+    await createAuditLog({
+      actor_user_id: actorUserId,
+      action: 'vault.cancelled',
+      target_type: 'vault',
+      target_id: vaultId,
+      metadata: { previousStatus, actor: actorUserId },
+    })
+
+    // TODO: Insert vault_outbox row for webhook delivery
+    // await db('vault_outbox').insert({
+    //   vault_id: vaultId,
+    //   event_type: 'vault.cancelled',
+    //   payload: JSON.stringify({ vault, previousStatus }),
+    //   created_at: new Date(),
+    // })
+
+    updateAnalyticsSummary()
+    res.status(200).json({
+      message: 'Vault cancelled',
+      id: vaultId,
+      vault,
+    })
+  } catch (error) {
+    console.error(`Failed to cancel vault ${vaultId}:`, error)
+    return next(AppError.internal('Failed to cancel vault'))
+  }
 })
 
 // POST /api/vaults/:id/dispute
@@ -431,6 +480,21 @@ vaultsRouter.get('/user/:address', authenticate, requireScopes(ApiScope.ReadVaul
     res.status(400).json({
       error: { code: 'VALIDATION_ERROR', message: 'User address must be a valid Stellar public key' },
     })
+    return
+  }
+
+  const actor = resolveVaultActor(req)
+  const isAdmin =
+    actor.role === UserRole.ADMIN ||
+    actor.role === 'ADMIN' ||
+    actor.role?.toUpperCase() === 'ADMIN'
+  const isSelf =
+    actor.userId === address ||
+    actor.walletAddress === address ||
+    req.apiKeyAuth?.userId === address
+
+  if (!isAdmin && !isSelf) {
+    res.status(403).json({ error: 'Forbidden: You do not have permission to view vaults for this address' })
     return
   }
   try {

@@ -7,13 +7,12 @@
                 "String",
                 "Address",
                 "VerifierSet",
-                "Option<Address>",
                 "Address",
                 "i128",
                 "Destinations",
                 "u64",
                 "Vec<Milestone>",
-                "Address"
+                "VaultOptions"
             ],
             "result": "Result<(), Error>"
         },
@@ -133,21 +132,6 @@
                 "String"
             ],
             "result": "Result<Vault, Error>"
-        },
-        {
-            "name": "reclaim_after_settlement",
-            "params": [
-                "String",
-                "Address"
-            ],
-            "result": "Result<(), Error>"
-        },
-        {
-            "name": "configure_window",
-            "params": [
-                "u64"
-            ],
-            "result": "()"
         },
         {
             "name": "dispute_milestone",
