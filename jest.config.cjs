@@ -37,6 +37,8 @@ module.exports = {
   testPathIgnorePatterns: [
     "/node_modules/",
     // bun:test / mock.module()
+    "<rootDir>/api/__tests__/evidence.test.mjs",
+    "<rootDir>/api/__tests__/pagination.test.mjs",
     "<rootDir>/src/repositories/etlBatchRepository.test.ts",
     "<rootDir>/src/tests/adminHorizonListener.test.ts",
     "<rootDir>/src/tests/cache.test.ts",

@@ -190,14 +190,18 @@
               {
                 "amount": "500",
                 "dueDate": "<timestamp>",
+                "evidence": [],
                 "id": "<milestone-1>",
+                "latestEvidenceHash": null,
                 "status": "completed",
                 "title": "Task 1"
               },
               {
                 "amount": "500",
                 "dueDate": "<timestamp>",
+                "evidence": [],
                 "id": "<milestone-2>",
+                "latestEvidenceHash": null,
                 "status": "completed",
                 "title": "Task 2"
               }
@@ -368,14 +372,18 @@
               {
                 "amount": "500",
                 "dueDate": "<timestamp>",
+                "evidence": [],
                 "id": "<milestone-1>",
+                "latestEvidenceHash": null,
                 "status": "completed",
                 "title": "Step 1"
               },
               {
                 "amount": "500",
                 "dueDate": "<timestamp>",
+                "evidence": [],
                 "id": "<milestone-2>",
+                "latestEvidenceHash": null,
                 "status": "failed",
                 "title": "Step 2"
               }

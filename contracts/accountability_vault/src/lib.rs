@@ -21,6 +21,15 @@
 //! An active vault may only be refunded by `withdraw` through the first 24 hours
 //! after staking, before its deadline, and before any milestone is verified.
 //!
+//! Settlement behavior:
+//! - On success (all milestones verified before deadline): `claim` or `claim_milestone`
+//!   releases funds to `success_destination`.
+//! - On deadline miss with partial completion: `slash_on_miss` pays verified-but-unclaimed
+//!   milestones to `success_destination` and slashes only the unverified remainder to
+//!   `failure_destination`. This ensures users receive credit for completed work.
+//! - On deadline miss with no completion: the full staked amount is slashed to
+//!   `failure_destination`.
+//!
 //! Security invariants:
 //! - Checks-Effects-Interactions: vault state (status, staked, milestones) is persisted to
 //!   storage BEFORE any external token::Client call in `slash_on_miss`, `claim`,
@@ -688,9 +697,15 @@ impl AccountabilityVault {
     /// deadline has passed and not all milestones were verified. Permissionless:
     /// anyone may trigger the slash after the deadline (e.g. a backend keeper).
     ///
-    /// Checks-Effects-Interactions: vault status is set to `Failed` and `staked`
-    /// is zeroed in storage BEFORE the external token transfer is executed,
-    /// ensuring the terminal state is committed even if the transfer call panics.
+    /// Verified but unclaimed milestones are paid to the `success_destination`
+    /// and only the unverified remainder is slashed to the `failure_destination`.
+    /// This ensures users receive credit for completed work even if they miss
+    /// the claim deadline.
+    ///
+    /// Checks-Effects-Interactions: vault status is set to `Failed`, milestones
+    /// are marked `released`, and `staked` is zeroed in storage BEFORE any
+    /// external token transfers, ensuring the terminal state is committed even
+    /// if a transfer call panics.
     pub fn slash_on_miss(env: Env, vault_id: String) -> Result<(), Error> {
         let mut vault: Vault = Self::load(&env, &vault_id)?;
         let now = env.ledger().timestamp();
@@ -716,26 +731,75 @@ impl AccountabilityVault {
             return Err(Error::MilestonesIncomplete);
         }
 
-        // CEI: capture transfer values, update and persist state, then call external token.
-        let slashed = vault.staked;
+        // CEI: 1. Calculate verified-unreleased and unverified amounts
+        let mut verified_unreleased: i128 = 0;
+        for i in 0..vault.milestones.len() {
+            let m = vault
+                .milestones
+                .get(i)
+                .ok_or(Error::MilestoneIndexOutOfRange)?;
+            if m.verified && !m.released {
+                verified_unreleased = verified_unreleased
+                    .checked_add(m.amount)
+                    .ok_or(Error::InvalidAmount)?;
+            }
+        }
+
+        let slashed = vault
+            .staked
+            .checked_sub(verified_unreleased)
+            .ok_or(Error::InvalidAmount)?;
+
+        // CEI: 2. Update state effects - mark verified milestones as released
+        for i in 0..vault.milestones.len() {
+            let mut m = vault
+                .milestones
+                .get(i)
+                .ok_or(Error::MilestoneIndexOutOfRange)?;
+            if m.verified && !m.released {
+                m.released = true;
+                vault.milestones.set(i, m);
+            }
+        }
+
+        let success_destination = vault.success_destination.clone();
         let failure_destination = vault.failure_destination.clone();
         let token_addr = vault.token.clone();
         vault.status = VaultStatus::Failed;
         vault.staked = 0;
+
+        // CEI: 3. Persist state BEFORE external token calls
         let key = DataKey::Vault(vault_id.clone());
         env.storage().persistent().set(&key, &vault);
         Self::extend_ttl(&env, &key);
 
-        token::Client::new(&env, &token_addr).transfer(
-            &env.current_contract_address(),
-            &failure_destination,
-            &slashed,
-        );
+        // CEI: 4. External interactions - pay verified milestones to success, remainder to failure
+        let client = token::Client::new(&env, &token_addr);
+        
+        if verified_unreleased > 0 {
+            client.transfer(
+                &env.current_contract_address(),
+                &success_destination,
+                &verified_unreleased,
+            );
+            env.events().publish(
+                (Symbol::new(&env, "verified_released"), vault_id.clone()),
+                verified_unreleased,
+            );
+        }
 
-        env.events().publish(
-            (Symbol::new(&env, "vault_slashed"), vault_id),
-            slashed,
-        );
+        if slashed > 0 {
+            client.transfer(
+                &env.current_contract_address(),
+                &failure_destination,
+                &slashed,
+            );
+            env.events().publish(
+                (Symbol::new(&env, "vault_slashed"), vault_id),
+                slashed,
+            );
+        }
+
         Ok(())
     }
 
@@ -809,6 +873,9 @@ impl AccountabilityVault {
     ///
     /// When the last milestone is claimed, the vault automatically transitions
     /// to `Completed`.
+    ///
+    /// Checks-Effects-Interactions: milestone `released` flag, `vault.staked`,
+    /// and status are persisted BEFORE the external token transfer.
     pub fn claim_milestone(
         env: Env,
         vault_id: String,
@@ -849,30 +916,33 @@ impl AccountabilityVault {
             return Err(Error::MilestoneAlreadyReleased);
         }
 
+        // CEI: 1. Capture values for external call
         let payout = milestone.amount;
+        let success_destination = vault.success_destination.clone();
+        let token_addr = vault.token.clone();
+        let total_amount = vault.amount;
 
-        // CEI: 1. Update state effects
+        // CEI: 2. Update state effects
         milestone.released = true;
         vault.milestones.set(index, milestone);
-        vault.staked -= payout;
+        vault.staked = vault
+            .staked
+            .checked_sub(payout)
+            .ok_or(Error::InvalidAmount)?;
 
         let completed = Self::all_released(&vault);
         if completed {
             vault.status = VaultStatus::Completed;
         }
 
-        // CEI: 2. Persist state BEFORE external token call
+        // CEI: 3. Persist state BEFORE external token call
         let key = DataKey::Vault(vault_id.clone());
         env.storage().persistent().set(&key, &vault);
         Self::extend_ttl(&env, &key);
 
-        // CEI: 3. External interactions
-        let client = token::Client::new(&env, &vault.token);
-        client.transfer(
-            &env.current_contract_address(),
-            &vault.success_destination,
-            &payout,
-        );
+        // CEI: 4. External interactions
+        let client = token::Client::new(&env, &token_addr);
+        client.transfer(&env.current_contract_address(), &success_destination, &payout);
 
         env.events().publish(
             (Symbol::new(&env, "milestone_claimed"), vault_id.clone()),
@@ -880,9 +950,18 @@ impl AccountabilityVault {
         );
 
         if completed {
+            // Emit cumulative released amount (sum of all claimed milestones)
+            let mut total_released: i128 = 0;
+            for m in vault.milestones.iter() {
+                if m.released {
+                    total_released = total_released
+                        .checked_add(m.amount)
+                        .ok_or(Error::InvalidAmount)?;
+                }
+            }
             env.events().publish(
                 (Symbol::new(&env, "vault_completed"), vault_id),
-                vault.amount,
+                total_released,
             );
         }
 
