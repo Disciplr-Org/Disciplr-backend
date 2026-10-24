@@ -1882,6 +1882,249 @@ fn test_dispute_window_no_overflow_panic() {
     assert_eq!(res, Err(Ok(Error::InvalidDeadline)));
 }
 
+#[test]
+fn test_reclaim_cannot_drain_other_vaults() {
+    let s = setup(&[100], &[1_000]);
+    let token_client = token::Client::new(&s.env, &s.token);
+
+    // Victim creates and stakes 1000
+    s.contract.stake(&s.vault_id, &s.creator);
+    assert_eq!(token_client.balance(&s.contract.address), 1_000);
+    assert_eq!(token_client.balance(&s.creator), 0);
+
+    // Attacker creates a separate Draft vault (staked == 0)
+    let attacker = Address::generate(&s.env);
+    let attacker_vault_id = String::from_str(&s.env, "attacker-vault");
+    let attacker_guardian = Address::generate(&s.env);
+    let verifier_set = VerifierSet {
+        verifiers: vec![&s.env, s.verifier.clone()],
+        threshold: 1,
+    };
+    let attacker_milestones = vec![
+        &s.env,
+        Milestone {
+            title: String::from_str(&s.env, "m"),
+            amount: 1_000,
+            due_date: 1_100,
+            verified: false,
+            released: false,
+        },
+    ];
+
+    s.contract.create_vault(
+        &attacker_vault_id,
+        &attacker,
+        &verifier_set,
+        &s.token,
+        &1_000,
+        &Destinations {
+            success: s.success.clone(),
+            failure: s.failure.clone(),
+        },
+        &1_100,
+        &attacker_milestones,
+        &VaultOptions {
+            oracle: None,
+            guardian: attacker_guardian.clone(),
+            dispute_window: 86_400,
+        },
+    );
+
+    assert_eq!(token_client.balance(&attacker), 0);
+
+    // Attacker attempts to call reclaim_after_settlement.
+    // Since reclaim_after_settlement was removed from the contract, invoking it fails.
+    let call_res = s.env.try_invoke_contract::<(), soroban_sdk::Val>(
+        &s.contract.address,
+        &Symbol::new(&s.env, "reclaim_after_settlement"),
+        vec![&s.env, attacker_vault_id.to_val(), s.token.to_val()],
+    );
+    assert!(call_res.is_err());
+
+    // Assert victim's stake remains in the contract and attacker's balance is unchanged
+    assert_eq!(token_client.balance(&s.contract.address), 1_000);
+    assert_eq!(token_client.balance(&attacker), 0);
+
+    let victim_vault = s.contract.get_vault(&s.vault_id);
+    assert_eq!(victim_vault.staked, 1_000);
+    assert_eq!(victim_vault.status, VaultStatus::Active);
+}
+
+#[test]
+fn test_balance_covers_outstanding_stakes() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let token_admin = Address::generate(&env);
+    let (token, token_admin_client) = create_token(&env, &token_admin);
+    let token_client = token::Client::new(&env, &token);
+
+    let contract_id = env.register(AccountabilityVault, ());
+    let contract = AccountabilityVaultClient::new(&env, &contract_id);
+
+    // Seeded linear congruential PRNG
+    let mut prng_state: u64 = 0x12345678_abcdef01;
+    let mut next_random = || -> u64 {
+        prng_state = prng_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        prng_state
+    };
+
+    struct TestVaultInfo {
+        id: String,
+        creator: Address,
+        verifier: Address,
+        guardian: Address,
+    }
+
+    let mut vaults: std::vec::Vec<TestVaultInfo> = std::vec::Vec::new();
+
+    // Loop of randomized create/stake/check_in/claim/slash/withdraw operations over multiple vaults
+    for step in 0..100 {
+        let op = next_random() % 7;
+        match op {
+            0 => {
+                // Create a new vault
+                let v_idx = vaults.len();
+                let creator = Address::generate(&env);
+                let verifier = Address::generate(&env);
+                let success = Address::generate(&env);
+                let failure = Address::generate(&env);
+                let guardian = Address::generate(&env);
+                let vault_id = String::from_str(&env, &std::format!("v-{}", v_idx));
+
+                let amount = ((next_random() % 500) + 100) as i128;
+                token_admin_client.mint(&creator, &amount);
+
+                let verifier_set = VerifierSet {
+                    verifiers: vec![&env, verifier.clone()],
+                    threshold: 1,
+                };
+                let milestones = vec![
+                    &env,
+                    Milestone {
+                        title: String::from_str(&env, "m1"),
+                        amount: amount / 2,
+                        due_date: env.ledger().timestamp() + 500,
+                        verified: false,
+                        released: false,
+                    },
+                    Milestone {
+                        title: String::from_str(&env, "m2"),
+                        amount: amount - (amount / 2),
+                        due_date: env.ledger().timestamp() + 1_000,
+                        verified: false,
+                        released: false,
+                    },
+                ];
+
+                let _ = contract.try_create_vault(
+                    &vault_id,
+                    &creator,
+                    &verifier_set,
+                    &token,
+                    &amount,
+                    &Destinations {
+                        success: success.clone(),
+                        failure: failure.clone(),
+                    },
+                    &(env.ledger().timestamp() + 1_000),
+                    &milestones,
+                    &VaultOptions {
+                        oracle: None,
+                        guardian: guardian.clone(),
+                        dispute_window: 86_400,
+                    },
+                );
+
+                vaults.push(TestVaultInfo {
+                    id: vault_id,
+                    creator,
+                    verifier,
+                    guardian,
+                });
+            }
+            1 => {
+                // Stake in an existing vault
+                if !vaults.is_empty() {
+                    let idx = (next_random() as usize) % vaults.len();
+                    let v = &vaults[idx];
+                    let _ = contract.try_stake(&v.id, &v.creator);
+                }
+            }
+            2 => {
+                // Check in milestone
+                if !vaults.is_empty() {
+                    let idx = (next_random() as usize) % vaults.len();
+                    let v = &vaults[idx];
+                    let m_idx = (next_random() % 2) as u32;
+                    let _ = contract.try_check_in(
+                        &v.id,
+                        &v.verifier,
+                        &m_idx,
+                        &evidence_hash(&env, (step % 255) as u8),
+                    );
+                }
+            }
+            3 => {
+                // Claim milestone
+                if !vaults.is_empty() {
+                    let idx = (next_random() as usize) % vaults.len();
+                    let v = &vaults[idx];
+                    let m_idx = (next_random() % 2) as u32;
+                    let _ = contract.try_claim_milestone(&v.id, &v.creator, &m_idx);
+                }
+            }
+            4 => {
+                // Bulk claim
+                if !vaults.is_empty() {
+                    let idx = (next_random() as usize) % vaults.len();
+                    let v = &vaults[idx];
+                    let _ = contract.try_claim(&v.id, &v.creator);
+                }
+            }
+            5 => {
+                // Slash on miss
+                if !vaults.is_empty() {
+                    let idx = (next_random() as usize) % vaults.len();
+                    let v = &vaults[idx];
+                    let _ = contract.try_slash_on_miss(&v.id);
+                }
+            }
+            6 => {
+                // Withdraw or advance time
+                if !vaults.is_empty() {
+                    let idx = (next_random() as usize) % vaults.len();
+                    let v = &vaults[idx];
+                    let _ = contract.try_withdraw(&v.id, &v.creator);
+                }
+                env.ledger().set_timestamp(env.ledger().timestamp() + 200);
+            }
+            _ => {}
+        }
+
+        // Global invariant check:
+        // Contract token balance must always be >= the sum of outstanding staked funds across all vaults.
+        let mut total_staked: i128 = 0;
+        for v in &vaults {
+            if let Ok(Ok(vault_record)) = contract.try_get_vault(&v.id) {
+                total_staked += vault_record.staked;
+            }
+        }
+        let contract_balance = token_client.balance(&contract_id);
+        assert!(
+            contract_balance >= total_staked,
+            "Invariant violation at step {}: contract balance ({}) < outstanding staked ({})",
+            step,
+            contract_balance,
+            total_staked
+        );
+    }
+}
+
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // Partial settlement tests: slash_on_miss pays verified-unclaimed to success
