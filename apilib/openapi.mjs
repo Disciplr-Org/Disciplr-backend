@@ -603,9 +603,23 @@ export const OPENAPI = {
           },
           details: {
             type: 'array',
-            items: { type: 'string' },
-            description: 'Detailed validation error messages',
-            example: ['amount must be a positive number'],
+            items: {
+              oneOf: [
+                { type: 'string' },
+                {
+                  type: 'object',
+                  required: ['field', 'code', 'message'],
+                  additionalProperties: true,
+                  properties: {
+                    field: { type: 'string', example: 'creator' },
+                    code: { type: 'string', example: 'invalid_address' },
+                    message: { type: 'string', example: 'creator must be a valid Stellar public key (G..., 56 characters with valid checksum)' },
+                  },
+                },
+              ],
+            },
+            description: 'Detailed validation error messages or structured field validation errors',
+            example: [{ field: 'creator', code: 'invalid_address', message: 'creator must be a valid Stellar public key (G..., 56 characters with valid checksum)' }],
           },
         },
       },
@@ -855,7 +869,7 @@ export const OPENAPI = {
         required: ['title', 'amount'],
         additionalProperties: false,
         properties: {
-          title: { type: 'string', example: 'Ship MVP' },
+          title: { type: 'string', maxLength: 128, example: 'Ship MVP' },
           amount: {
             oneOf: [
               { type: 'string', pattern: '^\\d+(\\.\\d{1,7})?$' },

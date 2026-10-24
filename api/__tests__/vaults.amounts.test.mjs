@@ -65,7 +65,7 @@ test('POST /vaults - rejects when milestone amounts do not sum to vault amount',
   const res = await request(app).post('/api/vaults').send(payload)
   assert.equal(res.status, 400)
   assert.equal(res.body.error, 'Validation failed')
-  assert.ok(res.body.details.includes('milestone amounts must sum to vault amount'))
+  assert.ok(res.body.details.some(d => d.message === 'milestone amounts must sum to vault amount'))
 })
 
 test('POST /vaults - rejects milestone amount of 0', async () => {
@@ -83,7 +83,7 @@ test('POST /vaults - rejects milestone amount of 0', async () => {
   const res = await request(app).post('/api/vaults').send(payload)
   assert.equal(res.status, 400)
   assert.equal(res.body.error, 'Validation failed')
-  assert.ok(res.body.details.some(d => d.includes('milestone 1: amount must be > 0')))
+  assert.ok(res.body.details.some(d => d.message.includes('milestone 1: amount must be > 0')))
 })
 
 test('POST /vaults - rejection table for invalid vault amounts and milestones', async () => {
@@ -96,7 +96,7 @@ test('POST /vaults - rejection table for invalid vault amounts and milestones', 
     // As vault amount
     const resVault = await request(app).post('/api/vaults').send(makePayload({ amount: invalid }))
     assert.equal(resVault.status, 400, `Expected 400 for vault amount: ${invalid}`)
-    assert.ok(resVault.body.details.some(d => d.includes('amount must be a positive number')))
+    assert.ok(resVault.body.details.some(d => d.message.includes('amount must be a positive number')))
 
     // As milestone amount
     const resMilestone = await request(app).post('/api/vaults').send(makePayload({
@@ -104,7 +104,7 @@ test('POST /vaults - rejection table for invalid vault amounts and milestones', 
       milestones: [{ title: 'M1', amount: invalid, dueDate: new Date(Date.now() + 86400000 * 10).toISOString() }],
     }))
     assert.equal(resMilestone.status, 400, `Expected 400 for milestone amount: ${invalid}`)
-    assert.ok(resMilestone.body.details.some(d => d.includes('milestone 1: amount must be')))
+    assert.ok(resMilestone.body.details.some(d => d.message.includes('milestone 1: amount must be')))
   }
 })
 

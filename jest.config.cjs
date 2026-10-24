@@ -86,6 +86,8 @@ module.exports = {
     "<rootDir>/apilib/__tests__/query.test.mjs",
     "<rootDir>/api/__tests__/observability.test.mjs",
     "<rootDir>/apilib/__tests__/log.test.mjs",
+    "<rootDir>/api/__tests__/vaults.create.test.mjs",
+    "<rootDir>/apilib/__tests__/validation.test.mjs",
     // vitest (imports describe/it/expect/vi from 'vitest', which collides
     // with Jest's own globals/expect instance when loaded in the same
     // worker — "Cannot redefine property: Symbol($$jest-matchers-object)")

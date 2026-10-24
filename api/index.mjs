@@ -7,9 +7,9 @@ import { checkReadiness, isDatabaseUnavailable } from '../apilib/store-bootstrap
 import { OPENAPI } from '../apilib/openapi.mjs'
 import { OnchainError, isEnabled, getConfig, getServer, buildCreateVaultTx, buildStakeTx, verifySignedTx, txHashOf, submitAndWait, validateForChain } from '../apilib/soroban.mjs'
 import { safeCompare, expireOverdueVaults } from '../apilib/expiry.mjs'
+import { validateCreateVault } from '../apilib/validation.mjs'
 import { requestIdMiddleware } from '../apilib/log.mjs'
 import { QueryValidationError, validateStatus, validateCreator, validateVaultId } from '../apilib/query.mjs'
-import { parseAmount, formatAmount } from '../apilib/amount.mjs'
 import { encodeCursor, decodeCursor, parseLimit } from '../apilib/pagination.mjs'
 import { failVault, validateMilestone } from '../shared/vaultMachine.mjs'
 import { buildCorsOptions, parseAllowedOrigins, isOriginAllowed, helmetOptions } from '../apilib/cors.mjs'
@@ -57,7 +57,6 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
   app.use(express.json({ limit: '100kb' }))
   app.use(createRateLimiter({ getStore }))
 
-  const STELLAR = /^G[A-Z2-7]{55}$/
   const hex = (n) => randomBytes(n).toString('hex')
   const bad = (res, msg, code = 400) => res.status(code).json({ error: msg })
   const wrap = (fn) => (req, res, next) => Promise.resolve().then(() => fn(req, res, next)).catch(next)
@@ -109,64 +108,34 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
   }))
 
   router.post('/vaults', wrap(async (req, res) => {
-    const b = req.body || {}
-    const errs = []
-    if (!STELLAR.test(b.creator || '')) errs.push('creator must be a Stellar public key (G..., 56 chars)')
-    if (!STELLAR.test(b.verifier || '')) errs.push('verifier must be a Stellar public key')
-    let vaultStroops = null
-    try {
-      vaultStroops = parseAmount(b.amount)
-      if (vaultStroops <= 0n) errs.push('amount must be a positive number')
-    } catch {
-      errs.push('amount must be a positive number')
+    const testNow = req._now || req.query.now || req.headers['x-test-now']
+    const nowForValidation = testNow ? new Date(testNow) : new Date()
+    const validation = validateCreateVault(req.body, { now: nowForValidation })
+    if (!validation.success) {
+      return res.status(400).json({ error: 'Validation failed', details: validation.details })
     }
-    const end = new Date(b.endDate); const start = b.startDate ? new Date(b.startDate) : new Date()
-    if (isNaN(end) || isNaN(start) || end <= start) errs.push('endDate must be a valid date after startDate')
-    const ms = Array.isArray(b.milestones) ? b.milestones : []
-    if (ms.length < 1 || ms.length > 20) errs.push('between 1 and 20 milestones are required')
-    let milestoneSumStroops = 0n
-    let hasMilestoneAmountError = false
-    const milestones = ms.map((m, i) => {
-      let formattedAmount = ''
-      try {
-        const mStroops = parseAmount(m?.amount)
-        if (mStroops <= 0n) {
-          hasMilestoneAmountError = true
-          errs.push(`milestone ${i + 1}: amount must be > 0`)
-        } else {
-          milestoneSumStroops += mStroops
-        }
-        formattedAmount = formatAmount(mStroops)
-      } catch {
-        hasMilestoneAmountError = true
-        errs.push(`milestone ${i + 1}: amount must be a positive number`)
-      }
-      return {
-        id: '', title: String(m?.title || '').trim().slice(0, 200), amount: formattedAmount,
-        dueDate: new Date(m?.dueDate || b.endDate).toISOString(), status: 'pending', _i: i,
-      }
-    })
-    milestones.forEach((m, i) => {
-      if (!m.title) errs.push(`milestone ${i + 1}: title is required`)
-      if (isNaN(new Date(m.dueDate))) errs.push(`milestone ${i + 1}: invalid dueDate`)
-    })
-    if (!hasMilestoneAmountError && vaultStroops !== null && vaultStroops > 0n && ms.length > 0) {
-      if (milestoneSumStroops !== vaultStroops) {
-        errs.push('milestone amounts must sum to vault amount')
-      }
-    }
-    if (errs.length) return res.status(400).json({ error: 'Validation failed', details: errs })
+
+    const validData = validation.data
     const id = 'vault-' + hex(6)
-    milestones.forEach((m, i) => { m.id = `${id}-m${i + 1}`; delete m._i })
+    validData.milestones.forEach((m, i) => { m.id = `${id}-m${i + 1}`; delete m._i })
     const now = new Date().toISOString()
     const s = await getStore()
     const chain = isEnabled()
-    const formattedVaultAmount = formatAmount(vaultStroops)
     const vault = {
-      id, name: String(b.name || '').trim().slice(0, 200) || `Vault ${formattedVaultAmount}`, creator: b.creator, amount: formattedVaultAmount, status: chain ? 'draft' : 'active', onchainStatus: chain ? 'pending_onchain' : null, startDate: start.toISOString(), endDate: end.toISOString(),
-      verifier: b.verifier, successDestination: STELLAR.test(b.successDestination || '') ? b.successDestination : b.creator,
-      failureDestination: STELLAR.test(b.failureDestination || '') ? b.failureDestination : b.verifier,
-      createdAt: now, updatedAt: now, milestones,
+      id,
+      name: validData.name || `Vault ${validData.amount}`,
+      creator: validData.creator,
+      amount: validData.amount,
+      status: chain ? 'draft' : 'active',
+      onchainStatus: chain ? 'pending_onchain' : null,
+      startDate: validData.startDate,
+      endDate: validData.endDate,
+      verifier: validData.verifier,
+      successDestination: validData.successDestination,
+      failureDestination: validData.failureDestination,
+      createdAt: now,
+      updatedAt: now,
+      milestones: validData.milestones,
     }
     if (chain) {
       // Build + simulate first so an invalid vault is rejected before anything is stored.
