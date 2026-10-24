@@ -1,11 +1,14 @@
 import { z } from 'zod'
 import { StrKey } from '@stellar/stellar-sdk'
+import { parseAmount, formatAmount } from './amount.mjs'
 
 // 5 years in milliseconds: 5 * 365 * 24 * 60 * 60 * 1000 = 157,680,000,000 ms
 const FIVE_YEARS_MS = 5 * 365 * 24 * 60 * 60 * 1000
 // 5 minutes in milliseconds for clock skew allowance
 const FIVE_MINUTES_MS = 5 * 60 * 1000
 const MAX_TITLE_BYTES = 128
+// Upper bound for a vault amount: 1e12 units expressed in stroops (10^7 per unit).
+const MAX_VAULT_STROOPS = 1_000_000_000_000n * 10_000_000n
 
 /**
  * Parses date input into a Date object treating string inputs without timezone as UTC.
@@ -246,10 +249,16 @@ export function validateCreateVault(payload, options = {}) {
     }
   }
 
-  // 3. Amount parsing (preserve exact behavior: positive number <= 1e12)
-  const amount = Number(b.amount)
-  if (!Number.isFinite(amount) || amount <= 0 || amount > 1e12) {
+  // 3. Amount parsing: exact 7-decimal value in stroops, positive and <= 1e12 units
+  let vaultStroops = null
+  try {
+    vaultStroops = parseAmount(b.amount)
+  } catch {
+    vaultStroops = null
+  }
+  if (vaultStroops === null || vaultStroops <= 0n || vaultStroops > MAX_VAULT_STROOPS) {
     addIssue('amount', 'invalid_amount', 'amount must be a positive number')
+    vaultStroops = null
   }
 
   // 4. Dates: startDate & endDate
@@ -293,6 +302,8 @@ export function validateCreateVault(payload, options = {}) {
     addIssue('milestones', 'invalid_length', 'between 1 and 20 milestones are required')
   } else {
     let prevDueDate = null
+    let milestoneSumStroops = 0n
+    let hasMilestoneAmountError = false
 
     b.milestones.forEach((m, i) => {
       const idx = `milestones[${i}]`
@@ -328,10 +339,18 @@ export function validateCreateVault(payload, options = {}) {
         }
       }
 
-      // Milestone amount
-      const mAmount = Number(m.amount)
-      if (!Number.isFinite(mAmount) || mAmount < 0) {
-        addIssue(`${idx}.amount`, 'invalid_amount', `milestone ${i + 1}: amount must be >= 0`)
+      // Milestone amount: exact 7-decimal value, strictly positive
+      try {
+        const mStroops = parseAmount(m.amount)
+        if (mStroops <= 0n) {
+          hasMilestoneAmountError = true
+          addIssue(`${idx}.amount`, 'invalid_amount', `milestone ${i + 1}: amount must be > 0`)
+        } else {
+          milestoneSumStroops += mStroops
+        }
+      } catch {
+        hasMilestoneAmountError = true
+        addIssue(`${idx}.amount`, 'invalid_amount', `milestone ${i + 1}: amount must be a positive number`)
       }
 
       // Milestone dueDate
@@ -359,6 +378,10 @@ export function validateCreateVault(payload, options = {}) {
         prevDueDate = mDueDate
       }
     })
+
+    if (!hasMilestoneAmountError && vaultStroops !== null && milestoneSumStroops !== vaultStroops) {
+      addIssue('milestones', 'milestone_sum_mismatch', 'milestone amounts must sum to vault amount')
+    }
   }
 
   if (issues.length > 0) {
@@ -374,7 +397,7 @@ export function validateCreateVault(payload, options = {}) {
       name: typeof b.name === 'string' ? b.name.trim().slice(0, 200) : '',
       creator: b.creator,
       verifier: b.verifier,
-      amount: String(amount),
+      amount: formatAmount(vaultStroops),
       startDate: startDate.toISOString(),
       endDate: endDate.toISOString(),
       successDestination: b.successDestination || b.creator,
@@ -384,7 +407,7 @@ export function validateCreateVault(payload, options = {}) {
         return {
           id: '',
           title: String(m.title || '').trim(),
-          amount: String(Number(m.amount)),
+          amount: formatAmount(parseAmount(m.amount)),
           dueDate: mDueDate.toISOString(),
           status: 'pending',
           _i: i,

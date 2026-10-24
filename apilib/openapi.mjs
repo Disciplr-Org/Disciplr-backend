@@ -109,10 +109,12 @@ export const OPENAPI = {
     '/vaults': {
       get: {
         operationId: 'listVaults',
-        summary: 'List vaults',
+        summary: 'List vaults with cursor pagination',
         parameters: [
           { name: 'creator', in: 'query', schema: { $ref: '#/components/schemas/StellarAddress' }, description: 'Filter by creator Stellar address' },
           { name: 'status', in: 'query', schema: { type: 'string', enum: ['active', 'completed', 'failed'] }, description: 'Filter by vault status' },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 }, description: 'Page size (1-100, default 25)' },
+          { name: 'cursor', in: 'query', schema: { type: 'string' }, description: 'Opaque pagination cursor from previous response' },
         ],
         responses: {
           200: {
@@ -151,6 +153,7 @@ export const OPENAPI = {
               },
             },
           },
+          400: err,
           503: unavailable,
         },
       },
@@ -345,6 +348,56 @@ export const OPENAPI = {
         },
       },
     },
+    '/vaults/{id}/milestones/{mid}/evidence': {
+      post: {
+        operationId: 'submitMilestoneEvidence',
+        summary: 'Creator submits evidence for a milestone: URL + SHA-256 hash + optional note',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Unique vault ID' },
+          { name: 'mid', in: 'path', required: true, schema: { type: 'string' }, description: 'Milestone ID' },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/SubmitEvidenceRequest' },
+              example: {
+                submitter: 'GBVAQKGA5P4TIZSZJBS5AW3XNJOTYG6I3Y5CLIGCBBUZDHMVF7YE7XCQ',
+                url: 'https://example.com/proof.pdf',
+                sha256: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+                note: 'MVP deployed to production',
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: 'Evidence submitted successfully',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/EvidenceEnvelope' },
+                example: {
+                  data: {
+                    id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+                    url: 'https://example.com/proof.pdf',
+                    sha256: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+                    note: 'MVP deployed to production',
+                    submittedBy: 'GBVAQKGA5P4TIZSZJBS5AW3XNJOTYG6I3Y5CLIGCBBUZDHMVF7YE7XCQ',
+                    verified: false,
+                    createdAt: '2026-04-15T12:00:00.000Z',
+                  },
+                },
+              },
+            },
+          },
+          400: err,
+          403: err,
+          404: err,
+          409: err,
+          503: unavailable,
+        },
+      },
+    },
     '/vaults/{id}/fail': {
       post: {
         operationId: 'failVault',
@@ -454,9 +507,11 @@ export const OPENAPI = {
     '/transactions': {
       get: {
         operationId: 'listTransactions',
-        summary: 'Activity feed (create / validate / release / redirect)',
+        summary: 'Activity feed with cursor pagination',
         parameters: [
           { name: 'vaultId', in: 'query', schema: { type: 'string' }, description: 'Filter activity by vault ID' },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 25 }, description: 'Page size (1-100, default 25)' },
+          { name: 'cursor', in: 'query', schema: { type: 'string' }, description: 'Opaque pagination cursor from previous response' },
         ],
         responses: {
           200: {
@@ -482,6 +537,7 @@ export const OPENAPI = {
               },
             },
           },
+          400: err,
           503: unavailable,
         },
       },
@@ -492,6 +548,7 @@ export const OPENAPI = {
         summary: 'Aggregate statistics',
         parameters: [
           { name: 'creator', in: 'query', schema: { $ref: '#/components/schemas/StellarAddress' }, description: 'Filter stats by creator Stellar address' },
+          { name: 'verifier', in: 'query', schema: { $ref: '#/components/schemas/StellarAddress' }, description: 'Filter stats by verifier Stellar address' },
         ],
         responses: {
           200: {
@@ -505,15 +562,16 @@ export const OPENAPI = {
                     active: 1,
                     completed: 1,
                     failed: 1,
-                    totalLocked: 2500,
-                    totalReleased: 800,
-                    totalRedirected: 1200,
+                    totalLocked: '2500',
+                    totalReleased: '800',
+                    totalRedirected: '1200',
                     successRate: 50,
                   },
                 },
               },
             },
           },
+          400: err,
           503: unavailable,
         },
       },
@@ -529,7 +587,8 @@ export const OPENAPI = {
       },
       Amount: {
         type: 'string',
-        description: 'Monetary amount represented as a numeric string',
+        pattern: '^\\d+(\\.\\d{1,7})?$',
+        description: 'Monetary amount represented as an exact 7-decimal numeric string',
         example: '1000',
       },
       Error: {
@@ -594,6 +653,26 @@ export const OPENAPI = {
           amount: { $ref: '#/components/schemas/Amount' },
           dueDate: { type: 'string', format: 'date-time', example: '2026-04-30T12:00:00.000Z' },
           status: { type: 'string', enum: ['pending', 'completed', 'failed'], example: 'pending' },
+          evidence: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/Evidence' },
+            description: 'Evidence submissions for this milestone (max 10, most recent first)',
+          },
+          latestEvidenceHash: { type: 'string', nullable: true, example: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08', description: 'SHA-256 hash of the most recent evidence submission' },
+        },
+      },
+      Evidence: {
+        type: 'object',
+        required: ['id', 'url', 'sha256', 'submittedBy', 'verified', 'createdAt'],
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', example: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' },
+          url: { type: 'string', format: 'uri', example: 'https://example.com/proof.pdf' },
+          sha256: { type: 'string', pattern: '^[0-9a-f]{64}$', example: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08' },
+          note: { type: 'string', nullable: true, example: 'MVP deployed to production' },
+          submittedBy: { $ref: '#/components/schemas/StellarAddress' },
+          verified: { type: 'boolean', example: false },
+          createdAt: { type: 'string', format: 'date-time', example: '2026-04-15T12:00:00.000Z' },
         },
       },
       Vault: {
@@ -640,7 +719,7 @@ export const OPENAPI = {
         additionalProperties: false,
         properties: {
           id: { type: 'string', example: 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11' },
-          type: { type: 'string', enum: ['create', 'validate', 'release', 'redirect', 'stake'], example: 'create' },
+          type: { type: 'string', enum: ['create', 'validate', 'release', 'redirect', 'stake', 'evidence'], example: 'create' },
           vaultId: { type: 'string', example: 'vault-demo-001' },
           amount: { $ref: '#/components/schemas/Amount' },
           status: { type: 'string', enum: ['pending', 'confirmed', 'failed', 'simulated'], example: 'confirmed' },
@@ -711,9 +790,9 @@ export const OPENAPI = {
           active: { type: 'integer', example: 1 },
           completed: { type: 'integer', example: 1 },
           failed: { type: 'integer', example: 1 },
-          totalLocked: { type: 'number', example: 2500 },
-          totalReleased: { type: 'number', example: 800 },
-          totalRedirected: { type: 'number', example: 1200 },
+          totalLocked: { $ref: '#/components/schemas/Amount', example: '2500' },
+          totalReleased: { $ref: '#/components/schemas/Amount', example: '800' },
+          totalRedirected: { $ref: '#/components/schemas/Amount', example: '1200' },
           successRate: { type: 'number', nullable: true, example: 50 },
         },
       },
@@ -735,26 +814,37 @@ export const OPENAPI = {
       },
       VaultList: {
         type: 'object',
-        required: ['data', 'count'],
+        required: ['data', 'count', 'page'],
         additionalProperties: false,
         properties: {
           data: {
             type: 'array',
             items: { $ref: '#/components/schemas/Vault' },
           },
-          count: { type: 'integer', example: 1 },
+          count: { type: 'integer', example: 1, description: 'Number of items in this page' },
+          page: { $ref: '#/components/schemas/PageInfo' },
         },
       },
       ActivityList: {
         type: 'object',
-        required: ['data', 'count'],
+        required: ['data', 'count', 'page'],
         additionalProperties: false,
         properties: {
           data: {
             type: 'array',
             items: { $ref: '#/components/schemas/Activity' },
           },
-          count: { type: 'integer', example: 1 },
+          count: { type: 'integer', example: 1, description: 'Number of items in this page' },
+          page: { $ref: '#/components/schemas/PageInfo' },
+        },
+      },
+      PageInfo: {
+        type: 'object',
+        required: ['limit', 'nextCursor'],
+        additionalProperties: false,
+        properties: {
+          limit: { type: 'integer', example: 25, description: 'Page size limit' },
+          nextCursor: { type: 'string', nullable: true, example: 'eyJjcmVhdGVkQXQiOiIyMDI2LTA0LTAxVDAwOjAwOjAwLjAwMFoiLCJpZCI6InZhdWx0LTAwMSJ9', description: 'Opaque cursor for the next page; null if this is the last page' },
         },
       },
       StatsEnvelope: {
@@ -780,7 +870,13 @@ export const OPENAPI = {
         additionalProperties: false,
         properties: {
           title: { type: 'string', maxLength: 128, example: 'Ship MVP' },
-          amount: { type: 'number', minimum: 0, example: 1000 },
+          amount: {
+            oneOf: [
+              { type: 'string', pattern: '^\\d+(\\.\\d{1,7})?$' },
+              { type: 'number' },
+            ],
+            example: '1000',
+          },
           dueDate: { type: 'string', format: 'date-time', example: '2026-04-15T00:00:00.000Z' },
         },
       },
@@ -792,7 +888,13 @@ export const OPENAPI = {
           name: { type: 'string', example: 'Launch the MVP' },
           creator: { $ref: '#/components/schemas/StellarAddress' },
           verifier: { $ref: '#/components/schemas/StellarAddress' },
-          amount: { type: 'number', minimum: 0, maximum: 1000000000000, example: 2500 },
+          amount: {
+            oneOf: [
+              { type: 'string', pattern: '^\\d+(\\.\\d{1,7})?$' },
+              { type: 'number' },
+            ],
+            example: '2500',
+          },
           startDate: { type: 'string', format: 'date-time', example: '2026-04-01T00:00:00.000Z' },
           endDate: { type: 'string', format: 'date-time', example: '2026-05-01T00:00:00.000Z' },
           successDestination: { $ref: '#/components/schemas/StellarAddress' },
@@ -824,6 +926,25 @@ export const OPENAPI = {
         additionalProperties: false,
         properties: {
           verifier: { $ref: '#/components/schemas/StellarAddress' },
+        },
+      },
+      SubmitEvidenceRequest: {
+        type: 'object',
+        required: ['submitter', 'url', 'sha256'],
+        additionalProperties: false,
+        properties: {
+          submitter: { $ref: '#/components/schemas/StellarAddress' },
+          url: { type: 'string', format: 'uri', pattern: '^https://', maxLength: 2048, example: 'https://example.com/proof.pdf' },
+          sha256: { type: 'string', pattern: '^[0-9a-f]{64}$', example: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08' },
+          note: { type: 'string', maxLength: 1000, example: 'MVP deployed to production' },
+        },
+      },
+      EvidenceEnvelope: {
+        type: 'object',
+        required: ['data'],
+        additionalProperties: false,
+        properties: {
+          data: { $ref: '#/components/schemas/Evidence' },
         },
       },
     },

@@ -83,11 +83,14 @@ Full service (optional): `npm run dev` (needs the variables documented in `docs/
 | `STORE_MODE` | no | `postgres` or explicit `memory`; defaults to Postgres when a URL is set or in production |
 | `DATABASE_CA_CERT` | no | PEM CA certificate for remote Postgres; remote TLS verifies certificates by default |
 | `DATABASE_SSL_INSECURE` | no | Only `1` disables certificate verification and logs a warning; loopback hosts use no TLS |
+| `CORS_ORIGINS` | no | Comma-separated allowed origins for cross-origin writes (defaults to `https://disciplr-frontend.vercel.app` in non-production; fails closed when unset in production) |
 | `PORT` | no | Local port for `node api/index.mjs` (default 3001) |
 
 ## Deployment
 
 Deployed on Vercel (project `disciplr-api`, database: Neon via the Vercel integration). `vercel.json` rewrites `/api/*` to the serverless function and serves `public/index.html` as the docs landing page.
+
+Configure `CORS_ORIGINS` in the Vercel project settings to specify permitted frontend origins (e.g. `https://disciplr-frontend.vercel.app` and any active Vercel preview URLs). When unset in production, the API fails closed and rejects cross-origin state-changing requests (`POST /api/vaults`, `/validate`, `/fail`) with 403 Forbidden. Public read endpoints (`GET /api/health`, `/api/vaults`, `/api/stats`, `/api/transactions`, `/api/openapi.json`) permit cross-origin access.
 
 ```bash
 vercel --prod --yes
