@@ -6,11 +6,19 @@ import { RegisterInput, LoginInput } from '../lib/validation.js'
 import { UserRole } from '../types/user.js'
 import { randomUUID } from 'node:crypto'
 import { recordSession, revokeAllUserSessions } from './session.js'
+import * as bcrypt from 'bcrypt'
 
 const STEP_UP_TTL_SECONDS = 5 * 60
 const STEP_UP_NONCES = new Map<string, { userId: string; action?: string; expiresAt: number; used: boolean }>()
 const BREACHED_PASSWORDS_ENV = 'AUTH_BREACHED_PASSWORDS'
 const BREACHED_PASSWORDS_ENABLED_ENV = 'AUTH_BREACHED_PASSWORDS_ENABLED'
+
+/**
+ * Dummy hash used for timing equalisation when the user is not found.
+ * This prevents timing attacks that distinguish between "user exists with wrong
+ * password" and "user does not exist".
+ */
+const DUMMY_PASSWORD_HASH = '$2b$10$X7DWJd1Pr.xO0Q8yq0Z.2.f2P0Y0Zq3Q0Z.2.f2P0Y0Zq3Q0Z.2.f'
 
 const parseBooleanEnv = (value?: string): boolean => {
     if (!value) return false
@@ -125,7 +133,18 @@ export class AuthService {
     static async login(input: LoginInput) {
         const prisma = getPrisma()
         const user = await prisma.user.findUnique({ where: { email: input.email } })
+        
+        // Timing equalisation: run bcrypt even if user not found, using a dummy hash.
+        // This prevents timing attacks that reveal whether an email exists in the system.
+        const hashToCheck = user?.passwordHash ?? DUMMY_PASSWORD_HASH
+        const isValid = await comparePassword(input.password, hashToCheck)
+        
         if (!user) {
+            // Audit the failed login attempt
+            await this.emitSecurityAudit('auth.login_failed', 'user', input.email, {
+                reason: 'user_not_found',
+                email: input.email,
+            })
             throw new Error('Invalid credentials')
         }
 
@@ -133,11 +152,18 @@ export class AuthService {
         // regardless of password correctness — fail closed.
         const isActive = typeof user.status !== 'string' || user.status === 'ACTIVE'
         if (user.deletedAt || !isActive) {
+            await this.emitSecurityAudit('auth.login_failed', 'user', user.id, {
+                reason: 'account_inactive',
+                email: input.email,
+            }, user.id)
             throw new Error('Invalid credentials')
         }
 
-        const isValid = await comparePassword(input.password, user.passwordHash)
         if (!isValid) {
+            await this.emitSecurityAudit('auth.login_failed', 'user', user.id, {
+                reason: 'wrong_password',
+                email: input.email,
+            }, user.id)
             throw new Error('Invalid credentials')
         }
 
@@ -171,6 +197,11 @@ export class AuthService {
 
             return updatedUser
         })
+
+        // Audit successful login
+        await this.emitSecurityAudit('auth.login_success', 'user', user.id, {
+            email: input.email,
+        }, user.id)
 
         return {
             user: { id: loggedInUser.id, email: loggedInUser.email, role: loggedInUser.role },

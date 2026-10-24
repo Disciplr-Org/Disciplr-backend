@@ -326,6 +326,19 @@ export const envSchema = z
       }),
     LOG_SLOW_THRESHOLD_MS: positiveInt(1000),
     LOG_ALWAYS_LOG_STATUS: z.string().default("500,502,503"),
+
+    // ── Mock login / Dev/Test utilities ────────────────────────────
+    // Explicit flag to enable credential-free userId login. This is a
+    // development/test helper that bypasses password checks. Default: false.
+    // SECURITY: Setting this to true in production is forbidden and will
+    // cause startup to fail.
+    ENABLE_MOCK_LOGIN: z
+      .string()
+      .optional()
+      .transform((v) => {
+        if (v === undefined || v === "") return false;
+        return ["1", "true", "yes", "on"].includes(v.trim().toLowerCase());
+      }),
   })
   .superRefine((data, ctx) => {
     // Existing CORS warning
@@ -334,6 +347,15 @@ export const envSchema = z
         code: z.ZodIssueCode.custom,
         path: ["CORS_ORIGINS"],
         message: 'CORS_ORIGINS cannot be "*" in production environment',
+      });
+    }
+
+    // Forbid mock login in production
+    if (data.NODE_ENV === "production" && data.ENABLE_MOCK_LOGIN === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["ENABLE_MOCK_LOGIN"],
+        message: "ENABLE_MOCK_LOGIN cannot be enabled in production environment",
       });
     }
 
