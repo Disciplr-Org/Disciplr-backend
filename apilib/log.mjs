@@ -109,6 +109,10 @@ export function wrapPoolForTiming(pool, customLogger = logger) {
 
   const originalConnect = pool.connect.bind(pool)
   pool.connect = async function timedConnect(...args) {
+    // pg's callback form (pool.connect(cb)) returns undefined; pass it straight through.
+    if (typeof args[args.length - 1] === 'function') {
+      return originalConnect(...args)
+    }
     const client = await originalConnect(...args)
     if (!client._timingWrapped) {
       const origClientQuery = client.query.bind(client)

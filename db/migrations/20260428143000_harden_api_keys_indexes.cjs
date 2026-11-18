@@ -49,7 +49,7 @@ exports.down = async function down(knex) {
   await knex.raw('DROP INDEX IF EXISTS idx_api_keys_expires_at')
   await knex.raw('DROP INDEX IF EXISTS idx_api_keys_hash_prefix')
   await knex.raw('DROP INDEX IF EXISTS idx_api_keys_user_revoked')
-  await knex.raw('ALTER TABLE api_keys DROP COLUMN IF EXISTS previous_valid_until')
-  await knex.raw('ALTER TABLE api_keys DROP COLUMN IF EXISTS previous_key_hash')
-  await knex.raw('ALTER TABLE api_keys DROP COLUMN IF EXISTS expires_at')
+  await knex.raw('ALTER TABLE IF EXISTS api_keys DROP COLUMN IF EXISTS previous_valid_until')
+  await knex.raw('ALTER TABLE IF EXISTS api_keys DROP COLUMN IF EXISTS previous_key_hash')
+  await knex.raw('ALTER TABLE IF EXISTS api_keys DROP COLUMN IF EXISTS expires_at')
 }
