@@ -7,7 +7,7 @@ import { UserRole } from '../types/user.js'
 import { randomUUID } from 'node:crypto'
 import { AppError } from '../middleware/errorHandler.js'
 import { recordSession, revokeAllUserSessions } from './session.js'
-import * as bcrypt from 'bcrypt'
+import * as bcrypt from 'bcryptjs'
 
 const STEP_UP_TTL_SECONDS = 5 * 60
 const STEP_UP_NONCES = new Map<string, { userId: string; action?: string; expiresAt: number; used: boolean }>()

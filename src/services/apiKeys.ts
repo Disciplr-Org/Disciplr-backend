@@ -18,8 +18,8 @@ interface RotateApiKeyInput {
 }
 
 type ApiKeyValidationResult =
-  | { valid: true; context: ApiKeyAuthContext }
-  | { valid: false; reason: 'malformed' | 'invalid' | 'revoked' | 'forbidden' }
+  | { valid: true; context: ApiKeyAuthContext; usingPreviousSecret?: boolean }
+  | { valid: false; reason: 'malformed' | 'invalid' | 'revoked' | 'expired' | 'forbidden' }
 
 interface ApiKeyRow {
   id: string

@@ -386,8 +386,7 @@ vaultsRouter.post('/:id/cancel', authenticate, requireValidVaultId, async (req, 
       }
       if (cancelResult.error === 'not_cancellable') {
         return next(AppError.conflict(
-          `Cannot cancel vault in status '${cancelResult.currentStatus}'. Only draft and active vaults can be cancelled.`,
-          { currentStatus: cancelResult.currentStatus }
+          `Cannot cancel vault in status '${cancelResult.currentStatus}'. Only draft and active vaults can be cancelled.`
         ))
       }
     }

@@ -10,7 +10,7 @@ exports.up = async function up(knex) {
       key_hash TEXT NOT NULL,
       label TEXT NOT NULL,
       scopes TEXT[] NOT NULL DEFAULT '{ }',
-      created_at TIMESTAMPZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       revoked_at TIMESTAMPTZ,
       expires_at TIMESTAMPTZ,
       previous_key_hash TEXT,

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { NotificationService } from '../services/notifications/factory.js'
 import { processJob as processExportJob } from '../services/exportQueue.js'
 import type { EnqueueOptions, JobHandler, JobHandlerRegistry, JobPayloadByType, JobType } from './types.js'
-import { TransactionETDLService } from '../services/transactionETL.js'
+import { TransactionETLService } from '../services/transactionETL.js'
 import { MilestoneEmbeddingSource, ReindexCursorStore } from '../services/evidenceReindex.js'
 import { EmbeddingProvider } from '../services/embeddingProvider.js'
 import { submitSlash } from '../services/soroban.js'
@@ -28,7 +28,6 @@ import {
   checkAndIncrementReportQuota,
 } from '../services/analyticsReports.js'
 import { resolveS3Config, uploadToS3 } from '../services/exportS3.js'
-import { cleanupExpiredRotationGrace } from '../services/apiKeys.js'
 import db from '../db/index.js'
 
 export interface EmbeddingReindexDependencies {
@@ -222,14 +221,7 @@ export const createDefaultJobHandlers = (
     )
   }
 
-  jobHandlers['apiKeys.cleanup'] = async (payload, context) => {
-    const batchSize = payload.batchSize ?? 1000
-    const cleared = await cleanupExpiredRotationGrace(batchSize)
-    logJob(
-      'apiKeys.cleanup',
-      `cleared=${cleared} batchSize=${batchSize} attempt=${context.attempt}`,
-    )
-  }
+  // TODO(drips-wave): re-enable apiKeys.cleanup — cleanupExpiredRotationGrace() and the 'apiKeys.cleanup' job type are missing from the merged API-key rotation work (#1743)
 
   jobHandlers['vault.reconcile'] = async (payload, context) => {
     const etlConfig = {
@@ -323,18 +315,23 @@ export const createDefaultJobHandlers = (
       }
       const snapshot = await renderOrgAnalyticsSnapshot(orgId)
       const key = `analytics/${orgId}/${new Date().toISOString()}.json`
-      await uploadToS3(portfolioBuffer, key, s3Config)
-      await saveOrgReport(orgId, key, snapshot)
+      const body = Buffer.from(JSON.stringify(snapshot))
+      if (s3Config) {
+        await uploadToS3(s3Config, key, body, 'application/json')
+        await saveOrgReport({ orgId, s3Key: key, snapshotAt: new Date().toISOString(), sizeBytes: body.length })
+      } else {
+        await saveOrgReport({ orgId, localBuffer: new Uint8Array(body), snapshotAt: new Date().toISOString(), sizeBytes: body.length })
+      }
       generated += 1
     }
     logJob(
       'analytics.report.generate',
-      `generated=${generated} skipped=${lipped} attempt=${context.attempt}`,
+      `generated=${generated} skipped=${skipped} attempt=${context.attempt}`,
     )
   }
 
   jobHandlers['retention.purge'] = async (payload, context) => {
-    const purged = await purgeSoftDeletedVaults(payload.batchSize)
+    const purged = await purgeSoftDeletedVaults(payload.organizationId, payload.batchSize)
     logJob('retention.purge', `purged=${purged} attempt=${context.attempt}`)
   }
 
