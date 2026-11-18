@@ -335,5 +335,10 @@ export const createDefaultJobHandlers = (
     logJob('retention.purge', `purged=${purged} attempt=${context.attempt}`)
   }
 
+  jobHandlers['saved-search.evaluate'] = async (payload, context) => {
+    // Placeholder for saved-search evaluation (restored: handler was dropped by an earlier merge)
+    logJob('saved-search.evaluate', `evaluated=${payload.searchId} attempt=${context.attempt}`)
+  }
+
   return jobHandlers
 }
