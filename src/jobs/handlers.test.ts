@@ -1,171 +1,482 @@
-import express from 'express';
-import request from 'supertest';
-import { createJobsRouter } from './handlers';
-import { Queue } from './queue';
-import { auditLog } from '../audit';
+// Jest ESM: handlers.ts pulls in many services (database, Soroban, S3, ...), so each of its
+// imports is replaced with unstable_mockModule and handlers.js is imported dynamically afterwards.
+// Nothing here touches the network, the database or the filesystem.
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals'
+import type { NotificationService } from '../services/notifications/factory.js'
+import type { EmbeddingReindexDependencies } from './handlers.js'
+import type { JobContext, JobHandler, JobPayloadByType, JobType } from './types.js'
 
-jest.mock('./queue');
-jest.mock('../audit');
+// ─── Mocked collaborators ────────────────────────────────────
+type SettlementOperation = {
+  id: string
+  status: 'pending' | 'submitted'
+  vault_id: string
+  target_milestone_id: string | null
+  transaction_hash: string | null
+  attempt_count: number
+}
 
-const MockQueue = jest.mockd(Queue);
-const mockAudit = auditLog as jest.MockedFunction<typeof auditLog>;
+type Submission = { status: string; txHash?: string; error?: string }
 
-describe('jobs HTTP  handlers', () => {
-  let app: express.Express;
+const cleanupExpiredSessions = jest.fn<(batchSize: number) => Promise<number>>()
+const purgeSoftDeletedVaults = jest.fn<(organizationId: string, batchSize?: number) => Promise<number>>()
+const relayOutboxBatch = jest.fn<(batchSize?: number) => Promise<number>>()
+const submitSlash = jest.fn<(vaultId: string, milestoneId: string | null) => Promise<{ submission: Submission }>>()
+const markSettlementSubmitted = jest.fn<(id: string, txHash: string, trx: unknown) => Promise<void>>()
+const confirmSettlementOperation = jest.fn<(id: string, txHash: string | null, trx: unknown) => Promise<void>>()
+const recordSettlementAttemptFailure = jest.fn<
+  (id: string, code: string, message: string, terminal: boolean, trx: unknown) => Promise<{ attemptCount: number; failureCode: string }>
+>()
+const reconcileVaults = jest.fn<
+  (options: { vaultIds?: string[]; batchSize?: number }) => Promise<{
+    totalVaults: number
+    checked: number
+    driftDetected: number
+    missingOnChain: number
+    errors: number
+  }>
+>()
+const TransactionETLService = jest.fn<(config: Record<string, unknown>) => { reconcileVaults: typeof reconcileVaults }>()
 
-  const createApp = (role: 'ADMIN' | 'USER') => {
-    const queue = new MockQueue({} as any) as jest.Mocked<Queue>;
-    app = express();
-    app.use(express.json());
-    app.use((req, _res, next) => {
-      req.user = { id: 'u1', role };
-      next();
-    });
-    app.use('/api/jobs', createJobsRouter(queue));
-    return { queue };
-  };
+// The settlement handler runs inside db.transaction(trx => ...) and reads rows through a chained
+// query builder: trx('settlement_operations').whereIn().whereNotNull().orderBy().limit().forUpdate().skipLocked()
+let queuedOperations: SettlementOperation[] = []
+const builder = {
+  whereIn: jest.fn(),
+  whereNotNull: jest.fn(),
+  orderBy: jest.fn(),
+  limit: jest.fn(),
+  forUpdate: jest.fn(),
+  skipLocked: jest.fn(),
+}
+const trx = jest.fn<(table: string) => typeof builder>(() => builder)
+const transaction = jest.fn(async (callback: (t: typeof trx) => Promise<void>) => callback(trx))
+
+jest.unstable_mockModule('../services/session.js', () => ({ cleanupExpiredSessions }))
+jest.unstable_mockModule('../services/retention.js', () => ({ purgeSoftDeletedVaults }))
+jest.unstable_mockModule('../services/outboxRelay.js', () => ({ relayOutboxBatch }))
+jest.unstable_mockModule('../services/soroban.js', () => ({ submitSlash }))
+jest.unstable_mockModule('../services/settlementOperations.js', () => ({
+  markSettlementSubmitted,
+  confirmSettlementOperation,
+  recordSettlementAttemptFailure,
+}))
+jest.unstable_mockModule('../services/transactionETL.js', () => ({ TransactionETLService }))
+jest.unstable_mockModule('../db/index.js', () => ({ default: { transaction } }))
+
+// Imported by handlers.ts but not exercised by the handlers under test.
+jest.unstable_mockModule('../services/notifications/factory.js', () => ({}))
+jest.unstable_mockModule('../services/exportQueue.js', () => ({ processJob: jest.fn() }))
+jest.unstable_mockModule('../services/evidenceReindex.js', () => ({ runReindexBatches: jest.fn() }))
+jest.unstable_mockModule('../services/embeddingProvider.js', () => ({}))
+jest.unstable_mockModule('../services/vaultExpiry.service.js', () => ({
+  sendMilestoneReminders: jest.fn(),
+  sendMilestoneDigestReminders: jest.fn(),
+  processDeferredReminders: jest.fn(),
+}))
+jest.unstable_mockModule('../lib/audit-logs.js', () => ({ createAuditLog: jest.fn() }))
+jest.unstable_mockModule('../services/analytics.service.js', () => ({ renderOrgAnalyticsSnapshot: jest.fn() }))
+jest.unstable_mockModule('../services/analyticsReports.js', () => ({
+  saveOrgReport: jest.fn(),
+  getAllOrgIds: jest.fn(),
+  checkAndIncrementReportQuota: jest.fn(),
+}))
+jest.unstable_mockModule('../services/exportS3.js', () => ({ resolveS3Config: jest.fn(), uploadToS3: jest.fn() }))
+
+const { createDefaultJobHandlers } = await import('./handlers.js')
+
+// ─── Helpers ─────────────────────────────────────────────────
+const send = jest.fn<(recipient: string, subject: string, body: string) => Promise<void>>()
+const notificationService = { send } as unknown as NotificationService
+const embeddingReindex = {} as unknown as EmbeddingReindexDependencies
+
+const context: JobContext = { jobId: 'job-1', attempt: 2 }
+const handlers = createDefaultJobHandlers(notificationService, embeddingReindex)
+
+function handlerFor<T extends JobType>(type: T): JobHandler<T> {
+  const handler = handlers[type]
+  if (!handler) throw new Error(`no handler registered for ${type}`)
+  return handler as JobHandler<T>
+}
+
+const run = <T extends JobType>(type: T, payload: JobPayloadByType[T]) => handlerFor(type)(payload, context)
+
+const operation = (overrides: Partial<SettlementOperation> = {}): SettlementOperation => ({
+  id: 'op-1',
+  status: 'pending',
+  vault_id: 'vault-1',
+  target_milestone_id: 'milestone-1',
+  transaction_hash: null,
+  attempt_count: 0,
+  ...overrides,
+})
+
+const loggedLines = (spy: jest.SpiedFunction<typeof console.log>): string[] => spy.mock.calls.map((call) => String(call[0]))
+const alerts = (spy: jest.SpiedFunction<typeof console.error>): Array<Record<string, unknown>> =>
+  spy.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+
+describe('createDefaultJobHandlers', () => {
+  let logSpy: jest.SpiedFunction<typeof console.log>
+  let errorSpy: jest.SpiedFunction<typeof console.error>
+  const savedEnv = {
+    DRY_RUN: process.env.DRY_RUN,
+    HORIZON_URL: process.env.HORIZON_URL,
+    STELLAR_NETWORK_PASSPHRASE: process.env.STELLAR_NETWORK_PASSPHRASE,
+  }
 
   beforeEach(() => {
-    jest.clearAllMocks();
-  });
+    logSpy = jest.spyOn(console, 'log').mockImplementation(() => {})
+    errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
 
-  describe('POST /api/jobs/enqueue', () => {
-    it('allows admin to enqueue a valid job', async () => {
-      const { queue } = createApp('ADMIN');
-      queue.enqueue.mockResolvedValue({ id: 'job1', type: 'oracle.call', state: 'queued' } as any);
+    delete process.env.DRY_RUN
+    delete process.env.HORIZON_URL
+    delete process.env.STELLAR_NETWORK_PASSPHRASE
 
-      const res = await request(app).post('/api/jobs/enqueue').send({ type: 'oracle.call', payload: { scope: 'all' } });
+    queuedOperations = []
+    for (const method of [builder.whereIn, builder.whereNotNull, builder.orderBy, builder.limit, builder.forUpdate]) {
+      method.mockReturnValue(builder)
+    }
+    builder.skipLocked.mockImplementation(async () => queuedOperations)
 
-      expect(res.status).toBe(201);
-      expect(res.body.job.id).toBe('job1');
-      expect(queue.enqueue).toHaveBeenCalledWith('oracle.call', { scope: 'all' }, {});
-      expect(mockAudit).toHaveBeenCalledWith('job.enqueue', expect.objectContaining({ jobId: 'job1' }));
-    });
+    markSettlementSubmitted.mockResolvedValue(undefined)
+    confirmSettlementOperation.mockResolvedValue(undefined)
+    recordSettlementAttemptFailure.mockImplementation(async (_id, code) => ({ attemptCount: 1, failureCode: code }))
+    TransactionETLService.mockImplementation(() => ({ reconcileVaults }))
+  })
 
-    it('returns 403 for non-admin', async () => {
-      createApp('USER');
-      const res = await request(app).post('/api/jobs/enqueue').send({ type: 'oracle.call', payload: {} });
+  afterEach(() => {
+    logSpy.mockRestore()
+    errorSpy.mockRestore()
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  })
 
-      expect(res.status).toBe(403);
-    });
+  it('registers every handler this suite covers', () => {
+    for (const type of [
+      'notification.send',
+      'sessions.cleanup',
+      'retention.purge',
+      'outbox.relay',
+      'vault.reconcile',
+      'settlement.process',
+    ] as const) {
+      expect(typeof handlers[type]).toBe('function')
+    }
+  })
 
-    it('returns 400 on validation error', async () => {
-      const { queue } = createApp('ADMIN');
-      queue.enqueue.mockRejectedObject(assign(Object.create(error('invalid'), { code: 'VALIDATION_ERROR' }).level);
+  describe('notification.send', () => {
+    it('sends the recipient, subject and body through the notification service', async () => {
+      send.mockResolvedValue(undefined)
 
-      const res = await request(app).post('/api/jobs/enqueue').send({ type: 'invalid', payload: {} });
+      await run('notification.send', { recipient: 'user@example.com', subject: 'Hello', body: 'World' })
 
-      expect(res.status).toBe(400);
-      expect(res.body.code).toBe('VALIDATION_ERROR');
-    });
-  });
+      expect(send).toHaveBeenCalledTimes(1)
+      expect(send).toHaveBeenCalledWith('user@example.com', 'Hello', 'World')
+      expect(loggedLines(logSpy)).toEqual(['[jobs:notification.send] executed job_id=job-1 attempt=2'])
+    })
 
-  describe('POST /api/admin/jobs/:id/retry', () => {
-    it('allows admin to retry a failed job', async () => {
-      const { queue } = createApp('ADMIN');
-      queue.retry.mockResolvedValue({ id: 'job1', state: 'queued', attempts: 0 } as any);
+    it('logs a structured error and rethrows so the queue can retry', async () => {
+      const failure = new Error('smtp down')
+      send.mockRejectedValue(failure)
 
-      const res = await request(app).post('/api/admin/jobs/job1/retry');
+      await expect(
+        run('notification.send', { recipient: 'user@example.com', subject: 'Hello', body: 'World' }),
+      ).rejects.toBe(failure)
 
-      expect(res.status).toBe(200);
-      expect(queue.retry).toHaveBeenCalledWith('job1', false);
-      expect(mockAudit).toHaveBeenCalledWith('job.retry', expect.objectContaining({ jobId: 'job1' }));
-    });
+      expect(alerts(errorSpy)).toEqual([
+        {
+          level: 'error',
+          message: 'notification_send_failed',
+          job_id: 'job-1',
+          attempt: 2,
+          recipient: 'user@example.com',
+          subject: 'Hello',
+          error: 'smtp down',
+        },
+      ])
+      expect(JSON.stringify(alerts(errorSpy))).not.toContain('World') // the body is never logged
+    })
+  })
 
-    it('allows force retry with ?force=true', async () => {
-      const { queue } = createApp('ADMIN');
-      queue.retry.mockResolvedValue({ id: 'job1', state: 'queued', attempts: 0 } as any);
+  describe('sessions.cleanup', () => {
+    it('deletes expired sessions in the requested batch size', async () => {
+      cleanupExpiredSessions.mockResolvedValue(7)
 
-      await request(app).post('/api/admin/jobs/job1/retry?force=true');
+      await run('sessions.cleanup', { batchSize: 250 })
 
-      expect(queue.retry).toHaveBeenCalledWith('job1', true);
-    });
+      expect(cleanupExpiredSessions).toHaveBeenCalledWith(250)
+      expect(loggedLines(logSpy)).toEqual(['[jobs:sessions.cleanup] deleted=7 batchSize=250 attempt=2'])
+    })
 
-    it('refuses without force when dead-lettered', async () => {
-      const { queue } = createApp('ADMIN');
-      queue.retry.mockRejectedValue(new Error('Job is dead-lettered; use force=true to retry'));
+    it('defaults to a batch of 1000', async () => {
+      cleanupExpiredSessions.mockResolvedValue(0)
 
-      const res = await request(app).post('/api/admin/jobs/job1/retry');
+      await run('sessions.cleanup', {})
 
-      expect(res.status).toBe(409);
-    });
+      expect(cleanupExpiredSessions).toHaveBeenCalledWith(1000)
+    })
 
-    it('returns 404 if job not found', async () => {
-      const { queue } = createApp('ADMIN');
-      queue.retry.mockRejectedValue(new Error('Job not found'));
+    it('propagates a cleanup failure for retry', async () => {
+      cleanupExpiredSessions.mockRejectedValue(new Error('db unavailable'))
+      await expect(run('sessions.cleanup', {})).rejects.toThrow('db unavailable')
+    })
+  })
 
-      const res = await request(app).post('/api/admin/jobs/nope/retry');
+  describe('retention.purge', () => {
+    it('purges soft-deleted vaults for the organization', async () => {
+      purgeSoftDeletedVaults.mockResolvedValue(3)
 
-      expect(res.status).toBe(404);
-    });
+      await run('retention.purge', { organizationId: 'org-1', batchSize: 25 })
 
-    it('returns 403 for non-admin', async () => {
-      createApp('USER');
-      const res = await request(app).post('/api/admin/jobs/job1/retry');
+      expect(purgeSoftDeletedVaults).toHaveBeenCalledWith('org-1', 25)
+      expect(loggedLines(logSpy)).toEqual(['[jobs:retention.purge] purged=3 attempt=2'])
+    })
 
-      expect(res.status).toBe(403);
-    });
-  });
+    it('leaves the batch size to the service when the payload has none', async () => {
+      purgeSoftDeletedVaults.mockResolvedValue(0)
 
-  describe('GET /api/jobs/depth', () => {
-    it('returns depth report for admin', async () => {
-      const { queue } = createApp('ADMIN');
-      queue.depth.mockResolvedValue({
-        generatedAt: '2026-06-27T00:00:00.000Z',
-        staleLeaseMs: 300000,
-        totalDepth: 0,
-        byType: {},
-      } as any);
+      await run('retention.purge', { organizationId: 'org-2' })
 
-      const res = await request(app).get('/api/jobs/depth');
+      expect(purgeSoftDeletedVaults).toHaveBeenCalledWith('org-2', undefined)
+    })
+  })
 
-      expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({ totalDepth: 0, byType: {} });
-    });
+  describe('outbox.relay', () => {
+    it('relays one batch and reports how many events were relayed', async () => {
+      relayOutboxBatch.mockResolvedValue(12)
 
-    it('returns 403 for non-admin', async () => {
-      createApp('USER');
-      const res = await request(app).get('/api/jobs/depth');
+      await run('outbox.relay', { batchSize: 40 })
 
-      expect(res.status).toBe(403);
-    });
+      expect(relayOutboxBatch).toHaveBeenCalledWith(40)
+      expect(loggedLines(logSpy)).toEqual(['[jobs:outbox.relay] relayed=12 attempt=2'])
+    })
 
-    it('validates staleLeaseMe query param', async () => {
-      const { queue } = createApp('ADMIN');
-      queue.depth.mockRejectedValue(new Error('staleLeaseMg must be a positive integer'));
+    it('leaves the batch size to the service when the payload has none', async () => {
+      relayOutboxBatch.mockResolvedValue(0)
 
-      const res = await request(app).get('/api/jobs/depth?staleLeaseMs=0');
+      await run('outbox.relay', {})
 
-      expect(res.status).toBe(400);
-    });
-  });
+      expect(relayOutboxBatch).toHaveBeenCalledWith(undefined)
+    })
+  })
 
-  describe('POST /api/jobs/sweep', () => {
-    it('sweeps stuck jobs for admin', async () => {
-      const { queue } = createApp('ADMIN');
-      queue.sweep.mockResolvedValue({ swetAt: '2026-06-27T00:00:00.000Z', staleLeaseMs: 300000, reclaimed: [], deadLettered: [] } as any);
+  describe('vault.reconcile', () => {
+    const summary = { totalVaults: 10, checked: 8, driftDetected: 2, missingOnChain: 1, errors: 0 }
 
-      const res = await request(app).post('/api/jobs/sweep');
+    it('reconciles the requested vaults with the testnet defaults', async () => {
+      reconcileVaults.mockResolvedValue(summary)
 
-      expect(res.status).toBe(200);
-      expect(queue.sweep).toHaveBeenCalledWith(300000);
-      expect(mockAudit).toHaveBeenCalledWith('job.sweep', expect.objectContaining({ reclaimedCount: 0, deadLetteredCount: 0 }));
-    });
+      await run('vault.reconcile', { vaultIds: ['v1', 'v2'], batchSize: 5 })
 
-    it('returns 403 for non-admin', async () => {
-      createApp('USER');
-      const res = await request(app).post('/api/jobs/sweep');
+      expect(TransactionETLService).toHaveBeenCalledWith({
+        horizonUrl: 'https://horizon-testnet.stellar.org',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+        batchSize: 5,
+        maxRetries: 3,
+      })
+      expect(reconcileVaults).toHaveBeenCalledWith({ vaultIds: ['v1', 'v2'], batchSize: 5 })
+      expect(loggedLines(logSpy)).toEqual([
+        '[jobs:vault.reconcile] vaultIds=2 batchSize=5 checked=8/10 drift=2 missing=1 errors=0 attempt=2',
+      ])
+    })
 
-      expect(res.status).toBe(403);
-    });
+    it('reconciles all vaults in batches of 50 when the payload is empty', async () => {
+      reconcileVaults.mockResolvedValue(summary)
 
-    it('validates staleLeaseMe query param', async () => {
-      const { queue } = createApp('ADMIN');
-      queue.sweep.mockRejectedValue(new Error('staleLeaseMe must be a positive integer'));
+      await run('vault.reconcile', {})
 
-      const res = await request(app).post('/api/jobs/sweep?staleLeaseMs=-1');
+      expect(TransactionETLService).toHaveBeenCalledWith(expect.objectContaining({ batchSize: 50 }))
+      expect(reconcileVaults).toHaveBeenCalledWith({ vaultIds: undefined, batchSize: undefined })
+      expect(loggedLines(logSpy)[0]).toContain('vaultIds=all batchSize=50')
+    })
 
-      expect(res.status).toBe(400);
-    });
-  });
-});
+    it('uses the Horizon URL and network passphrase from the environment', async () => {
+      process.env.HORIZON_URL = 'https://horizon.example.test'
+      process.env.STELLAR_NETWORK_PASSPHRASE = 'Example Network'
+      reconcileVaults.mockResolvedValue(summary)
+
+      await run('vault.reconcile', {})
+
+      expect(TransactionETLService).toHaveBeenCalledWith(
+        expect.objectContaining({ horizonUrl: 'https://horizon.example.test', networkPassphrase: 'Example Network' }),
+      )
+    })
+
+    it('propagates a reconciliation failure for retry', async () => {
+      reconcileVaults.mockRejectedValue(new Error('horizon unreachable'))
+      await expect(run('vault.reconcile', {})).rejects.toThrow('horizon unreachable')
+    })
+  })
+
+  describe('settlement.process', () => {
+    it('skips submission entirely in DRY_RUN mode', async () => {
+      process.env.DRY_RUN = 'true'
+
+      await run('settlement.process', {})
+
+      expect(transaction).not.toHaveBeenCalled()
+      expect(submitSlash).not.toHaveBeenCalled()
+      expect(loggedLines(logSpy)).toEqual(['[jobs:settlement.process] DRY_RUN: submission skipped attempt=2'])
+    })
+
+    it('locks a bounded batch of pending and submitted operations', async () => {
+      for (const [requested, expected] of [
+        [undefined, 20],
+        [0, 1],
+        [37, 37],
+        [500, 100],
+      ] as const) {
+        builder.limit.mockClear()
+        await run('settlement.process', { batchSize: requested })
+        expect(builder.limit).toHaveBeenCalledWith(expected)
+      }
+
+      expect(trx).toHaveBeenCalledWith('settlement_operations')
+      expect(builder.whereIn).toHaveBeenCalledWith('status', ['pending', 'submitted'])
+      expect(builder.whereNotNull).toHaveBeenCalledWith('vault_id')
+      expect(builder.orderBy).toHaveBeenCalledWith('created_at')
+      expect(builder.forUpdate).toHaveBeenCalled()
+      expect(builder.skipLocked).toHaveBeenCalled()
+    })
+
+    it('does nothing when there is no work', async () => {
+      await run('settlement.process', {})
+
+      expect(submitSlash).not.toHaveBeenCalled()
+      expect(confirmSettlementOperation).not.toHaveBeenCalled()
+      expect(recordSettlementAttemptFailure).not.toHaveBeenCalled()
+    })
+
+    it('only confirms an operation that was already submitted, without resubmitting it', async () => {
+      queuedOperations = [operation({ status: 'submitted', transaction_hash: 'tx-existing' })]
+
+      await run('settlement.process', {})
+
+      expect(confirmSettlementOperation).toHaveBeenCalledWith('op-1', 'tx-existing', trx)
+      expect(submitSlash).not.toHaveBeenCalled()
+      expect(markSettlementSubmitted).not.toHaveBeenCalled()
+      expect(loggedLines(logSpy)).toEqual([
+        '[jobs:settlement.process] recovered confirmation operation=op-1 tx=tx-existing',
+      ])
+    })
+
+    it('submits a pending operation, then records and confirms its transaction', async () => {
+      queuedOperations = [operation()]
+      submitSlash.mockResolvedValue({ submission: { status: 'success', txHash: 'tx-new' } })
+
+      await run('settlement.process', {})
+
+      expect(submitSlash).toHaveBeenCalledWith('vault-1', 'milestone-1')
+      expect(markSettlementSubmitted).toHaveBeenCalledWith('op-1', 'tx-new', trx)
+      expect(confirmSettlementOperation).toHaveBeenCalledWith('op-1', 'tx-new', trx)
+      expect(markSettlementSubmitted.mock.invocationCallOrder[0]).toBeLessThan(
+        confirmSettlementOperation.mock.invocationCallOrder[0],
+      )
+      expect(recordSettlementAttemptFailure).not.toHaveBeenCalled()
+    })
+
+    it('processes every operation in the batch even when one fails', async () => {
+      queuedOperations = [operation({ id: 'op-a' }), operation({ id: 'op-b', vault_id: 'vault-2' })]
+      submitSlash
+        .mockResolvedValueOnce({ submission: { status: 'failed', error: 'network timeout' } })
+        .mockResolvedValueOnce({ submission: { status: 'success', txHash: 'tx-b' } })
+
+      await run('settlement.process', {})
+
+      expect(recordSettlementAttemptFailure).toHaveBeenCalledWith('op-a', 'NETWORK_ERROR', 'network timeout', false, trx)
+      expect(confirmSettlementOperation).toHaveBeenCalledWith('op-b', 'tx-b', trx)
+    })
+
+    it('records a retryable failure without dead-lettering it', async () => {
+      queuedOperations = [operation({ attempt_count: 1 })]
+      submitSlash.mockResolvedValue({ submission: { status: 'failed', error: 'rpc connection reset' } })
+
+      await run('settlement.process', {})
+
+      expect(recordSettlementAttemptFailure).toHaveBeenCalledWith('op-1', 'NETWORK_ERROR', 'rpc connection reset', false, trx)
+      expect(errorSpy).not.toHaveBeenCalled()
+    })
+
+    it('classifies an unconfigured Soroban client as retryable SOROBAN_NOT_CONFIGURED', async () => {
+      queuedOperations = [operation()]
+      submitSlash.mockResolvedValue({ submission: { status: 'not_configured' } })
+
+      await run('settlement.process', {})
+
+      expect(recordSettlementAttemptFailure).toHaveBeenCalledWith(
+        'op-1',
+        'SOROBAN_NOT_CONFIGURED',
+        'Soroban submission is not configured',
+        false,
+        trx,
+      )
+    })
+
+    it('dead-letters a contract rejection immediately and raises an alert', async () => {
+      queuedOperations = [operation()]
+      submitSlash.mockResolvedValue({ submission: { status: 'failed', error: 'contract error: vault is paused' } })
+      recordSettlementAttemptFailure.mockResolvedValue({ attemptCount: 1, failureCode: 'CONTRACT_REJECTED' })
+
+      await run('settlement.process', {})
+
+      expect(recordSettlementAttemptFailure).toHaveBeenCalledWith(
+        'op-1',
+        'CONTRACT_REJECTED',
+        'contract error: vault is paused',
+        true,
+        trx,
+      )
+      expect(alerts(errorSpy)).toEqual([
+        {
+          level: 'alert',
+          message: 'settlement_operation_dead_lettered',
+          operation_id: 'op-1',
+          vault_id: 'vault-1',
+          attempts: 1,
+          failure_code: 'CONTRACT_REJECTED',
+        },
+      ])
+    })
+
+    it('dead-letters a retryable failure once the fifth attempt is used', async () => {
+      queuedOperations = [operation({ attempt_count: 4 })]
+      submitSlash.mockResolvedValue({ submission: { status: 'failed', error: 'network timeout' } })
+      recordSettlementAttemptFailure.mockResolvedValue({ attemptCount: 5, failureCode: 'RETRY_LIMIT_EXCEEDED' })
+
+      await run('settlement.process', {})
+
+      expect(recordSettlementAttemptFailure).toHaveBeenCalledWith('op-1', 'RETRY_LIMIT_EXCEEDED', 'network timeout', true, trx)
+      expect(alerts(errorSpy)[0]).toMatchObject({ message: 'settlement_operation_dead_lettered', attempts: 5 })
+    })
+
+    it('records a thrown submission error against the operation instead of failing the job', async () => {
+      queuedOperations = [operation()]
+      submitSlash.mockRejectedValue(new Error('socket hang up'))
+
+      await expect(run('settlement.process', {})).resolves.toBeUndefined()
+
+      expect(recordSettlementAttemptFailure).toHaveBeenCalledWith('op-1', 'NETWORK_ERROR', 'socket hang up', false, trx)
+    })
+
+    it('dead-letters a thrown contract rejection', async () => {
+      queuedOperations = [operation()]
+      submitSlash.mockRejectedValue(new Error('vault disputed'))
+
+      await run('settlement.process', {})
+
+      expect(recordSettlementAttemptFailure).toHaveBeenCalledWith('op-1', 'CONTRACT_REJECTED', 'vault disputed', true, trx)
+    })
+
+    it('truncates very long error messages before storing them', async () => {
+      queuedOperations = [operation()]
+      submitSlash.mockResolvedValue({ submission: { status: 'failed', error: 'x'.repeat(5000) } })
+
+      await run('settlement.process', {})
+
+      const stored = recordSettlementAttemptFailure.mock.calls[0][2]
+      expect(stored).toHaveLength(2000)
+    })
+  })
+})

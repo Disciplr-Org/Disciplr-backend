@@ -103,7 +103,6 @@ module.exports = {
     // They fail before a single assertion executes, so they are excluded rather
     // than rewritten against the real modules; porting them is tracked
     // separately, like the other suites above.
-    "<rootDir>/src/jobs/handlers.test.ts",
     "<rootDir>/src/jobs/queue.test.ts",
     "<rootDir>/src/jobs/system.test.ts",
     // Legacy suites currently target removed routes, old response contracts,
