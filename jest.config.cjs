@@ -42,7 +42,6 @@ module.exports = {
     "<rootDir>/src/repositories/etlBatchRepository.test.ts",
     "<rootDir>/src/tests/cache.test.ts",
     "<rootDir>/src/tests/email.injection.test.ts",
-    "<rootDir>/src/tests/etag.test.ts",
     "<rootDir>/src/tests/evidence.service.test.ts",
     "<rootDir>/src/tests/evidence.ssrf.test.ts",
     "<rootDir>/src/tests/expirationScheduler.heartbeat.test.ts",
