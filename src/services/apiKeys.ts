@@ -10,6 +10,7 @@ interface CreateApiKeyInput {
   orgId?: string
   label: string
   scopes: ApiScope[]
+  expiresAt?: string | null
 }
 
 interface RotateApiKeyInput {
@@ -30,6 +31,7 @@ interface ApiKeyRow {
   scopes: string[] | string | null
   created_at: string | Date
   revoked_at: string | Date | null
+  expires_at?: string | Date | null
   last_used_at?: string | Date | null
   request_count?: number | null
   last_ip?: string | null
@@ -126,6 +128,7 @@ const toRecord = (row: ApiKeyRow): ApiKeyRecord => ({
   scopes: normalizeScopeColumn(row.scopes),
   createdAt: asIsoString(row.created_at)!,
   revokedAt: asIsoString(row.revoked_at),
+  expiresAt: asIsoString(row.expires_at),
   lastUsedAt: asIsoString(row.last_used_at),
   requestCount: row.request_count ?? 0,
   lastIp: row.last_ip ?? null,
@@ -134,6 +137,7 @@ const toRecord = (row: ApiKeyRow): ApiKeyRecord => ({
 const cloneRecord = (record: ApiKeyRecord): ApiKeyRecord => ({
   ...record,
   scopes: [...record.scopes],
+  expiresAt: record.expiresAt ?? null,
   lastUsedAt: record.lastUsedAt,
   requestCount: record.requestCount,
   lastIp: record.lastIp,
@@ -183,8 +187,8 @@ const createMemoryRepository = (): ApiKeyRepository => ({
 const createPgRepository = (pool: Pool): ApiKeyRepository => ({
   async create(record) {
     await pool.query(
-      `INSERT INTO api_keys (id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip)
-       VALUES ($1, $2, $3, $4, $5, $6::text[], $7::timestamptz, $8::timestamptz, $9::timestamptz, $10, $11)`,
+      `INSERT INTO api_keys (id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, expires_at, last_used_at, request_count, last_ip)
+       VALUES ($1, $2, $3, $4, $5, $6::text[], $7::timestamptz, $8::timestamptz, $9::timestamptz, $10::timestamptz, $11, $12)`,
       [
         record.id,
         record.userId,
@@ -194,6 +198,7 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
         record.scopes,
         record.createdAt,
         record.revokedAt,
+        record.expiresAt ?? null,
         record.lastUsedAt ?? null,
         record.requestCount ?? 0,
         record.lastIp ?? null,
@@ -202,7 +207,7 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
   },
   async listForUser(userId) {
     const result = await pool.query<ApiKeyRow>(
-      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, expires_at, last_used_at, request_count, last_ip
        FROM api_keys
        WHERE user_id = $1
        ORDER BY created_at DESC`,
@@ -213,7 +218,7 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
   },
   async listForOrg(orgId) {
     const result = await pool.query<ApiKeyRow>(
-      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, expires_at, last_used_at, request_count, last_ip
        FROM api_keys
        WHERE org_id = $1
        ORDER BY created_at DESC`,
@@ -224,7 +229,7 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
   },
   async getById(id) {
     const result = await pool.query<ApiKeyRow>(
-      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, expires_at, last_used_at, request_count, last_ip
        FROM api_keys
        WHERE id = $1
        LIMIT 1`,
@@ -243,11 +248,12 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
            scopes = $6::text[],
            created_at = $7::timestamptz,
            revoked_at = $8::timestamptz,
-           last_used_at = $9::timestamptz,
-           request_count = $10,
-           last_ip = $11
+           expires_at = $9::timestamptz,
+           last_used_at = $10::timestamptz,
+           request_count = $11,
+           last_ip = $12
        WHERE id = $1
-       RETURNING id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip`,
+       RETURNING id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, expires_at, last_used_at, request_count, last_ip`,
       [
         record.id,
         record.userId,
@@ -257,6 +263,7 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
         record.scopes,
         record.createdAt,
         record.revokedAt,
+        record.expiresAt ?? null,
         record.lastUsedAt ?? null,
         record.requestCount ?? 0,
         record.lastIp ?? null,
@@ -267,7 +274,7 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
   },
   async findByIdForUser(id, userId) {
     const result = await pool.query<ApiKeyRow>(
-      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, expires_at, last_used_at, request_count, last_ip
        FROM api_keys
        WHERE id = $1 AND user_id = $2
        LIMIT 1`,
@@ -278,7 +285,7 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
   },
   async findByHashPrefix(prefix) {
     const result = await pool.query<ApiKeyRow>(
-      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, expires_at, last_used_at, request_count, last_ip
        FROM api_keys
        WHERE left(key_hash, $1) = $2`,
       [HASH_PREFIX_LENGTH, prefix],
@@ -316,6 +323,7 @@ const createApiKeyRecord = async (input: CreateApiKeyInput, secret: string): Pro
     scopes: normalizeScopes(input.scopes),
     createdAt: utcNow(),
     revokedAt: null,
+    expiresAt: input.expiresAt ?? null,
   }
 }
 
@@ -545,6 +553,10 @@ export const validateApiKey = async (
 
   if (record.revokedAt) {
     return { valid: false, reason: 'revoked' }
+  }
+
+  if (record.expiresAt && new Date(record.expiresAt) <= new Date(utcNow())) {
+    return { valid: false, reason: 'expired' }
   }
 
   const normalizedRequiredScopes = normalizeScopes(requiredScopes)

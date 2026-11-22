@@ -28,6 +28,7 @@ export interface ApiKeyRecord {
   scopes: ApiScope[]
   createdAt: string
   revokedAt: string | null
+  expiresAt?: string | null
   lastUsedAt?: string | null
   requestCount?: number
   lastIp?: string | null

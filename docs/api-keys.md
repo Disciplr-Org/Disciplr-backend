@@ -20,6 +20,15 @@ This backend supports scoped API keys for server-to-server access. Keys are inte
 
 Creates a new API key for the authenticated user.
 
+Request body fields:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `label` | string | yes | Human-readable name, 1–100 characters. |
+| `scopes` | string[] | yes | One or more valid scope strings. |
+| `orgId` | UUID string | no | Bind the key to an organization the caller belongs to. |
+| `expiresAt` | ISO 8601 string | no | Key expiry time. Must be a future UTC timestamp, at most 1 year from now. |
+
 Example:
 
 ```bash
@@ -28,7 +37,8 @@ curl -X POST "http://localhost:3000/api/api-keys" \
   -H "x-user-id: user-123" \
   -d '{
     "label": "analytics integration",
-    "scopes": ["read:analytics", "read:vaults"]
+    "scopes": ["read:analytics", "read:vaults"],
+    "expiresAt": "2027-01-01T00:00:00Z"
   }'
 ```
 
@@ -36,6 +46,21 @@ Response notes:
 
 - `apiKey` is returned exactly once.
 - `apiKeyMeta` is safe to store or display because it omits the secret and hash.
+- `apiKeyMeta.expiresAt` is `null` when no expiry was set; otherwise an ISO 8601 UTC string.
+
+## Key expiry
+
+Pass an `expiresAt` ISO 8601 timestamp at creation time to set a hard expiry on a key. Once that time is reached:
+
+- `validateApiKey` returns `{ valid: false, reason: 'expired' }`.
+- Requests to API-key protected endpoints return `401` with `{ "error": "API key is expired." }`.
+- Expiry is checked **before** scope authorization, so an expired key with correct scopes still fails.
+
+Constraints:
+
+- `expiresAt` must be a future timestamp.
+- Maximum allowed value is 1 year from the time of creation.
+- Omitting `expiresAt` creates a key with no expiry (existing behaviour).
 
 ### List
 
