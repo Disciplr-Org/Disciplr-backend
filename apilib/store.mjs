@@ -6,6 +6,8 @@
 import { randomUUID, randomBytes } from 'node:crypto'
 import { createStoreProvider } from './store-bootstrap.mjs'
 import { seed } from './demo-data.mjs'
+import { wrapPoolForTiming } from './log.mjs'
+import { parseAmount, formatAmount } from './amount.mjs'
 const iso = (d) => new Date(d).toISOString()
 const hex = (n) => randomBytes(n).toString('hex')
 
@@ -38,13 +40,71 @@ function applyTransition(current, result) {
 
 export class MemoryStore {
   kind = 'memory'
-  constructor() { const s = seed(); this.vaults = s.vaults; this.activity = s.activity; this.transitionLocks = new Map() }
+  constructor() { const s = seed(); this.vaults = s.vaults; this.activity = s.activity; this.transitionLocks = new Map(); this.evidence = [] }
   async init() {}
-  async listVaults({ creator, status } = {}) {
-    return this.vaults.filter((v) => (!creator || v.creator === creator) && (!status || v.status === status))
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  async listVaults({ creator, status, limit, cursor } = {}) {
+    let filtered = this.vaults.filter((v) => (!creator || v.creator === creator) && (!status || v.status === status))
+    
+    // Apply cursor filter
+    if (cursor) {
+      filtered = filtered.filter((v) => {
+        const cmp = v.createdAt.localeCompare(cursor.timestamp)
+        return cmp < 0 || (cmp === 0 && v.id < cursor.id)
+      })
+    }
+    
+    // Sort by (created_at DESC, id DESC)
+    filtered.sort((a, b) => {
+      const cmp = b.createdAt.localeCompare(a.createdAt)
+      return cmp !== 0 ? cmp : b.id.localeCompare(a.id)
+    })
+    
+    // Apply limit + 1 to check for next page
+    const pageSize = limit || 25
+    const page = filtered.slice(0, pageSize + 1)
+    const hasMore = page.length > pageSize
+    const items = hasMore ? page.slice(0, pageSize) : page
+    
+    return {
+      items: items.map((v) => this._attachEvidence(v)),
+      hasMore,
+      lastItem: items.length > 0 ? items[items.length - 1] : null,
+    }
   }
-  async getVault(id) { return this.vaults.find((v) => v.id === id) || null }
+  async getVault(id) {
+    const v = this.vaults.find((v) => v.id === id)
+    return v ? this._attachEvidence(v) : null
+  }
+  _attachEvidence(vault) {
+    const vaultEvidence = this.evidence.filter((e) => e.vaultId === vault.id)
+    return {
+      ...vault,
+      milestones: vault.milestones.map((m) => {
+        const mEvidence = vaultEvidence.filter((e) => e.milestoneId === m.id)
+          .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+          .slice(0, 10)
+        return {
+          ...m,
+          evidence: mEvidence,
+          latestEvidenceHash: mEvidence.length > 0 ? mEvidence[0].sha256 : null,
+        }
+      }),
+    }
+  }
+
+  // Aggregate statistics for dashboard without loading all vaults.
+  async aggregateStats({ creator, verifier } = {}) {
+    const filtered = this.vaults.filter((v) => (!creator || v.creator === creator) && (!verifier || v.verifier === verifier))
+    const totalVaults = filtered.length
+    const active = filtered.filter(v => v.status === 'active').length
+    const completed = filtered.filter(v => v.status === 'completed').length
+    const failed = filtered.filter(v => v.status === 'failed').length
+    const totalLocked = formatAmount(filtered.filter(v => v.status === 'active').reduce((sum, v) => sum + parseAmount(v.amount), 0n))
+    const totalReleased = formatAmount(filtered.filter(v => v.status === 'completed').reduce((sum, v) => sum + parseAmount(v.amount), 0n))
+    const totalRedirected = formatAmount(filtered.filter(v => v.status === 'failed').reduce((sum, v) => sum + parseAmount(v.amount), 0n))
+    return { totalVaults, active, completed, failed, totalLocked, totalReleased, totalRedirected }
+  }
+
   async createVault(v) { this.vaults.push(v); return v }
   async saveVault(v) { v.updatedAt = iso(Date.now()); return v }
   async addActivity(a) { this.activity.push(a); return a }
@@ -74,8 +134,34 @@ export class MemoryStore {
       if (this.transitionLocks.get(vaultId) === mine) this.transitionLocks.delete(vaultId)
     }
   }
-  async listActivity({ vaultId } = {}) {
-    return this.activity.filter((a) => !vaultId || a.vaultId === vaultId).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  async listActivity({ vaultId, limit, cursor } = {}) {
+    let filtered = this.activity.filter((a) => !vaultId || a.vaultId === vaultId)
+    
+    // Apply cursor filter
+    if (cursor) {
+      filtered = filtered.filter((a) => {
+        const cmp = a.createdAt.localeCompare(cursor.timestamp)
+        return cmp < 0 || (cmp === 0 && a.id < cursor.id)
+      })
+    }
+    
+    // Sort by (created_at DESC, id DESC)
+    filtered.sort((a, b) => {
+      const cmp = b.createdAt.localeCompare(a.createdAt)
+      return cmp !== 0 ? cmp : b.id.localeCompare(a.id)
+    })
+    
+    // Apply limit + 1 to check for next page
+    const pageSize = limit || 25
+    const page = filtered.slice(0, pageSize + 1)
+    const hasMore = page.length > pageSize
+    const items = hasMore ? page.slice(0, pageSize) : page
+    
+    return {
+      items,
+      hasMore,
+      lastItem: items.length > 0 ? items[items.length - 1] : null,
+    }
   }
   async getActivityByHash(hash) { return this.activity.find((a) => a.hash === hash) || null }
   async saveActivity(a) { return a }
@@ -109,6 +195,21 @@ export class MemoryStore {
     const remaining = overdue.length - batch.length
     return { processed: batch.length, remaining: Math.max(0, remaining) }
   }
+  async addMilestoneEvidence({ id, vaultId, milestoneId, url, sha256, note, submittedBy, verified = false }) {
+    const evidence = {
+      id,
+      vaultId,
+      milestoneId,
+      url,
+      sha256,
+      note: note || null,
+      submittedBy,
+      verified,
+      createdAt: iso(Date.now()),
+    }
+    this.evidence.push(evidence)
+    return evidence
+  }
 }
 
 export class PgStore {
@@ -118,30 +219,111 @@ export class PgStore {
     await this.pool.query('SELECT 1')
   }
 
-  rowToVault(r, ms) {
+  rowToVault(r, ms, evidence = []) {
+    const milestones = ms.filter((m) => m.vault_id === r.id).sort((a, b) => a.sort_order - b.sort_order)
+      .map((m) => {
+        const mEvidence = evidence.filter((e) => e.milestone_id === m.id)
+          .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+          .slice(0, 10)
+          .map((e) => ({
+            id: e.id,
+            url: e.url,
+            sha256: e.sha256,
+            note: e.note || null,
+            submittedBy: e.submitted_by,
+            verified: e.verified || false,
+            createdAt: iso(e.created_at),
+          }))
+        return {
+          id: m.id,
+          title: m.title,
+          amount: formatAmount(parseAmount(m.amount)),
+          dueDate: iso(m.due_date || m.deadline),
+          status: m.status,
+          evidence: mEvidence,
+          latestEvidenceHash: mEvidence.length > 0 ? mEvidence[0].sha256 : null,
+        }
+      })
     return {
-      id: r.id, name: r.name || `Vault ${r.id}`, creator: r.creator, amount: String(Number(r.amount)), status: r.status, startDate: iso(r.start_date), endDate: iso(r.end_date),
+      id: r.id, name: r.name || `Vault ${r.id}`, creator: r.creator, amount: formatAmount(parseAmount(r.amount)), status: r.status, startDate: iso(r.start_date), endDate: iso(r.end_date),
       verifier: r.verifier, successDestination: r.success_destination, failureDestination: r.failure_destination,
       onchainStatus: r.onchain_status || null,
       createdAt: iso(r.created_at), updatedAt: iso(r.updated_at),
-      milestones: ms.filter((m) => m.vault_id === r.id).sort((a, b) => a.sort_order - b.sort_order)
-        .map((m) => ({ id: m.id, title: m.title, amount: String(Number(m.amount)), dueDate: iso(m.due_date || m.deadline), status: m.status })),
+      milestones,
     }
   }
-  async listVaults({ creator, status } = {}) {
+  async listVaults({ creator, status, limit, cursor } = {}) {
     const w = ['deleted_at IS NULL']; const p = []
     if (creator) { p.push(creator); w.push(`creator = $${p.length}`) }
-    if (status) { p.push(status); w.push(`status = $${p.length}::vault_status`) }
-    const { rows } = await this.pool.query(`SELECT * FROM vaults WHERE ${w.join(' AND ')} ORDER BY created_at DESC LIMIT 200`, p)
-    if (!rows.length) return []
-    const ms = (await this.pool.query('SELECT * FROM milestones WHERE vault_id = ANY($1) AND deleted_at IS NULL', [rows.map((r) => r.id)])).rows
-    return rows.map((r) => this.rowToVault(r, ms))
+    if (status) {
+      // Unknown statuses would make the ::vault_status cast throw; treat them as matching nothing.
+      if (!new Set(['active', 'completed', 'failed']).has(status)) return { items: [], hasMore: false, lastItem: null }
+      p.push(status); w.push(`status = $${p.length}::vault_status`)
+    }
+    
+    // Apply cursor WHERE clause for keyset pagination
+    if (cursor) {
+      p.push(cursor.timestamp, cursor.id)
+      w.push(`(created_at, id) < ($${p.length - 1}, $${p.length})`)
+    }
+    
+    const pageSize = limit || 25
+    p.push(pageSize + 1)
+    
+    const { rows } = await this.pool.query(
+      `SELECT * FROM vaults WHERE ${w.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT $${p.length}`,
+      p
+    )
+    
+    const hasMore = rows.length > pageSize
+    const items = hasMore ? rows.slice(0, pageSize) : rows
+    
+    if (!items.length) return { items: [], hasMore: false, lastItem: null }
+    
+    const vaultIds = items.map((r) => r.id)
+    const ms = (await this.pool.query('SELECT * FROM milestones WHERE vault_id = ANY($1) AND deleted_at IS NULL', [vaultIds])).rows
+    const evidence = (await this.pool.query('SELECT * FROM milestone_evidence WHERE vault_id = ANY($1)', [vaultIds])).rows
+    
+    const vaults = items.map((r) => this.rowToVault(r, ms, evidence))
+    return {
+      items: vaults,
+      hasMore,
+      lastItem: items.length > 0 ? items[items.length - 1] : null,
+    }
+  }
+
+  // Aggregate statistics for dashboard without loading all vaults.
+  async aggregateStats({ creator, verifier } = {}) {
+    const w = ['deleted_at IS NULL']; const p = []
+    if (creator) { p.push(creator); w.push(`creator = $${p.length}`) }
+    if (verifier) { p.push(verifier); w.push(`verifier = $${p.length}`) }
+    const q = `SELECT 
+      count(*) AS total_vaults,
+      count(*) FILTER (WHERE status = 'active'::vault_status) AS active,
+      count(*) FILTER (WHERE status = 'completed'::vault_status) AS completed,
+      count(*) FILTER (WHERE status = 'failed'::vault_status) AS failed,
+      COALESCE(sum(amount) FILTER (WHERE status = 'active'::vault_status), 0) AS total_locked,
+      COALESCE(sum(amount) FILTER (WHERE status = 'completed'::vault_status), 0) AS total_released,
+      COALESCE(sum(amount) FILTER (WHERE status = 'failed'::vault_status), 0) AS total_redirected
+    FROM vaults WHERE ${w.join(' AND ')}`
+    const { rows } = await this.pool.query(q, p)
+    const r = rows[0]
+    return {
+      totalVaults: Number(r.total_vaults),
+      active: Number(r.active),
+      completed: Number(r.completed),
+      failed: Number(r.failed),
+      totalLocked: formatAmount(parseAmount(String(r.total_locked))),
+      totalReleased: formatAmount(parseAmount(String(r.total_released))),
+      totalRedirected: formatAmount(parseAmount(String(r.total_redirected))),
+    }
   }
   async getVault(id) {
     const { rows } = await this.pool.query('SELECT * FROM vaults WHERE id = $1 AND deleted_at IS NULL', [id])
     if (!rows[0]) return null
     const ms = (await this.pool.query('SELECT * FROM milestones WHERE vault_id = $1 AND deleted_at IS NULL', [id])).rows
-    return this.rowToVault(rows[0], ms)
+    const evidence = (await this.pool.query('SELECT * FROM milestone_evidence WHERE vault_id = $1', [id])).rows
+    return this.rowToVault(rows[0], ms, evidence)
   }
   async createVault(v) {
     const c = await this.pool.connect()
@@ -205,7 +387,7 @@ export class PgStore {
       client.release()
     }
   }
-  actRow(r) { return { id: r.id, type: r.type, vaultId: r.vault_id, amount: String(Number(r.amount)), status: r.status, hash: r.hash, memo: r.memo, ledger: r.ledger == null ? null : Number(r.ledger), createdAt: iso(r.created_at) } }
+  actRow(r) { return { id: r.id, type: r.type, vaultId: r.vault_id, amount: formatAmount(parseAmount(r.amount)), status: r.status, hash: r.hash, memo: r.memo, ledger: r.ledger == null ? null : Number(r.ledger), createdAt: iso(r.created_at) } }
   async getActivityByHash(hash) {
     const { rows } = await this.pool.query('SELECT * FROM activity_log WHERE hash=$1 LIMIT 1', [hash])
     return rows[0] ? this.actRow(rows[0]) : null
@@ -214,11 +396,33 @@ export class PgStore {
     await this.pool.query('UPDATE activity_log SET status=$2, memo=$3, ledger=$4 WHERE id=$1', [a.id, a.status, a.memo, a.ledger ?? null])
     return a
   }
-  async listActivity({ vaultId } = {}) {
-    const { rows } = vaultId
-      ? await this.pool.query('SELECT * FROM activity_log WHERE vault_id=$1 ORDER BY created_at DESC LIMIT 200', [vaultId])
-      : await this.pool.query('SELECT * FROM activity_log ORDER BY created_at DESC LIMIT 200')
-    return rows.map((r) => this.actRow(r))
+  async listActivity({ vaultId, limit, cursor } = {}) {
+    const w = []; const p = []
+    if (vaultId) { p.push(vaultId); w.push(`vault_id = $${p.length}`) }
+    
+    // Apply cursor WHERE clause for keyset pagination
+    if (cursor) {
+      p.push(cursor.timestamp, cursor.id)
+      w.push(`(created_at, id) < ($${p.length - 1}, $${p.length})`)
+    }
+    
+    const pageSize = limit || 25
+    p.push(pageSize + 1)
+    
+    const whereClause = w.length > 0 ? `WHERE ${w.join(' AND ')}` : ''
+    const { rows } = await this.pool.query(
+      `SELECT * FROM activity_log ${whereClause} ORDER BY created_at DESC, id DESC LIMIT $${p.length}`,
+      p
+    )
+    
+    const hasMore = rows.length > pageSize
+    const items = hasMore ? rows.slice(0, pageSize) : rows
+    
+    return {
+      items: items.map((r) => this.actRow(r)),
+      hasMore,
+      lastItem: items.length > 0 ? items[items.length - 1] : null,
+    }
   }
   async expireOverdueVaults({ now = new Date(), batchSize = 100 } = {}) {
     const client = await this.pool.connect()
@@ -291,10 +495,30 @@ export class PgStore {
       client.release()
     }
   }
+  async addMilestoneEvidence({ id, vaultId, milestoneId, url, sha256, note, submittedBy, verified = false }) {
+    const { rows } = await this.pool.query(
+      `INSERT INTO milestone_evidence (id, vault_id, milestone_id, url, sha256, note, submitted_by, verified, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+       RETURNING *`,
+      [id, vaultId, milestoneId, url, sha256, note || null, submittedBy, verified]
+    )
+    return {
+      id: rows[0].id,
+      url: rows[0].url,
+      sha256: rows[0].sha256,
+      note: rows[0].note || null,
+      submittedBy: rows[0].submitted_by,
+      verified: rows[0].verified || false,
+      createdAt: iso(rows[0].created_at),
+    }
+  }
 }
 
 const makeProvider = () => createStoreProvider({
-  makePool: async (config) => new (await import('pg')).default.Pool(config),
+  makePool: async (config) => {
+    const pool = new (await import('pg')).default.Pool(config)
+    return wrapPoolForTiming(pool)
+  },
   makePostgres: (pool) => new PgStore(pool),
   makeMemory: () => new MemoryStore(),
 })

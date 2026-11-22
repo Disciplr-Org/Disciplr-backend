@@ -48,6 +48,7 @@ jest.unstable_mockModule('../services/webhooks.js', () => ({
   removeSubscriberForOrg: mockRemoveSubscriberForOrg,
   rotateSubscriberSecret: mockRotateSubscriberSecret,
   isUrlAllowed: mockIsUrlAllowed,
+  isUrlAllowedForOrg: jest.fn().mockResolvedValue({ allowed: true }),
   // Imported by the real types/webhook.ts schema for event-type validation.
   KNOWN_EVENT_TYPES: new Set([
     'vault_created',

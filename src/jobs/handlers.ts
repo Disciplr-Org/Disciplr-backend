@@ -221,6 +221,8 @@ export const createDefaultJobHandlers = (
     )
   }
 
+  // TODO(drips-wave): re-enable apiKeys.cleanup — cleanupExpiredRotationGrace() and the 'apiKeys.cleanup' job type are missing from the merged API-key rotation work (#1743)
+
   jobHandlers['vault.reconcile'] = async (payload, context) => {
     const etlConfig = {
       horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org',
@@ -311,24 +313,14 @@ export const createDefaultJobHandlers = (
         skipped += 1
         continue
       }
-      const report = await renderOrgAnalyticsSnapshot(orgId)
-      const key = `analytics/${orgId}/${createHash('sha256').update(`${orgId}:${context.jobId}`).digest('hex')}.json`
-      const buffer = Buffer.from(JSON.stringify(report))
+      const snapshot = await renderOrgAnalyticsSnapshot(orgId)
+      const key = `analytics/${orgId}/${new Date().toISOString()}.json`
+      const body = Buffer.from(JSON.stringify(snapshot))
       if (s3Config) {
-        await uploadToS3(s3Config, key, buffer, 'application/json')
-        await saveOrgReport({
-          orgId,
-          s3Key: key,
-          snapshotAt: report.snapshotAt,
-          sizeBytes: buffer.byteLength,
-        })
+        await uploadToS3(s3Config, key, body, 'application/json')
+        await saveOrgReport({ orgId, s3Key: key, snapshotAt: new Date().toISOString(), sizeBytes: body.length })
       } else {
-        await saveOrgReport({
-          orgId,
-          localBuffer: buffer,
-          snapshotAt: report.snapshotAt,
-          sizeBytes: buffer.byteLength,
-        })
+        await saveOrgReport({ orgId, localBuffer: new Uint8Array(body), snapshotAt: new Date().toISOString(), sizeBytes: body.length })
       }
       generated += 1
     }
@@ -339,15 +331,12 @@ export const createDefaultJobHandlers = (
   }
 
   jobHandlers['retention.purge'] = async (payload, context) => {
-    const result = await purgeSoftDeletedVaults(payload.organizationId, payload.batchSize)
-    logJob(
-      'retention.purge',
-      `org=${payload.organizationId} deletedVaults=${result.deletedVaults} deletedMilestones=${result.deletedMilestones} attempt=${context.attempt}`,
-    )
+    const purged = await purgeSoftDeletedVaults(payload.organizationId, payload.batchSize)
+    logJob('retention.purge', `purged=${purged} attempt=${context.attempt}`)
   }
 
   jobHandlers['saved-search.evaluate'] = async (payload, context) => {
-    // Placeholder for saved-search evaluation
+    // Placeholder for saved-search evaluation (restored: handler was dropped by an earlier merge)
     logJob('saved-search.evaluate', `evaluated=${payload.searchId} attempt=${context.attempt}`)
   }
 

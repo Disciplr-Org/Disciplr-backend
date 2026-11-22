@@ -123,6 +123,57 @@ export function createVaultArgs(vault, tokenId) {
 
 export const stakeArgs = (vault) => [nativeToScVal(vault.id, { type: 'string' }), addr(vault.creator)]
 
+/**
+ * Typed argument shapes for the settlement invocations. These mirror the accountability_vault ABI:
+ *   slash_on_miss(vault_id: String)
+ *   claim(vault_id: String, caller: Address)
+ *   claim_milestone(vault_id: String, caller: Address, index: u32)
+ *   withdraw(vault_id: String, creator: Address)
+ */
+export const SLASH_ARGS = ['vaultId']
+export const CLAIM_ARGS = ['vaultId', 'caller']
+export const CLAIM_MILESTONE_ARGS = ['vaultId', 'caller', 'index']
+export const WITHDRAW_ARGS = ['vaultId', 'creator']
+
+const ARG_SHAPES = {
+  slash_on_miss: SLASH_ARGS,
+  claim: CLAIM_ARGS,
+  claim_milestone: CLAIM_MILESTONE_ARGS,
+  withdraw: WITHDRAW_ARGS,
+}
+
+/** Reject anything that is not a plain G-address (muxed M-addresses are not accepted). */
+export function assertGAddress(value, field) {
+  if (typeof value !== 'string' || !/^G[A-Z2-7]{55}$/.test(value)) {
+    throw new OnchainError(`${field} must be a valid Stellar G-address`, 400, { field })
+  }
+  try { Keypair.fromPublicKey(value) } catch { throw new OnchainError(`${field} must be a valid Stellar G-address`, 400, { field }) }
+  return value
+}
+
+/**
+ * Pure ScVal encoder for the settlement invocations. No RPC, so it is unit-testable in isolation.
+ * Returns the args in contract order.
+ */
+export function buildInvocationArgs(method, args = {}) {
+  const shape = ARG_SHAPES[method]
+  if (!shape) throw new OnchainError(`Unsupported method ${method}`)
+  const extra = Object.keys(args).filter((k) => !shape.includes(k))
+  if (extra.length) throw new OnchainError(`Unexpected argument(s) for ${method}: ${extra.join(', ')}`)
+  const missing = shape.filter((k) => args[k] === undefined || args[k] === null)
+  if (missing.length) throw new OnchainError(`Missing argument(s) for ${method}: ${missing.join(', ')}`)
+  return shape.map((k) => {
+    if (k === 'vaultId') return nativeToScVal(String(args.vaultId), { type: 'string' })
+    if (k === 'caller' || k === 'creator') return addr(assertGAddress(args[k], k))
+    if (k === 'index') {
+      const n = Number(args.index)
+      if (!Number.isInteger(n) || n < 0 || n > 0xffffffff) throw new OnchainError('index must be a u32', 400, { field: 'index' })
+      return nativeToScVal(n, { type: 'u32' })
+    }
+    throw new OnchainError(`Unsupported argument ${k}`)
+  })
+}
+
 export function expectedArgs(operation, vault, cfg) {
   if (operation === 'create_vault') return createVaultArgs(vault, cfg.tokenId)
   if (operation === 'stake') return stakeArgs(vault)

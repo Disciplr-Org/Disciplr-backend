@@ -10,7 +10,7 @@ import {
   listSubscribers,
   removeSubscriberForOrg,
   rotateSubscriberSecret,
-  isUrlAllowed,
+  isUrlAllowedForOrg,
 } from '../services/webhooks.js'
 
 /**
@@ -55,13 +55,14 @@ webhookRouter.post(
       }
 
       const { url, events, active } = parseResult.data
-      if (!isUrlAllowed(url)) {
-        return next(AppError.validation('Webhook URL not permitted', { field: 'url' }))
-      }
-
       const orgId = req.query.orgId as string | undefined
       if (!orgId) {
         return next(AppError.badRequest('orgId is required'))
+      }
+
+      const egress = await isUrlAllowedForOrg(orgId, url)
+      if (!egress.allowed) {
+        return next(AppError.validation(egress.reason ?? 'Webhook URL not permitted', { field: 'url' }))
       }
 
       const secret = randomUUID().replace(/-/g, '')

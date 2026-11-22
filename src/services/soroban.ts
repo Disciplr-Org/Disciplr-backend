@@ -12,6 +12,7 @@ import { retryWithBackoff, sleep, type RetryConfig } from '../utils/retry.js'
 import { StrKey } from '@stellar/stellar-sdk'
 import { AppError, SorobanTimeoutError } from '../middleware/errorHandler.js'
 import { getTracer } from '../observability/tracing.js'
+import { runInSubmitLane } from './sorobanSubmitLane.js'
 import { recordSorobanTransaction } from '../observability/sorobanMetrics.js'
 
 export function normalizeToClassicAddress(address: string): string {
@@ -57,6 +58,8 @@ export interface SorobanConfig {
   submitPollMaxAttempts: number
   rpcTimeoutMs: number
   submitTimeoutMs: number
+  /** Transaction validity window in seconds (SOROBAN_TX_TIMEOUT_SECS). Default 30. */
+  txTimeoutSecs?: number
   submitRetry: RetryConfig
 }
 
@@ -120,6 +123,7 @@ export const getSorobanConfig = (): SorobanConfig | null => {
     submitPollMaxAttempts: positiveIntFromEnv('SOROBAN_SUBMIT_POLL_MAX_ATTEMPTS', DEFAULT_SUBMIT_POLL_MAX_ATTEMPTS),
     rpcTimeoutMs: positiveIntFromEnv('SOROBAN_RPC_TIMEOUT_MS', DEFAULT_RPC_TIMEOUT_MS),
     submitTimeoutMs: positiveIntFromEnv('SOROBAN_SUBMIT_TIMEOUT_MS', 60_000),
+    txTimeoutSecs: positiveIntFromEnv('SOROBAN_TX_TIMEOUT_SECS', 30),
     submitRetry: getSubmitRetryConfig(),
   }
   return cachedSorobanConfig
@@ -336,6 +340,53 @@ export const resetRpcPool = (): void => {
 export const getRpcPoolHealth = (): RpcEndpointHealth[] | null =>
   _rpcPool ? _rpcPool.getHealthStatuses() : null
 
+const DEFAULT_TX_TIMEOUT_SECS = 30
+const MAX_TRY_AGAIN_RESENDS = 3
+const LEDGER_CLOSE_MARGIN_MS = 5_000
+
+export type SorobanTxErrorKind = 'contract' | 'tx' | 'expired'
+
+/** Structured submission failure: `{ kind: 'contract', code }`, `{ kind: 'tx', code }` or `{ kind: 'expired' }`. */
+export class SorobanTxError extends Error {
+  constructor(message: string, readonly kind: SorobanTxErrorKind, readonly code: string) {
+    super(message)
+    this.name = 'SorobanTxError'
+  }
+}
+
+/** Decode a TransactionResult (object or base64 XDR) into a structured code. */
+export function decodeTxResult(
+  raw: unknown,
+  xdr: any,
+): { kind: 'contract' | 'tx'; code: string } | null {
+  if (!raw) return null
+  try {
+    const res: any = typeof raw === 'string' ? xdr.TransactionResult.fromXDR(raw, 'base64') : raw
+    const code: string = res.result().switch().name
+    if (code === 'txFailed') {
+      const op = res.result().results()?.[0]?.tr?.()
+      const opCode: string | undefined = op?.value?.()?.switch?.()?.name
+      if (opCode && opCode !== 'invokeHostFunctionSuccess') return { kind: 'contract', code: opCode }
+    }
+    return { kind: 'tx', code }
+  } catch {
+    return null
+  }
+}
+
+/** Serialises submissions per source account, then runs the real submit. */
+async function submitTransaction(
+  config: SorobanConfig,
+  methodName: string,
+  scVals: any[],
+  loadSdk: StellarSdkLoader = () => import('@stellar/stellar-sdk'),
+  pool?: SorobanRpcPool,
+): Promise<{ txHash: string }> {
+  return runInSubmitLane(config.sourceAccount, () =>
+    submitTransactionInLane(config, methodName, scVals, loadSdk, pool),
+  )
+}
+
 // ─── Internal helper for transaction submission ───────────────────────────────
 
 /**
@@ -352,7 +403,7 @@ export const getRpcPoolHealth = (): RpcEndpointHealth[] | null =>
  *  - Once sendTransaction returns a response (committed), the endpoint is
  *    locked in for the polling phase to avoid double-submission.
  */
-async function submitTransaction(
+async function submitTransactionInLane(
   config: SorobanConfig,
   methodName: string,
   scVals: any[],
@@ -375,6 +426,7 @@ async function submitTransaction(
         rpc: SorobanRpc,
         TransactionBuilder,
         BASE_FEE,
+        xdr,
       } = await loadSdk()
 
       const keypair = Keypair.fromSecret(config.secretKey)
@@ -398,34 +450,66 @@ async function submitTransaction(
         try {
           const server = new SorobanRpc.Server(url)
 
-          const account = await retryRpc('getAccount', config, () =>
-            server.getAccount(config.sourceAccount),
-          )
+          const txTimeoutSecs = config.txTimeoutSecs ?? DEFAULT_TX_TIMEOUT_SECS
 
-          const tx = new TransactionBuilder(account, {
-            fee: BASE_FEE,
-            networkPassphrase: config.networkPassphrase,
-          })
-            .addOperation(callOp)
-            .setTimeout(30)
-            .build()
+          const buildSigned = async (): Promise<any> => {
+            const account = await retryRpc('getAccount', config, () =>
+              server.getAccount(config.sourceAccount),
+            )
+            const tx = new TransactionBuilder(account, {
+              fee: BASE_FEE,
+              networkPassphrase: config.networkPassphrase,
+            })
+              .addOperation(callOp)
+              .setTimeout(txTimeoutSecs)
+              .build()
+            const p: any = await retryRpc('prepareTransaction', config, () =>
+              server.prepareTransaction(tx),
+            )
+            p.sign(keypair)
+            return p
+          }
 
-          const prepared: any = await retryRpc('prepareTransaction', config, () =>
-            server.prepareTransaction(tx),
-          )
-          prepared.sign(keypair)
+          let prepared = await buildSigned()
+          let maxTimeMs = Date.now() + txTimeoutSecs * 1000
+          let rebuilt = false
+          let resends = 0
+          let response: any
 
           // sendTransaction is retried on the SAME endpoint for transient network
           // errors; switching endpoints only happens if it never returns at all.
-          const response: any = await retryRpc('sendTransaction', config, () =>
-            server.sendTransaction(prepared),
-          )
-          responseHash = response.hash
-
-          if (response.status === 'ERROR') {
-            activePool.recordFailure(url)
-            throw new Error(`Soroban sendTransaction failed: ${response.status}`)
+          for (;;) {
+            response = await retryRpc('sendTransaction', config, () =>
+              server.sendTransaction(prepared),
+            )
+            if (response.status === 'TRY_AGAIN_LATER') {
+              // Not accepted: resend the SAME signed envelope (no new sequence).
+              if (resends >= MAX_TRY_AGAIN_RESENDS) {
+                throw new SorobanTxError('try_again_later_exhausted', 'tx', 'try_again_later_exhausted')
+              }
+              resends += 1
+              await sleep(config.submitRetry.initialBackoffMs * 2 ** (resends - 1))
+              continue
+            }
+            if (response.status === 'ERROR') {
+              const decoded = decodeTxResult(response.errorResult, xdr)
+              if (decoded?.code === 'txBadSeq' && !rebuilt) {
+                rebuilt = true
+                prepared = await buildSigned()
+                maxTimeMs = Date.now() + txTimeoutSecs * 1000
+                continue
+              }
+              activePool.recordFailure(url)
+              throw new SorobanTxError(
+                `Soroban sendTransaction failed: ${decoded?.code ?? response.status}`,
+                decoded?.kind ?? 'tx',
+                decoded?.code ?? 'error',
+              )
+            }
+            break
           }
+          // PENDING and DUPLICATE are both accepted: poll the hash. No resend after this.
+          responseHash = response.hash
 
           const deadline = Date.now() + config.submitTimeoutMs
           const pollConfig: RetryConfig = {
@@ -438,6 +522,9 @@ async function submitTransaction(
 
           const getResponse = await retryWithBackoff(
             async () => {
+              if (Date.now() >= maxTimeMs + LEDGER_CLOSE_MARGIN_MS) {
+                throw new SorobanTxError('Soroban transaction expired before inclusion', 'expired', 'expired')
+              }
               if (Date.now() >= deadline) {
                 throw new SorobanTimeoutError(response.hash, config.submitTimeoutMs)
               }
@@ -452,7 +539,12 @@ async function submitTransaction(
           )
 
           if (getResponse.status !== 'SUCCESS') {
-            throw new Error(`Soroban transaction did not succeed: ${getResponse.status}`)
+            const decoded = decodeTxResult(getResponse.resultXdr, xdr)
+            throw new SorobanTxError(
+              `Soroban transaction did not succeed: ${getResponse.status}${decoded ? ` (${decoded.code})` : ''}`,
+              decoded?.kind ?? 'tx',
+              decoded?.code ?? String(getResponse.status),
+            )
           }
 
           activePool.recordSuccess(url)

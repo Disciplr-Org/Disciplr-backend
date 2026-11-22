@@ -1,7 +1,13 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import { isIP } from 'node:net'
 import { WebhookSubscriberRepository } from '../repositories/webhookSubscriberRepository.js'
 import { retryWithBackoff } from '../utils/retry.js'
+import {
+  EgressBlockedError,
+  fetchPinnedTarget,
+  isPrivateOverrideEnabled,
+  resolvePublicTarget,
+  type EgressTarget,
+} from '../security/egressGuard.js'
 import { db } from '../db/index.js'
 import { applyFieldMasking, FieldPolicy, DEFAULT_FIELD_POLICY, parseFieldPolicy } from '../utils/webhookFieldMasking.js'
 import { getTracer } from '../observability/tracing.js'
@@ -366,69 +372,6 @@ export const checkBreaker = async (
 }
 
 /**
- * Returns true when a URL is safe to deliver to.
- *
- * Blocks loopback, link-local, and RFC-1918 addresses.  If
- * WEBHOOK_ALLOWED_HOSTS is set, the target hostname must also match.
- */
-export const isUrlAllowed = (
-  url: string,
-  allowedHosts: string[] = (process.env.WEBHOOK_ALLOWED_HOSTS ?? '')
-    .split(',')
-    .map((h) => h.trim())
-    .filter(Boolean),
-): boolean => {
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    return false
-  }
-
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    return false
-  }
-
-  // Strip brackets from IPv6 addresses — Node >= 25 includes them in hostname.
-  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase()
-  const ipv6MappedMatch = hostname.match(/^::ffff:(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f:]+))$/i)
-  const normalizedIpv4 = ipv6MappedMatch
-    ? (ipv6MappedMatch[1] ?? ipv6MappedMatch[2]
-        .split(':')
-        .flatMap((part) => {
-          const value = Number.parseInt(part || '0', 16)
-          return [String((value >> 8) & 255), String(value & 255)]
-        })
-        .slice(-4)
-        .join('.'))
-    : hostname
-
-  // Block loopback and common private ranges (SSRF mitigation)
-  if (
-    hostname === 'localhost' ||
-    hostname.endsWith('.localhost') ||
-    normalizedIpv4 === '127.0.0.1' ||
-    hostname === '::1' ||
-    /^10\./.test(normalizedIpv4) ||
-    /^192\.168\./.test(normalizedIpv4) ||
-    /^172\.(1[6-9]|2[0-9]|3[01])\./.test(normalizedIpv4) ||
-    /^169\.254\./.test(normalizedIpv4)
-  ) {
-    return false
-  }
-
-  if (isIP(hostname) === 0 && /(?:^|\.)localtest\.me$/.test(hostname)) {
-    return false
-  }
-
-  if (allowedHosts.length === 0) {
-    return true
-  }
-
-  return allowedHosts.some((h) => hostname === h || hostname.endsWith(`.${h}`))
-}
-
-/**
  * Minimum length for a webhook signing secret. Secrets shorter than this are
  * rejected to prevent accidental use of empty or weak keys.
  */
@@ -533,23 +476,33 @@ export const listEgressAllowlist = async (
 
 /**
  * Checks whether a URL is permitted for the given organization, respecting:
- * 1. The global SSRF guard (unconditional baseline).
+ * 1. The shared egress guard (resolve-validate-pin): the URL is resolved to IP
+ *    addresses and every resolved address must be public. DNS rebinding at
+ *    delivery time is prevented because delivery pins the socket to a validated
+ *    IP rather than re-resolving at connect time.
  * 2. The per-org egress allowlist, when configured (deny by policy if not on it).
  *
- * When the org has no allowlist entries the SSRF guard alone governs.
+ * When the org has no allowlist entries the egress guard alone governs.
  */
 export const isUrlAllowedForOrg = async (
   organizationId: string,
   url: string,
 ): Promise<{ allowed: boolean; reason?: string }> => {
-  if (!isUrlAllowed(url)) {
-    return { allowed: false, reason: `Webhook URL not permitted: ${url}` }
+  let target: EgressTarget
+  try {
+    target = await resolvePublicTarget(url, { allowPrivate: isPrivateOverrideEnabled() })
+  } catch (err) {
+    return {
+      allowed: false,
+      reason: `Webhook URL not permitted: ${url}`,
+    }
   }
   const orgHosts = await getEgressAllowlist(organizationId)
   if (orgHosts.length === 0) {
     return { allowed: true }
   }
-  if (!isUrlAllowed(url, orgHosts)) {
+  const hostname = target.hostname
+  if (!orgHosts.some((h) => hostname === h || hostname.endsWith(`.${h}`))) {
     return { allowed: false, reason: `Webhook URL not on egress allowlist for org: ${url}` }
   }
   return { allowed: true }
@@ -720,6 +673,7 @@ const deliverOnce = async (
   subscriber: WebhookSubscriber,
   payload: WebhookDeliveryPayload,
   timeoutMs = 10_000,
+  target?: EgressTarget,
 ): Promise<number> => {
   const tracer = getTracer()
   return tracer.withSpan(
@@ -732,13 +686,27 @@ const deliverOnce = async (
       const body = buildVersionedPayload(subscriber, payload)
       const signature = signPayload(subscriber.secret, body)
 
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), timeoutMs)
+      // Resolve and validate the destination on every delivery attempt unless a
+      // pre-validated target is supplied (the dispatcher resolves once before
+      // the retry loop). Pin the socket to the validated IP; a blocked
+      // destination throws EgressBlockedError before any socket is opened.
+      let resolved = target
+      if (!resolved) {
+          try {
+            resolved = await resolvePublicTarget(subscriber.url, {
+              allowPrivate: isPrivateOverrideEnabled(),
+            })
+          } catch (err: any) {
+            if (err instanceof EgressBlockedError) throw err
+            throw new Error(
+              `Egress resolution failed for ${subscriber.url}: ${err?.message ?? err}`,
+            )
+          }
+      }
 
       try {
-        const response = await fetch(subscriber.url, {
+        const response = await fetchPinnedTarget(resolved, {
           method: 'POST',
-          redirect: 'manual',
           headers: {
             'content-type': 'application/json',
             'x-disciplr-signature': signature,
@@ -747,28 +715,28 @@ const deliverOnce = async (
             'x-disciplr-delivery-timestamp': payload.timestamp,
           },
           body,
-          signal: controller.signal,
+          timeoutMs,
         })
 
-        span.setAttribute('http.status_code', response.status)
+        span.setAttribute('http.status_code', response.statusCode)
 
-        if (response.status >= 300 && response.status < 400) {
-          const location = response.headers.get('location')
+        if (response.statusCode >= 300 && response.statusCode < 400) {
+          const location = response.headers['location']
           const error = new Error(`Webhook redirect refused${location ? `: ${location}` : ''}`)
           span.setStatus({ code: 'ERROR', message: error.message })
           throw error
         }
 
-        if (response.status >= 400) {
-          const error = new Error(`HTTP ${response.status}`)
+        if (response.statusCode >= 400) {
+          const error = new Error(`HTTP ${response.statusCode}`)
           span.setStatus({ code: 'ERROR', message: error.message })
           throw error
         }
 
         span.setStatus({ code: 'OK' })
-        return response.status
+        return response.statusCode
       } finally {
-        clearTimeout(timer)
+        // fetchPinnedTarget consumes the response body and destroys its socket.
       }
     },
   )
@@ -811,16 +779,32 @@ export const dispatchWebhookEvent = async (
       let attempts = 0
       let lastStatusCode: number | undefined
 
-      // ── Egress allowlist check (delivery-time enforcement) ─────────────────
-      if (!isUrlAllowed(subscriber.url)) {
-        const reason = `Webhook URL not permitted: ${subscriber.url}`
+      // ── Egress guard (delivery-time enforcement) ─────────────────
+      // Resolve and validate before any socket is opened. Blocked destinations
+      // are recorded as `egress_blocked` and are not treated as transient
+      // network errors, so they are not retried. The socket is pinned to the
+      // validated IP for every attempt below.
+      let target: EgressTarget
+      try {
+        target = await resolvePublicTarget(subscriber.url, {
+          allowPrivate: isPrivateOverrideEnabled(),
+        })
+      } catch (err: any) {
+        const reason = `egress_blocked: ${
+          err instanceof EgressBlockedError ? err.message : err?.message ?? 'blocked egress target'
+        }`
         await deadLetter(subscriber.id, payload, reason, 0)
         return { subscriberId: subscriber.id, url: subscriber.url, success: false, error: reason, attempts: 0 }
       }
-      if (orgAllowlistHosts.length > 0 && !isUrlAllowed(subscriber.url, orgAllowlistHosts)) {
-        const reason = `Webhook URL not on egress allowlist for org: ${subscriber.url}`
-        await deadLetter(subscriber.id, payload, reason, 0)
-        return { subscriberId: subscriber.id, url: subscriber.url, success: false, error: reason, attempts: 0 }
+
+      // Per-org allowlist is an additional policy layer on top of the egress guard.
+      if (orgAllowlistHosts.length > 0) {
+        const hostname = target.hostname
+        if (!orgAllowlistHosts.some((h) => hostname === h || hostname.endsWith(`.${h}`))) {
+          const reason = `Webhook URL not on egress allowlist for org: ${subscriber.url}`
+          await deadLetter(subscriber.id, payload, reason, 0)
+          return { subscriberId: subscriber.id, url: subscriber.url, success: false, error: reason, attempts: 0 }
+        }
       }
 
       // ── Circuit breaker check ──────────────────────────────
@@ -848,7 +832,7 @@ export const dispatchWebhookEvent = async (
         await retryWithBackoff(
           async () => {
             attempts += 1
-            lastStatusCode = await deliverOnce(subscriber, payload)
+            lastStatusCode = await deliverOnce(subscriber, payload, 10_000, target)
           },
           {
             maxAttempts: 3,
@@ -1063,6 +1047,13 @@ export const replayWindow = async (
   const errors: Array<{ eventId: string; error: string }> = []
 
   for (const dl of deadLetters) {
+    const check = await isUrlAllowedForOrg(subscriber.organizationId, subscriber.url)
+    if (!check.allowed) {
+      failureCount++
+      errors.push({ eventId: dl.event_id, error: check.reason ?? 'Webhook URL not permitted' })
+      continue
+    }
+
     try {
       await deliverOnce(subscriber, dl.payload)
       await db('webhook_dead_letters').where({ id: dl.id }).update({ replayed_at: new Date().toISOString() })

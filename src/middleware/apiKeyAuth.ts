@@ -23,9 +23,24 @@ export const authenticateApiKey = (requiredScopes: ApiScope[] = []): RequestHand
         return
       }
 
+      if (validation.reason === 'expired') {
+        res.status(401).json({ error: 'API key is expired.' })
+        return
+      }
+
       const reasonLabel = validation.reason === 'revoked' ? 'revoked' : 'invalid'
       res.status(401).json({ error: `API key is ${reasonLabel}.` })
       return
+    }
+
+    // Signal to clients that they are still using the previous secret during
+    // the rotation grace window.
+    if (validation.usingPreviousSecret) {
+      res.setHeader('Deprecation', 'true')
+      res.setHeader(
+        'Warning',
+        '299 - "API key rotated; this secret is in its grace window and will soon be invalid. Update to the new secret."',
+      )
     }
 
     req.apiKeyAuth = validation.context
@@ -34,7 +49,7 @@ export const authenticateApiKey = (requiredScopes: ApiScope[] = []): RequestHand
 }
 
 // Require at least one of the provided scopes when an API key is used.
-export const requireScopes = (...required: ApiScope[]): RequestHandler => {
+export const requireScopes = (...requiredScopes: ApiScope[]): RequestHandler => {
   return (req, res, next) => {
     const context = req.apiKeyAuth
     if (!context) {
@@ -43,7 +58,7 @@ export const requireScopes = (...required: ApiScope[]): RequestHandler => {
       return
     }
 
-    const hasOne = required.some((scope) => context.scopes.includes(scope))
+    const hasOne = requiredScopes.some((scope) => context.scopes.includes(scope))
     if (!hasOne) {
       res.status(403).json({ error: 'API key does not have the required scopes.' })
       return

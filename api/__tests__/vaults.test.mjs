@@ -57,15 +57,16 @@ test('POST /vaults - validation error on invalid payload (empty, invalid stellar
 
   const badRes2 = await request(app).post('/api/vaults').send(buildVaultPayload({ creator: 'not-stellar' }))
   assert.equal(badRes2.status, 400)
-  assert.ok(badRes2.body.details.some((d) => d.includes('creator must be a Stellar public key')))
+  const msg = (d) => (typeof d === 'string' ? d : d?.message || '');
+  assert.ok(badRes2.body.details.some((d) => msg(d).includes('Stellar public key')))
 
   const badRes3 = await request(app).post('/api/vaults').send(buildVaultPayload({ amount: -10 }))
   assert.equal(badRes3.status, 400)
-  assert.ok(badRes3.body.details.some((d) => d.includes('amount must be a positive number')))
+  assert.ok(badRes3.body.details.some((d) => msg(d).includes('amount must be a positive number')))
 
   const badRes4 = await request(app).post('/api/vaults').send(buildVaultPayload({ milestones: [] }))
   assert.equal(badRes4.status, 400)
-  assert.ok(badRes4.body.details.some((d) => d.includes('between 1 and 20 milestones are required')))
+  assert.ok(badRes4.body.details.some((d) => msg(d).includes('between 1 and 20 milestones are required')))
 })
 
 test('GET /vaults - lists vaults and supports creator & status filters', async () => {

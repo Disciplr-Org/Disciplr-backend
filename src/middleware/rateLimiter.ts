@@ -148,6 +148,50 @@ export const apiKeyRateLimiter = createRateLimiter({
   prefix: 'apikey:',
 })
 
+/**
+ * Per-account login rate limiter (keyed by normalised email).
+ * Throttles login attempts to a specific account regardless of originating IP.
+ * Helps prevent distributed credential stuffing attacks against a single account.
+ */
+export const createAccountLoginLimiter = () => {
+  const redisClient = getRedisClient()
+  const LOGIN_WINDOW_MS = 15 * 60 * 1000 // 15 minutes
+  const LOGIN_MAX = 5 // Max attempts per account per window
+
+  return rateLimit({
+    windowMs: LOGIN_WINDOW_MS,
+    max: LOGIN_MAX,
+    store: redisClient ? new RedisStore(redisClient, 'rl:login-account:') : undefined,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    skipSuccessfulRequests: true, // Only failed login attempts count
+    handler: (req, res, _next, options) => {
+      logRateLimitBreached(req)
+      const resetTime = (req as Request & { rateLimit?: RateLimitInfo }).rateLimit?.resetTime
+      if (resetTime) {
+        const resetMs = resetTime.getTime() - Date.now()
+        const retryAfterSeconds = Math.max(0, Math.ceil(resetMs / 1000))
+        res.setHeader('Retry-After', retryAfterSeconds.toString())
+      }
+      res.status(429).json({
+        error: 'Too many login attempts for this account. Please try again later.',
+        retryAfter: resetTime ? Math.ceil((resetTime.getTime() - Date.now()) / 1000) : undefined,
+      })
+    },
+    keyGenerator: (req) => {
+      // Normalise email: trim and lower-case to prevent bypass via casing
+      const email = req.body?.email
+      if (typeof email === 'string') {
+        return `account:${email.trim().toLowerCase()}`
+      }
+      // Fallback: if no email, use IP so the limiter still functions
+      return `account-unknown:${normalizeIp(req)}`
+    },
+  })
+}
+
+export const accountLoginLimiter = createAccountLoginLimiter()
+
 let orgRead: any
 export const orgReadRateLimiter = (req: Request, res: Response, next: NextFunction) => {
   if (!orgRead) {

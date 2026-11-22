@@ -2,8 +2,8 @@
 exports.config = { transaction: false }
 
 const constraints = [
-  ['ck_activity_log_type', "CHECK (type IN ('create', 'validate', 'release', 'redirect'))"],
-  ['ck_activity_log_status', "CHECK (status IN ('pending', 'confirmed', 'failed'))"],
+  ['ck_activity_log_type', "CHECK (type IN ('create', 'validate', 'release', 'redirect', 'stake', 'evidence'))"],
+  ['ck_activity_log_status', "CHECK (status IN ('pending', 'confirmed', 'failed', 'simulated'))"],
   ['ck_activity_log_amount_nonnegative', 'CHECK (amount >= 0)'],
   ['fk_activity_log_vault', 'FOREIGN KEY (vault_id) REFERENCES vaults(id)'],
 ]
@@ -12,8 +12,8 @@ async function preflight(knex) {
   const { rows } = await knex.raw(`
     SELECT
       count(*) FILTER (WHERE v.id IS NULL)::int AS orphans,
-      count(*) FILTER (WHERE a.type NOT IN ('create', 'validate', 'release', 'redirect'))::int AS invalid_type,
-      count(*) FILTER (WHERE a.status NOT IN ('pending', 'confirmed', 'failed'))::int AS invalid_status,
+      count(*) FILTER (WHERE a.type NOT IN ('create', 'validate', 'release', 'redirect', 'stake', 'evidence'))::int AS invalid_type,
+      count(*) FILTER (WHERE a.status NOT IN ('pending', 'confirmed', 'failed', 'simulated'))::int AS invalid_status,
       count(*) FILTER (WHERE a.amount < 0)::int AS negative_amount
     FROM activity_log a LEFT JOIN vaults v ON v.id = a.vault_id`)
   const violations = Object.entries(rows[0]).filter(([, count]) => count > 0)

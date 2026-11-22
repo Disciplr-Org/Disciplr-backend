@@ -87,7 +87,7 @@ test('Vault expiry suite', async (t) => {
     assert.equal(updated.milestones[1].status, 'failed')
 
     // Verify activity has exactly one redirect activity with memo 'Deadline passed'
-    const acts = await store.listActivity({ vaultId: vault.id })
+    const acts = (await store.listActivity({ vaultId: vault.id })).items
     const redirectActs = acts.filter((a) => a.type === 'redirect' && a.memo === 'Deadline passed')
     assert.equal(redirectActs.length, 1)
 
@@ -97,7 +97,7 @@ test('Vault expiry suite', async (t) => {
       .set('Authorization', 'Bearer correct-secret-value-1234')
     assert.equal(resCron2.status, 200)
 
-    const actsAfter = await store.listActivity({ vaultId: vault.id })
+    const actsAfter = (await store.listActivity({ vaultId: vault.id })).items
     const redirectActsAfter = actsAfter.filter((a) => a.type === 'redirect' && a.memo === 'Deadline passed')
     assert.equal(redirectActsAfter.length, 1)
   })
@@ -185,7 +185,7 @@ test('Vault expiry suite', async (t) => {
 
     const v = await store.getVault(vId)
     assert.equal(v.status, 'failed')
-    const acts = await store.listActivity({ vaultId: vId })
+    const acts = (await store.listActivity({ vaultId: vId })).items
     const redirects = acts.filter((a) => a.type === 'redirect' && a.memo === 'Deadline passed')
     assert.equal(redirects.length, 1)
   })
