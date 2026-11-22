@@ -955,6 +955,562 @@ registry.registerPath({
 })
 
 
+// ==================== ORG VAULTS & SAVED SEARCHES ====================
+// Routes from src/routes/orgVaults.ts, mounted at /api/organizations.
+
+const PagePagination = registry.register(
+  'PagePagination',
+  z.object({
+    page: z.number().int().openapi({ example: 1 }),
+    pageSize: z.number().int().openapi({ example: 20 }),
+    total: z.number().int().openapi({ example: 42 }),
+    totalPages: z.number().int().openapi({ example: 3 }),
+    hasNext: z.boolean(),
+    hasPrev: z.boolean(),
+  }),
+)
+
+const OrgErrorResponse = z.object({
+  error: z.string().openapi({ example: 'Internal server error' }),
+})
+
+const ORG_ID_PARAM = {
+  name: 'orgId',
+  in: 'path' as const,
+  required: true,
+  schema: { type: 'string' as const, example: 'org_123' },
+}
+
+const SEARCH_ID_PARAM = {
+  name: 'searchId',
+  in: 'path' as const,
+  required: true,
+  schema: { type: 'string' as const },
+}
+
+const PAGE_PARAM = {
+  name: 'page',
+  in: 'query' as const,
+  schema: { type: 'integer' as const, minimum: 1, default: 1 },
+}
+
+const PAGE_SIZE_PARAM = {
+  name: 'pageSize',
+  in: 'query' as const,
+  schema: { type: 'integer' as const, minimum: 1, maximum: 100, default: 20 },
+}
+
+const CURSOR_LIMIT_PARAM = {
+  name: 'limit',
+  in: 'query' as const,
+  schema: { type: 'integer' as const, minimum: 1, maximum: 100, default: 20 },
+}
+
+const OrgVaultStatus = z.enum([
+  'draft',
+  'active',
+  'completed',
+  'failed',
+  'cancelled',
+])
+
+const OrgVaultSchema = registry.register(
+  'OrgVault',
+  z.object({
+    id: z.string(),
+    creator: z.string(),
+    verifier: z.string(),
+    amount: z.string().openapi({ example: '100.0000000' }),
+    status: OrgVaultStatus,
+    orgId: z.string(),
+    startTimestamp: z.string().datetime(),
+    endTimestamp: z.string().datetime(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  }),
+)
+
+const SavedSearchQueryDefinitionSchema = registry.register(
+  'SavedSearchQueryDefinition',
+  z.object({
+    q: z.string().max(200).optional().openapi({ description: 'Free-text search term (sanitized)' }),
+    status: OrgVaultStatus.optional(),
+    verifier: z.string().max(256).optional(),
+    amount_min: z.string().regex(/^\d+(\.\d+)?$/).optional().openapi({ description: 'Inclusive lower amount bound' }),
+    amount_max: z.string().regex(/^\d+(\.\d+)?$/).optional().openapi({ description: 'Inclusive upper amount bound' }),
+    date_from: z.string().optional().openapi({ description: 'ISO 8601 date or timestamp (inclusive lower created_at bound)' }),
+    date_to: z.string().optional().openapi({ description: 'ISO 8601 date or timestamp (inclusive upper created_at bound)' }),
+    sort_by: z.enum(['created_at', 'amount', 'end_date', 'status']).optional(),
+    sort_order: z.enum(['asc', 'desc']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+)
+
+const OrgVaultSearchSchema = registry.register(
+  'OrgVaultSearch',
+  z.object({
+    id: z.string(),
+    org_id: z.string(),
+    name: z.string().openapi({ example: 'High-value active vaults' }),
+    query_definition: SavedSearchQueryDefinitionSchema,
+    alerts_enabled: z.boolean(),
+    alert_recipient: z.string().nullable(),
+    alert_frequency_ms: z.number().int().openapi({ example: 3_600_000 }),
+    last_evaluated_at: z.string().datetime().nullable(),
+    last_result_hash: z.string().nullable(),
+    created_by: z.string(),
+    created_at: z.string().datetime(),
+    updated_at: z.string().datetime(),
+  }),
+)
+
+const OrgVaultSearchResultSchema = registry.register(
+  'OrgVaultSearchResult',
+  z.object({
+    id: z.string(),
+    creator: z.string(),
+    verifier: z.string(),
+    amount: z.string(),
+    status: OrgVaultStatus,
+    organization_id: z.string(),
+    start_date: z.string().datetime(),
+    end_date: z.string().datetime(),
+    created_at: z.string().datetime(),
+    updated_at: z.string().datetime(),
+  }),
+)
+
+// GET /api/organizations/:orgId/vaults
+registry.registerPath({
+  method: 'get',
+  path: '/api/organizations/{orgId}/vaults',
+  summary: 'List vaults belonging to an organization',
+  description:
+    'Offset-paginated listing of the org\'s non-deleted vaults, with optional status/creator filters and sorting.',
+  tags: ['Org Vaults'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    PAGE_PARAM,
+    PAGE_SIZE_PARAM,
+    {
+      name: 'sortBy',
+      in: 'query',
+      schema: { type: 'string', enum: ['createdAt', 'amount', 'endTimestamp', 'status'] },
+    },
+    { name: 'sortOrder', in: 'query', schema: { type: 'string', enum: ['asc', 'desc'] } },
+    { name: 'status', in: 'query', schema: { type: 'string', enum: ['draft', 'active', 'completed', 'failed', 'cancelled'] } },
+    { name: 'creator', in: 'query', schema: { type: 'string' } },
+  ],
+  responses: {
+    200: {
+      description: 'Paginated org vaults',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.array(OrgVaultSchema),
+            pagination: PagePagination,
+          }),
+        },
+      },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Caller is not a member of the organization', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// POST /api/organizations/:orgId/vault-searches
+registry.registerPath({
+  method: 'post',
+  path: '/api/organizations/{orgId}/vault-searches',
+  summary: 'Create a saved vault search',
+  description:
+    'Creates a saved search for the org. Requires owner/admin. Each org may keep at most 20 saved searches; when alerts are enabled the recipient is required and the frequency must be at least one hour.',
+  tags: ['Org Vaults'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+  ],
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({
+            name: z.string().min(1).max(255),
+            query_definition: SavedSearchQueryDefinitionSchema,
+            alerts_enabled: z.boolean().optional().default(false),
+            alert_recipient: z.string().optional().openapi({ description: 'Required when alerts_enabled is true' }),
+            alert_frequency_ms: z
+              .number()
+              .int()
+              .min(3_600_000)
+              .optional()
+              .openapi({ description: 'Minimum 3600000 (1 hour)', example: 3_600_000 }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: 'Saved search created',
+      content: {
+        'application/json': {
+          schema: z.object({ search: OrgVaultSearchSchema }),
+        },
+      },
+    },
+    400: { description: 'Invalid name, query_definition or alert settings', content: { 'application/json': { schema: OrgErrorResponse } } },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    422: { description: 'Org has reached the saved-search limit (20)', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/organizations/:orgId/vault-searches
+registry.registerPath({
+  method: 'get',
+  path: '/api/organizations/{orgId}/vault-searches',
+  summary: 'List saved vault searches',
+  tags: ['Org Vaults'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Saved searches, newest first',
+      content: {
+        'application/json': {
+          schema: z.object({ searches: z.array(OrgVaultSearchSchema) }),
+        },
+      },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Caller is not a member of the organization', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/organizations/:orgId/vault-searches/:searchId
+registry.registerPath({
+  method: 'get',
+  path: '/api/organizations/{orgId}/vault-searches/{searchId}',
+  summary: 'Get a saved vault search',
+  tags: ['Org Vaults'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    SEARCH_ID_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Saved search',
+      content: {
+        'application/json': {
+          schema: z.object({ search: OrgVaultSearchSchema }),
+        },
+      },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Caller is not a member of the organization', content: { 'application/json': { schema: OrgErrorResponse } } },
+    404: { description: 'Saved search not found', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// DELETE /api/organizations/:orgId/vault-searches/:searchId
+registry.registerPath({
+  method: 'delete',
+  path: '/api/organizations/{orgId}/vault-searches/{searchId}',
+  summary: 'Delete a saved vault search',
+  tags: ['Org Vaults'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    SEARCH_ID_PARAM,
+  ],
+  responses: {
+    204: { description: 'Saved search deleted' },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    404: { description: 'Saved search not found', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/organizations/:orgId/vaults/search
+registry.registerPath({
+  method: 'get',
+  path: '/api/organizations/{orgId}/vaults/search',
+  summary: 'Search an organization\'s vaults',
+  description:
+    'Full-text search (tsvector with an ILIKE fallback) plus structured filters, cursor-paginated on (created_at DESC, id DESC).',
+  tags: ['Org Vaults'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    { name: 'q', in: 'query', schema: { type: 'string', maxLength: 200, description: 'Sanitized free-text term' } },
+    { name: 'status', in: 'query', schema: { type: 'string', enum: ['draft', 'active', 'completed', 'failed', 'cancelled'] } },
+    { name: 'verifier', in: 'query', schema: { type: 'string' } },
+    { name: 'amount_min', in: 'query', schema: { type: 'string' } },
+    { name: 'amount_max', in: 'query', schema: { type: 'string' } },
+    { name: 'date_from', in: 'query', schema: { type: 'string', description: 'ISO 8601 lower bound on created_at' } },
+    { name: 'date_to', in: 'query', schema: { type: 'string', description: 'ISO 8601 upper bound on created_at' } },
+    { name: 'cursor', in: 'query', schema: { type: 'string', description: 'Opaque cursor from a previous page' } },
+    CURSOR_LIMIT_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Matching vaults',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.array(OrgVaultSearchResultSchema),
+            pagination: PaginationCursor,
+          }),
+        },
+      },
+    },
+    400: { description: 'Invalid cursor', content: { 'application/json': { schema: OrgErrorResponse } } },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Caller is not a member of the organization', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// ==================== ORG ANALYTICS ====================
+// Routes from src/routes/orgAnalytics.ts, mounted at /api/orgs
+// (and at the /api/organizations alias).
+
+const OrgAnalyticsSchema = registry.register(
+  'OrgAnalytics',
+  z.object({
+    orgId: z.string(),
+    analytics: z.object({
+      totalCapital: z.string().openapi({ example: '4200.0000000' }),
+      successRate: z.number().openapi({ description: 'completed / (completed + failed)', example: 0.75 }),
+      activeVaults: z.number().int(),
+      completedVaults: z.number().int(),
+      failedVaults: z.number().int(),
+    }),
+    teamPerformance: z.array(
+      z.object({
+        creator: z.string(),
+        vaultCount: z.number().int(),
+        totalAmount: z.string(),
+        successRate: z.number(),
+      }),
+    ),
+    generatedAt: z.string().datetime(),
+  }),
+)
+
+const OrgRiskAnalyticsSchema = registry.register(
+  'OrgRiskAnalytics',
+  z.object({
+    orgId: z.string(),
+    generatedAt: z.string().datetime(),
+    range: z.object({
+      startDate: z.string().datetime(),
+      endDate: z.string().datetime(),
+    }),
+    analytics: z.object({
+      totalVaults: z.number().int(),
+      activeVaults: z.number().int(),
+      resolvedVaults: z.number().int(),
+      slashedVaults: z.number().int(),
+      slashRate: z.number(),
+      capitalAtRisk: z.string(),
+    }),
+  }),
+)
+
+const CohortRetentionSchema = registry.register(
+  'CohortRetention',
+  z.object({
+    cohorts: z.array(
+      z.object({
+        cohort_period: z.string().openapi({ example: '2026-01' }),
+        cohort_size: z.number().int(),
+        retained_count: z.number().int(),
+        retention_rate: z.number().openapi({ description: 'Fraction in [0, 1]' }),
+      }),
+    ),
+    range: z.number().int().nullable(),
+    generatedAt: z.string().datetime(),
+  }),
+)
+
+const TeamRollupEntrySchema = z.object({
+  teamId: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  vaultCount: z.number().int(),
+  totalCapital: z.string(),
+  activeVaults: z.number().int(),
+  completedVaults: z.number().int(),
+  failedVaults: z.number().int(),
+  milestoneCount: z.number().int(),
+  milestonesCompleted: z.number().int(),
+  slashRate: z.number(),
+})
+
+const TeamRollupSchema = registry.register(
+  'TeamRollup',
+  z.object({
+    orgId: z.string(),
+    teams: z.array(TeamRollupEntrySchema),
+    orgTotals: TeamRollupEntrySchema.omit({ teamId: true, name: true, slug: true }).extend({
+      teamCount: z.number().int(),
+    }),
+    generatedAt: z.string().datetime(),
+  }),
+)
+
+const AnalyticsReportSchema = registry.register(
+  'OrgAnalyticsReport',
+  z.object({
+    id: z.string(),
+    orgId: z.string(),
+    snapshotAt: z.string().datetime(),
+    createdAt: z.string().datetime(),
+    sizeBytes: z.number().int(),
+    downloadUrl: z.string().nullable().openapi({ description: 'Signed S3 URL or local download path' }),
+  }),
+)
+
+// GET /api/orgs/:orgId/analytics/risk
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/analytics/risk',
+  summary: 'Get org risk analytics',
+  description: 'Slash rate, capital at risk and vault counts, optionally scoped to a date window.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    { name: 'startDate', in: 'query', schema: { type: 'string', description: 'ISO 8601 window start' } },
+    { name: 'endDate', in: 'query', schema: { type: 'string', description: 'ISO 8601 window end' } },
+  ],
+  responses: {
+    200: {
+      description: 'Risk analytics',
+      content: { 'application/json': { schema: OrgRiskAnalyticsSchema } },
+    },
+    400: { description: 'Invalid date range', content: { 'application/json': { schema: OrgErrorResponse } } },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/orgs/:orgId/analytics
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/analytics',
+  summary: 'Get org vault analytics',
+  description: 'Totals, success rate and a per-creator team-performance breakdown, aggregated from Postgres.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Org analytics',
+      content: { 'application/json': { schema: OrgAnalyticsSchema } },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Failed to generate org analytics', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/orgs/:orgId/cohort-retention
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/cohort-retention',
+  summary: 'Get cohort retention',
+  description:
+    'Retention cohorts read from the vault_cohort_retention materialized view. Note: the view is global, not scoped to the org.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    { name: 'range', in: 'query', schema: { type: 'integer', minimum: 1, description: 'Number of most-recent cohorts to return' } },
+  ],
+  responses: {
+    200: {
+      description: 'Cohort retention data',
+      content: {
+        'application/json': {
+          schema: z.object({
+            success: z.boolean(),
+            orgId: z.string(),
+            data: CohortRetentionSchema,
+          }),
+        },
+      },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/orgs/:orgId/teams/rollup
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/teams/rollup',
+  summary: 'Get org team rollup',
+  description: 'Per-team vault, capital and milestone totals plus org-wide totals.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Team rollup',
+      content: { 'application/json': { schema: TeamRollupSchema } },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Failed to generate team rollup', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/orgs/:orgId/analytics/reports
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/analytics/reports',
+  summary: 'List org analytics reports',
+  description: 'Point-in-time analytics reports, newest first, with a signed download URL when available.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    PAGE_PARAM,
+    PAGE_SIZE_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Paginated analytics reports',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.array(AnalyticsReportSchema),
+            pagination: PagePagination,
+          }),
+        },
+      },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
 export function generateOpenApiSpec() {
   const generator = new OpenApiGeneratorV31(registry.definitions)
 
