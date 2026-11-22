@@ -118,6 +118,239 @@ components:
         - description
         - status
         - createdAt
+    VerifierProfile:
+      type: object
+      properties:
+        userId:
+          type: string
+          description: Stellar public key that identifies the verifier
+          example: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
+        displayName:
+          type:
+            - string
+            - "null"
+        metadata:
+          type:
+            - object
+            - "null"
+          additionalProperties: {}
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - suspended
+            - deactivated
+          description: "Verifier lifecycle status. Allowed transitions:
+            pending→approved|deactivated, approved→suspended|deactivated,
+            suspended→approved|deactivated, deactivated→pending|approved."
+          example: approved
+        createdAt:
+          type: string
+          format: date-time
+        approvedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        suspendedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        deactivatedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+      required:
+        - userId
+        - status
+        - createdAt
+    VerifierStats:
+      type: object
+      properties:
+        totalVerifications:
+          type: integer
+          example: 12
+        approvals:
+          type: integer
+          example: 9
+        rejections:
+          type: integer
+          example: 3
+        disputes:
+          type: integer
+          example: 1
+        approvalRatio:
+          type: number
+          example: 0.75
+        rejectionRatio:
+          type: number
+          example: 0.25
+        disputeRate:
+          type: number
+          example: 0.0833
+      required:
+        - totalVerifications
+        - approvals
+        - rejections
+        - disputes
+        - approvalRatio
+        - rejectionRatio
+        - disputeRate
+    VerifierWithStats:
+      type: object
+      properties:
+        profile:
+          $ref: "#/components/schemas/VerifierProfile"
+        stats:
+          $ref: "#/components/schemas/VerifierStats"
+      required:
+        - profile
+        - stats
+    VerifierPagination:
+      type: object
+      properties:
+        limit:
+          type: integer
+          description: Page size in effect (max 200)
+          example: 50
+        offset:
+          type: integer
+          description: Zero-based offset of the first item
+          example: 0
+        count:
+          type: integer
+          description: Number of items in this page
+          example: 2
+        hasMore:
+          type: boolean
+          description: Whether another page is likely available
+          example: false
+      required:
+        - limit
+        - offset
+        - count
+        - hasMore
+    VerifierListResponse:
+      type: object
+      properties:
+        verifiers:
+          type: array
+          items:
+            $ref: "#/components/schemas/VerifierWithStats"
+        pagination:
+          $ref: "#/components/schemas/VerifierPagination"
+      required:
+        - verifiers
+        - pagination
+    VerifierCreateResponse:
+      type: object
+      properties:
+        profile:
+          $ref: "#/components/schemas/VerifierProfile"
+        stats:
+          $ref: "#/components/schemas/VerifierStats"
+        auditLogId:
+          type: string
+          description: Audit log entry id when one was written
+      required:
+        - profile
+        - stats
+    VerifierMutationResponse:
+      type: object
+      properties:
+        profile:
+          $ref: "#/components/schemas/VerifierProfile"
+        stats:
+          $ref: "#/components/schemas/VerifierStats"
+        auditLogId:
+          type:
+            - string
+            - "null"
+          description: Audit log entry id, or null when the request was a no-op
+        changedFields:
+          type: array
+          items:
+            type: string
+          description: Profile fields changed by this request
+          example:
+            - status
+      required:
+        - profile
+        - stats
+        - auditLogId
+        - changedFields
+    CreateVerifierRequest:
+      type: object
+      properties:
+        userId:
+          type: string
+          minLength: 1
+          description: Stellar public key of the verifier to create
+          example: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
+        displayName:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: {}
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - suspended
+            - deactivated
+          description: "Verifier lifecycle status. Allowed transitions:
+            pending→approved|deactivated, approved→suspended|deactivated,
+            suspended→approved|deactivated, deactivated→pending|approved."
+          example: approved
+        reason:
+          type: string
+          description: Reason recorded on the audit log entry
+      required:
+        - userId
+    UpdateVerifierRequest:
+      type: object
+      properties:
+        displayName:
+          type:
+            - string
+            - "null"
+        metadata:
+          type:
+            - object
+            - "null"
+          additionalProperties: {}
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - suspended
+            - deactivated
+          description: "Verifier lifecycle status. Allowed transitions:
+            pending→approved|deactivated, approved→suspended|deactivated,
+            suspended→approved|deactivated, deactivated→pending|approved."
+          example: approved
+        reason:
+          type: string
+          description: Reason recorded on the audit log entry
+    VerifierReasonRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: Reason recorded on the audit log entry
+    VerifierErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: verifier not found
+      required:
+        - error
     ExportRequest:
       type: object
       properties:
@@ -202,183 +435,464 @@ components:
         - status
         - attempts
         - maxAttempts
-    Notification:
+    PagePagination:
+      type: object
+      properties:
+        page:
+          type: integer
+          example: 1
+        pageSize:
+          type: integer
+          example: 20
+        total:
+          type: integer
+          example: 42
+        totalPages:
+          type: integer
+          example: 3
+        hasNext:
+          type: boolean
+        hasPrev:
+          type: boolean
+      required:
+        - page
+        - pageSize
+        - total
+        - totalPages
+        - hasNext
+        - hasPrev
+    OrgVault:
       type: object
       properties:
         id:
           type: string
-          format: uuid
-          example: 123e4567-e89b-12d3-a456-426614174000
-        user_id:
+        creator:
           type: string
-          example: user_123
-        type:
+        verifier:
           type: string
-          example: vault_failure
-        title:
+        amount:
           type: string
-          example: Vault deadline missed
-        message:
+          example: "100.0000000"
+        status:
           type: string
-          example: The deadline for vault 123 has expired.
-        data:
-          type:
-            - object
-            - "null"
-          additionalProperties: {}
-          example:
-            vaultId: "123"
-        idempotency_key:
-          type:
-            - string
-            - "null"
-          example: key_123
-        read_at:
-          type:
-            - string
-            - "null"
-          format: date-time
-          example: 2026-06-02T10:00:00Z
-        archived_at:
-          type:
-            - string
-            - "null"
-          format: date-time
-          example: null
-        created_at:
+          enum:
+            - draft
+            - active
+            - completed
+            - failed
+            - cancelled
+        orgId:
+          type: string
+        startTimestamp:
           type: string
           format: date-time
-          example: 2026-06-02T09:00:00Z
+        endTimestamp:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
       required:
         - id
-        - user_id
-        - type
-        - title
-        - message
-        - data
-        - idempotency_key
-        - read_at
-        - archived_at
-        - created_at
-    NotificationListResponse:
+        - creator
+        - verifier
+        - amount
+        - status
+        - orgId
+        - startTimestamp
+        - endTimestamp
+        - createdAt
+        - updatedAt
+    SavedSearchQueryDefinition:
       type: object
       properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/Notification"
-        pagination:
-          $ref: "#/components/schemas/PaginationCursor"
-      required:
-        - data
-        - pagination
-    UserNotificationPreferences:
+        q:
+          type: string
+          maxLength: 200
+          description: Free-text search term (sanitized)
+        status:
+          type: string
+          enum:
+            - draft
+            - active
+            - completed
+            - failed
+            - cancelled
+        verifier:
+          type: string
+          maxLength: 256
+        amount_min:
+          type: string
+          pattern: ^\d+(\.\d+)?$
+          description: Inclusive lower amount bound
+        amount_max:
+          type: string
+          pattern: ^\d+(\.\d+)?$
+          description: Inclusive upper amount bound
+        date_from:
+          type: string
+          description: ISO 8601 date or timestamp (inclusive lower created_at bound)
+        date_to:
+          type: string
+          description: ISO 8601 date or timestamp (inclusive upper created_at bound)
+        sort_by:
+          type: string
+          enum:
+            - created_at
+            - amount
+            - end_date
+            - status
+        sort_order:
+          type: string
+          enum:
+            - asc
+            - desc
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+    OrgVaultSearch:
       type: object
       properties:
         id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+          example: High-value active vaults
+        query_definition:
+          $ref: "#/components/schemas/SavedSearchQueryDefinition"
+        alerts_enabled:
+          type: boolean
+        alert_recipient:
           type:
             - string
             - "null"
-          example: pref_123
-        user_id:
+        alert_frequency_ms:
+          type: integer
+          example: 3600000
+        last_evaluated_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        last_result_hash:
+          type:
+            - string
+            - "null"
+        created_by:
           type: string
-          example: user_123
-        timezone:
-          type: string
-          description: IANA timezone identifier
-          example: UTC
-        quiet_hours_enabled:
-          type: boolean
-          description: Whether quiet hours are enabled
-          example: false
-        quiet_hours_start:
-          type: string
-          description: Quiet hours start in HH:MM format
-          example: 22:00
-        quiet_hours_end:
-          type: string
-          description: Quiet hours end in HH:MM format
-          example: 08:00
         created_at:
           type: string
           format: date-time
-          example: 2026-06-02T10:00:00Z
         updated_at:
           type: string
           format: date-time
-          example: 2026-06-02T10:00:00Z
       required:
         - id
-        - user_id
-        - timezone
-        - quiet_hours_enabled
-        - quiet_hours_start
-        - quiet_hours_end
+        - org_id
+        - name
+        - query_definition
+        - alerts_enabled
+        - alert_recipient
+        - alert_frequency_ms
+        - last_evaluated_at
+        - last_result_hash
+        - created_by
         - created_at
         - updated_at
-    UpdateUserNotificationPreferences:
+    OrgVaultSearchResult:
       type: object
       properties:
-        timezone:
+        id:
           type: string
-          description: Valid IANA timezone identifier
-          example: America/New_York
-        quiet_hours_enabled:
-          type: boolean
-          description: Whether quiet hours are enabled
-          example: true
-        quiet_hours_start:
+        creator:
           type: string
-          description: Quiet hours start in HH:MM format
-          example: 22:00
-        quiet_hours_end:
+        verifier:
           type: string
-          description: Quiet hours end in HH:MM format
-          example: 08:00
-    OrgNotificationPreferences:
-      type: object
-      properties:
-        organizationId:
+        amount:
           type: string
-          example: org_123
-        categories:
-          type: object
-          additionalProperties:
-            type: boolean
-          example:
-            vault_failure: true
-            milestone_reminder: true
-            milestone_reminder_deferred: true
-            milestone_reminder_processed: true
-            milestone_digest: true
-        channels:
-          type: object
-          additionalProperties:
-            type: boolean
-          example:
-            email: true
+        status:
+          type: string
+          enum:
+            - draft
+            - active
+            - completed
+            - failed
+            - cancelled
+        organization_id:
+          type: string
+        start_date:
+          type: string
+          format: date-time
+        end_date:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
       required:
-        - organizationId
-        - categories
-        - channels
-    UpdateOrgNotificationPreferences:
+        - id
+        - creator
+        - verifier
+        - amount
+        - status
+        - organization_id
+        - start_date
+        - end_date
+        - created_at
+        - updated_at
+    OrgAnalytics:
       type: object
       properties:
-        categories:
+        orgId:
+          type: string
+        analytics:
           type: object
-          additionalProperties:
-            type: boolean
-          description: Map of notification category to enabled flag
-          example:
-            vault_failure: true
-            milestone_reminder: false
-        channels:
+          properties:
+            totalCapital:
+              type: string
+              example: "4200.0000000"
+            successRate:
+              type: number
+              description: completed / (completed + failed)
+              example: 0.75
+            activeVaults:
+              type: integer
+            completedVaults:
+              type: integer
+            failedVaults:
+              type: integer
+          required:
+            - totalCapital
+            - successRate
+            - activeVaults
+            - completedVaults
+            - failedVaults
+        teamPerformance:
+          type: array
+          items:
+            type: object
+            properties:
+              creator:
+                type: string
+              vaultCount:
+                type: integer
+              totalAmount:
+                type: string
+              successRate:
+                type: number
+            required:
+              - creator
+              - vaultCount
+              - totalAmount
+              - successRate
+        generatedAt:
+          type: string
+          format: date-time
+      required:
+        - orgId
+        - analytics
+        - teamPerformance
+        - generatedAt
+    OrgRiskAnalytics:
+      type: object
+      properties:
+        orgId:
+          type: string
+        generatedAt:
+          type: string
+          format: date-time
+        range:
           type: object
-          additionalProperties:
-            type: boolean
-          description: Map of delivery channel to enabled flag
-          example:
-            email: true
+          properties:
+            startDate:
+              type: string
+              format: date-time
+            endDate:
+              type: string
+              format: date-time
+          required:
+            - startDate
+            - endDate
+        analytics:
+          type: object
+          properties:
+            totalVaults:
+              type: integer
+            activeVaults:
+              type: integer
+            resolvedVaults:
+              type: integer
+            slashedVaults:
+              type: integer
+            slashRate:
+              type: number
+            capitalAtRisk:
+              type: string
+          required:
+            - totalVaults
+            - activeVaults
+            - resolvedVaults
+            - slashedVaults
+            - slashRate
+            - capitalAtRisk
+      required:
+        - orgId
+        - generatedAt
+        - range
+        - analytics
+    CohortRetention:
+      type: object
+      properties:
+        cohorts:
+          type: array
+          items:
+            type: object
+            properties:
+              cohort_period:
+                type: string
+                example: 2026-01
+              cohort_size:
+                type: integer
+              retained_count:
+                type: integer
+              retention_rate:
+                type: number
+                description: Fraction in [0, 1]
+            required:
+              - cohort_period
+              - cohort_size
+              - retained_count
+              - retention_rate
+        range:
+          type:
+            - integer
+            - "null"
+        generatedAt:
+          type: string
+          format: date-time
+      required:
+        - cohorts
+        - range
+        - generatedAt
+    TeamRollup:
+      type: object
+      properties:
+        orgId:
+          type: string
+        teams:
+          type: array
+          items:
+            type: object
+            properties:
+              teamId:
+                type: string
+              name:
+                type: string
+              slug:
+                type: string
+              vaultCount:
+                type: integer
+              totalCapital:
+                type: string
+              activeVaults:
+                type: integer
+              completedVaults:
+                type: integer
+              failedVaults:
+                type: integer
+              milestoneCount:
+                type: integer
+              milestonesCompleted:
+                type: integer
+              slashRate:
+                type: number
+            required:
+              - teamId
+              - name
+              - slug
+              - vaultCount
+              - totalCapital
+              - activeVaults
+              - completedVaults
+              - failedVaults
+              - milestoneCount
+              - milestonesCompleted
+              - slashRate
+        orgTotals:
+          type: object
+          properties:
+            vaultCount:
+              type: integer
+            totalCapital:
+              type: string
+            activeVaults:
+              type: integer
+            completedVaults:
+              type: integer
+            failedVaults:
+              type: integer
+            milestoneCount:
+              type: integer
+            milestonesCompleted:
+              type: integer
+            slashRate:
+              type: number
+            teamCount:
+              type: integer
+          required:
+            - vaultCount
+            - totalCapital
+            - activeVaults
+            - completedVaults
+            - failedVaults
+            - milestoneCount
+            - milestonesCompleted
+            - slashRate
+            - teamCount
+        generatedAt:
+          type: string
+          format: date-time
+      required:
+        - orgId
+        - teams
+        - orgTotals
+        - generatedAt
+    OrgAnalyticsReport:
+      type: object
+      properties:
+        id:
+          type: string
+        orgId:
+          type: string
+        snapshotAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        sizeBytes:
+          type: integer
+        downloadUrl:
+          type:
+            - string
+            - "null"
+          description: Signed S3 URL or local download path
+      required:
+        - id
+        - orgId
+        - snapshotAt
+        - createdAt
+        - sizeBytes
+        - downloadUrl
   parameters: {}
 paths:
   /api/health:
@@ -1295,6 +1809,653 @@ paths:
           description: Vault not found
         "409":
           description: Vault already cancelled or not cancellable
+  /api/admin/verifiers:
+    get:
+      operationId: adminListVerifiers
+      summary: List verifier profiles with aggregate stats
+      description: Returns verifier profiles ordered by the underlying table order.
+        `limit` is clamped to 200 and defaults to 50; invalid values fall back
+        to the defaults.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Paginated verifier profiles with aggregate verification stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierListResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/ErrorEnvelope"
+                  - $ref: "#/components/schemas/VerifierErrorResponse"
+    post:
+      operationId: adminCreateVerifier
+      summary: Create a verifier profile
+      description: "`userId` must be a valid Stellar public key. When `status` is
+        omitted the profile is created as `pending`. A unique-constraint
+        violation returns 409."
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVerifierRequest"
+      responses:
+        "201":
+          description: Verifier profile created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierCreateResponse"
+        "400":
+          description: Missing userId, invalid Stellar public key, non-string displayName,
+            non-object metadata or invalid status
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/ErrorEnvelope"
+                  - $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Verifier already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}:
+    get:
+      operationId: adminGetVerifier
+      summary: Get a verifier profile and its stats
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      responses:
+        "200":
+          description: Verifier profile and aggregate stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierWithStats"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/ErrorEnvelope"
+                  - $ref: "#/components/schemas/VerifierErrorResponse"
+    patch:
+      operationId: adminUpdateVerifier
+      summary: Update a verifier profile
+      description: Only the provided fields are updated. `displayName` and `metadata`
+        accept `null` to clear them. Status changes follow the verifier
+        transition matrix; an illegal transition returns 409.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateVerifierRequest"
+      responses:
+        "200":
+          description: Updated verifier profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Non-string displayName, non-object metadata or invalid status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+    delete:
+      operationId: adminDeleteVerifier
+      summary: Delete a verifier profile
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "204":
+          description: Verifier profile deleted; no content returned
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/approve:
+    post:
+      operationId: adminApproveVerifier
+      summary: Approve a verifier
+      description: Creates the verifier profile as `approved` when it does not exist
+        yet, otherwise transitions the existing profile. A second in-flight
+        transition for the same verifier returns 429.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier approved
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "429":
+          description: A concurrent transition for this verifier is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/suspend:
+    post:
+      operationId: adminSuspendVerifier
+      summary: Suspend a verifier
+      description: Creates the verifier profile as `suspended` when it does not exist
+        yet, otherwise transitions the existing profile. A second in-flight
+        transition for the same verifier returns 429.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier suspended
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "429":
+          description: A concurrent transition for this verifier is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/reinstate:
+    post:
+      operationId: adminReinstateVerifier
+      summary: Reinstate a suspended or deactivated verifier
+      description: Restores a previously approved verifier to `approved`, otherwise to
+        `pending`. Reinstating an already active (`approved`/`pending`) verifier
+        is a no-op returning an empty `changedFields` and a `null` `auditLogId`.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier reinstated (or already active)
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/deactivate:
+    post:
+      operationId: adminDeactivateVerifier
+      summary: Deactivate a verifier
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier deactivated
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/reactivate:
+    post:
+      operationId: adminReactivateVerifier
+      summary: Reactivate a deactivated verifier
+      description: Transitions a deactivated verifier back to `pending`, pending
+        re-approval.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier reactivated as pending
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
   /api/exports/me:
     post:
       summary: Enqueue a personal data export job
@@ -1503,212 +2664,451 @@ paths:
                       - warnings
                 required:
                   - data
-  /api/notifications:
+  /api/organizations/{orgId}/vaults:
     get:
-      operationId: listNotifications
-      summary: List user notifications
+      summary: List vaults belonging to an organization
+      description: Offset-paginated listing of the org's non-deleted vaults, with
+        optional status/creator filters and sorting.
       tags:
-        - Notifications
+        - Org Vaults
       security:
         - bearerAuth: []
       parameters:
-        - schema:
-            type: string
-            enum:
-              - all
-              - read
-              - unread
-            description: Filter by read status
-            example: all
-          required: false
-          description: Filter by read status
-          name: status
-          in: query
-        - schema:
-            type: string
-            description: Include archived notifications (true/1)
-            example: "false"
-          required: false
-          description: Include archived notifications (true/1)
-          name: includeArchived
-          in: query
-        - schema:
-            type:
-              - number
-              - "null"
-            description: Number of notifications to return
-            example: 20
-          required: false
-          description: Number of notifications to return
-          name: limit
-          in: query
-        - schema:
-            type: string
-            description: Pagination cursor
-            example: cur_abc123
-          required: false
-          description: Pagination cursor
-          name: cursor
-          in: query
-      responses:
-        "200":
-          description: List of notifications with pagination cursor
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/NotificationListResponse"
-        "400":
-          description: Bad request (invalid status or cursor)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/notifications/{id}/read:
-    patch:
-      operationId: markNotificationAsRead
-      summary: Mark a notification as read
-      tags:
-        - Notifications
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: id
+        - name: orgId
           in: path
           required: true
           schema:
             type: string
-          description: Notification ID
+            example: org_123
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum:
+              - createdAt
+              - amount
+              - endTimestamp
+              - status
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - draft
+              - active
+              - completed
+              - failed
+              - cancelled
+        - name: creator
+          in: query
+          schema:
+            type: string
       responses:
         "200":
-          description: Notification marked as read
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Notification"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "404":
-          description: Notification not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/notifications/read-all:
-    post:
-      operationId: markAllNotificationsAsRead
-      summary: Mark all notifications as read
-      tags:
-        - Notifications
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: All notifications marked as read
+          description: Paginated org vaults
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  updated:
-                    type: number
-                    description: Number of notifications marked as read
-                    example: 5
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgVault"
+                  pagination:
+                    $ref: "#/components/schemas/PagePagination"
                 required:
-                  - updated
+                  - data
+                  - pagination
         "401":
-          description: Unauthorized
+          description: Authentication required
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/users/me/notification-preferences:
-    get:
-      operationId: getUserNotificationPreferences
-      summary: Get user notification preferences
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Caller is not a member of the organization
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/organizations/{orgId}/vault-searches:
+    post:
+      summary: Create a saved vault search
+      description: Creates a saved search for the org. Requires owner/admin. Each org
+        may keep at most 20 saved searches; when alerts are enabled the
+        recipient is required and the frequency must be at least one hour.
       tags:
-        - Notifications
+        - Org Vaults
       security:
         - bearerAuth: []
-      responses:
-        "200":
-          description: Current user notification preferences
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/UserNotificationPreferences"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-    put:
-      operationId: updateUserNotificationPreferences
-      summary: Update user notification preferences
-      tags:
-        - Notifications
-      security:
-        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
       requestBody:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/UpdateUserNotificationPreferences"
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                query_definition:
+                  $ref: "#/components/schemas/SavedSearchQueryDefinition"
+                alerts_enabled:
+                  type: boolean
+                  default: false
+                alert_recipient:
+                  type: string
+                  description: Required when alerts_enabled is true
+                alert_frequency_ms:
+                  type: integer
+                  minimum: 3600000
+                  description: Minimum 3600000 (1 hour)
+                  example: 3600000
+              required:
+                - name
+                - query_definition
+      responses:
+        "201":
+          description: Saved search created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  search:
+                    $ref: "#/components/schemas/OrgVaultSearch"
+                required:
+                  - search
+        "400":
+          description: Invalid name, query_definition or alert settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "422":
+          description: Org has reached the saved-search limit (20)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+    get:
+      summary: List saved vault searches
+      tags:
+        - Org Vaults
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
       responses:
         "200":
-          description: Updated user notification preferences
+          description: Saved searches, newest first
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/UserNotificationPreferences"
-        "400":
-          description: Bad request (invalid timezone or time format)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
+                type: object
+                properties:
+                  searches:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgVaultSearch"
+                required:
+                  - searches
         "401":
-          description: Unauthorized
+          description: Authentication required
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Caller is not a member of the organization
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/organizations/{orgId}/vault-searches/{searchId}:
+    get:
+      summary: Get a saved vault search
+      tags:
+        - Org Vaults
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: searchId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Saved search
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  search:
+                    $ref: "#/components/schemas/OrgVaultSearch"
+                required:
+                  - search
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Caller is not a member of the organization
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "404":
+          description: Saved search not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
     delete:
-      operationId: resetUserNotificationPreferences
-      summary: Reset user notification preferences to defaults
+      summary: Delete a saved vault search
       tags:
-        - Notifications
+        - Org Vaults
       security:
         - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: searchId
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
-        "200":
-          description: Default user notification preferences
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/UserNotificationPreferences"
+        "204":
+          description: Saved search deleted
         "401":
-          description: Unauthorized
+          description: Authentication required
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/orgs/{orgId}/notification-preferences:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "404":
+          description: Saved search not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/organizations/{orgId}/vaults/search:
     get:
-      operationId: getOrgNotificationPreferences
-      summary: Get organization notification preferences
+      summary: Search an organization's vaults
+      description: Full-text search (tsvector with an ILIKE fallback) plus structured
+        filters, cursor-paginated on (created_at DESC, id DESC).
       tags:
-        - Notifications
+        - Org Vaults
       security:
         - bearerAuth: []
       parameters:
@@ -1717,68 +3117,440 @@ paths:
           required: true
           schema:
             type: string
-          description: Organization ID
-      responses:
-        "200":
-          description: Organization notification preferences
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OrgNotificationPreferences"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (member access required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-    put:
-      operationId: updateOrgNotificationPreferences
-      summary: Update organization notification preferences
-      tags:
-        - Notifications
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: orgId
-          in: path
-          required: true
+            example: org_123
+        - name: q
+          in: query
           schema:
             type: string
-          description: Organization ID
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UpdateOrgNotificationPreferences"
+            maxLength: 200
+            description: Sanitized free-text term
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - draft
+              - active
+              - completed
+              - failed
+              - cancelled
+        - name: verifier
+          in: query
+          schema:
+            type: string
+        - name: amount_min
+          in: query
+          schema:
+            type: string
+        - name: amount_max
+          in: query
+          schema:
+            type: string
+        - name: date_from
+          in: query
+          schema:
+            type: string
+            description: ISO 8601 lower bound on created_at
+        - name: date_to
+          in: query
+          schema:
+            type: string
+            description: ISO 8601 upper bound on created_at
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            description: Opaque cursor from a previous page
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
       responses:
         "200":
-          description: Updated organization notification preferences
+          description: Matching vaults
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/OrgNotificationPreferences"
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgVaultSearchResult"
+                  pagination:
+                    $ref: "#/components/schemas/PaginationCursor"
+                required:
+                  - data
+                  - pagination
         "400":
-          description: Bad request (invalid category or channel)
+          description: Invalid cursor
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
         "401":
-          description: Unauthorized
+          description: Authentication required
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
         "403":
-          description: Forbidden (owner or admin required)
+          description: Caller is not a member of the organization
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/analytics/risk:
+    get:
+      summary: Get org risk analytics
+      description: Slash rate, capital at risk and vault counts, optionally scoped to
+        a date window.
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            description: ISO 8601 window start
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            description: ISO 8601 window end
+      responses:
+        "200":
+          description: Risk analytics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgRiskAnalytics"
+        "400":
+          description: Invalid date range
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/analytics:
+    get:
+      summary: Get org vault analytics
+      description: Totals, success rate and a per-creator team-performance breakdown,
+        aggregated from Postgres.
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+      responses:
+        "200":
+          description: Org analytics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgAnalytics"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Failed to generate org analytics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/cohort-retention:
+    get:
+      summary: Get cohort retention
+      description: "Retention cohorts read from the vault_cohort_retention
+        materialized view. Note: the view is global, not scoped to the org."
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: range
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            description: Number of most-recent cohorts to return
+      responses:
+        "200":
+          description: Cohort retention data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  orgId:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/CohortRetention"
+                required:
+                  - success
+                  - orgId
+                  - data
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/teams/rollup:
+    get:
+      summary: Get org team rollup
+      description: Per-team vault, capital and milestone totals plus org-wide totals.
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+      responses:
+        "200":
+          description: Team rollup
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamRollup"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Failed to generate team rollup
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/analytics/reports:
+    get:
+      summary: List org analytics reports
+      description: Point-in-time analytics reports, newest first, with a signed
+        download URL when available.
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Paginated analytics reports
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgAnalyticsReport"
+                  pagination:
+                    $ref: "#/components/schemas/PagePagination"
+                required:
+                  - data
+                  - pagination
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
 webhooks: {}

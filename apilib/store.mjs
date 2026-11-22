@@ -106,7 +106,12 @@ export class MemoryStore {
   }
 
   async createVault(v) { this.vaults.push(v); return v }
-  async saveVault(v) { v.updatedAt = iso(Date.now()); return v }
+  async saveVault(v) {
+    v.updatedAt = iso(Date.now())
+    const idx = this.vaults.findIndex((x) => x.id === v.id)
+    if (idx >= 0) this.vaults[idx] = v
+    return v
+  }
   async addActivity(a) { this.activity.push(a); return a }
   async insertActivityTx(_tx, a) { return a }
   // Serialises read-check-write per vault so concurrent validate/fail requests cannot interleave.
@@ -128,7 +133,7 @@ export class MemoryStore {
       for (const a of activities) await this.insertActivityTx(null, a)
       this.vaults[index] = vault
       this.activity.push(...activities)
-      return { ...result, vaultStatus: vault.status, vault, activities }
+      return { ...result, vaultStatus: vault.status, vault: this._attachEvidence(vault), activities }
     } finally {
       release()
       if (this.transitionLocks.get(vaultId) === mine) this.transitionLocks.delete(vaultId)
@@ -156,11 +161,12 @@ export class MemoryStore {
     const page = filtered.slice(0, pageSize + 1)
     const hasMore = page.length > pageSize
     const items = hasMore ? page.slice(0, pageSize) : page
+    const activityItems = items.map((activity) => ({ ...activity, ledger: activity.ledger ?? null }))
     
     return {
-      items,
+      items: activityItems,
       hasMore,
-      lastItem: items.length > 0 ? items[items.length - 1] : null,
+      lastItem: activityItems.length > 0 ? activityItems[activityItems.length - 1] : null,
     }
   }
   async getActivityByHash(hash) { return this.activity.find((a) => a.hash === hash) || null }

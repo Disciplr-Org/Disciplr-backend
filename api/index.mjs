@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto'
 import { getStore as defaultGetStore, StoreConflictError } from '../apilib/store.mjs'
 import { checkReadiness, isDatabaseUnavailable } from '../apilib/store-bootstrap.mjs'
 import { OPENAPI } from '../apilib/openapi.mjs'
-import { OnchainError, isEnabled, getConfig, getServer, buildCreateVaultTx, buildStakeTx, verifySignedTx, txHashOf, submitAndWait, validateForChain } from '../apilib/soroban.mjs'
+import { OnchainError, isEnabled, getConfig, getServer, buildCreateVaultTx, buildStakeTx, buildClaimMilestoneTx, buildSlashTx, buildWithdrawTx, verifySignedTx, txHashOf, submitAndWait, validateForChain } from '../apilib/soroban.mjs'
 import { safeCompare, expireOverdueVaults } from '../apilib/expiry.mjs'
 import { validateCreateVault } from '../apilib/validation.mjs'
 import { requestIdMiddleware } from '../apilib/log.mjs'
@@ -150,6 +150,23 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
     res.status(201).json({ data: vault })
   }))
 
+  // Helper to resolve milestone index from { milestoneId } or { index }
+  const resolveMilestoneIndex = (vault, body = {}) => {
+    if (body.milestoneId !== undefined && body.milestoneId !== null) {
+      const idx = vault.milestones.findIndex((m) => m.id === body.milestoneId)
+      if (idx < 0) return { error: 'Milestone not found', status: 404 }
+      return { index: idx, milestone: vault.milestones[idx] }
+    }
+    if (body.index !== undefined && body.index !== null) {
+      const idx = Number(body.index)
+      if (!Number.isInteger(idx) || idx < 0 || idx >= vault.milestones.length) {
+        return { error: 'Milestone index out of range', status: 400 }
+      }
+      return { index: idx, milestone: vault.milestones[idx] }
+    }
+    return { error: 'milestoneId or index is required', status: 400 }
+  }
+
   // Build the unsigned stake invocation for a vault whose create_vault is confirmed on-chain.
   router.post('/vaults/:id/onchain/stake', wrap(async (req, res) => {
     if (!isEnabled()) return bad(res, 'On-chain mode is disabled', 409)
@@ -162,33 +179,127 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
     res.json({ data: v, onChain: await buildStakeTx(getServer(cfg), cfg, v) })
   }))
 
-  // Accept the creator-signed XDR for create_vault or stake, verify it, relay it and record the real result.
+  // Build the unsigned claim_milestone invocation for an active on-chain vault.
+  router.post('/vaults/:id/onchain/claim-milestone', wrap(async (req, res) => {
+    if (!isEnabled()) return bad(res, 'On-chain mode is disabled', 409)
+    const s = await getStore()
+    const v = await s.getVault(req.params.id)
+    if (!v) return bad(res, 'Vault not found', 404)
+    if (v.onchainStatus !== 'active' || v.status !== 'active') return bad(res, 'Vault must be active on-chain to claim a milestone', 409)
+    const resolved = resolveMilestoneIndex(v, req.body || {})
+    if (resolved.error) return bad(res, resolved.error, resolved.status)
+    const cfg = getConfig()
+    const caller = req.body?.caller
+    res.json({ data: v, onChain: await buildClaimMilestoneTx(getServer(cfg), cfg, v, { caller, index: resolved.index }) })
+  }))
+
+  // Build the unsigned slash_on_miss invocation for an active on-chain vault.
+  router.post('/vaults/:id/onchain/slash', wrap(async (req, res) => {
+    if (!isEnabled()) return bad(res, 'On-chain mode is disabled', 409)
+    const s = await getStore()
+    const v = await s.getVault(req.params.id)
+    if (!v) return bad(res, 'Vault not found', 404)
+    if (v.onchainStatus !== 'active' || v.status !== 'active') return bad(res, 'Vault must be active on-chain to slash', 409)
+    const cfg = getConfig()
+    const caller = req.body?.caller
+    res.json({ data: v, onChain: await buildSlashTx(getServer(cfg), cfg, v, { caller }) })
+  }))
+
+  // Build the unsigned withdraw invocation for an active or completed on-chain vault.
+  router.post('/vaults/:id/onchain/withdraw', wrap(async (req, res) => {
+    if (!isEnabled()) return bad(res, 'On-chain mode is disabled', 409)
+    const s = await getStore()
+    const v = await s.getVault(req.params.id)
+    if (!v) return bad(res, 'Vault not found', 404)
+    if (v.onchainStatus !== 'active') return bad(res, 'Vault must be active on-chain to withdraw', 409)
+    const cfg = getConfig()
+    res.json({ data: v, onChain: await buildWithdrawTx(getServer(cfg), cfg, v) })
+  }))
+
+  // Accept a signed XDR for create_vault, stake, claim_milestone, slash_on_miss or withdraw,
+  // verify it against expectedArgs, relay it and record the real result.
   router.post('/vaults/:id/onchain/submit', wrap(async (req, res) => {
     if (!isEnabled()) return bad(res, 'On-chain mode is disabled', 409)
     const s = await getStore()
     const v = await s.getVault(req.params.id)
     if (!v) return bad(res, 'Vault not found', 404)
     const cfg = getConfig()
-    const { signedXdr, networkPassphrase } = req.body || {}
+    const { signedXdr, networkPassphrase, operation: rawOp, milestoneId, index, caller } = req.body || {}
     if (typeof signedXdr !== 'string' || !signedXdr) return bad(res, 'signedXdr is required')
     if (networkPassphrase !== undefined && networkPassphrase !== cfg.networkPassphrase) return bad(res, 'Network passphrase mismatch')
-    const operation = v.onchainStatus === 'pending_onchain' ? 'create_vault' : v.onchainStatus === 'created' ? 'stake' : null
+
     // Idempotency is keyed by tx hash: a resubmission of an already-recorded transaction never broadcasts a duplicate row.
     const probeHash = txHashOf(signedXdr, cfg)
     let existing = probeHash ? await s.getActivityByHash(probeHash) : null
     if (existing && existing.vaultId !== v.id) existing = null
     if (existing && existing.status !== 'pending') return res.status(existing.status === 'failed' ? 422 : 200).json({ data: v, activity: existing })
-    if (!operation) return bad(res, 'Vault is already active', 409)
-    const { tx, hash } = verifySignedTx(signedXdr, v, operation, cfg)
+
+    let operation
+    const params = {}
+    let claimedMilestone = null
+    if (rawOp !== undefined) {
+      const normalized = rawOp === 'slash' ? 'slash_on_miss' : rawOp
+      if (!['create_vault', 'stake', 'claim_milestone', 'slash_on_miss', 'withdraw'].includes(normalized)) {
+        return bad(res, `Unsupported operation ${rawOp}`)
+      }
+      operation = normalized
+      if (operation === 'create_vault' && v.onchainStatus !== 'pending_onchain') return bad(res, 'Vault is already created on-chain', 409)
+      if (operation === 'stake' && v.onchainStatus !== 'created') return bad(res, 'Vault must be created on-chain before staking', 409)
+      if (operation === 'claim_milestone' || operation === 'slash_on_miss') {
+        if (v.onchainStatus !== 'active' || v.status !== 'active') return bad(res, `Vault must be active on-chain for ${operation}`, 409)
+      }
+      if (operation === 'withdraw' && v.onchainStatus !== 'active') return bad(res, 'Vault must be active on-chain to withdraw', 409)
+      if (operation === 'claim_milestone') {
+        const resolved = resolveMilestoneIndex(v, { milestoneId, index })
+        if (resolved.error) return bad(res, resolved.error, resolved.status)
+        params.index = resolved.index
+        claimedMilestone = resolved.milestone
+        if (caller !== undefined) params.caller = caller
+      } else if (operation === 'slash_on_miss' && caller !== undefined) {
+        params.caller = caller
+      }
+    } else {
+      operation = v.onchainStatus === 'pending_onchain' ? 'create_vault' : v.onchainStatus === 'created' ? 'stake' : null
+      if (!operation) return bad(res, 'Vault is already active', 409)
+    }
+
+    const { tx, hash } = verifySignedTx(signedXdr, v, operation, cfg, params)
     const now = new Date().toISOString()
-    const act = existing || await s.addActivity({ id: crypto.randomUUID(), type: operation === 'stake' ? 'stake' : 'create', vaultId: v.id, amount: v.amount, status: 'pending', hash, memo: `${operation} submitted`, ledger: null, createdAt: now })
+    const actType = operation === 'stake'
+      ? 'stake'
+      : operation === 'create_vault'
+        ? 'create'
+        : operation === 'slash_on_miss'
+          ? 'redirect'
+          : 'release'
+    const actAmount = claimedMilestone ? claimedMilestone.amount : v.amount
+    const act = existing || await s.addActivity({ id: crypto.randomUUID(), type: actType, vaultId: v.id, amount: actAmount, status: 'pending', hash, memo: `${operation} submitted`, ledger: null, createdAt: now })
     const r = await submitAndWait(getServer(cfg), tx, hash, { resume: !!existing, timeoutMs: Number(process.env.SOROBAN_POLL_TIMEOUT_MS) || 30000, intervalMs: Number(process.env.SOROBAN_POLL_INTERVAL_MS) || 1000 })
     if (r.status === 'PENDING') return res.status(202).json({ data: v, activity: act })
     act.ledger = r.ledger ?? null
     if (r.status === 'SUCCESS') {
-      act.status = 'confirmed'; act.memo = operation === 'stake' ? 'Vault staked' : 'Vault created on-chain'
-      v.onchainStatus = operation === 'stake' ? 'active' : 'created'
-      if (operation === 'stake') v.status = 'active'
+      act.status = 'confirmed'
+      if (operation === 'create_vault') {
+        act.memo = 'Vault created on-chain'
+        v.onchainStatus = 'created'
+      } else if (operation === 'stake') {
+        act.memo = 'Vault staked'
+        v.onchainStatus = 'active'
+        v.status = 'active'
+      } else if (operation === 'claim_milestone') {
+        act.memo = 'Milestone claimed on-chain'
+        v.milestones[params.index].status = 'completed'
+        if (v.milestones.every((m) => m.status === 'completed')) v.status = 'completed'
+      } else if (operation === 'slash_on_miss') {
+        act.memo = 'Vault slashed on-chain'
+        v.status = 'failed'
+        for (const m of v.milestones) {
+          if (m.status !== 'completed') m.status = 'failed'
+        }
+      } else if (operation === 'withdraw') {
+        act.memo = 'Vault withdrawn on-chain'
+        v.status = 'completed'
+      }
       await s.saveActivity(act); await s.saveVault(v)
       return res.json({ data: v, activity: act })
     }

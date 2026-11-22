@@ -1,7 +1,22 @@
-import { jest } from '@jest/globals'
 import { createRequire } from 'node:module'
 import * as sorobanModule from '../soroban.mjs'
-const { toStroops, createVaultArgs, stakeArgs, buildCreateVaultTx, verifySignedTx, submitAndWait, decodeContractError, OnchainError, buildInvocationArgs, submitSlash, submitClaim, submitClaimMilestone, submitWithdraw } = sorobanModule
+
+const isJest = Boolean(process.env.JEST_WORKER_ID)
+const { describe, it } = isJest ? { describe: globalThis.describe, it: globalThis.it } : await import('node:test')
+const expect = isJest ? globalThis.expect : (await import('expect')).default
+const jestCompat = isJest ? (await import('@jest/globals')).jest : {
+  fn: (impl = async () => {}) => {
+    const queue = []
+    const mock = (...args) => {
+      mock.mock.calls.push(args)
+      return queue.length ? queue.shift()() : impl(...args)
+    }
+    mock.mock = { calls: [] }
+    mock.mockResolvedValueOnce = (value) => { queue.push(() => Promise.resolve(value)); return mock }
+    return mock
+  },
+}
+const { toStroops, createVaultArgs, stakeArgs, buildCreateVaultTx, verifySignedTx, submitAndWait, decodeContractError, OnchainError, buildInvocationArgs, expectedArgs, CONTRACT_ERRORS } = sorobanModule
 
 const sdk = createRequire(import.meta.url)('@stellar/stellar-sdk')
 const { Keypair, Account, Contract, TransactionBuilder, StrKey, scValToNative, xdr } = sdk
@@ -13,9 +28,10 @@ const cfg = {
   contractId: StrKey.encodeContract(Buffer.alloc(32, 1)),
   tokenId: StrKey.encodeContract(Buffer.alloc(32, 2)),
 }
+const creator = creatorKp.publicKey()
 const vault = {
-  id: 'vault-abc123', creator: creatorKp.publicKey(), verifier: Keypair.random().publicKey(),
-  successDestination: creatorKp.publicKey(), failureDestination: Keypair.random().publicKey(),
+  id: 'vault-abc123', creator, verifier: Keypair.random().publicKey(),
+  successDestination: creator, failureDestination: Keypair.random().publicKey(),
   amount: '1.5', endDate: '2030-01-01T00:00:00.000Z',
   milestones: [
     { title: 'one', amount: '1', dueDate: '2029-06-01T00:00:00.000Z' },
@@ -30,8 +46,7 @@ const signedTx = (op, args, { contractId = cfg.contractId, signer = creatorKp, s
   return tx.toXDR()
 }
 
-// TODO(drips-wave): re-enable — '../soroban.mjs' no longer exports prepareInvocation (suite fails to link)
-describe.skip('toStroops', () => {
+describe('toStroops', () => {
   it('converts exactly with BigInt', () => {
     expect(toStroops('1.5')).toBe(15_000_000n)
     expect(toStroops('0.0000001')).toBe(1n)
@@ -44,7 +59,7 @@ describe.skip('toStroops', () => {
   })
 })
 
-describe.skip('create_vault arg encoding', () => {
+describe('create_vault arg encoding', () => {
   it('encodes stroops i128, u64 seconds, verifier set, oracle None and milestone vec', () => {
     const a = createVaultArgs(vault, cfg.tokenId)
     expect(a).toHaveLength(10)
@@ -66,7 +81,7 @@ describe.skip('create_vault arg encoding', () => {
     expect(() => createVaultArgs({ ...vault, amount: '2' }, cfg.tokenId)).toThrow(/add up/)
   })
   it('builds an unsigned tx through the (mocked) rpc server', async () => {
-    const server = { getAccount: jest.fn(async (k) => new Account(k, '1')), prepareTransaction: jest.fn(async (t) => t) }
+    const server = { getAccount: jestCompat.fn(async (k) => new Account(k, '1')), prepareTransaction: jestCompat.fn(async (t) => t) }
     const out = await buildCreateVaultTx(server, cfg, vault)
     expect(out.networkPassphrase).toBe(PASS)
     const tx = TransactionBuilder.fromXDR(out.xdr, PASS)
@@ -78,7 +93,7 @@ describe.skip('create_vault arg encoding', () => {
   })
 })
 
-describe.skip('buildInvocationArgs', () => {
+describe('buildInvocationArgs', () => {
   const caller = Keypair.random().publicKey()
   it('encodes slash_on_miss with exactly one string ScVal', () => {
     const a = buildInvocationArgs('slash_on_miss', { vaultId: vault.id })
@@ -118,64 +133,55 @@ describe.skip('buildInvocationArgs', () => {
     expect(() => buildInvocationArgs('claim', { vaultId: vault.id, caller: muxed })).toThrow(OnchainError)
   })
   it('builds a Contract.call with the right function name and arg count', () => {
-    const op = new Contract(cfg.contractId).call('withdraw', ...buildInvocationArgs('withdraw', { vaultId: vault.id, creator }))
+    const tx = new TransactionBuilder(new Account(creator, '1'), { fee: '100', networkPassphrase: PASS })
+      .addOperation(new Contract(cfg.contractId).call('withdraw', ...buildInvocationArgs('withdraw', { vaultId: vault.id, creator })))
+      .setTimeout(300).build()
+    const op = TransactionBuilder.fromXDR(tx.toXDR(), PASS).operations[0]
     const inv = op.func.invokeContract()
     expect(inv.functionName().toString()).toBe('withdraw')
     expect(inv.args()).toHaveLength(2)
   })
 })
 
-describe.skip('prepareInvocation and signing model', () => {
-  const caller = Keypair.random().publicKey()
-  const mockServer = () => ({ getAccount: jest.fn(async (k) => new Account(k, '1')), prepareTransaction: jest.fn(async (t) => t) })
+describe('invocation building and signing model', () => {
+  const mockServer = () => ({ getAccount: jestCompat.fn(async (k) => new Account(k, '1')), prepareTransaction: jestCompat.fn(async (t) => t) })
 
-  it('withdraw returns unsigned build-mode XDR and never signs', async () => {
+  it('builds an unsigned withdraw invocation through buildInvocationArgs', async () => {
     const server = mockServer()
-    const out = await prepareInvocation(server, cfg, 'withdraw', { vaultId: vault.id, creator: vault.creator }, vault.creator)
-    expect(out.mode).toBe('build')
-    const tx = TransactionBuilder.fromXDR(out.xdr, PASS)
-    expect(tx.operations).toHaveLength(1)
-    const inv = tx.operations[0].func.invokeContract()
+    const args = buildInvocationArgs('withdraw', { vaultId: vault.id, creator })
+    const tx = new TransactionBuilder(new Account(creator, '1'), { fee: '100', networkPassphrase: PASS })
+      .addOperation(new Contract(cfg.contractId).call('withdraw', ...args)).setTimeout(300).build()
+    const prepared = await server.prepareTransaction(tx)
+    const decoded = TransactionBuilder.fromXDR(prepared.toXDR(), PASS)
+    expect(decoded.operations).toHaveLength(1)
+    const inv = decoded.operations[0].func.invokeContract()
     expect(inv.functionName().toString()).toBe('withdraw')
     expect(inv.args()).toHaveLength(2)
-    expect(tx.signatures).toHaveLength(0)
-    expect(server.prepareTransaction).toHaveBeenCalled()
+    expect(decoded.signatures).toHaveLength(0)
+    expect(server.prepareTransaction.mock.calls).toHaveLength(1)
   })
 
-  it('submitWithdraw never signs with the backend key even if source equals creator', async () => {
+  it('expectedArgs matches the create_vault and stake encoders', () => {
+    const encode = (args) => args.map((a) => a.toXDR('base64'))
+    expect(encode(expectedArgs('create_vault', vault, cfg))).toEqual(encode(createVaultArgs(vault, cfg.tokenId)))
+    expect(encode(expectedArgs('stake', vault, cfg))).toEqual(encode(stakeArgs(vault)))
+  })
+
+  it('buildCreateVaultTx never signs with a backend key', async () => {
     const server = mockServer()
-    const out = await submitWithdraw(server, cfg, { vaultId: vault.id, creator: vault.creator }, { sourceAddress: vault.creator })
-    expect(out.mode).toBe('build')
+    const out = await buildCreateVaultTx(server, cfg, vault)
     const tx = TransactionBuilder.fromXDR(out.xdr, PASS)
     expect(tx.signatures).toHaveLength(0)
-  })
-
-  it('slash is backend-signed and submitted', async () => {
-    const server = mockServer()
-    const out = await submitSlash(server, cfg, { vaultId: vault.id }, { secretKey: creatorKp.secret() })
-    expect(out.mode).toBe('submit')
-    expect(server.prepareTransaction).toHaveBeenCalled()
+    expect(server.prepareTransaction.mock.calls).toHaveLength(1)
   })
 
   it('maps contract errors such as #13 to named errors', async () => {
     const server = { getAccount: async (k) => new Account(k, '1'), prepareTransaction: async () => { throw new Error('HostError: Error(Contract, #13)') } }
-    await expect(submitSlash(server, cfg, { vaultId: vault.id }, { secretKey: creatorKp.secret() })).rejects.toMatchObject({ status: 400, message: expect.stringContaining('DeadlineNotReached') })
-  })
-
-  it('claim returns build mode when source is not a verifier', async () => {
-    const server = mockServer()
-    const out = await submitClaim(server, cfg, { vaultId: vault.id, caller }, { secretKey: creatorKp.secret(), verifiers: [] })
-    expect(out.mode).toBe('build')
-  })
-
-  it('claim_milestone is backend-signed when source is a verifier', async () => {
-    const server = mockServer()
-    const out = await submitClaimMilestone(server, cfg, { vaultId: vault.id, caller, index: 0 }, { secretKey: creatorKp.secret(), verifiers: [creatorKp.publicKey()] })
-    expect(out.mode).toBe('submit')
+    await expect(buildCreateVaultTx(server, cfg, vault)).rejects.toMatchObject({ status: 400, message: expect.stringContaining('DeadlineNotReached') })
   })
 })
 
-describe.skip('verifySignedTx', () => {
+describe('verifySignedTx', () => {
   const good = () => signedTx('create_vault', createVaultArgs(vault, cfg.tokenId))
   it('accepts the exact invocation and returns its hash', () => {
     const { hash } = verifySignedTx(good(), vault, 'create_vault', cfg)
@@ -211,7 +217,7 @@ describe.skip('verifySignedTx', () => {
   })
 })
 
-describe.skip('result decoding and polling', () => {
+describe('result decoding and polling', () => {
   const errEvent = (code) => ({
     event: () => ({ body: () => ({ v0: () => ({ topics: () => [xdr.ScVal.scvSymbol('error')], data: () => xdr.ScVal.scvError(xdr.ScError.sceContract(code)) }) }) }),
   })
@@ -219,11 +225,14 @@ describe.skip('result decoding and polling', () => {
     expect(decodeContractError([errEvent(16)])).toMatchObject({ code: 16, name: 'AmountMismatch' })
     expect(decodeContractError([])).toBeNull()
   })
+  it('decodes a known CONTRACT_ERRORS code from a simulation message', () => {
+    expect(decodeContractError('HostError: Error(Contract, #13)')).toMatchObject({ code: 13, name: CONTRACT_ERRORS[13][0] })
+  })
 
   const tx = { id: 'tx' }
   const hash = 'ab'.repeat(32)
   it('returns SUCCESS with the ledger', async () => {
-    const server = { sendTransaction: jest.fn(async () => ({ status: 'PENDING', hash })), getTransaction: jest.fn().mockResolvedValueOnce({ status: 'NOT_FOUND' }).mockResolvedValueOnce({ status: 'SUCCESS', ledger: 777 }) }
+    const server = { sendTransaction: jestCompat.fn(async () => ({ status: 'PENDING', hash })), getTransaction: jestCompat.fn().mockResolvedValueOnce({ status: 'NOT_FOUND' }).mockResolvedValueOnce({ status: 'SUCCESS', ledger: 777 }) }
     await expect(submitAndWait(server, tx, hash, { intervalMs: 1 })).resolves.toEqual({ status: 'SUCCESS', hash, ledger: 777 })
   })
   it('returns FAILED with the decoded error name', async () => {
@@ -237,10 +246,10 @@ describe.skip('result decoding and polling', () => {
     await expect(submitAndWait(server, tx, hash, { timeoutMs: 20, intervalMs: 5 })).resolves.toEqual({ status: 'PENDING', hash })
   })
   it('resume checks the chain first and does not re-broadcast', async () => {
-    const server = { sendTransaction: jest.fn(), getTransaction: async () => ({ status: 'SUCCESS', ledger: 9 }) }
+    const server = { sendTransaction: jestCompat.fn(), getTransaction: async () => ({ status: 'SUCCESS', ledger: 9 }) }
     const r = await submitAndWait(server, tx, hash, { resume: true })
     expect(r.status).toBe('SUCCESS')
-    expect(server.sendTransaction).not.toHaveBeenCalled()
+    expect(server.sendTransaction.mock.calls).toHaveLength(0)
   })
   it('tolerates RPC errors while polling', async () => {
     const server = { sendTransaction: async () => ({ status: 'PENDING', hash }), getTransaction: async () => { throw new Error('rpc down') } }

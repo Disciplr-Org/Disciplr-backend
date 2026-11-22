@@ -14,6 +14,9 @@ import { UserRole } from '../types/user.js'
 import { requestTelemetry } from '../middleware/telemetry.js'
 import { authRateLimiter, accountLoginLimiter } from '../middleware/rateLimiter.js'
 import { getEnv } from '../config/env.js'
+import { generateAccessToken } from '../lib/auth-utils.js'
+import { recordSession } from '../services/session.js'
+import { randomUUID } from 'node:crypto'
 
 export const authRouter = Router();
 authRouter.use(requestTelemetry);
@@ -60,12 +63,18 @@ const isMockLoginAllowed = (): boolean => {
     const env = getEnv()
     return env.ENABLE_MOCK_LOGIN === true
   } catch {
-    // If env not initialised, fall back to checking the raw env var (tests)
+    // If env not initialised, fall back to checking the raw env var (tests).
+    // Production is always refused, even when env validation failed.
+    if (process.env.NODE_ENV === 'production') return false
     const raw = process.env.ENABLE_MOCK_LOGIN
     if (!raw) return false
     return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase())
   }
 }
+
+// Mock-login tokens are real, short-lived access tokens. Keep the recorded
+// session lifetime in sync with the access-token TTL (15 minutes by default).
+const MOCK_LOGIN_TOKEN_TTL_MS = 15 * 60 * 1000
 
 const authUserSelect = {
   id: true,
@@ -130,6 +139,18 @@ authRouter.post('/login', authJson, authRateLimiter, accountLoginLimiter, async 
           throw error
         }
 
+        // Issue a real JWT so the token works with `authenticate`-protected
+        // routes such as GET /api/vaults. This mirrors the credential login
+        // path: a jti is embedded and the matching session row is recorded,
+        // so the token is revocable via POST /api/auth/logout.
+        const jti = randomUUID()
+        const accessToken = generateAccessToken({
+          userId: updatedUser.id,
+          role: updatedUser.role,
+          jti,
+        })
+        await recordSession(updatedUser.id, jti, new Date(Date.now() + MOCK_LOGIN_TOKEN_TTL_MS))
+
         const auditLog = await createAuditLog({
           actor_user_id: updatedUser.id,
           action: "auth.mock_login_used",
@@ -143,7 +164,7 @@ authRouter.post('/login', authJson, authRateLimiter, accountLoginLimiter, async 
 
         res.status(200).json({
           user: formatAuthUser(updatedUser),
-          token: `mock-token-${updatedUser.id}`,
+          token: accessToken,
           auditLogId: auditLog.id,
         });
         return;
