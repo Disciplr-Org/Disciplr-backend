@@ -2,6 +2,9 @@
 
 `POST /api/jobs/enqueue` is admin-only and validates payload by job type using a discriminated schema.
 
+> Operational incidents (dead letters, queue backlog, stuck leases) are covered by
+> [runbooks/jobs-dead-letters.md](runbooks/jobs-dead-letters.md).
+
 ## Supported job types
 
 - `notification.send`
