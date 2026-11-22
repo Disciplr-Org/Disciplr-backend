@@ -474,10 +474,86 @@ export const OPENAPI = {
         },
       },
     },
+    '/vaults/{id}/onchain/claim-milestone': {
+      post: {
+        operationId: 'buildOnchainClaimMilestone',
+        summary: 'Build the unsigned claim_milestone XDR for an active on-chain vault (requires SOROBAN_ENABLED=1)',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Unique vault ID' },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  milestoneId: { type: 'string', description: 'Milestone ID to claim' },
+                  index: { type: 'integer', minimum: 0, description: '0-based milestone index (alternative to milestoneId)' },
+                  caller: { $ref: '#/components/schemas/StellarAddress' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: onchainResult('Vault and {onChain: {xdr, networkPassphrase, operation}}'),
+          400: err,
+          404: err,
+          409: err,
+          503: unavailable,
+        },
+      },
+    },
+    '/vaults/{id}/onchain/slash': {
+      post: {
+        operationId: 'buildOnchainSlash',
+        summary: 'Build the unsigned slash_on_miss XDR for an active on-chain vault (requires SOROBAN_ENABLED=1)',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Unique vault ID' },
+        ],
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  caller: { $ref: '#/components/schemas/StellarAddress' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: onchainResult('Vault and {onChain: {xdr, networkPassphrase, operation}}'),
+          400: err,
+          404: err,
+          409: err,
+          503: unavailable,
+        },
+      },
+    },
+    '/vaults/{id}/onchain/withdraw': {
+      post: {
+        operationId: 'buildOnchainWithdraw',
+        summary: 'Build the unsigned withdraw XDR for the creator to sign (requires SOROBAN_ENABLED=1)',
+        parameters: [
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Unique vault ID' },
+        ],
+        responses: {
+          200: onchainResult('Vault and {onChain: {xdr, networkPassphrase, operation}}'),
+          400: err,
+          404: err,
+          409: err,
+          503: unavailable,
+        },
+      },
+    },
     '/vaults/{id}/onchain/submit': {
       post: {
         operationId: 'submitOnchainTransaction',
-        summary: 'Submit the creator-signed create_vault or stake XDR; verified against the stored vault, relayed, and recorded with the real hash and ledger. Idempotent by tx hash. 202 = still pending, 422 = failed on-chain',
+        summary: 'Submit a signed create_vault, stake, claim_milestone, slash_on_miss or withdraw XDR; verified against expectedArgs, relayed, and recorded with the real hash and ledger. Idempotent by tx hash. 202 = still pending, 422 = failed on-chain',
         parameters: [
           { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Unique vault ID' },
         ],
@@ -488,7 +564,14 @@ export const OPENAPI = {
               schema: {
                 type: 'object',
                 required: ['signedXdr'],
-                properties: { signedXdr: { type: 'string' }, networkPassphrase: { type: 'string' } },
+                properties: {
+                  signedXdr: { type: 'string' },
+                  networkPassphrase: { type: 'string' },
+                  operation: { type: 'string', enum: ['create_vault', 'stake', 'claim_milestone', 'slash_on_miss', 'slash', 'withdraw'] },
+                  milestoneId: { type: 'string' },
+                  index: { type: 'integer', minimum: 0 },
+                  caller: { $ref: '#/components/schemas/StellarAddress' },
+                },
               },
             },
           },
