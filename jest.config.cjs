@@ -112,7 +112,6 @@ module.exports = {
     "<rootDir>/src/tests/admin.dualControl.test.ts",
     "<rootDir>/src/tests/orgVaultIsolation.test.ts",
     "<rootDir>/src/tests/vaultTransitions.test.ts",
-    "<rootDir>/src/tests/jobs.system.handlers.test.ts",
     "<rootDir>/src/tests/csrf.protection.test.ts",
     "<rootDir>/src/tests/auth.rateLimiter.test.ts",
   ],
