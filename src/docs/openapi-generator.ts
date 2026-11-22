@@ -5,7 +5,6 @@ import {
 } from '@asteasolutions/zod-to-openapi'
 import { z } from 'zod'
 import { registerSchema, loginSchema } from '../lib/validation.js'
-import { UserRole } from '../types/user.js'
 
 extendZodWithOpenApi(z)
 
@@ -833,9 +832,9 @@ registry.registerPath({
 
 // ==================== EXPORT ROUTES ====================
 
-const ExportRequestRef = registry.register('ExportRequest', ExportRequestSchema)
-const ExportJobResponseRef = registry.register('ExportJobResponse', ExportJobResponseSchema)
-const ExportJobStatusRef = registry.register('ExportJobStatus', ExportJobStatusSchema)
+export const ExportRequestRef = registry.register('ExportRequest', ExportRequestSchema)
+export const ExportJobResponseRef = registry.register('ExportJobResponse', ExportJobResponseSchema)
+export const ExportJobStatusRef = registry.register('ExportJobStatus', ExportJobStatusSchema)
 
 // POST /api/exports/me
 registry.registerPath({
@@ -954,6 +953,336 @@ registry.registerPath({
   },
 })
 
+
+// ==================== NOTIFICATION SCHEMAS ====================
+
+export const NotificationSchema = registry.register(
+  'Notification',
+  z.object({
+    id: z.string().uuid().openapi({ example: '123e4567-e89b-12d3-a456-426614174000' }),
+    user_id: z.string().openapi({ example: 'user_123' }),
+    type: z.string().openapi({ example: 'vault_failure' }),
+    title: z.string().openapi({ example: 'Vault deadline missed' }),
+    message: z.string().openapi({ example: 'The deadline for vault 123 has expired.' }),
+    data: z.record(z.string(), z.unknown()).nullable().openapi({ example: { vaultId: '123' } }),
+    idempotency_key: z.string().nullable().openapi({ example: 'key_123' }),
+    read_at: z.string().datetime().nullable().openapi({ example: '2026-06-02T10:00:00Z' }),
+    archived_at: z.string().datetime().nullable().openapi({ example: null }),
+    created_at: z.string().datetime().openapi({ example: '2026-06-02T09:00:00Z' }),
+  }),
+)
+
+export const NotificationListResponseSchema = registry.register(
+  'NotificationListResponse',
+  z.object({
+    data: z.array(NotificationSchema),
+    pagination: PaginationCursor,
+  }),
+)
+
+export const UserNotificationPreferencesSchema = registry.register(
+  'UserNotificationPreferences',
+  z.object({
+    id: z.string().nullable().openapi({ example: 'pref_123' }),
+    user_id: z.string().openapi({ example: 'user_123' }),
+    timezone: z.string().openapi({ description: 'IANA timezone identifier', example: 'UTC' }),
+    quiet_hours_enabled: z.boolean().openapi({ description: 'Whether quiet hours are enabled', example: false }),
+    quiet_hours_start: z.string().openapi({ description: 'Quiet hours start in HH:MM format', example: '22:00' }),
+    quiet_hours_end: z.string().openapi({ description: 'Quiet hours end in HH:MM format', example: '08:00' }),
+    created_at: z.string().datetime().openapi({ example: '2026-06-02T10:00:00Z' }),
+    updated_at: z.string().datetime().openapi({ example: '2026-06-02T10:00:00Z' }),
+  }),
+)
+
+export const UpdateUserNotificationPreferencesSchema = registry.register(
+  'UpdateUserNotificationPreferences',
+  z.object({
+    timezone: z.string().optional().openapi({ description: 'Valid IANA timezone identifier', example: 'America/New_York' }),
+    quiet_hours_enabled: z.boolean().optional().openapi({ description: 'Whether quiet hours are enabled', example: true }),
+    quiet_hours_start: z.string().optional().openapi({ description: 'Quiet hours start in HH:MM format', example: '22:00' }),
+    quiet_hours_end: z.string().optional().openapi({ description: 'Quiet hours end in HH:MM format', example: '08:00' }),
+  }),
+)
+
+export const OrgNotificationPreferencesSchema = registry.register(
+  'OrgNotificationPreferences',
+  z.object({
+    organizationId: z.string().openapi({ example: 'org_123' }),
+    categories: z.record(z.string(), z.boolean()).openapi({
+      example: {
+        vault_failure: true,
+        milestone_reminder: true,
+        milestone_reminder_deferred: true,
+        milestone_reminder_processed: true,
+        milestone_digest: true,
+      },
+    }),
+    channels: z.record(z.string(), z.boolean()).openapi({
+      example: {
+        email: true,
+      },
+    }),
+  }),
+)
+
+export const UpdateOrgNotificationPreferencesSchema = registry.register(
+  'UpdateOrgNotificationPreferences',
+  z.object({
+    categories: z.record(z.string(), z.boolean()).optional().openapi({
+      description: 'Map of notification category to enabled flag',
+      example: { vault_failure: true, milestone_reminder: false },
+    }),
+    channels: z.record(z.string(), z.boolean()).optional().openapi({
+      description: 'Map of delivery channel to enabled flag',
+      example: { email: true },
+    }),
+  }),
+)
+
+// ==================== NOTIFICATION ROUTES ====================
+
+// GET /api/notifications
+registry.registerPath({
+  method: 'get',
+  path: '/api/notifications',
+  operationId: 'listNotifications',
+  summary: 'List user notifications',
+  tags: ['Notifications'],
+  security: [{ bearerAuth: [] }],
+  request: {
+    query: z.object({
+      status: z.enum(['all', 'read', 'unread']).optional().openapi({ description: 'Filter by read status', example: 'all' }),
+      includeArchived: z.string().optional().openapi({ description: 'Include archived notifications (true/1)', example: 'false' }),
+      limit: z.coerce.number().optional().openapi({ description: 'Number of notifications to return', example: 20 }),
+      cursor: z.string().optional().openapi({ description: 'Pagination cursor', example: 'cur_abc123' }),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'List of notifications with pagination cursor',
+      content: { 'application/json': { schema: NotificationListResponseSchema } },
+    },
+    400: {
+      description: 'Bad request (invalid status or cursor)',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    401: {
+      description: 'Unauthorized',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+})
+
+// PATCH /api/notifications/:id/read
+registry.registerPath({
+  method: 'patch',
+  path: '/api/notifications/{id}/read',
+  operationId: 'markNotificationAsRead',
+  summary: 'Mark a notification as read',
+  tags: ['Notifications'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    {
+      name: 'id',
+      in: 'path',
+      required: true,
+      schema: { type: 'string' },
+      description: 'Notification ID',
+    },
+  ],
+  responses: {
+    200: {
+      description: 'Notification marked as read',
+      content: { 'application/json': { schema: NotificationSchema } },
+    },
+    401: {
+      description: 'Unauthorized',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    404: {
+      description: 'Notification not found',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+})
+
+// POST /api/notifications/read-all
+registry.registerPath({
+  method: 'post',
+  path: '/api/notifications/read-all',
+  operationId: 'markAllNotificationsAsRead',
+  summary: 'Mark all notifications as read',
+  tags: ['Notifications'],
+  security: [{ bearerAuth: [] }],
+  responses: {
+    200: {
+      description: 'All notifications marked as read',
+      content: {
+        'application/json': {
+          schema: z.object({
+            updated: z.number().openapi({ description: 'Number of notifications marked as read', example: 5 }),
+          }),
+        },
+      },
+    },
+    401: {
+      description: 'Unauthorized',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+})
+
+// GET /api/users/me/notification-preferences
+registry.registerPath({
+  method: 'get',
+  path: '/api/users/me/notification-preferences',
+  operationId: 'getUserNotificationPreferences',
+  summary: 'Get user notification preferences',
+  tags: ['Notifications'],
+  security: [{ bearerAuth: [] }],
+  responses: {
+    200: {
+      description: 'Current user notification preferences',
+      content: { 'application/json': { schema: UserNotificationPreferencesSchema } },
+    },
+    401: {
+      description: 'Unauthorized',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+})
+
+// PUT /api/users/me/notification-preferences
+registry.registerPath({
+  method: 'put',
+  path: '/api/users/me/notification-preferences',
+  operationId: 'updateUserNotificationPreferences',
+  summary: 'Update user notification preferences',
+  tags: ['Notifications'],
+  security: [{ bearerAuth: [] }],
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: UpdateUserNotificationPreferencesSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Updated user notification preferences',
+      content: { 'application/json': { schema: UserNotificationPreferencesSchema } },
+    },
+    400: {
+      description: 'Bad request (invalid timezone or time format)',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    401: {
+      description: 'Unauthorized',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+})
+
+// DELETE /api/users/me/notification-preferences
+registry.registerPath({
+  method: 'delete',
+  path: '/api/users/me/notification-preferences',
+  operationId: 'resetUserNotificationPreferences',
+  summary: 'Reset user notification preferences to defaults',
+  tags: ['Notifications'],
+  security: [{ bearerAuth: [] }],
+  responses: {
+    200: {
+      description: 'Default user notification preferences',
+      content: { 'application/json': { schema: UserNotificationPreferencesSchema } },
+    },
+    401: {
+      description: 'Unauthorized',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+})
+
+// GET /api/orgs/:orgId/notification-preferences
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/notification-preferences',
+  operationId: 'getOrgNotificationPreferences',
+  summary: 'Get organization notification preferences',
+  tags: ['Notifications'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    {
+      name: 'orgId',
+      in: 'path',
+      required: true,
+      schema: { type: 'string' },
+      description: 'Organization ID',
+    },
+  ],
+  responses: {
+    200: {
+      description: 'Organization notification preferences',
+      content: { 'application/json': { schema: OrgNotificationPreferencesSchema } },
+    },
+    401: {
+      description: 'Unauthorized',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    403: {
+      description: 'Forbidden (member access required)',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+})
+
+// PUT /api/orgs/:orgId/notification-preferences
+registry.registerPath({
+  method: 'put',
+  path: '/api/orgs/{orgId}/notification-preferences',
+  operationId: 'updateOrgNotificationPreferences',
+  summary: 'Update organization notification preferences',
+  tags: ['Notifications'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    {
+      name: 'orgId',
+      in: 'path',
+      required: true,
+      schema: { type: 'string' },
+      description: 'Organization ID',
+    },
+  ],
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: UpdateOrgNotificationPreferencesSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Updated organization notification preferences',
+      content: { 'application/json': { schema: OrgNotificationPreferencesSchema } },
+    },
+    400: {
+      description: 'Bad request (invalid category or channel)',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    401: {
+      description: 'Unauthorized',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+    403: {
+      description: 'Forbidden (owner or admin required)',
+      content: { 'application/json': { schema: ErrorEnvelope } },
+    },
+  },
+})
 
 export function generateOpenApiSpec() {
   const generator = new OpenApiGeneratorV31(registry.definitions)
