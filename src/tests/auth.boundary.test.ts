@@ -90,6 +90,8 @@ jest.unstable_mockModule('../middleware/stepUp.js', () => ({
 }))
 jest.unstable_mockModule('../services/auth.service.js', () => ({ AuthService: mockAuthService }))
 jest.unstable_mockModule('../services/session.js', () => ({
+  recordSession: jest.fn(async () => undefined),
+  validateSession: jest.fn(async () => true),
   revokeSession: mockRevokeSession,
   revokeAllUserSessions: mockRevokeAllUserSessions,
 }))
@@ -157,8 +159,11 @@ describe('mock userId-only login boundary', () => {
     expect(res.status).toBe(200)
     expect(res.body).toMatchObject({
       user: { id: TARGET_ID, role: UserRole.USER },
-      token: `mock-token-${TARGET_ID}`,
+      token: expect.any(String),
     })
+    // A real signed JWT, not the old opaque `mock-token-<id>` string.
+    expect(res.body.token).not.toMatch(/^mock-token-/)
+    expect(res.body.token.split('.')).toHaveLength(3)
   })
 })
 

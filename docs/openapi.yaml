@@ -118,6 +118,239 @@ components:
         - description
         - status
         - createdAt
+    VerifierProfile:
+      type: object
+      properties:
+        userId:
+          type: string
+          description: Stellar public key that identifies the verifier
+          example: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
+        displayName:
+          type:
+            - string
+            - "null"
+        metadata:
+          type:
+            - object
+            - "null"
+          additionalProperties: {}
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - suspended
+            - deactivated
+          description: "Verifier lifecycle status. Allowed transitions:
+            pending→approved|deactivated, approved→suspended|deactivated,
+            suspended→approved|deactivated, deactivated→pending|approved."
+          example: approved
+        createdAt:
+          type: string
+          format: date-time
+        approvedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        suspendedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        deactivatedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+      required:
+        - userId
+        - status
+        - createdAt
+    VerifierStats:
+      type: object
+      properties:
+        totalVerifications:
+          type: integer
+          example: 12
+        approvals:
+          type: integer
+          example: 9
+        rejections:
+          type: integer
+          example: 3
+        disputes:
+          type: integer
+          example: 1
+        approvalRatio:
+          type: number
+          example: 0.75
+        rejectionRatio:
+          type: number
+          example: 0.25
+        disputeRate:
+          type: number
+          example: 0.0833
+      required:
+        - totalVerifications
+        - approvals
+        - rejections
+        - disputes
+        - approvalRatio
+        - rejectionRatio
+        - disputeRate
+    VerifierWithStats:
+      type: object
+      properties:
+        profile:
+          $ref: "#/components/schemas/VerifierProfile"
+        stats:
+          $ref: "#/components/schemas/VerifierStats"
+      required:
+        - profile
+        - stats
+    VerifierPagination:
+      type: object
+      properties:
+        limit:
+          type: integer
+          description: Page size in effect (max 200)
+          example: 50
+        offset:
+          type: integer
+          description: Zero-based offset of the first item
+          example: 0
+        count:
+          type: integer
+          description: Number of items in this page
+          example: 2
+        hasMore:
+          type: boolean
+          description: Whether another page is likely available
+          example: false
+      required:
+        - limit
+        - offset
+        - count
+        - hasMore
+    VerifierListResponse:
+      type: object
+      properties:
+        verifiers:
+          type: array
+          items:
+            $ref: "#/components/schemas/VerifierWithStats"
+        pagination:
+          $ref: "#/components/schemas/VerifierPagination"
+      required:
+        - verifiers
+        - pagination
+    VerifierCreateResponse:
+      type: object
+      properties:
+        profile:
+          $ref: "#/components/schemas/VerifierProfile"
+        stats:
+          $ref: "#/components/schemas/VerifierStats"
+        auditLogId:
+          type: string
+          description: Audit log entry id when one was written
+      required:
+        - profile
+        - stats
+    VerifierMutationResponse:
+      type: object
+      properties:
+        profile:
+          $ref: "#/components/schemas/VerifierProfile"
+        stats:
+          $ref: "#/components/schemas/VerifierStats"
+        auditLogId:
+          type:
+            - string
+            - "null"
+          description: Audit log entry id, or null when the request was a no-op
+        changedFields:
+          type: array
+          items:
+            type: string
+          description: Profile fields changed by this request
+          example:
+            - status
+      required:
+        - profile
+        - stats
+        - auditLogId
+        - changedFields
+    CreateVerifierRequest:
+      type: object
+      properties:
+        userId:
+          type: string
+          minLength: 1
+          description: Stellar public key of the verifier to create
+          example: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
+        displayName:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: {}
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - suspended
+            - deactivated
+          description: "Verifier lifecycle status. Allowed transitions:
+            pending→approved|deactivated, approved→suspended|deactivated,
+            suspended→approved|deactivated, deactivated→pending|approved."
+          example: approved
+        reason:
+          type: string
+          description: Reason recorded on the audit log entry
+      required:
+        - userId
+    UpdateVerifierRequest:
+      type: object
+      properties:
+        displayName:
+          type:
+            - string
+            - "null"
+        metadata:
+          type:
+            - object
+            - "null"
+          additionalProperties: {}
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - suspended
+            - deactivated
+          description: "Verifier lifecycle status. Allowed transitions:
+            pending→approved|deactivated, approved→suspended|deactivated,
+            suspended→approved|deactivated, deactivated→pending|approved."
+          example: approved
+        reason:
+          type: string
+          description: Reason recorded on the audit log entry
+    VerifierReasonRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: Reason recorded on the audit log entry
+    VerifierErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: verifier not found
+      required:
+        - error
     ExportRequest:
       type: object
       properties:
@@ -202,285 +435,464 @@ components:
         - status
         - attempts
         - maxAttempts
-    WebhookSubscription:
+    PagePagination:
+      type: object
+      properties:
+        page:
+          type: integer
+          example: 1
+        pageSize:
+          type: integer
+          example: 20
+        total:
+          type: integer
+          example: 42
+        totalPages:
+          type: integer
+          example: 3
+        hasNext:
+          type: boolean
+        hasPrev:
+          type: boolean
+      required:
+        - page
+        - pageSize
+        - total
+        - totalPages
+        - hasNext
+        - hasPrev
+    OrgVault:
       type: object
       properties:
         id:
           type: string
-          format: uuid
-          example: 123e4567-e89b-12d3-a456-426614174000
-        url:
+        creator:
           type: string
-          format: uri
-          example: https://example.com/webhook
-        events:
-          type: array
-          items:
-            type: string
-          example:
-            - vault.created
-            - vault.completed
-        active:
-          type: boolean
-          example: true
+        verifier:
+          type: string
+        amount:
+          type: string
+          example: "100.0000000"
+        status:
+          type: string
+          enum:
+            - draft
+            - active
+            - completed
+            - failed
+            - cancelled
         orgId:
           type: string
-          example: org_123
+        startTimestamp:
+          type: string
+          format: date-time
+        endTimestamp:
+          type: string
+          format: date-time
         createdAt:
           type: string
           format: date-time
-          example: 2026-06-02T10:00:00Z
+        updatedAt:
+          type: string
+          format: date-time
       required:
         - id
-        - url
-        - events
-        - active
+        - creator
+        - verifier
+        - amount
+        - status
+        - orgId
+        - startTimestamp
+        - endTimestamp
         - createdAt
-    CreateWebhookRequest:
+        - updatedAt
+    SavedSearchQueryDefinition:
       type: object
       properties:
-        url:
+        q:
           type: string
-          format: uri
-          example: https://example.com/webhook
-        events:
-          type: array
-          items:
-            type: string
-          minItems: 1
-          example:
-            - vault.created
-            - vault.completed
-        active:
-          type: boolean
-          default: true
-          example: true
-      required:
-        - url
-        - events
-    CreateWebhookResponse:
-      type: object
-      properties:
-        secret:
+          maxLength: 200
+          description: Free-text search term (sanitized)
+        status:
           type: string
-          description: Generated webhook signing secret (only shown once)
-          example: a1b2c3d4e5f67890
-        subscription:
-          $ref: "#/components/schemas/WebhookSubscription"
-      required:
-        - secret
-        - subscription
-    RotateWebhookSecretResponse:
-      type: object
-      properties:
-        secret:
+          enum:
+            - draft
+            - active
+            - completed
+            - failed
+            - cancelled
+        verifier:
           type: string
-          description: New webhook signing secret
-          example: f6e5d4c3b2a10987
-        subscription:
-          $ref: "#/components/schemas/WebhookSubscription"
-      required:
-        - secret
-        - subscription
-    WebhookDeadLetter:
+          maxLength: 256
+        amount_min:
+          type: string
+          pattern: ^\d+(\.\d+)?$
+          description: Inclusive lower amount bound
+        amount_max:
+          type: string
+          pattern: ^\d+(\.\d+)?$
+          description: Inclusive upper amount bound
+        date_from:
+          type: string
+          description: ISO 8601 date or timestamp (inclusive lower created_at bound)
+        date_to:
+          type: string
+          description: ISO 8601 date or timestamp (inclusive upper created_at bound)
+        sort_by:
+          type: string
+          enum:
+            - created_at
+            - amount
+            - end_date
+            - status
+        sort_order:
+          type: string
+          enum:
+            - asc
+            - desc
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+    OrgVaultSearch:
       type: object
       properties:
         id:
           type: string
-          format: uuid
-          example: 123e4567-e89b-12d3-a456-426614174000
-        subscriber_id:
+        org_id:
           type: string
-          format: uuid
-          example: 123e4567-e89b-12d3-a456-426614174001
-        event_id:
+        name:
           type: string
-          example: evt_123
-        event_type:
-          type: string
-          example: vault.failed
-        payload:
-          type: object
-          additionalProperties: {}
-          example:
-            vaultId: "123"
-        last_error:
-          type: string
-          example: "HTTP 500: Internal Server Error"
-        attempts:
-          type: number
-          example: 5
-        failed_at:
-          type: string
-          format: date-time
-          example: 2026-06-02T10:00:00Z
-        replayed_at:
+          example: High-value active vaults
+        query_definition:
+          $ref: "#/components/schemas/SavedSearchQueryDefinition"
+        alerts_enabled:
+          type: boolean
+        alert_recipient:
+          type:
+            - string
+            - "null"
+        alert_frequency_ms:
+          type: integer
+          example: 3600000
+        last_evaluated_at:
           type:
             - string
             - "null"
           format: date-time
-          example: null
-      required:
-        - id
-        - subscriber_id
-        - event_id
-        - event_type
-        - payload
-        - last_error
-        - attempts
-        - failed_at
-        - replayed_at
-    FieldPolicy:
-      type: object
-      properties:
-        mode:
+        last_result_hash:
+          type:
+            - string
+            - "null"
+        created_by:
           type: string
-          enum:
-            - default
-            - allowlist
-            - denylist
-          example: default
-        fields:
-          type: array
-          items:
-            type: string
-          example:
-            - email
-            - address
-        stripPii:
-          type: boolean
-          example: true
-      required:
-        - mode
-        - fields
-        - stripPii
-    AdminWebhookSubscriber:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-          example: 123e4567-e89b-12d3-a456-426614174000
-        organization_id:
-          type: string
-          example: org_123
-        url:
-          type: string
-          format: uri
-          example: https://example.com/webhook
-        events:
-          type: array
-          items:
-            type: string
-          example:
-            - vault.created
-        active:
-          type: boolean
-          example: true
         created_at:
           type: string
           format: date-time
-          example: 2026-06-02T10:00:00Z
-        rotated_at:
-          type:
-            - string
-            - "null"
+        updated_at:
+          type: string
           format: date-time
-          example: null
-        field_policy:
-          $ref: "#/components/schemas/FieldPolicy"
       required:
         - id
-        - organization_id
-        - url
-        - events
-        - active
+        - org_id
+        - name
+        - query_definition
+        - alerts_enabled
+        - alert_recipient
+        - alert_frequency_ms
+        - last_evaluated_at
+        - last_result_hash
+        - created_by
         - created_at
-    EgressAllowlistEntry:
+        - updated_at
+    OrgVaultSearchResult:
       type: object
       properties:
         id:
           type: string
-          format: uuid
-          example: 123e4567-e89b-12d3-a456-426614174000
-        organizationId:
+        creator:
           type: string
-          example: org_123
-        host:
+        verifier:
           type: string
-          example: api.example.com
+        amount:
+          type: string
+        status:
+          type: string
+          enum:
+            - draft
+            - active
+            - completed
+            - failed
+            - cancelled
+        organization_id:
+          type: string
+        start_date:
+          type: string
+          format: date-time
+        end_date:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - creator
+        - verifier
+        - amount
+        - status
+        - organization_id
+        - start_date
+        - end_date
+        - created_at
+        - updated_at
+    OrgAnalytics:
+      type: object
+      properties:
+        orgId:
+          type: string
+        analytics:
+          type: object
+          properties:
+            totalCapital:
+              type: string
+              example: "4200.0000000"
+            successRate:
+              type: number
+              description: completed / (completed + failed)
+              example: 0.75
+            activeVaults:
+              type: integer
+            completedVaults:
+              type: integer
+            failedVaults:
+              type: integer
+          required:
+            - totalCapital
+            - successRate
+            - activeVaults
+            - completedVaults
+            - failedVaults
+        teamPerformance:
+          type: array
+          items:
+            type: object
+            properties:
+              creator:
+                type: string
+              vaultCount:
+                type: integer
+              totalAmount:
+                type: string
+              successRate:
+                type: number
+            required:
+              - creator
+              - vaultCount
+              - totalAmount
+              - successRate
+        generatedAt:
+          type: string
+          format: date-time
+      required:
+        - orgId
+        - analytics
+        - teamPerformance
+        - generatedAt
+    OrgRiskAnalytics:
+      type: object
+      properties:
+        orgId:
+          type: string
+        generatedAt:
+          type: string
+          format: date-time
+        range:
+          type: object
+          properties:
+            startDate:
+              type: string
+              format: date-time
+            endDate:
+              type: string
+              format: date-time
+          required:
+            - startDate
+            - endDate
+        analytics:
+          type: object
+          properties:
+            totalVaults:
+              type: integer
+            activeVaults:
+              type: integer
+            resolvedVaults:
+              type: integer
+            slashedVaults:
+              type: integer
+            slashRate:
+              type: number
+            capitalAtRisk:
+              type: string
+          required:
+            - totalVaults
+            - activeVaults
+            - resolvedVaults
+            - slashedVaults
+            - slashRate
+            - capitalAtRisk
+      required:
+        - orgId
+        - generatedAt
+        - range
+        - analytics
+    CohortRetention:
+      type: object
+      properties:
+        cohorts:
+          type: array
+          items:
+            type: object
+            properties:
+              cohort_period:
+                type: string
+                example: 2026-01
+              cohort_size:
+                type: integer
+              retained_count:
+                type: integer
+              retention_rate:
+                type: number
+                description: Fraction in [0, 1]
+            required:
+              - cohort_period
+              - cohort_size
+              - retained_count
+              - retention_rate
+        range:
+          type:
+            - integer
+            - "null"
+        generatedAt:
+          type: string
+          format: date-time
+      required:
+        - cohorts
+        - range
+        - generatedAt
+    TeamRollup:
+      type: object
+      properties:
+        orgId:
+          type: string
+        teams:
+          type: array
+          items:
+            type: object
+            properties:
+              teamId:
+                type: string
+              name:
+                type: string
+              slug:
+                type: string
+              vaultCount:
+                type: integer
+              totalCapital:
+                type: string
+              activeVaults:
+                type: integer
+              completedVaults:
+                type: integer
+              failedVaults:
+                type: integer
+              milestoneCount:
+                type: integer
+              milestonesCompleted:
+                type: integer
+              slashRate:
+                type: number
+            required:
+              - teamId
+              - name
+              - slug
+              - vaultCount
+              - totalCapital
+              - activeVaults
+              - completedVaults
+              - failedVaults
+              - milestoneCount
+              - milestonesCompleted
+              - slashRate
+        orgTotals:
+          type: object
+          properties:
+            vaultCount:
+              type: integer
+            totalCapital:
+              type: string
+            activeVaults:
+              type: integer
+            completedVaults:
+              type: integer
+            failedVaults:
+              type: integer
+            milestoneCount:
+              type: integer
+            milestonesCompleted:
+              type: integer
+            slashRate:
+              type: number
+            teamCount:
+              type: integer
+          required:
+            - vaultCount
+            - totalCapital
+            - activeVaults
+            - completedVaults
+            - failedVaults
+            - milestoneCount
+            - milestonesCompleted
+            - slashRate
+            - teamCount
+        generatedAt:
+          type: string
+          format: date-time
+      required:
+        - orgId
+        - teams
+        - orgTotals
+        - generatedAt
+    OrgAnalyticsReport:
+      type: object
+      properties:
+        id:
+          type: string
+        orgId:
+          type: string
+        snapshotAt:
+          type: string
+          format: date-time
         createdAt:
           type: string
           format: date-time
-          example: 2026-06-02T10:00:00Z
+        sizeBytes:
+          type: integer
+        downloadUrl:
+          type:
+            - string
+            - "null"
+          description: Signed S3 URL or local download path
       required:
         - id
-        - organizationId
-        - host
+        - orgId
+        - snapshotAt
         - createdAt
-    SubscriberDeliveryStats:
-      type: object
-      properties:
-        subscriber_id:
-          type: string
-          format: uuid
-          example: 123e4567-e89b-12d3-a456-426614174000
-        window:
-          type: string
-          example: 24h
-        window_start:
-          type: string
-          format: date-time
-          example: 2026-06-01T10:00:00Z
-        window_end:
-          type: string
-          format: date-time
-          example: 2026-06-02T10:00:00Z
-        attempt_count:
-          type: number
-          example: 120
-        success_count:
-          type: number
-          example: 118
-        failure_count:
-          type: number
-          example: 2
-        success_rate:
-          type: number
-          example: 0.9833
-        p50_latency_ms:
-          type:
-            - number
-            - "null"
-          example: 45
-        p95_latency_ms:
-          type:
-            - number
-            - "null"
-          example: 120
-        last_failure_reason:
-          type:
-            - string
-            - "null"
-          example: ETIMEDOUT
-        breaker_state:
-          type:
-            - string
-            - "null"
-          example: CLOSED
-      required:
-        - subscriber_id
-        - window
-        - window_start
-        - window_end
-        - attempt_count
-        - success_count
-        - failure_count
-        - success_rate
-        - p50_latency_ms
-        - p95_latency_ms
-        - last_failure_reason
-        - breaker_state
+        - sizeBytes
+        - downloadUrl
   parameters: {}
 paths:
   /api/health:
@@ -1397,6 +1809,653 @@ paths:
           description: Vault not found
         "409":
           description: Vault already cancelled or not cancellable
+  /api/admin/verifiers:
+    get:
+      operationId: adminListVerifiers
+      summary: List verifier profiles with aggregate stats
+      description: Returns verifier profiles ordered by the underlying table order.
+        `limit` is clamped to 200 and defaults to 50; invalid values fall back
+        to the defaults.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Paginated verifier profiles with aggregate verification stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierListResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/ErrorEnvelope"
+                  - $ref: "#/components/schemas/VerifierErrorResponse"
+    post:
+      operationId: adminCreateVerifier
+      summary: Create a verifier profile
+      description: "`userId` must be a valid Stellar public key. When `status` is
+        omitted the profile is created as `pending`. A unique-constraint
+        violation returns 409."
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVerifierRequest"
+      responses:
+        "201":
+          description: Verifier profile created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierCreateResponse"
+        "400":
+          description: Missing userId, invalid Stellar public key, non-string displayName,
+            non-object metadata or invalid status
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/ErrorEnvelope"
+                  - $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Verifier already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}:
+    get:
+      operationId: adminGetVerifier
+      summary: Get a verifier profile and its stats
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      responses:
+        "200":
+          description: Verifier profile and aggregate stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierWithStats"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/ErrorEnvelope"
+                  - $ref: "#/components/schemas/VerifierErrorResponse"
+    patch:
+      operationId: adminUpdateVerifier
+      summary: Update a verifier profile
+      description: Only the provided fields are updated. `displayName` and `metadata`
+        accept `null` to clear them. Status changes follow the verifier
+        transition matrix; an illegal transition returns 409.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateVerifierRequest"
+      responses:
+        "200":
+          description: Updated verifier profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Non-string displayName, non-object metadata or invalid status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+    delete:
+      operationId: adminDeleteVerifier
+      summary: Delete a verifier profile
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "204":
+          description: Verifier profile deleted; no content returned
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/approve:
+    post:
+      operationId: adminApproveVerifier
+      summary: Approve a verifier
+      description: Creates the verifier profile as `approved` when it does not exist
+        yet, otherwise transitions the existing profile. A second in-flight
+        transition for the same verifier returns 429.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier approved
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "429":
+          description: A concurrent transition for this verifier is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/suspend:
+    post:
+      operationId: adminSuspendVerifier
+      summary: Suspend a verifier
+      description: Creates the verifier profile as `suspended` when it does not exist
+        yet, otherwise transitions the existing profile. A second in-flight
+        transition for the same verifier returns 429.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier suspended
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "429":
+          description: A concurrent transition for this verifier is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/reinstate:
+    post:
+      operationId: adminReinstateVerifier
+      summary: Reinstate a suspended or deactivated verifier
+      description: Restores a previously approved verifier to `approved`, otherwise to
+        `pending`. Reinstating an already active (`approved`/`pending`) verifier
+        is a no-op returning an empty `changedFields` and a `null` `auditLogId`.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier reinstated (or already active)
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/deactivate:
+    post:
+      operationId: adminDeactivateVerifier
+      summary: Deactivate a verifier
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier deactivated
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/reactivate:
+    post:
+      operationId: adminReactivateVerifier
+      summary: Reactivate a deactivated verifier
+      description: Transitions a deactivated verifier back to `pending`, pending
+        re-approval.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier reactivated as pending
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
   /api/exports/me:
     post:
       summary: Enqueue a personal data export job
@@ -1605,1058 +2664,893 @@ paths:
                       - warnings
                 required:
                   - data
-  /api/webhooks:
-    post:
-      operationId: createWebhookSubscription
-      summary: Create a webhook subscription for an organization
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      parameters:
-        - schema:
-            type: string
-            description: Organization ID
-            example: org_123
-          required: true
-          description: Organization ID
-          name: orgId
-          in: query
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateWebhookRequest"
-      responses:
-        "201":
-          description: Webhook subscription created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CreateWebhookResponse"
-        "400":
-          description: Bad request (missing orgId or invalid body)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (member access required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "422":
-          description: Unprocessable entity (URL not permitted by egress policy)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/organizations/{orgId}/vaults:
     get:
-      operationId: listWebhookSubscriptions
-      summary: List webhook subscriptions for an organization
+      summary: List vaults belonging to an organization
+      description: Offset-paginated listing of the org's non-deleted vaults, with
+        optional status/creator filters and sorting.
       tags:
-        - Webhooks
+        - Org Vaults
       security:
         - bearerAuth: []
       parameters:
-        - schema:
-            type: string
-            description: Organization ID
-            example: org_123
+        - name: orgId
+          in: path
           required: true
-          description: Organization ID
-          name: orgId
+          schema:
+            type: string
+            example: org_123
+        - name: page
           in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum:
+              - createdAt
+              - amount
+              - endTimestamp
+              - status
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - draft
+              - active
+              - completed
+              - failed
+              - cancelled
+        - name: creator
+          in: query
+          schema:
+            type: string
       responses:
         "200":
-          description: List of webhook subscriptions
+          description: Paginated org vaults
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  subscriptions:
+                  data:
                     type: array
                     items:
-                      $ref: "#/components/schemas/WebhookSubscription"
+                      $ref: "#/components/schemas/OrgVault"
+                  pagination:
+                    $ref: "#/components/schemas/PagePagination"
                 required:
-                  - subscriptions
-        "400":
-          description: Bad request (missing orgId)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
+                  - data
+                  - pagination
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (member access required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/webhooks/{id}:
-    get:
-      operationId: getWebhookSubscription
-      summary: Get a webhook subscription by ID
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-          description: Webhook subscription ID (UUID)
-        - name: orgId
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Organization ID
-      responses:
-        "200":
-          description: Webhook subscription details
+          description: Authentication required
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  subscription:
-                    $ref: "#/components/schemas/WebhookSubscription"
+                  error:
+                    type: string
+                    example: Internal server error
                 required:
-                  - subscription
-        "400":
-          description: Bad request (invalid ID format or missing orgId)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
+                  - error
         "403":
-          description: Forbidden (member access required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "404":
-          description: Webhook subscription not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-    delete:
-      operationId: deleteWebhookSubscription
-      summary: Delete a webhook subscription
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-          description: Webhook subscription ID (UUID)
-        - name: orgId
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Organization ID
-      responses:
-        "200":
-          description: Webhook subscription deleted
+          description: Caller is not a member of the organization
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  deleted:
-                    type: boolean
-                    example: true
+                  error:
+                    type: string
+                    example: Internal server error
                 required:
-                  - deleted
-        "400":
-          description: Bad request (invalid ID format or missing orgId)
+                  - error
+        "500":
+          description: Internal server error
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (member access required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "404":
-          description: Webhook subscription not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/webhooks/{id}/rotate-secret:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/organizations/{orgId}/vault-searches:
     post:
-      operationId: rotateWebhookSecret
-      summary: Rotate signing secret for a webhook subscription
+      summary: Create a saved vault search
+      description: Creates a saved search for the org. Requires owner/admin. Each org
+        may keep at most 20 saved searches; when alerts are enabled the
+        recipient is required and the frequency must be at least one hour.
       tags:
-        - Webhooks
+        - Org Vaults
       security:
         - bearerAuth: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-          description: Webhook subscription ID (UUID)
         - name: orgId
-          in: query
-          required: true
-          schema:
-            type: string
-          description: Organization ID
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties: {}
-              description: Empty body expected
-      responses:
-        "200":
-          description: Webhook secret rotated successfully
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RotateWebhookSecretResponse"
-        "400":
-          description: Bad request (invalid ID format or missing orgId)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (member access required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "404":
-          description: Webhook subscription not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/admin/webhooks/dead-letters:
-    get:
-      operationId: listWebhookDeadLetters
-      summary: List webhook dead-letter queue entries (admin)
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      parameters:
-        - schema:
-            type:
-              - number
-              - "null"
-            default: 50
-            example: 50
-          required: false
-          name: limit
-          in: query
-        - schema:
-            type:
-              - number
-              - "null"
-            default: 0
-            example: 0
-          required: false
-          name: offset
-          in: query
-        - schema:
-            type: string
-            example: 123e4567-e89b-12d3-a456-426614174000
-          required: false
-          name: subscriber_id
-          in: query
-      responses:
-        "200":
-          description: List of dead-letter deliveries
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  webhook_dead_letters:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/WebhookDeadLetter"
-                  count:
-                    type: number
-                    example: 10
-                  total:
-                    type: number
-                    example: 25
-                  limit:
-                    type: number
-                    example: 50
-                  offset:
-                    type: number
-                    example: 0
-                  has_more:
-                    type: boolean
-                    example: false
-                required:
-                  - webhook_dead_letters
-                  - count
-                  - total
-                  - limit
-                  - offset
-                  - has_more
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/admin/webhooks/dead-letters/{id}/replay:
-    post:
-      operationId: replayWebhookDeadLetter
-      summary: Replay a specific dead-letter webhook delivery (admin)
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: id
           in: path
           required: true
           schema:
             type: string
-          description: Dead letter entry ID
-      responses:
-        "202":
-          description: Dead letter replayed
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  replayed:
-                    type: boolean
-                    example: true
-                required:
-                  - replayed
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "404":
-          description: Dead letter not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/admin/webhooks/subscribers:
-    post:
-      operationId: upsertAdminWebhookSubscriber
-      summary: Idempotently register or update a subscriber (admin)
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
+            example: org_123
       requestBody:
         content:
           application/json:
             schema:
               type: object
               properties:
-                organization_id:
+                name:
                   type: string
-                  example: org_123
-                url:
+                  minLength: 1
+                  maxLength: 255
+                query_definition:
+                  $ref: "#/components/schemas/SavedSearchQueryDefinition"
+                alerts_enabled:
+                  type: boolean
+                  default: false
+                alert_recipient:
                   type: string
-                  format: uri
-                  example: https://example.com/webhook
-                secret:
-                  type: string
-                  example: sec_123
-                events:
-                  type: array
-                  items:
-                    type: string
-                  example:
-                    - vault.created
-              required:
-                - organization_id
-                - url
-                - secret
-      responses:
-        "200":
-          description: Webhook subscriber registered or updated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AdminWebhookSubscriber"
-        "400":
-          description: Bad request (missing required fields)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "422":
-          description: Unprocessable entity (URL not permitted by egress policy)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-    get:
-      operationId: listAdminWebhookSubscribers
-      summary: List active subscribers for an organization (admin)
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      parameters:
-        - schema:
-            type: string
-            example: org_123
-          required: true
-          name: organization_id
-          in: query
-      responses:
-        "200":
-          description: List of active subscribers
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  subscribers:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/AdminWebhookSubscriber"
-                required:
-                  - subscribers
-        "400":
-          description: Bad request (missing organization_id)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/admin/webhooks/subscribers/{id}/rotate-secret:
-    post:
-      operationId: rotateAdminWebhookSubscriberSecret
-      summary: Rotate signing secret for a subscriber with grace window (admin)
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          description: Subscriber ID
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                organization_id:
-                  type: string
-                  example: org_123
-                new_secret:
-                  type: string
-                  example: new_sec_123
-              required:
-                - organization_id
-                - new_secret
-      responses:
-        "200":
-          description: Secret rotated successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id:
-                    type: string
-                    example: 123e4567-e89b-12d3-a456-426614174000
-                  rotated_at:
-                    type: string
-                    format: date-time
-                    example: 2026-06-02T10:00:00Z
-                required:
-                  - id
-                  - rotated_at
-        "400":
-          description: Bad request (missing organization_id or new_secret)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "404":
-          description: Subscriber not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/admin/webhooks/pause/status:
-    get:
-      operationId: getWebhookPauseStatus
-      summary: Get current webhook delivery pause status (admin)
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: Current delivery pause status
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  paused:
-                    type: boolean
-                    example: false
-                required:
-                  - paused
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/admin/webhooks/pause:
-    post:
-      operationId: pauseWebhookDelivery
-      summary: Halt all outbound webhook delivery (admin)
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: Webhook delivery paused
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  paused:
-                    type: boolean
-                    enum:
-                      - true
-                    example: true
-                required:
-                  - paused
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/admin/webhooks/resume:
-    post:
-      operationId: resumeWebhookDelivery
-      summary: Resume all outbound webhook delivery (admin)
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      responses:
-        "200":
-          description: Webhook delivery resumed
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  paused:
-                    type: boolean
-                    enum:
-                      - false
-                    example: false
-                required:
-                  - paused
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/admin/webhooks/{id}/replay:
-    post:
-      operationId: replayWebhookWindow
-      summary: Replay dead-letter entries for a subscriber within a time window (admin)
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          description: Subscriber ID
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                start_time:
-                  type: string
-                  format: date-time
-                  example: 2026-06-01T00:00:00Z
-                end_time:
-                  type: string
-                  format: date-time
-                  example: 2026-06-02T00:00:00Z
-                replay_marker:
-                  type: string
-                  example: marker_abc
-                max_events:
+                  description: Required when alerts_enabled is true
+                alert_frequency_ms:
                   type: integer
-                  minimum: 1
-                  example: 500
+                  minimum: 3600000
+                  description: Minimum 3600000 (1 hour)
+                  example: 3600000
               required:
-                - start_time
-                - end_time
-      responses:
-        "200":
-          description: Window replay executed
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  replayed:
-                    type: boolean
-                    example: true
-                  count:
-                    type: number
-                    example: 10
-                  success_count:
-                    type: number
-                    example: 10
-                  failure_count:
-                    type: number
-                    example: 0
-                  replay_marker:
-                    type: string
-                    example: marker_abc
-                required:
-                  - replayed
-                  - count
-                  - success_count
-                  - failure_count
-        "400":
-          description: Bad request (invalid timestamps or params)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "404":
-          description: Subscriber not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/admin/webhooks/egress-allowlist:
-    get:
-      operationId: listEgressAllowlist
-      summary: List egress allowlist entries for an organization (admin)
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      parameters:
-        - schema:
-            type: string
-            example: org_123
-          required: true
-          name: organization_id
-          in: query
-      responses:
-        "200":
-          description: List of egress allowlist entries
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  egress_allowlist:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/EgressAllowlistEntry"
-                required:
-                  - egress_allowlist
-        "400":
-          description: Bad request (missing organization_id)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-    post:
-      operationId: addEgressAllowlistEntry
-      summary: Add host to an organization egress allowlist (admin)
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                organization_id:
-                  type: string
-                  example: org_123
-                host:
-                  type: string
-                  example: api.example.com
-              required:
-                - organization_id
-                - host
+                - name
+                - query_definition
       responses:
         "201":
-          description: Egress allowlist entry created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/EgressAllowlistEntry"
-        "400":
-          description: Bad request (missing organization_id or host)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-    delete:
-      operationId: removeEgressAllowlistEntry
-      summary: Remove host from an organization egress allowlist (admin)
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                organization_id:
-                  type: string
-                  example: org_123
-                host:
-                  type: string
-                  example: api.example.com
-              required:
-                - organization_id
-                - host
-      responses:
-        "200":
-          description: Egress allowlist entry removed
+          description: Saved search created
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  removed:
-                    type: boolean
-                    example: true
+                  search:
+                    $ref: "#/components/schemas/OrgVaultSearch"
                 required:
-                  - removed
+                  - search
         "400":
-          description: Bad request (missing organization_id or host)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "404":
-          description: Entry not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/admin/webhooks/{id}/stats:
-    get:
-      operationId: getSubscriberDeliveryStats
-      summary: Get aggregated delivery analytics for a subscriber (admin)
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          description: Subscriber ID
-        - name: window
-          in: query
-          required: false
-          schema:
-            type: string
-            default: 24h
-          description: Time window (e.g. 1h, 24h, 72h, 3d)
-      responses:
-        "200":
-          description: Subscriber delivery stats
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SubscriberDeliveryStats"
-        "400":
-          description: Bad request (invalid window parameter)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "403":
-          description: Forbidden (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "404":
-          description: Subscriber not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-  /api/admin/webhooks/subscribers/{id}/field-policy:
-    patch:
-      operationId: updateSubscriberFieldPolicy
-      summary: Update field masking policy for a subscriber (admin)
-      tags:
-        - Webhooks
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          description: Subscriber ID
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                organization_id:
-                  type: string
-                  example: org_123
-                field_policy:
-                  $ref: "#/components/schemas/FieldPolicy"
-              required:
-                - organization_id
-                - field_policy
-      responses:
-        "200":
-          description: Field policy updated
+          description: Invalid name, query_definition or alert settings
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  id:
+                  error:
                     type: string
-                    example: 123e4567-e89b-12d3-a456-426614174000
-                  field_policy:
-                    $ref: "#/components/schemas/FieldPolicy"
+                    example: Internal server error
                 required:
-                  - id
-                  - field_policy
-        "400":
-          description: Bad request (invalid organization_id or field_policy)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
+                  - error
         "401":
-          description: Unauthorized
+          description: Authentication required
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
         "403":
-          description: Forbidden (admin required)
+          description: Owner or admin role required
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "422":
+          description: Org has reached the saved-search limit (20)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+    get:
+      summary: List saved vault searches
+      tags:
+        - Org Vaults
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+      responses:
+        "200":
+          description: Saved searches, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  searches:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgVaultSearch"
+                required:
+                  - searches
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Caller is not a member of the organization
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/organizations/{orgId}/vault-searches/{searchId}:
+    get:
+      summary: Get a saved vault search
+      tags:
+        - Org Vaults
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: searchId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Saved search
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  search:
+                    $ref: "#/components/schemas/OrgVaultSearch"
+                required:
+                  - search
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Caller is not a member of the organization
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
         "404":
-          description: Subscriber not found
+          description: Saved search not found
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+    delete:
+      summary: Delete a saved vault search
+      tags:
+        - Org Vaults
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: searchId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Saved search deleted
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "404":
+          description: Saved search not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/organizations/{orgId}/vaults/search:
+    get:
+      summary: Search an organization's vaults
+      description: Full-text search (tsvector with an ILIKE fallback) plus structured
+        filters, cursor-paginated on (created_at DESC, id DESC).
+      tags:
+        - Org Vaults
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: q
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+            description: Sanitized free-text term
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - draft
+              - active
+              - completed
+              - failed
+              - cancelled
+        - name: verifier
+          in: query
+          schema:
+            type: string
+        - name: amount_min
+          in: query
+          schema:
+            type: string
+        - name: amount_max
+          in: query
+          schema:
+            type: string
+        - name: date_from
+          in: query
+          schema:
+            type: string
+            description: ISO 8601 lower bound on created_at
+        - name: date_to
+          in: query
+          schema:
+            type: string
+            description: ISO 8601 upper bound on created_at
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            description: Opaque cursor from a previous page
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Matching vaults
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgVaultSearchResult"
+                  pagination:
+                    $ref: "#/components/schemas/PaginationCursor"
+                required:
+                  - data
+                  - pagination
+        "400":
+          description: Invalid cursor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Caller is not a member of the organization
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/analytics/risk:
+    get:
+      summary: Get org risk analytics
+      description: Slash rate, capital at risk and vault counts, optionally scoped to
+        a date window.
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            description: ISO 8601 window start
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            description: ISO 8601 window end
+      responses:
+        "200":
+          description: Risk analytics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgRiskAnalytics"
+        "400":
+          description: Invalid date range
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/analytics:
+    get:
+      summary: Get org vault analytics
+      description: Totals, success rate and a per-creator team-performance breakdown,
+        aggregated from Postgres.
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+      responses:
+        "200":
+          description: Org analytics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgAnalytics"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Failed to generate org analytics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/cohort-retention:
+    get:
+      summary: Get cohort retention
+      description: "Retention cohorts read from the vault_cohort_retention
+        materialized view. Note: the view is global, not scoped to the org."
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: range
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            description: Number of most-recent cohorts to return
+      responses:
+        "200":
+          description: Cohort retention data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  orgId:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/CohortRetention"
+                required:
+                  - success
+                  - orgId
+                  - data
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/teams/rollup:
+    get:
+      summary: Get org team rollup
+      description: Per-team vault, capital and milestone totals plus org-wide totals.
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+      responses:
+        "200":
+          description: Team rollup
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamRollup"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Failed to generate team rollup
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/analytics/reports:
+    get:
+      summary: List org analytics reports
+      description: Point-in-time analytics reports, newest first, with a signed
+        download URL when available.
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Paginated analytics reports
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgAnalyticsReport"
+                  pagination:
+                    $ref: "#/components/schemas/PagePagination"
+                required:
+                  - data
+                  - pagination
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
 webhooks: {}

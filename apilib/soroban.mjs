@@ -174,9 +174,32 @@ export function buildInvocationArgs(method, args = {}) {
   })
 }
 
-export function expectedArgs(operation, vault, cfg) {
+export function expectedArgs(operation, vault, cfg, params = {}) {
   if (operation === 'create_vault') return createVaultArgs(vault, cfg.tokenId)
   if (operation === 'stake') return stakeArgs(vault)
+  if (operation === 'claim_milestone') {
+    return buildInvocationArgs('claim_milestone', {
+      vaultId: vault.id,
+      caller: params.caller ?? vault.creator,
+      index: params.index,
+    })
+  }
+  if (operation === 'slash_on_miss') {
+    return buildInvocationArgs('slash_on_miss', { vaultId: vault.id })
+  }
+  if (operation === 'withdraw') {
+    return buildInvocationArgs('withdraw', { vaultId: vault.id, creator: vault.creator })
+  }
+  if (operation === 'claim') {
+    return buildInvocationArgs('claim', { vaultId: vault.id, caller: params.caller ?? vault.creator })
+  }
+  throw new OnchainError(`Unsupported operation ${operation}`)
+}
+
+export function expectedSigner(operation, vault, params = {}) {
+  if (operation === 'create_vault' || operation === 'stake' || operation === 'withdraw') return vault.creator
+  if (operation === 'claim_milestone' || operation === 'claim') return assertGAddress(params.caller ?? vault.creator, 'caller')
+  if (operation === 'slash_on_miss') return assertGAddress(params.caller ?? vault.verifier, 'caller')
   throw new OnchainError(`Unsupported operation ${operation}`)
 }
 
@@ -203,10 +226,11 @@ export function decodeContractError(input) {
   return { code, name, message }
 }
 
-async function buildUnsigned(server, cfg, vault, operation) {
-  const account = await server.getAccount(vault.creator)
+async function buildUnsigned(server, cfg, vault, operation, params = {}) {
+  const source = expectedSigner(operation, vault, params)
+  const account = await server.getAccount(source)
   const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase: cfg.networkPassphrase })
-    .addOperation(new Contract(cfg.contractId).call(operation, ...expectedArgs(operation, vault, cfg)))
+    .addOperation(new Contract(cfg.contractId).call(operation, ...expectedArgs(operation, vault, cfg, params)))
     .setTimeout(300).build()
   try {
     const prepared = await server.prepareTransaction(tx) // simulate + footprint + resource fee
@@ -220,31 +244,43 @@ async function buildUnsigned(server, cfg, vault, operation) {
 
 export const buildCreateVaultTx = (server, cfg, vault) => buildUnsigned(server, cfg, vault, 'create_vault')
 export const buildStakeTx = (server, cfg, vault) => buildUnsigned(server, cfg, vault, 'stake')
+export const buildClaimMilestoneTx = (server, cfg, vault, { caller, index } = {}) =>
+  buildUnsigned(server, cfg, vault, 'claim_milestone', { caller, index })
+export const buildSlashTx = (server, cfg, vault, { caller } = {}) =>
+  buildUnsigned(server, cfg, vault, 'slash_on_miss', { caller })
+export const buildWithdrawTx = (server, cfg, vault) => buildUnsigned(server, cfg, vault, 'withdraw')
 
 /**
  * Decode a client-signed XDR and prove it is exactly the expected invocation for this vault:
- * same network, source = creator, signed by the creator, one invoke-contract op on the configured
+ * same network, source = expected signer, signed by that signer, one invoke-contract op on the configured
  * contract and function with args identical to those we would have built. Throws OnchainError(400).
  */
-export function verifySignedTx(signedXdr, vault, operation, cfg) {
+export function verifySignedTx(signedXdr, vault, operation, cfg, params = {}) {
   let tx
   try { tx = TransactionBuilder.fromXDR(String(signedXdr), cfg.networkPassphrase) } catch { throw new OnchainError('signedXdr is not a valid transaction envelope') }
   if (tx.innerTransaction) throw new OnchainError('Fee-bump transactions are not accepted')
-  if (tx.source !== vault.creator) throw new OnchainError('Transaction source must be the vault creator')
+  const signer = expectedSigner(operation, vault, params)
+  if (tx.source !== signer) {
+    throw new OnchainError(signer === vault.creator ? 'Transaction source must be the vault creator' : 'Transaction source must match expected signer')
+  }
   let signed = false
   try {
-    const kp = Keypair.fromPublicKey(vault.creator); const h = tx.hash()
+    const kp = Keypair.fromPublicKey(signer); const h = tx.hash()
     signed = tx.signatures.some((s) => kp.verify(h, s.signature()))
   } catch { signed = false }
-  if (!signed) throw new OnchainError('No valid creator signature for this network passphrase')
+  if (!signed) {
+    throw new OnchainError(signer === vault.creator ? 'No valid creator signature for this network passphrase' : 'No valid signature for this network passphrase')
+  }
   if (tx.operations.length !== 1) throw new OnchainError('Transaction must contain exactly one operation')
   const op = tx.operations[0]
   if (op.type !== 'invokeHostFunction' || op.func.switch().name !== 'hostFunctionTypeInvokeContract') throw new OnchainError('Transaction must invoke a contract')
-  if (op.source && op.source !== vault.creator) throw new OnchainError('Operation source must be the vault creator')
+  if (op.source && op.source !== signer) {
+    throw new OnchainError(signer === vault.creator ? 'Operation source must be the vault creator' : 'Operation source must match expected signer')
+  }
   const inv = op.func.invokeContract()
   if (Address.fromScAddress(inv.contractAddress()).toString() !== cfg.contractId) throw new OnchainError('Transaction targets a different contract')
   if (inv.functionName().toString() !== operation) throw new OnchainError(`Transaction must call ${operation}`)
-  const want = expectedArgs(operation, vault, cfg).map((a) => a.toXDR('base64'))
+  const want = expectedArgs(operation, vault, cfg, params).map((a) => a.toXDR('base64'))
   const got = inv.args().map((a) => a.toXDR('base64'))
   if (want.length !== got.length || want.some((w, i) => w !== got[i])) throw new OnchainError(`Transaction arguments do not match vault ${vault.id}`)
   return { tx, hash: tx.hash().toString('hex') }

@@ -52,14 +52,18 @@
               {
                 "amount": "500",
                 "dueDate": "<timestamp>",
+                "evidence": [],
                 "id": "<milestone-1>",
+                "latestEvidenceHash": null,
                 "status": "completed",
                 "title": "Task 1"
               },
               {
                 "amount": "500",
                 "dueDate": "<timestamp>",
+                "evidence": [],
                 "id": "<milestone-2>",
+                "latestEvidenceHash": null,
                 "status": "pending",
                 "title": "Task 2"
               }
@@ -100,14 +104,18 @@
               {
                 "amount": "500",
                 "dueDate": "<timestamp>",
+                "evidence": [],
                 "id": "<milestone-1>",
+                "latestEvidenceHash": null,
                 "status": "completed",
                 "title": "Task 1"
               },
               {
                 "amount": "500",
                 "dueDate": "<timestamp>",
+                "evidence": [],
                 "id": "<milestone-2>",
+                "latestEvidenceHash": null,
                 "status": "completed",
                 "title": "Task 2"
               }
@@ -144,6 +152,7 @@
                 "createdAt": "<timestamp>",
                 "hash": "<hash>",
                 "id": "<uuid>",
+                "ledger": null,
                 "memo": "Funds released to success destination",
                 "status": "simulated",
                 "type": "release",
@@ -154,6 +163,7 @@
                 "createdAt": "<timestamp>",
                 "hash": "<hash>",
                 "id": "<uuid>",
+                "ledger": null,
                 "memo": "Milestone validated: Task 2",
                 "status": "simulated",
                 "type": "validate",
@@ -164,6 +174,7 @@
                 "createdAt": "<timestamp>",
                 "hash": "<hash>",
                 "id": "<uuid>",
+                "ledger": null,
                 "memo": "Milestone validated: Task 1",
                 "status": "simulated",
                 "type": "validate",
@@ -174,6 +185,7 @@
                 "createdAt": "<timestamp>",
                 "hash": "<hash>",
                 "id": "<uuid>",
+                "ledger": null,
                 "memo": "Vault created",
                 "status": "simulated",
                 "type": "create",
@@ -253,14 +265,18 @@
               {
                 "amount": "500",
                 "dueDate": "<timestamp>",
+                "evidence": [],
                 "id": "<milestone-1>",
+                "latestEvidenceHash": null,
                 "status": "completed",
                 "title": "Step 1"
               },
               {
                 "amount": "500",
                 "dueDate": "<timestamp>",
+                "evidence": [],
                 "id": "<milestone-2>",
+                "latestEvidenceHash": null,
                 "status": "pending",
                 "title": "Step 2"
               }
@@ -292,14 +308,18 @@
               {
                 "amount": "500",
                 "dueDate": "<timestamp>",
+                "evidence": [],
                 "id": "<milestone-1>",
+                "latestEvidenceHash": null,
                 "status": "completed",
                 "title": "Step 1"
               },
               {
                 "amount": "500",
                 "dueDate": "<timestamp>",
+                "evidence": [],
                 "id": "<milestone-2>",
+                "latestEvidenceHash": null,
                 "status": "failed",
                 "title": "Step 2"
               }
@@ -336,6 +356,7 @@
                 "createdAt": "<timestamp>",
                 "hash": "<hash>",
                 "id": "<uuid>",
+                "ledger": null,
                 "memo": "Funds redirected to failure destination",
                 "status": "simulated",
                 "type": "redirect",
@@ -346,6 +367,7 @@
                 "createdAt": "<timestamp>",
                 "hash": "<hash>",
                 "id": "<uuid>",
+                "ledger": null,
                 "memo": "Milestone validated: Step 1",
                 "status": "simulated",
                 "type": "validate",
@@ -356,6 +378,7 @@
                 "createdAt": "<timestamp>",
                 "hash": "<hash>",
                 "id": "<uuid>",
+                "ledger": null,
                 "memo": "Vault created",
                 "status": "simulated",
                 "type": "create",

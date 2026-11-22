@@ -830,6 +830,451 @@ registry.registerPath({
   },
 })
 
+// ==================== ADMIN VERIFIERS ROUTES ====================
+
+const verifierStatusSchema = z
+  .enum(['pending', 'approved', 'suspended', 'deactivated'])
+  .openapi({
+    description:
+      'Verifier lifecycle status. Allowed transitions: pending→approved|deactivated, ' +
+      'approved→suspended|deactivated, suspended→approved|deactivated, deactivated→pending|approved.',
+    example: 'approved',
+  })
+
+const VerifierProfileSchema = registry.register(
+  'VerifierProfile',
+  z.object({
+    userId: z.string().openapi({
+      description: 'Stellar public key that identifies the verifier',
+      example: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+    }),
+    displayName: z.string().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+    status: verifierStatusSchema,
+    createdAt: z.string().datetime(),
+    approvedAt: z.string().datetime().nullable().optional(),
+    suspendedAt: z.string().datetime().nullable().optional(),
+    deactivatedAt: z.string().datetime().nullable().optional(),
+  })
+)
+
+const VerifierStatsSchema = registry.register(
+  'VerifierStats',
+  z.object({
+    totalVerifications: z.number().int().openapi({ example: 12 }),
+    approvals: z.number().int().openapi({ example: 9 }),
+    rejections: z.number().int().openapi({ example: 3 }),
+    disputes: z.number().int().openapi({ example: 1 }),
+    approvalRatio: z.number().openapi({ example: 0.75 }),
+    rejectionRatio: z.number().openapi({ example: 0.25 }),
+    disputeRate: z.number().openapi({ example: 0.0833 }),
+  })
+)
+
+const VerifierWithStatsSchema = registry.register(
+  'VerifierWithStats',
+  z.object({
+    profile: VerifierProfileSchema,
+    stats: VerifierStatsSchema,
+  })
+)
+
+const VerifierPaginationSchema = registry.register(
+  'VerifierPagination',
+  z.object({
+    limit: z.number().int().openapi({ description: 'Page size in effect (max 200)', example: 50 }),
+    offset: z.number().int().openapi({ description: 'Zero-based offset of the first item', example: 0 }),
+    count: z.number().int().openapi({ description: 'Number of items in this page', example: 2 }),
+    hasMore: z.boolean().openapi({ description: 'Whether another page is likely available', example: false }),
+  })
+)
+
+const VerifierListResponseSchema = registry.register(
+  'VerifierListResponse',
+  z.object({
+    verifiers: z.array(VerifierWithStatsSchema),
+    pagination: VerifierPaginationSchema,
+  })
+)
+
+const VerifierCreateResponseSchema = registry.register(
+  'VerifierCreateResponse',
+  z.object({
+    profile: VerifierProfileSchema,
+    stats: VerifierStatsSchema,
+    auditLogId: z.string().optional().openapi({ description: 'Audit log entry id when one was written' }),
+  })
+)
+
+const VerifierMutationResponseSchema = registry.register(
+  'VerifierMutationResponse',
+  z.object({
+    profile: VerifierProfileSchema,
+    stats: VerifierStatsSchema,
+    auditLogId: z.string().nullable().openapi({
+      description: 'Audit log entry id, or null when the request was a no-op',
+    }),
+    changedFields: z.array(z.string()).openapi({
+      description: 'Profile fields changed by this request',
+      example: ['status'],
+    }),
+  })
+)
+
+const CreateVerifierRequestSchema = registry.register(
+  'CreateVerifierRequest',
+  z.object({
+    userId: z.string().min(1).openapi({
+      description: 'Stellar public key of the verifier to create',
+      example: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+    }),
+    displayName: z.string().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+    status: verifierStatusSchema.optional(),
+    reason: z.string().optional().openapi({ description: 'Reason recorded on the audit log entry' }),
+  })
+)
+
+const UpdateVerifierRequestSchema = registry.register(
+  'UpdateVerifierRequest',
+  z.object({
+    displayName: z.string().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+    status: verifierStatusSchema.optional(),
+    reason: z.string().optional().openapi({ description: 'Reason recorded on the audit log entry' }),
+  })
+)
+
+const VerifierReasonRequestSchema = registry.register(
+  'VerifierReasonRequest',
+  z.object({
+    reason: z.string().optional().openapi({ description: 'Reason recorded on the audit log entry' }),
+  })
+)
+
+const VerifierErrorResponseSchema = registry.register(
+  'VerifierErrorResponse',
+  z.object({
+    error: z.string().openapi({ example: 'verifier not found' }),
+  })
+)
+
+// Route handlers respond with `{ error: string }`; errors handed to the global
+// error handler (e.g. AppError.validation for an invalid Stellar key) use the
+// shared ErrorEnvelope instead, so both shapes are documented for those codes.
+const VerifierOrEnvelopeErrorSchema = z.union([
+  ErrorEnvelope,
+  VerifierErrorResponseSchema,
+])
+
+const verifierUserIdParameter = {
+  name: 'userId',
+  in: 'path' as const,
+  required: true,
+  schema: { type: 'string' as const },
+  description: 'Verifier identifier (Stellar public key)',
+}
+
+const verifierSecurity = [{ bearerAuth: [] }]
+
+const verifierErrorResponse = (
+  description: string,
+  schema: z.ZodTypeAny = VerifierErrorResponseSchema,
+) => ({
+  description,
+  content: { 'application/json': { schema } },
+})
+
+const requestIdHeader = {
+  'X-Request-Id': {
+    description: 'Request correlation id; echoes the inbound x-request-id header when supplied',
+    schema: { type: 'string' as const },
+  },
+}
+
+// GET /api/admin/verifiers
+registry.registerPath({
+  method: 'get',
+  path: '/api/admin/verifiers',
+  operationId: 'adminListVerifiers',
+  summary: 'List verifier profiles with aggregate stats',
+  description:
+    'Returns verifier profiles ordered by the underlying table order. `limit` is ' +
+    'clamped to 200 and defaults to 50; invalid values fall back to the defaults.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [
+    { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 } },
+    { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } },
+  ],
+  responses: {
+    200: {
+      description: 'Paginated verifier profiles with aggregate verification stats',
+      content: { 'application/json': { schema: VerifierListResponseSchema } },
+    },
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    500: verifierErrorResponse('Unexpected server error', VerifierOrEnvelopeErrorSchema),
+  },
+})
+
+// GET /api/admin/verifiers/:userId
+registry.registerPath({
+  method: 'get',
+  path: '/api/admin/verifiers/{userId}',
+  operationId: 'adminGetVerifier',
+  summary: 'Get a verifier profile and its stats',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  responses: {
+    200: {
+      description: 'Verifier profile and aggregate stats',
+      content: { 'application/json': { schema: VerifierWithStatsSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    500: verifierErrorResponse('Unexpected server error', VerifierOrEnvelopeErrorSchema),
+  },
+})
+
+// POST /api/admin/verifiers
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers',
+  operationId: 'adminCreateVerifier',
+  summary: 'Create a verifier profile',
+  description:
+    '`userId` must be a valid Stellar public key. When `status` is omitted the ' +
+    'profile is created as `pending`. A unique-constraint violation returns 409.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  request: {
+    body: { content: { 'application/json': { schema: CreateVerifierRequestSchema } } },
+  },
+  responses: {
+    201: {
+      description: 'Verifier profile created',
+      content: { 'application/json': { schema: VerifierCreateResponseSchema } },
+    },
+    400: verifierErrorResponse(
+      'Missing userId, invalid Stellar public key, non-string displayName, non-object metadata or invalid status',
+      VerifierOrEnvelopeErrorSchema,
+    ),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    409: verifierErrorResponse('Verifier already exists'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// PATCH /api/admin/verifiers/:userId
+registry.registerPath({
+  method: 'patch',
+  path: '/api/admin/verifiers/{userId}',
+  operationId: 'adminUpdateVerifier',
+  summary: 'Update a verifier profile',
+  description:
+    'Only the provided fields are updated. `displayName` and `metadata` accept ' +
+    '`null` to clear them. Status changes follow the verifier transition matrix; ' +
+    'an illegal transition returns 409.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: UpdateVerifierRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Updated verifier profile',
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Non-string displayName, non-object metadata or invalid status'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// DELETE /api/admin/verifiers/:userId
+registry.registerPath({
+  method: 'delete',
+  path: '/api/admin/verifiers/{userId}',
+  operationId: 'adminDeleteVerifier',
+  summary: 'Delete a verifier profile',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: {
+      required: false,
+      content: { 'application/json': { schema: VerifierReasonRequestSchema } },
+    },
+  },
+  responses: {
+    204: { description: 'Verifier profile deleted; no content returned' },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/approve
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/approve',
+  operationId: 'adminApproveVerifier',
+  summary: 'Approve a verifier',
+  description:
+    'Creates the verifier profile as `approved` when it does not exist yet, ' +
+    'otherwise transitions the existing profile. A second in-flight transition ' +
+    'for the same verifier returns 429.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier approved',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    429: verifierErrorResponse('A concurrent transition for this verifier is already in progress'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/suspend
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/suspend',
+  operationId: 'adminSuspendVerifier',
+  summary: 'Suspend a verifier',
+  description:
+    'Creates the verifier profile as `suspended` when it does not exist yet, ' +
+    'otherwise transitions the existing profile. A second in-flight transition ' +
+    'for the same verifier returns 429.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier suspended',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    429: verifierErrorResponse('A concurrent transition for this verifier is already in progress'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/reinstate
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/reinstate',
+  operationId: 'adminReinstateVerifier',
+  summary: 'Reinstate a suspended or deactivated verifier',
+  description:
+    'Restores a previously approved verifier to `approved`, otherwise to ' +
+    '`pending`. Reinstating an already active (`approved`/`pending`) verifier ' +
+    'is a no-op returning an empty `changedFields` and a `null` `auditLogId`.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier reinstated (or already active)',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/deactivate
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/deactivate',
+  operationId: 'adminDeactivateVerifier',
+  summary: 'Deactivate a verifier',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier deactivated',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/reactivate
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/reactivate',
+  operationId: 'adminReactivateVerifier',
+  summary: 'Reactivate a deactivated verifier',
+  description: 'Transitions a deactivated verifier back to `pending`, pending re-approval.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier reactivated as pending',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
 // ==================== EXPORT ROUTES ====================
 
 export const ExportRequestRef = registry.register('ExportRequest', ExportRequestSchema)
@@ -954,800 +1399,198 @@ registry.registerPath({
 })
 
 
-// ==================== WEBHOOK SCHEMAS ====================
+// ==================== ORG VAULTS & SAVED SEARCHES ====================
+// Routes from src/routes/orgVaults.ts, mounted at /api/organizations.
 
-export const WebhookSubscriptionSchema = registry.register(
-  'WebhookSubscription',
+const PagePagination = registry.register(
+  'PagePagination',
   z.object({
-    id: z.string().uuid().openapi({ example: '123e4567-e89b-12d3-a456-426614174000' }),
-    url: z.string().url().openapi({ example: 'https://example.com/webhook' }),
-    events: z.array(z.string()).openapi({ example: ['vault.created', 'vault.completed'] }),
-    active: z.boolean().openapi({ example: true }),
-    orgId: z.string().optional().openapi({ example: 'org_123' }),
-    createdAt: z.string().datetime().openapi({ example: '2026-06-02T10:00:00Z' }),
+    page: z.number().int().openapi({ example: 1 }),
+    pageSize: z.number().int().openapi({ example: 20 }),
+    total: z.number().int().openapi({ example: 42 }),
+    totalPages: z.number().int().openapi({ example: 3 }),
+    hasNext: z.boolean(),
+    hasPrev: z.boolean(),
   }),
 )
 
-export const CreateWebhookRequestSchema = registry.register(
-  'CreateWebhookRequest',
-  z.object({
-    url: z.string().url().openapi({ example: 'https://example.com/webhook' }),
-    events: z.array(z.string()).min(1).openapi({ example: ['vault.created', 'vault.completed'] }),
-    active: z.boolean().optional().default(true).openapi({ example: true }),
-  }),
-)
-
-export const CreateWebhookResponseSchema = registry.register(
-  'CreateWebhookResponse',
-  z.object({
-    secret: z.string().openapi({ description: 'Generated webhook signing secret (only shown once)', example: 'a1b2c3d4e5f67890' }),
-    subscription: WebhookSubscriptionSchema,
-  }),
-)
-
-export const RotateWebhookSecretResponseSchema = registry.register(
-  'RotateWebhookSecretResponse',
-  z.object({
-    secret: z.string().openapi({ description: 'New webhook signing secret', example: 'f6e5d4c3b2a10987' }),
-    subscription: WebhookSubscriptionSchema,
-  }),
-)
-
-export const WebhookDeadLetterSchema = registry.register(
-  'WebhookDeadLetter',
-  z.object({
-    id: z.string().uuid().openapi({ example: '123e4567-e89b-12d3-a456-426614174000' }),
-    subscriber_id: z.string().uuid().openapi({ example: '123e4567-e89b-12d3-a456-426614174001' }),
-    event_id: z.string().openapi({ example: 'evt_123' }),
-    event_type: z.string().openapi({ example: 'vault.failed' }),
-    payload: z.record(z.string(), z.unknown()).openapi({ example: { vaultId: '123' } }),
-    last_error: z.string().openapi({ example: 'HTTP 500: Internal Server Error' }),
-    attempts: z.number().openapi({ example: 5 }),
-    failed_at: z.string().datetime().openapi({ example: '2026-06-02T10:00:00Z' }),
-    replayed_at: z.string().datetime().nullable().openapi({ example: null }),
-  }),
-)
-
-export const FieldPolicySchema = registry.register(
-  'FieldPolicy',
-  z.object({
-    mode: z.enum(['default', 'allowlist', 'denylist']).openapi({ example: 'default' }),
-    fields: z.array(z.string()).openapi({ example: ['email', 'address'] }),
-    stripPii: z.boolean().openapi({ example: true }),
-  }),
-)
-
-export const AdminWebhookSubscriberSchema = registry.register(
-  'AdminWebhookSubscriber',
-  z.object({
-    id: z.string().uuid().openapi({ example: '123e4567-e89b-12d3-a456-426614174000' }),
-    organization_id: z.string().openapi({ example: 'org_123' }),
-    url: z.string().url().openapi({ example: 'https://example.com/webhook' }),
-    events: z.array(z.string()).openapi({ example: ['vault.created'] }),
-    active: z.boolean().openapi({ example: true }),
-    created_at: z.string().datetime().openapi({ example: '2026-06-02T10:00:00Z' }),
-    rotated_at: z.string().datetime().nullable().optional().openapi({ example: null }),
-    field_policy: FieldPolicySchema.optional(),
-  }),
-)
-
-export const EgressAllowlistEntrySchema = registry.register(
-  'EgressAllowlistEntry',
-  z.object({
-    id: z.string().uuid().openapi({ example: '123e4567-e89b-12d3-a456-426614174000' }),
-    organizationId: z.string().openapi({ example: 'org_123' }),
-    host: z.string().openapi({ example: 'api.example.com' }),
-    createdAt: z.string().datetime().openapi({ example: '2026-06-02T10:00:00Z' }),
-  }),
-)
-
-export const SubscriberDeliveryStatsSchema = registry.register(
-  'SubscriberDeliveryStats',
-  z.object({
-    subscriber_id: z.string().uuid().openapi({ example: '123e4567-e89b-12d3-a456-426614174000' }),
-    window: z.string().openapi({ example: '24h' }),
-    window_start: z.string().datetime().openapi({ example: '2026-06-01T10:00:00Z' }),
-    window_end: z.string().datetime().openapi({ example: '2026-06-02T10:00:00Z' }),
-    attempt_count: z.number().openapi({ example: 120 }),
-    success_count: z.number().openapi({ example: 118 }),
-    failure_count: z.number().openapi({ example: 2 }),
-    success_rate: z.number().openapi({ example: 0.9833 }),
-    p50_latency_ms: z.number().nullable().openapi({ example: 45 }),
-    p95_latency_ms: z.number().nullable().openapi({ example: 120 }),
-    last_failure_reason: z.string().nullable().openapi({ example: 'ETIMEDOUT' }),
-    breaker_state: z.string().nullable().openapi({ example: 'CLOSED' }),
-  }),
-)
-
-// ==================== WEBHOOK ROUTES ====================
-
-// POST /api/webhooks
-registry.registerPath({
-  method: 'post',
-  path: '/api/webhooks',
-  operationId: 'createWebhookSubscription',
-  summary: 'Create a webhook subscription for an organization',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  request: {
-    query: z.object({
-      orgId: z.string().openapi({ description: 'Organization ID', example: 'org_123' }),
-    }),
-    body: {
-      content: {
-        'application/json': {
-          schema: CreateWebhookRequestSchema,
-        },
-      },
-    },
-  },
-  responses: {
-    201: {
-      description: 'Webhook subscription created',
-      content: { 'application/json': { schema: CreateWebhookResponseSchema } },
-    },
-    400: {
-      description: 'Bad request (missing orgId or invalid body)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (member access required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    422: {
-      description: 'Unprocessable entity (URL not permitted by egress policy)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
+const OrgErrorResponse = z.object({
+  error: z.string().openapi({ example: 'Internal server error' }),
 })
 
-// GET /api/webhooks
-registry.registerPath({
-  method: 'get',
-  path: '/api/webhooks',
-  operationId: 'listWebhookSubscriptions',
-  summary: 'List webhook subscriptions for an organization',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  request: {
-    query: z.object({
-      orgId: z.string().openapi({ description: 'Organization ID', example: 'org_123' }),
-    }),
-  },
-  responses: {
-    200: {
-      description: 'List of webhook subscriptions',
-      content: {
-        'application/json': {
-          schema: z.object({
-            subscriptions: z.array(WebhookSubscriptionSchema),
-          }),
-        },
-      },
-    },
-    400: {
-      description: 'Bad request (missing orgId)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (member access required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
-})
+const ORG_ID_PARAM = {
+  name: 'orgId',
+  in: 'path' as const,
+  required: true,
+  schema: { type: 'string' as const, example: 'org_123' },
+}
 
-// GET /api/webhooks/:id
+const SEARCH_ID_PARAM = {
+  name: 'searchId',
+  in: 'path' as const,
+  required: true,
+  schema: { type: 'string' as const },
+}
+
+const PAGE_PARAM = {
+  name: 'page',
+  in: 'query' as const,
+  schema: { type: 'integer' as const, minimum: 1, default: 1 },
+}
+
+const PAGE_SIZE_PARAM = {
+  name: 'pageSize',
+  in: 'query' as const,
+  schema: { type: 'integer' as const, minimum: 1, maximum: 100, default: 20 },
+}
+
+const CURSOR_LIMIT_PARAM = {
+  name: 'limit',
+  in: 'query' as const,
+  schema: { type: 'integer' as const, minimum: 1, maximum: 100, default: 20 },
+}
+
+const OrgVaultStatus = z.enum([
+  'draft',
+  'active',
+  'completed',
+  'failed',
+  'cancelled',
+])
+
+const OrgVaultSchema = registry.register(
+  'OrgVault',
+  z.object({
+    id: z.string(),
+    creator: z.string(),
+    verifier: z.string(),
+    amount: z.string().openapi({ example: '100.0000000' }),
+    status: OrgVaultStatus,
+    orgId: z.string(),
+    startTimestamp: z.string().datetime(),
+    endTimestamp: z.string().datetime(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  }),
+)
+
+const SavedSearchQueryDefinitionSchema = registry.register(
+  'SavedSearchQueryDefinition',
+  z.object({
+    q: z.string().max(200).optional().openapi({ description: 'Free-text search term (sanitized)' }),
+    status: OrgVaultStatus.optional(),
+    verifier: z.string().max(256).optional(),
+    amount_min: z.string().regex(/^\d+(\.\d+)?$/).optional().openapi({ description: 'Inclusive lower amount bound' }),
+    amount_max: z.string().regex(/^\d+(\.\d+)?$/).optional().openapi({ description: 'Inclusive upper amount bound' }),
+    date_from: z.string().optional().openapi({ description: 'ISO 8601 date or timestamp (inclusive lower created_at bound)' }),
+    date_to: z.string().optional().openapi({ description: 'ISO 8601 date or timestamp (inclusive upper created_at bound)' }),
+    sort_by: z.enum(['created_at', 'amount', 'end_date', 'status']).optional(),
+    sort_order: z.enum(['asc', 'desc']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+)
+
+const OrgVaultSearchSchema = registry.register(
+  'OrgVaultSearch',
+  z.object({
+    id: z.string(),
+    org_id: z.string(),
+    name: z.string().openapi({ example: 'High-value active vaults' }),
+    query_definition: SavedSearchQueryDefinitionSchema,
+    alerts_enabled: z.boolean(),
+    alert_recipient: z.string().nullable(),
+    alert_frequency_ms: z.number().int().openapi({ example: 3_600_000 }),
+    last_evaluated_at: z.string().datetime().nullable(),
+    last_result_hash: z.string().nullable(),
+    created_by: z.string(),
+    created_at: z.string().datetime(),
+    updated_at: z.string().datetime(),
+  }),
+)
+
+const OrgVaultSearchResultSchema = registry.register(
+  'OrgVaultSearchResult',
+  z.object({
+    id: z.string(),
+    creator: z.string(),
+    verifier: z.string(),
+    amount: z.string(),
+    status: OrgVaultStatus,
+    organization_id: z.string(),
+    start_date: z.string().datetime(),
+    end_date: z.string().datetime(),
+    created_at: z.string().datetime(),
+    updated_at: z.string().datetime(),
+  }),
+)
+
+// GET /api/organizations/:orgId/vaults
 registry.registerPath({
   method: 'get',
-  path: '/api/webhooks/{id}',
-  operationId: 'getWebhookSubscription',
-  summary: 'Get a webhook subscription by ID',
-  tags: ['Webhooks'],
+  path: '/api/organizations/{orgId}/vaults',
+  summary: 'List vaults belonging to an organization',
+  description:
+    'Offset-paginated listing of the org\'s non-deleted vaults, with optional status/creator filters and sorting.',
+  tags: ['Org Vaults'],
   security: [{ bearerAuth: [] }],
   parameters: [
+    ORG_ID_PARAM,
+    PAGE_PARAM,
+    PAGE_SIZE_PARAM,
     {
-      name: 'id',
-      in: 'path',
-      required: true,
-      schema: { type: 'string', format: 'uuid' },
-      description: 'Webhook subscription ID (UUID)',
-    },
-    {
-      name: 'orgId',
+      name: 'sortBy',
       in: 'query',
-      required: true,
-      schema: { type: 'string' },
-      description: 'Organization ID',
+      schema: { type: 'string', enum: ['createdAt', 'amount', 'endTimestamp', 'status'] },
     },
+    { name: 'sortOrder', in: 'query', schema: { type: 'string', enum: ['asc', 'desc'] } },
+    { name: 'status', in: 'query', schema: { type: 'string', enum: ['draft', 'active', 'completed', 'failed', 'cancelled'] } },
+    { name: 'creator', in: 'query', schema: { type: 'string' } },
   ],
   responses: {
     200: {
-      description: 'Webhook subscription details',
+      description: 'Paginated org vaults',
       content: {
         'application/json': {
           schema: z.object({
-            subscription: WebhookSubscriptionSchema,
+            data: z.array(OrgVaultSchema),
+            pagination: PagePagination,
           }),
         },
       },
     },
-    400: {
-      description: 'Bad request (invalid ID format or missing orgId)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (member access required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    404: {
-      description: 'Webhook subscription not found',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Caller is not a member of the organization', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
   },
 })
 
-// POST /api/webhooks/:id/rotate-secret
+// POST /api/organizations/:orgId/vault-searches
 registry.registerPath({
   method: 'post',
-  path: '/api/webhooks/{id}/rotate-secret',
-  operationId: 'rotateWebhookSecret',
-  summary: 'Rotate signing secret for a webhook subscription',
-  tags: ['Webhooks'],
+  path: '/api/organizations/{orgId}/vault-searches',
+  summary: 'Create a saved vault search',
+  description:
+    'Creates a saved search for the org. Requires owner/admin. Each org may keep at most 20 saved searches; when alerts are enabled the recipient is required and the frequency must be at least one hour.',
+  tags: ['Org Vaults'],
   security: [{ bearerAuth: [] }],
   parameters: [
-    {
-      name: 'id',
-      in: 'path',
-      required: true,
-      schema: { type: 'string', format: 'uuid' },
-      description: 'Webhook subscription ID (UUID)',
-    },
-    {
-      name: 'orgId',
-      in: 'query',
-      required: true,
-      schema: { type: 'string' },
-      description: 'Organization ID',
-    },
-  ],
-  request: {
-    body: {
-      content: {
-        'application/json': {
-          schema: z.object({}).openapi({ description: 'Empty body expected' }),
-        },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: 'Webhook secret rotated successfully',
-      content: { 'application/json': { schema: RotateWebhookSecretResponseSchema } },
-    },
-    400: {
-      description: 'Bad request (invalid ID format or missing orgId)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (member access required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    404: {
-      description: 'Webhook subscription not found',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
-})
-
-// DELETE /api/webhooks/:id
-registry.registerPath({
-  method: 'delete',
-  path: '/api/webhooks/{id}',
-  operationId: 'deleteWebhookSubscription',
-  summary: 'Delete a webhook subscription',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  parameters: [
-    {
-      name: 'id',
-      in: 'path',
-      required: true,
-      schema: { type: 'string', format: 'uuid' },
-      description: 'Webhook subscription ID (UUID)',
-    },
-    {
-      name: 'orgId',
-      in: 'query',
-      required: true,
-      schema: { type: 'string' },
-      description: 'Organization ID',
-    },
-  ],
-  responses: {
-    200: {
-      description: 'Webhook subscription deleted',
-      content: {
-        'application/json': {
-          schema: z.object({
-            deleted: z.boolean().openapi({ example: true }),
-          }),
-        },
-      },
-    },
-    400: {
-      description: 'Bad request (invalid ID format or missing orgId)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (member access required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    404: {
-      description: 'Webhook subscription not found',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
-})
-
-// GET /api/admin/webhooks/dead-letters
-registry.registerPath({
-  method: 'get',
-  path: '/api/admin/webhooks/dead-letters',
-  operationId: 'listWebhookDeadLetters',
-  summary: 'List webhook dead-letter queue entries (admin)',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  request: {
-    query: z.object({
-      limit: z.coerce.number().optional().openapi({ example: 50, default: 50 }),
-      offset: z.coerce.number().optional().openapi({ example: 0, default: 0 }),
-      subscriber_id: z.string().optional().openapi({ example: '123e4567-e89b-12d3-a456-426614174000' }),
-    }),
-  },
-  responses: {
-    200: {
-      description: 'List of dead-letter deliveries',
-      content: {
-        'application/json': {
-          schema: z.object({
-            webhook_dead_letters: z.array(WebhookDeadLetterSchema),
-            count: z.number().openapi({ example: 10 }),
-            total: z.number().openapi({ example: 25 }),
-            limit: z.number().openapi({ example: 50 }),
-            offset: z.number().openapi({ example: 0 }),
-            has_more: z.boolean().openapi({ example: false }),
-          }),
-        },
-      },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (admin required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
-})
-
-// POST /api/admin/webhooks/dead-letters/:id/replay
-registry.registerPath({
-  method: 'post',
-  path: '/api/admin/webhooks/dead-letters/{id}/replay',
-  operationId: 'replayWebhookDeadLetter',
-  summary: 'Replay a specific dead-letter webhook delivery (admin)',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  parameters: [
-    {
-      name: 'id',
-      in: 'path',
-      required: true,
-      schema: { type: 'string' },
-      description: 'Dead letter entry ID',
-    },
-  ],
-  responses: {
-    202: {
-      description: 'Dead letter replayed',
-      content: {
-        'application/json': {
-          schema: z.object({
-            replayed: z.boolean().openapi({ example: true }),
-          }),
-        },
-      },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (admin required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    404: {
-      description: 'Dead letter not found',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
-})
-
-// POST /api/admin/webhooks/subscribers
-registry.registerPath({
-  method: 'post',
-  path: '/api/admin/webhooks/subscribers',
-  operationId: 'upsertAdminWebhookSubscriber',
-  summary: 'Idempotently register or update a subscriber (admin)',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  request: {
-    body: {
-      content: {
-        'application/json': {
-          schema: z.object({
-            organization_id: z.string().openapi({ example: 'org_123' }),
-            url: z.string().url().openapi({ example: 'https://example.com/webhook' }),
-            secret: z.string().openapi({ example: 'sec_123' }),
-            events: z.array(z.string()).optional().openapi({ example: ['vault.created'] }),
-          }),
-        },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: 'Webhook subscriber registered or updated',
-      content: { 'application/json': { schema: AdminWebhookSubscriberSchema } },
-    },
-    400: {
-      description: 'Bad request (missing required fields)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (admin required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    422: {
-      description: 'Unprocessable entity (URL not permitted by egress policy)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
-})
-
-// GET /api/admin/webhooks/subscribers
-registry.registerPath({
-  method: 'get',
-  path: '/api/admin/webhooks/subscribers',
-  operationId: 'listAdminWebhookSubscribers',
-  summary: 'List active subscribers for an organization (admin)',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  request: {
-    query: z.object({
-      organization_id: z.string().openapi({ example: 'org_123' }),
-    }),
-  },
-  responses: {
-    200: {
-      description: 'List of active subscribers',
-      content: {
-        'application/json': {
-          schema: z.object({
-            subscribers: z.array(AdminWebhookSubscriberSchema),
-          }),
-        },
-      },
-    },
-    400: {
-      description: 'Bad request (missing organization_id)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (admin required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
-})
-
-// POST /api/admin/webhooks/subscribers/:id/rotate-secret
-registry.registerPath({
-  method: 'post',
-  path: '/api/admin/webhooks/subscribers/{id}/rotate-secret',
-  operationId: 'rotateAdminWebhookSubscriberSecret',
-  summary: 'Rotate signing secret for a subscriber with grace window (admin)',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  parameters: [
-    {
-      name: 'id',
-      in: 'path',
-      required: true,
-      schema: { type: 'string' },
-      description: 'Subscriber ID',
-    },
+    ORG_ID_PARAM,
   ],
   request: {
     body: {
       content: {
         'application/json': {
           schema: z.object({
-            organization_id: z.string().openapi({ example: 'org_123' }),
-            new_secret: z.string().openapi({ example: 'new_sec_123' }),
-          }),
-        },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: 'Secret rotated successfully',
-      content: {
-        'application/json': {
-          schema: z.object({
-            id: z.string().openapi({ example: '123e4567-e89b-12d3-a456-426614174000' }),
-            rotated_at: z.string().datetime().openapi({ example: '2026-06-02T10:00:00Z' }),
-          }),
-        },
-      },
-    },
-    400: {
-      description: 'Bad request (missing organization_id or new_secret)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (admin required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    404: {
-      description: 'Subscriber not found',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
-})
-
-// GET /api/admin/webhooks/pause/status
-registry.registerPath({
-  method: 'get',
-  path: '/api/admin/webhooks/pause/status',
-  operationId: 'getWebhookPauseStatus',
-  summary: 'Get current webhook delivery pause status (admin)',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  responses: {
-    200: {
-      description: 'Current delivery pause status',
-      content: {
-        'application/json': {
-          schema: z.object({
-            paused: z.boolean().openapi({ example: false }),
-          }),
-        },
-      },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (admin required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
-})
-
-// POST /api/admin/webhooks/pause
-registry.registerPath({
-  method: 'post',
-  path: '/api/admin/webhooks/pause',
-  operationId: 'pauseWebhookDelivery',
-  summary: 'Halt all outbound webhook delivery (admin)',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  responses: {
-    200: {
-      description: 'Webhook delivery paused',
-      content: {
-        'application/json': {
-          schema: z.object({
-            paused: z.literal(true).openapi({ example: true }),
-          }),
-        },
-      },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (admin required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
-})
-
-// POST /api/admin/webhooks/resume
-registry.registerPath({
-  method: 'post',
-  path: '/api/admin/webhooks/resume',
-  operationId: 'resumeWebhookDelivery',
-  summary: 'Resume all outbound webhook delivery (admin)',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  responses: {
-    200: {
-      description: 'Webhook delivery resumed',
-      content: {
-        'application/json': {
-          schema: z.object({
-            paused: z.literal(false).openapi({ example: false }),
-          }),
-        },
-      },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (admin required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
-})
-
-// POST /api/admin/webhooks/:id/replay
-registry.registerPath({
-  method: 'post',
-  path: '/api/admin/webhooks/{id}/replay',
-  operationId: 'replayWebhookWindow',
-  summary: 'Replay dead-letter entries for a subscriber within a time window (admin)',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  parameters: [
-    {
-      name: 'id',
-      in: 'path',
-      required: true,
-      schema: { type: 'string' },
-      description: 'Subscriber ID',
-    },
-  ],
-  request: {
-    body: {
-      content: {
-        'application/json': {
-          schema: z.object({
-            start_time: z.string().datetime().openapi({ example: '2026-06-01T00:00:00Z' }),
-            end_time: z.string().datetime().openapi({ example: '2026-06-02T00:00:00Z' }),
-            replay_marker: z.string().optional().openapi({ example: 'marker_abc' }),
-            max_events: z.number().int().min(1).optional().openapi({ example: 500 }),
-          }),
-        },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: 'Window replay executed',
-      content: {
-        'application/json': {
-          schema: z.object({
-            replayed: z.boolean().openapi({ example: true }),
-            count: z.number().openapi({ example: 10 }),
-            success_count: z.number().openapi({ example: 10 }),
-            failure_count: z.number().openapi({ example: 0 }),
-            replay_marker: z.string().optional().openapi({ example: 'marker_abc' }),
-          }),
-        },
-      },
-    },
-    400: {
-      description: 'Bad request (invalid timestamps or params)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (admin required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    404: {
-      description: 'Subscriber not found',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
-})
-
-// GET /api/admin/webhooks/egress-allowlist
-registry.registerPath({
-  method: 'get',
-  path: '/api/admin/webhooks/egress-allowlist',
-  operationId: 'listEgressAllowlist',
-  summary: 'List egress allowlist entries for an organization (admin)',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  request: {
-    query: z.object({
-      organization_id: z.string().openapi({ example: 'org_123' }),
-    }),
-  },
-  responses: {
-    200: {
-      description: 'List of egress allowlist entries',
-      content: {
-        'application/json': {
-          schema: z.object({
-            egress_allowlist: z.array(EgressAllowlistEntrySchema),
-          }),
-        },
-      },
-    },
-    400: {
-      description: 'Bad request (missing organization_id)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (admin required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
-})
-
-// POST /api/admin/webhooks/egress-allowlist
-registry.registerPath({
-  method: 'post',
-  path: '/api/admin/webhooks/egress-allowlist',
-  operationId: 'addEgressAllowlistEntry',
-  summary: 'Add host to an organization egress allowlist (admin)',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  request: {
-    body: {
-      content: {
-        'application/json': {
-          schema: z.object({
-            organization_id: z.string().openapi({ example: 'org_123' }),
-            host: z.string().openapi({ example: 'api.example.com' }),
+            name: z.string().min(1).max(255),
+            query_definition: SavedSearchQueryDefinitionSchema,
+            alerts_enabled: z.boolean().optional().default(false),
+            alert_recipient: z.string().optional().openapi({ description: 'Required when alerts_enabled is true' }),
+            alert_frequency_ms: z
+              .number()
+              .int()
+              .min(3_600_000)
+              .optional()
+              .openapi({ description: 'Minimum 3600000 (1 hour)', example: 3_600_000 }),
           }),
         },
       },
@@ -1755,179 +1598,360 @@ registry.registerPath({
   },
   responses: {
     201: {
-      description: 'Egress allowlist entry created',
-      content: { 'application/json': { schema: EgressAllowlistEntrySchema } },
-    },
-    400: {
-      description: 'Bad request (missing organization_id or host)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (admin required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-  },
-})
-
-// DELETE /api/admin/webhooks/egress-allowlist
-registry.registerPath({
-  method: 'delete',
-  path: '/api/admin/webhooks/egress-allowlist',
-  operationId: 'removeEgressAllowlistEntry',
-  summary: 'Remove host from an organization egress allowlist (admin)',
-  tags: ['Webhooks'],
-  security: [{ bearerAuth: [] }],
-  request: {
-    body: {
+      description: 'Saved search created',
       content: {
         'application/json': {
-          schema: z.object({
-            organization_id: z.string().openapi({ example: 'org_123' }),
-            host: z.string().openapi({ example: 'api.example.com' }),
-          }),
+          schema: z.object({ search: OrgVaultSearchSchema }),
         },
       },
     },
-  },
-  responses: {
-    200: {
-      description: 'Egress allowlist entry removed',
-      content: {
-        'application/json': {
-          schema: z.object({
-            removed: z.boolean().openapi({ example: true }),
-          }),
-        },
-      },
-    },
-    400: {
-      description: 'Bad request (missing organization_id or host)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (admin required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    404: {
-      description: 'Entry not found',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
+    400: { description: 'Invalid name, query_definition or alert settings', content: { 'application/json': { schema: OrgErrorResponse } } },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    422: { description: 'Org has reached the saved-search limit (20)', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
   },
 })
 
-// GET /api/admin/webhooks/:id/stats
+// GET /api/organizations/:orgId/vault-searches
 registry.registerPath({
   method: 'get',
-  path: '/api/admin/webhooks/{id}/stats',
-  operationId: 'getSubscriberDeliveryStats',
-  summary: 'Get aggregated delivery analytics for a subscriber (admin)',
-  tags: ['Webhooks'],
+  path: '/api/organizations/{orgId}/vault-searches',
+  summary: 'List saved vault searches',
+  tags: ['Org Vaults'],
   security: [{ bearerAuth: [] }],
   parameters: [
-    {
-      name: 'id',
-      in: 'path',
-      required: true,
-      schema: { type: 'string' },
-      description: 'Subscriber ID',
-    },
-    {
-      name: 'window',
-      in: 'query',
-      required: false,
-      schema: { type: 'string', default: '24h' },
-      description: 'Time window (e.g. 1h, 24h, 72h, 3d)',
-    },
+    ORG_ID_PARAM,
   ],
   responses: {
     200: {
-      description: 'Subscriber delivery stats',
-      content: { 'application/json': { schema: SubscriberDeliveryStatsSchema } },
+      description: 'Saved searches, newest first',
+      content: {
+        'application/json': {
+          schema: z.object({ searches: z.array(OrgVaultSearchSchema) }),
+        },
+      },
     },
-    400: {
-      description: 'Bad request (invalid window parameter)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    403: {
-      description: 'Forbidden (admin required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
-    404: {
-      description: 'Subscriber not found',
-      content: { 'application/json': { schema: ErrorEnvelope } },
-    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Caller is not a member of the organization', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
   },
 })
 
-// PATCH /api/admin/webhooks/subscribers/:id/field-policy
+// GET /api/organizations/:orgId/vault-searches/:searchId
 registry.registerPath({
-  method: 'patch',
-  path: '/api/admin/webhooks/subscribers/{id}/field-policy',
-  operationId: 'updateSubscriberFieldPolicy',
-  summary: 'Update field masking policy for a subscriber (admin)',
-  tags: ['Webhooks'],
+  method: 'get',
+  path: '/api/organizations/{orgId}/vault-searches/{searchId}',
+  summary: 'Get a saved vault search',
+  tags: ['Org Vaults'],
   security: [{ bearerAuth: [] }],
   parameters: [
-    {
-      name: 'id',
-      in: 'path',
-      required: true,
-      schema: { type: 'string' },
-      description: 'Subscriber ID',
-    },
+    ORG_ID_PARAM,
+    SEARCH_ID_PARAM,
   ],
-  request: {
-    body: {
-      content: {
-        'application/json': {
-          schema: z.object({
-            organization_id: z.string().openapi({ example: 'org_123' }),
-            field_policy: FieldPolicySchema,
-          }),
-        },
-      },
-    },
-  },
   responses: {
     200: {
-      description: 'Field policy updated',
+      description: 'Saved search',
+      content: {
+        'application/json': {
+          schema: z.object({ search: OrgVaultSearchSchema }),
+        },
+      },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Caller is not a member of the organization', content: { 'application/json': { schema: OrgErrorResponse } } },
+    404: { description: 'Saved search not found', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// DELETE /api/organizations/:orgId/vault-searches/:searchId
+registry.registerPath({
+  method: 'delete',
+  path: '/api/organizations/{orgId}/vault-searches/{searchId}',
+  summary: 'Delete a saved vault search',
+  tags: ['Org Vaults'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    SEARCH_ID_PARAM,
+  ],
+  responses: {
+    204: { description: 'Saved search deleted' },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    404: { description: 'Saved search not found', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/organizations/:orgId/vaults/search
+registry.registerPath({
+  method: 'get',
+  path: '/api/organizations/{orgId}/vaults/search',
+  summary: 'Search an organization\'s vaults',
+  description:
+    'Full-text search (tsvector with an ILIKE fallback) plus structured filters, cursor-paginated on (created_at DESC, id DESC).',
+  tags: ['Org Vaults'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    { name: 'q', in: 'query', schema: { type: 'string', maxLength: 200, description: 'Sanitized free-text term' } },
+    { name: 'status', in: 'query', schema: { type: 'string', enum: ['draft', 'active', 'completed', 'failed', 'cancelled'] } },
+    { name: 'verifier', in: 'query', schema: { type: 'string' } },
+    { name: 'amount_min', in: 'query', schema: { type: 'string' } },
+    { name: 'amount_max', in: 'query', schema: { type: 'string' } },
+    { name: 'date_from', in: 'query', schema: { type: 'string', description: 'ISO 8601 lower bound on created_at' } },
+    { name: 'date_to', in: 'query', schema: { type: 'string', description: 'ISO 8601 upper bound on created_at' } },
+    { name: 'cursor', in: 'query', schema: { type: 'string', description: 'Opaque cursor from a previous page' } },
+    CURSOR_LIMIT_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Matching vaults',
       content: {
         'application/json': {
           schema: z.object({
-            id: z.string().openapi({ example: '123e4567-e89b-12d3-a456-426614174000' }),
-            field_policy: FieldPolicySchema,
+            data: z.array(OrgVaultSearchResultSchema),
+            pagination: PaginationCursor,
           }),
         },
       },
     },
-    400: {
-      description: 'Bad request (invalid organization_id or field_policy)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
+    400: { description: 'Invalid cursor', content: { 'application/json': { schema: OrgErrorResponse } } },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Caller is not a member of the organization', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// ==================== ORG ANALYTICS ====================
+// Routes from src/routes/orgAnalytics.ts, mounted at /api/orgs
+// (and at the /api/organizations alias).
+
+const OrgAnalyticsSchema = registry.register(
+  'OrgAnalytics',
+  z.object({
+    orgId: z.string(),
+    analytics: z.object({
+      totalCapital: z.string().openapi({ example: '4200.0000000' }),
+      successRate: z.number().openapi({ description: 'completed / (completed + failed)', example: 0.75 }),
+      activeVaults: z.number().int(),
+      completedVaults: z.number().int(),
+      failedVaults: z.number().int(),
+    }),
+    teamPerformance: z.array(
+      z.object({
+        creator: z.string(),
+        vaultCount: z.number().int(),
+        totalAmount: z.string(),
+        successRate: z.number(),
+      }),
+    ),
+    generatedAt: z.string().datetime(),
+  }),
+)
+
+const OrgRiskAnalyticsSchema = registry.register(
+  'OrgRiskAnalytics',
+  z.object({
+    orgId: z.string(),
+    generatedAt: z.string().datetime(),
+    range: z.object({
+      startDate: z.string().datetime(),
+      endDate: z.string().datetime(),
+    }),
+    analytics: z.object({
+      totalVaults: z.number().int(),
+      activeVaults: z.number().int(),
+      resolvedVaults: z.number().int(),
+      slashedVaults: z.number().int(),
+      slashRate: z.number(),
+      capitalAtRisk: z.string(),
+    }),
+  }),
+)
+
+const CohortRetentionSchema = registry.register(
+  'CohortRetention',
+  z.object({
+    cohorts: z.array(
+      z.object({
+        cohort_period: z.string().openapi({ example: '2026-01' }),
+        cohort_size: z.number().int(),
+        retained_count: z.number().int(),
+        retention_rate: z.number().openapi({ description: 'Fraction in [0, 1]' }),
+      }),
+    ),
+    range: z.number().int().nullable(),
+    generatedAt: z.string().datetime(),
+  }),
+)
+
+const TeamRollupEntrySchema = z.object({
+  teamId: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  vaultCount: z.number().int(),
+  totalCapital: z.string(),
+  activeVaults: z.number().int(),
+  completedVaults: z.number().int(),
+  failedVaults: z.number().int(),
+  milestoneCount: z.number().int(),
+  milestonesCompleted: z.number().int(),
+  slashRate: z.number(),
+})
+
+const TeamRollupSchema = registry.register(
+  'TeamRollup',
+  z.object({
+    orgId: z.string(),
+    teams: z.array(TeamRollupEntrySchema),
+    orgTotals: TeamRollupEntrySchema.omit({ teamId: true, name: true, slug: true }).extend({
+      teamCount: z.number().int(),
+    }),
+    generatedAt: z.string().datetime(),
+  }),
+)
+
+const AnalyticsReportSchema = registry.register(
+  'OrgAnalyticsReport',
+  z.object({
+    id: z.string(),
+    orgId: z.string(),
+    snapshotAt: z.string().datetime(),
+    createdAt: z.string().datetime(),
+    sizeBytes: z.number().int(),
+    downloadUrl: z.string().nullable().openapi({ description: 'Signed S3 URL or local download path' }),
+  }),
+)
+
+// GET /api/orgs/:orgId/analytics/risk
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/analytics/risk',
+  summary: 'Get org risk analytics',
+  description: 'Slash rate, capital at risk and vault counts, optionally scoped to a date window.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    { name: 'startDate', in: 'query', schema: { type: 'string', description: 'ISO 8601 window start' } },
+    { name: 'endDate', in: 'query', schema: { type: 'string', description: 'ISO 8601 window end' } },
+  ],
+  responses: {
+    200: {
+      description: 'Risk analytics',
+      content: { 'application/json': { schema: OrgRiskAnalyticsSchema } },
     },
-    401: {
-      description: 'Unauthorized',
-      content: { 'application/json': { schema: ErrorEnvelope } },
+    400: { description: 'Invalid date range', content: { 'application/json': { schema: OrgErrorResponse } } },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/orgs/:orgId/analytics
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/analytics',
+  summary: 'Get org vault analytics',
+  description: 'Totals, success rate and a per-creator team-performance breakdown, aggregated from Postgres.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Org analytics',
+      content: { 'application/json': { schema: OrgAnalyticsSchema } },
     },
-    403: {
-      description: 'Forbidden (admin required)',
-      content: { 'application/json': { schema: ErrorEnvelope } },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Failed to generate org analytics', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/orgs/:orgId/cohort-retention
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/cohort-retention',
+  summary: 'Get cohort retention',
+  description:
+    'Retention cohorts read from the vault_cohort_retention materialized view. Note: the view is global, not scoped to the org.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    { name: 'range', in: 'query', schema: { type: 'integer', minimum: 1, description: 'Number of most-recent cohorts to return' } },
+  ],
+  responses: {
+    200: {
+      description: 'Cohort retention data',
+      content: {
+        'application/json': {
+          schema: z.object({
+            success: z.boolean(),
+            orgId: z.string(),
+            data: CohortRetentionSchema,
+          }),
+        },
+      },
     },
-    404: {
-      description: 'Subscriber not found',
-      content: { 'application/json': { schema: ErrorEnvelope } },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/orgs/:orgId/teams/rollup
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/teams/rollup',
+  summary: 'Get org team rollup',
+  description: 'Per-team vault, capital and milestone totals plus org-wide totals.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Team rollup',
+      content: { 'application/json': { schema: TeamRollupSchema } },
     },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Failed to generate team rollup', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/orgs/:orgId/analytics/reports
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/analytics/reports',
+  summary: 'List org analytics reports',
+  description: 'Point-in-time analytics reports, newest first, with a signed download URL when available.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    PAGE_PARAM,
+    PAGE_SIZE_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Paginated analytics reports',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.array(AnalyticsReportSchema),
+            pagination: PagePagination,
+          }),
+        },
+      },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
   },
 })
 

@@ -40,7 +40,6 @@ module.exports = {
     "<rootDir>/api/__tests__/evidence.test.mjs",
     "<rootDir>/api/__tests__/pagination.test.mjs",
     "<rootDir>/src/repositories/etlBatchRepository.test.ts",
-    "<rootDir>/src/tests/adminHorizonListener.test.ts",
     "<rootDir>/src/tests/cache.test.ts",
     "<rootDir>/src/tests/email.injection.test.ts",
     "<rootDir>/src/tests/etag.test.ts",
@@ -50,7 +49,6 @@ module.exports = {
     "<rootDir>/src/tests/expirationScheduler.overlap.test.ts",
     "<rootDir>/src/tests/exports.quota.concurrency.test.ts",
     "<rootDir>/src/tests/membership.roleTransition.test.ts",
-    "<rootDir>/src/tests/metricsAuth.test.ts",
     "<rootDir>/src/tests/prismaScope.concurrency.test.ts",
     "<rootDir>/src/tests/prismaScope.test.ts",
     "<rootDir>/src/tests/privacy-logger.allowlist.test.ts",
@@ -64,7 +62,6 @@ module.exports = {
     "<rootDir>/src/tests/vaultValidation.destination.test.ts",
     "<rootDir>/src/tests/apiKeyScopes.test.ts",
     "<rootDir>/src/tests/apiKeys.usageAnalytics.test.ts",
-    "<rootDir>/src/tests/docs.disasterRecovery.test.ts",
     // node:test API integration suites, run via `npm run test:api`
     "<rootDir>/api/__tests__/contract.test.mjs",
     "<rootDir>/api/__tests__/expiry.test.mjs",
@@ -92,13 +89,11 @@ module.exports = {
     // vitest (imports describe/it/expect/vi from 'vitest', which collides
     // with Jest's own globals/expect instance when loaded in the same
     // worker — "Cannot redefine property: Symbol($$jest-matchers-object)")
-    "<rootDir>/src/tests/quietHours.test.ts",
     "<rootDir>/src/tests/sorobanEnv.test.ts",
     "<rootDir>/src/tests/vaultExpiry.digest.test.ts",
     "<rootDir>/src/tests/webhookVerify.test.ts",
     "<rootDir>/src/routes/apiKeys.test.ts",
     "<rootDir>/src/routes/oauth.test.ts",
-    "<rootDir>/src/routes/auth.test.ts",
     // Job suites written against an API this codebase does not expose: they
     // import `Queue`/`SchedulerRegistry`/`createJobsRouter` and a `../audit`
     // module that do not exist here, and rely on custom matchers
@@ -118,9 +113,7 @@ module.exports = {
     "<rootDir>/src/tests/orgVaultIsolation.test.ts",
     "<rootDir>/src/tests/vaultTransitions.test.ts",
     "<rootDir>/src/tests/jobs.system.handlers.test.ts",
-    "<rootDir>/src/tests/csrf.protection.test.ts",
     "<rootDir>/src/tests/orgAnalytics.risk.test.ts",
-    "<rootDir>/src/tests/auth.rateLimiter.test.ts",
     "<rootDir>/src/tests/orgInvitations.test.ts",
   ],
   moduleDirectories: ["node_modules", "<rootDir>/node_modules"],

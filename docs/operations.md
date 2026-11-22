@@ -381,3 +381,4 @@ curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
 | Scenario | Runbook |
 |---|---|
 | Horizon listener stalls; slash backlog builds | [horizon-stall.md](runbooks/horizon-stall.md) |
+| Background jobs dead-letter or the queue backs up | [jobs-dead-letters.md](runbooks/jobs-dead-letters.md) |

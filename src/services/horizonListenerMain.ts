@@ -22,9 +22,32 @@ import { CheckpointStore } from './checkpointStore.js'
 import { getValidatedConfig } from '../config/horizonListener.js'
 import { ProcessorConfig } from '../types/horizonSync.js'
 
-async function main(): Promise<void> {
+export interface HorizonListenerMainDeps {
+  db?: typeof db
+  getValidatedConfig?: typeof getValidatedConfig
+  CheckpointStoreClass?: typeof CheckpointStore
+  EventProcessorClass?: typeof EventProcessor
+  HorizonListenerClass?: typeof HorizonListener
+  exit?: (code?: number) => void
+  logger?: {
+    log: (...args: unknown[]) => void
+    error: (...args: unknown[]) => void
+  }
+}
+
+export async function main(deps: HorizonListenerMainDeps = {}): Promise<void> {
+  const {
+    db: database = db,
+    getValidatedConfig: getConfig = getValidatedConfig,
+    CheckpointStoreClass = CheckpointStore,
+    EventProcessorClass = EventProcessor,
+    HorizonListenerClass = HorizonListener,
+    exit = process.exit.bind(process),
+    logger = console,
+  } = deps
+
   try {
-    console.log(
+    logger.log(
       JSON.stringify({
         level: 'info',
         event: 'horizon.startup',
@@ -34,9 +57,9 @@ async function main(): Promise<void> {
       }),
     )
 
-    const config = getValidatedConfig()
+    const config = getConfig()
 
-    console.log(
+    logger.log(
       JSON.stringify({
         level: 'info',
         event: 'horizon.config_loaded',
@@ -52,8 +75,8 @@ async function main(): Promise<void> {
     )
 
     // Verify database connectivity.
-    await db.raw('SELECT 1')
-    console.log(
+    await database.raw('SELECT 1')
+    logger.log(
       JSON.stringify({
         level: 'info',
         event: 'horizon.db_connected',
@@ -62,16 +85,16 @@ async function main(): Promise<void> {
       }),
     )
 
-    const checkpointStore = new CheckpointStore(db)
+    const checkpointStore = new CheckpointStoreClass(database)
 
     const processorConfig: ProcessorConfig = {
       maxRetries: config.retryMaxAttempts,
       retryBackoffMs: config.retryBackoffMs,
     }
-    const eventProcessor = new EventProcessor(db, processorConfig)
-    const horizonListener = new HorizonListener(config, eventProcessor, db, checkpointStore)
+    const eventProcessor = new EventProcessorClass(database, processorConfig)
+    const horizonListener = new HorizonListenerClass(config, eventProcessor, database, checkpointStore)
 
-    console.log(
+    logger.log(
       JSON.stringify({
         level: 'info',
         event: 'horizon.listener_starting',
@@ -82,7 +105,7 @@ async function main(): Promise<void> {
 
     await horizonListener.start()
 
-    console.log(
+    logger.log(
       JSON.stringify({
         level: 'info',
         event: 'horizon.listener_running',
@@ -91,7 +114,7 @@ async function main(): Promise<void> {
       }),
     )
   } catch (error) {
-    console.error(
+    logger.error(
       JSON.stringify({
         level: 'fatal',
         event: 'horizon.startup_failed',
@@ -101,11 +124,21 @@ async function main(): Promise<void> {
         timestamp: new Date().toISOString(),
       }),
     )
-    process.exit(1)
+    exit(1)
   }
 }
 
-main().catch((error) => {
-  console.error('Unhandled error in main:', error)
-  process.exit(1)
-})
+export default main
+
+const isMain =
+  typeof process !== 'undefined' &&
+  process.argv[1] &&
+  (process.argv[1].endsWith('horizonListenerMain.ts') ||
+    process.argv[1].endsWith('horizonListenerMain.js'))
+
+if (isMain) {
+  main().catch((error) => {
+    console.error('Unhandled error in main:', error)
+    process.exit(1)
+  })
+}

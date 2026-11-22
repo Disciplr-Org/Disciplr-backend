@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals'
 import {
   parseTimeToMinutes,
   getLocalMinutes,
@@ -8,6 +8,14 @@ import {
   isValidTimeFormat,
   QuietHoursConfig,
 } from '../utils/quietHours.js'
+
+beforeEach(() => {
+  jest.useFakeTimers().setSystemTime(new Date('2024-06-15T12:00:00.000Z'))
+})
+
+afterEach(() => {
+  jest.useRealTimers()
+})
 
 describe('quietHours utilities', () => {
   describe('parseTimeToMinutes', () => {

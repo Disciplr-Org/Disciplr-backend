@@ -131,6 +131,23 @@ The enforcement model follows a **token-driven trust hierarchy**:
 - Legacy `POST /api/auth/login` requests that provide only `userId` read the persisted user row instead of fabricating in-memory role state.
 - Administrative role updates write through to the database, so subsequent requests and restarts observe the same role.
 
+### Development Helper: userId-only login
+
+When `ENABLE_MOCK_LOGIN=true` in a non-production environment, `POST /api/auth/login`
+accepts `{ "userId": "<uuid>" }` without credentials. This path is a development
+testing helper only:
+
+- It returns a **real, short-lived access JWT** in `token`, signed by the same
+  `generateAccessToken()` helper as the credential login. The token carries the
+  user's persisted `role`, so it authenticates normally against
+  `authenticate`-protected routes such as `GET /api/vaults`.
+- A session row is recorded for the token's `jti`, so the token can be revoked
+  with `POST /api/auth/logout`.
+- The login is audited as `auth.mock_login_used`.
+- Enabling `ENABLE_MOCK_LOGIN` together with `NODE_ENV=production` fails env
+  validation at startup, and the route refuses mock login in production
+  regardless of the flag.
+
 ### Request Headers: Untrusted
 
 **Critical Security Invariant:**

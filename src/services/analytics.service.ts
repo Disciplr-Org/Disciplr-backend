@@ -11,6 +11,7 @@ import { parseAndNormalizeToUTC, utcNow } from '../utils/timestamps.js'
 import { getOrSet, invalidate } from '../lib/cache.js'
 import { getOrgAnalyticsBatched } from './analyticsBatchLoader.js'
 import type { OrgVaultAnalytics } from './analyticsBatchLoader.js'
+import { listVaultsByOrg } from './vaultStore.js'
 
 // Re-exported so callers can import every analytics helper from this single
 // service module rather than reaching into the individual implementation
@@ -264,13 +265,79 @@ export async function updateAnalyticsSummary(orgId?: string): Promise<void> {
  * Render a point-in-time analytics snapshot for a single org.
  * Pulls vault IDs from the in-memory vaults store so it works without a DB.
  */
-export async function renderOrgAnalyticsSnapshot(orgId: string): Promise<OrgVaultAnalytics & { orgId: string; snapshotAt: string }> {
-  // Import lazily to avoid circular deps and to stay hermetic in tests
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { vaults } = require('../routes/vaults.js') as { vaults: Array<{ id: string; orgId?: string }> }
-  const orgVaultIds = vaults
-    .filter((v) => v.orgId === orgId)
-    .map((v) => v.id)
-  const analytics = await getOrgAnalyticsBatched(orgVaultIds)
+/** Page size used when walking an org's vaults; matches the vaultStore cap. */
+const SNAPSHOT_VAULT_PAGE_SIZE = 100
+/** Maximum number of vault IDs handed to a single analytics query batch. */
+const ANALYTICS_BATCH_SIZE = 500
+
+/**
+ * Walks every vault belonging to an org via keyset pagination.
+ * Returns the full set of vault IDs the org owns (soft-deleted vaults excluded
+ * by `listVaultsByOrg`).
+ */
+async function listOrgVaultIds(orgId: string): Promise<string[]> {
+  const vaultIds: string[] = []
+  let cursor: string | undefined
+
+  do {
+    const page = await listVaultsByOrg(orgId, SNAPSHOT_VAULT_PAGE_SIZE, cursor)
+    vaultIds.push(...page.vaults.map((vault) => vault.id))
+    cursor = page.nextCursor ?? undefined
+  } while (cursor)
+
+  return vaultIds
+}
+
+/** Merge per-batch aggregates into a single snapshot. */
+function mergeOrgAnalyticsBatches(batches: OrgVaultAnalytics[]): OrgVaultAnalytics {
+  const merged = batches.reduce<OrgVaultAnalytics>(
+    (acc, batch) => ({
+      totalVaults: acc.totalVaults + batch.totalVaults,
+      activeVaults: acc.activeVaults + batch.activeVaults,
+      completedVaults: acc.completedVaults + batch.completedVaults,
+      failedVaults: acc.failedVaults + batch.failedVaults,
+      totalLockedCapital: (
+        Number(acc.totalLockedCapital) + Number(batch.totalLockedCapital)
+      ).toString(),
+      successRate: 0,
+      totalMilestones: acc.totalMilestones + batch.totalMilestones,
+      completedMilestones: acc.completedMilestones + batch.completedMilestones,
+    }),
+    {
+      totalVaults: 0,
+      activeVaults: 0,
+      completedVaults: 0,
+      failedVaults: 0,
+      totalLockedCapital: '0',
+      successRate: 0,
+      totalMilestones: 0,
+      completedMilestones: 0,
+    },
+  )
+
+  const resolvedVaults = merged.completedVaults + merged.failedVaults
+  merged.successRate =
+    resolvedVaults > 0 ? merged.completedVaults / resolvedVaults : 0
+
+  return merged
+}
+
+export async function renderOrgAnalyticsSnapshot(
+  orgId: string,
+): Promise<OrgVaultAnalytics & { orgId: string; snapshotAt: string }> {
+  const orgVaultIds = await listOrgVaultIds(orgId)
+
+  const batches: string[][] = []
+  for (let i = 0; i < orgVaultIds.length; i += ANALYTICS_BATCH_SIZE) {
+    batches.push(orgVaultIds.slice(i, i + ANALYTICS_BATCH_SIZE))
+  }
+
+  const analytics =
+    batches.length === 0
+      ? await getOrgAnalyticsBatched([])
+      : mergeOrgAnalyticsBatches(
+          await Promise.all(batches.map((batch) => getOrgAnalyticsBatched(batch))),
+        )
+
   return { ...analytics, orgId, snapshotAt: utcNow() }
 }
