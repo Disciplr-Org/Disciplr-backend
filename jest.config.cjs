@@ -45,7 +45,6 @@ module.exports = {
     "<rootDir>/src/tests/email.injection.test.ts",
     "<rootDir>/src/tests/etag.test.ts",
     "<rootDir>/src/tests/evidence.service.test.ts",
-    "<rootDir>/src/tests/evidence.ssrf.test.ts",
     "<rootDir>/src/tests/expirationScheduler.heartbeat.test.ts",
     "<rootDir>/src/tests/expirationScheduler.overlap.test.ts",
     "<rootDir>/src/tests/exports.quota.concurrency.test.ts",
