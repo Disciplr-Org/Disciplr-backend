@@ -110,7 +110,6 @@ module.exports = {
     // or Vitest-only mocks. Keep the blocking Jest run focused on the suites
     // that match the shipped application contract.
     "<rootDir>/src/tests/admin.dualControl.test.ts",
-    "<rootDir>/src/tests/orgVaultIsolation.test.ts",
     "<rootDir>/src/tests/vaultTransitions.test.ts",
     "<rootDir>/src/tests/jobs.system.handlers.test.ts",
     "<rootDir>/src/tests/csrf.protection.test.ts",
