@@ -64,7 +64,6 @@ module.exports = {
     "<rootDir>/src/tests/vaultValidation.destination.test.ts",
     "<rootDir>/src/tests/apiKeyScopes.test.ts",
     "<rootDir>/src/tests/apiKeys.usageAnalytics.test.ts",
-    "<rootDir>/src/tests/docs.disasterRecovery.test.ts",
     // node:test API integration suites, run via `npm run test:api`
     "<rootDir>/api/__tests__/contract.test.mjs",
     "<rootDir>/api/__tests__/expiry.test.mjs",
