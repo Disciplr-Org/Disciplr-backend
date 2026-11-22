@@ -118,6 +118,239 @@ components:
         - description
         - status
         - createdAt
+    VerifierProfile:
+      type: object
+      properties:
+        userId:
+          type: string
+          description: Stellar public key that identifies the verifier
+          example: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
+        displayName:
+          type:
+            - string
+            - "null"
+        metadata:
+          type:
+            - object
+            - "null"
+          additionalProperties: {}
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - suspended
+            - deactivated
+          description: "Verifier lifecycle status. Allowed transitions:
+            pending→approved|deactivated, approved→suspended|deactivated,
+            suspended→approved|deactivated, deactivated→pending|approved."
+          example: approved
+        createdAt:
+          type: string
+          format: date-time
+        approvedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        suspendedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        deactivatedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+      required:
+        - userId
+        - status
+        - createdAt
+    VerifierStats:
+      type: object
+      properties:
+        totalVerifications:
+          type: integer
+          example: 12
+        approvals:
+          type: integer
+          example: 9
+        rejections:
+          type: integer
+          example: 3
+        disputes:
+          type: integer
+          example: 1
+        approvalRatio:
+          type: number
+          example: 0.75
+        rejectionRatio:
+          type: number
+          example: 0.25
+        disputeRate:
+          type: number
+          example: 0.0833
+      required:
+        - totalVerifications
+        - approvals
+        - rejections
+        - disputes
+        - approvalRatio
+        - rejectionRatio
+        - disputeRate
+    VerifierWithStats:
+      type: object
+      properties:
+        profile:
+          $ref: "#/components/schemas/VerifierProfile"
+        stats:
+          $ref: "#/components/schemas/VerifierStats"
+      required:
+        - profile
+        - stats
+    VerifierPagination:
+      type: object
+      properties:
+        limit:
+          type: integer
+          description: Page size in effect (max 200)
+          example: 50
+        offset:
+          type: integer
+          description: Zero-based offset of the first item
+          example: 0
+        count:
+          type: integer
+          description: Number of items in this page
+          example: 2
+        hasMore:
+          type: boolean
+          description: Whether another page is likely available
+          example: false
+      required:
+        - limit
+        - offset
+        - count
+        - hasMore
+    VerifierListResponse:
+      type: object
+      properties:
+        verifiers:
+          type: array
+          items:
+            $ref: "#/components/schemas/VerifierWithStats"
+        pagination:
+          $ref: "#/components/schemas/VerifierPagination"
+      required:
+        - verifiers
+        - pagination
+    VerifierCreateResponse:
+      type: object
+      properties:
+        profile:
+          $ref: "#/components/schemas/VerifierProfile"
+        stats:
+          $ref: "#/components/schemas/VerifierStats"
+        auditLogId:
+          type: string
+          description: Audit log entry id when one was written
+      required:
+        - profile
+        - stats
+    VerifierMutationResponse:
+      type: object
+      properties:
+        profile:
+          $ref: "#/components/schemas/VerifierProfile"
+        stats:
+          $ref: "#/components/schemas/VerifierStats"
+        auditLogId:
+          type:
+            - string
+            - "null"
+          description: Audit log entry id, or null when the request was a no-op
+        changedFields:
+          type: array
+          items:
+            type: string
+          description: Profile fields changed by this request
+          example:
+            - status
+      required:
+        - profile
+        - stats
+        - auditLogId
+        - changedFields
+    CreateVerifierRequest:
+      type: object
+      properties:
+        userId:
+          type: string
+          minLength: 1
+          description: Stellar public key of the verifier to create
+          example: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
+        displayName:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: {}
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - suspended
+            - deactivated
+          description: "Verifier lifecycle status. Allowed transitions:
+            pending→approved|deactivated, approved→suspended|deactivated,
+            suspended→approved|deactivated, deactivated→pending|approved."
+          example: approved
+        reason:
+          type: string
+          description: Reason recorded on the audit log entry
+      required:
+        - userId
+    UpdateVerifierRequest:
+      type: object
+      properties:
+        displayName:
+          type:
+            - string
+            - "null"
+        metadata:
+          type:
+            - object
+            - "null"
+          additionalProperties: {}
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - suspended
+            - deactivated
+          description: "Verifier lifecycle status. Allowed transitions:
+            pending→approved|deactivated, approved→suspended|deactivated,
+            suspended→approved|deactivated, deactivated→pending|approved."
+          example: approved
+        reason:
+          type: string
+          description: Reason recorded on the audit log entry
+    VerifierReasonRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: Reason recorded on the audit log entry
+    VerifierErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: verifier not found
+      required:
+        - error
     ExportRequest:
       type: object
       properties:
@@ -1118,6 +1351,653 @@ paths:
           description: Vault not found
         "409":
           description: Vault already cancelled or not cancellable
+  /api/admin/verifiers:
+    get:
+      operationId: adminListVerifiers
+      summary: List verifier profiles with aggregate stats
+      description: Returns verifier profiles ordered by the underlying table order.
+        `limit` is clamped to 200 and defaults to 50; invalid values fall back
+        to the defaults.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Paginated verifier profiles with aggregate verification stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierListResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/ErrorEnvelope"
+                  - $ref: "#/components/schemas/VerifierErrorResponse"
+    post:
+      operationId: adminCreateVerifier
+      summary: Create a verifier profile
+      description: "`userId` must be a valid Stellar public key. When `status` is
+        omitted the profile is created as `pending`. A unique-constraint
+        violation returns 409."
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVerifierRequest"
+      responses:
+        "201":
+          description: Verifier profile created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierCreateResponse"
+        "400":
+          description: Missing userId, invalid Stellar public key, non-string displayName,
+            non-object metadata or invalid status
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/ErrorEnvelope"
+                  - $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Verifier already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}:
+    get:
+      operationId: adminGetVerifier
+      summary: Get a verifier profile and its stats
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      responses:
+        "200":
+          description: Verifier profile and aggregate stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierWithStats"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/ErrorEnvelope"
+                  - $ref: "#/components/schemas/VerifierErrorResponse"
+    patch:
+      operationId: adminUpdateVerifier
+      summary: Update a verifier profile
+      description: Only the provided fields are updated. `displayName` and `metadata`
+        accept `null` to clear them. Status changes follow the verifier
+        transition matrix; an illegal transition returns 409.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateVerifierRequest"
+      responses:
+        "200":
+          description: Updated verifier profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Non-string displayName, non-object metadata or invalid status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+    delete:
+      operationId: adminDeleteVerifier
+      summary: Delete a verifier profile
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "204":
+          description: Verifier profile deleted; no content returned
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/approve:
+    post:
+      operationId: adminApproveVerifier
+      summary: Approve a verifier
+      description: Creates the verifier profile as `approved` when it does not exist
+        yet, otherwise transitions the existing profile. A second in-flight
+        transition for the same verifier returns 429.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier approved
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "429":
+          description: A concurrent transition for this verifier is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/suspend:
+    post:
+      operationId: adminSuspendVerifier
+      summary: Suspend a verifier
+      description: Creates the verifier profile as `suspended` when it does not exist
+        yet, otherwise transitions the existing profile. A second in-flight
+        transition for the same verifier returns 429.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier suspended
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "429":
+          description: A concurrent transition for this verifier is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/reinstate:
+    post:
+      operationId: adminReinstateVerifier
+      summary: Reinstate a suspended or deactivated verifier
+      description: Restores a previously approved verifier to `approved`, otherwise to
+        `pending`. Reinstating an already active (`approved`/`pending`) verifier
+        is a no-op returning an empty `changedFields` and a `null` `auditLogId`.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier reinstated (or already active)
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/deactivate:
+    post:
+      operationId: adminDeactivateVerifier
+      summary: Deactivate a verifier
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier deactivated
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/reactivate:
+    post:
+      operationId: adminReactivateVerifier
+      summary: Reactivate a deactivated verifier
+      description: Transitions a deactivated verifier back to `pending`, pending
+        re-approval.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier reactivated as pending
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
   /api/exports/me:
     post:
       summary: Enqueue a personal data export job
