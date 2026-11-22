@@ -202,6 +202,285 @@ components:
         - status
         - attempts
         - maxAttempts
+    WebhookSubscription:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 123e4567-e89b-12d3-a456-426614174000
+        url:
+          type: string
+          format: uri
+          example: https://example.com/webhook
+        events:
+          type: array
+          items:
+            type: string
+          example:
+            - vault.created
+            - vault.completed
+        active:
+          type: boolean
+          example: true
+        orgId:
+          type: string
+          example: org_123
+        createdAt:
+          type: string
+          format: date-time
+          example: 2026-06-02T10:00:00Z
+      required:
+        - id
+        - url
+        - events
+        - active
+        - createdAt
+    CreateWebhookRequest:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+          example: https://example.com/webhook
+        events:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          example:
+            - vault.created
+            - vault.completed
+        active:
+          type: boolean
+          default: true
+          example: true
+      required:
+        - url
+        - events
+    CreateWebhookResponse:
+      type: object
+      properties:
+        secret:
+          type: string
+          description: Generated webhook signing secret (only shown once)
+          example: a1b2c3d4e5f67890
+        subscription:
+          $ref: "#/components/schemas/WebhookSubscription"
+      required:
+        - secret
+        - subscription
+    RotateWebhookSecretResponse:
+      type: object
+      properties:
+        secret:
+          type: string
+          description: New webhook signing secret
+          example: f6e5d4c3b2a10987
+        subscription:
+          $ref: "#/components/schemas/WebhookSubscription"
+      required:
+        - secret
+        - subscription
+    WebhookDeadLetter:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 123e4567-e89b-12d3-a456-426614174000
+        subscriber_id:
+          type: string
+          format: uuid
+          example: 123e4567-e89b-12d3-a456-426614174001
+        event_id:
+          type: string
+          example: evt_123
+        event_type:
+          type: string
+          example: vault.failed
+        payload:
+          type: object
+          additionalProperties: {}
+          example:
+            vaultId: "123"
+        last_error:
+          type: string
+          example: "HTTP 500: Internal Server Error"
+        attempts:
+          type: number
+          example: 5
+        failed_at:
+          type: string
+          format: date-time
+          example: 2026-06-02T10:00:00Z
+        replayed_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+          example: null
+      required:
+        - id
+        - subscriber_id
+        - event_id
+        - event_type
+        - payload
+        - last_error
+        - attempts
+        - failed_at
+        - replayed_at
+    FieldPolicy:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum:
+            - default
+            - allowlist
+            - denylist
+          example: default
+        fields:
+          type: array
+          items:
+            type: string
+          example:
+            - email
+            - address
+        stripPii:
+          type: boolean
+          example: true
+      required:
+        - mode
+        - fields
+        - stripPii
+    AdminWebhookSubscriber:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 123e4567-e89b-12d3-a456-426614174000
+        organization_id:
+          type: string
+          example: org_123
+        url:
+          type: string
+          format: uri
+          example: https://example.com/webhook
+        events:
+          type: array
+          items:
+            type: string
+          example:
+            - vault.created
+        active:
+          type: boolean
+          example: true
+        created_at:
+          type: string
+          format: date-time
+          example: 2026-06-02T10:00:00Z
+        rotated_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+          example: null
+        field_policy:
+          $ref: "#/components/schemas/FieldPolicy"
+      required:
+        - id
+        - organization_id
+        - url
+        - events
+        - active
+        - created_at
+    EgressAllowlistEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 123e4567-e89b-12d3-a456-426614174000
+        organizationId:
+          type: string
+          example: org_123
+        host:
+          type: string
+          example: api.example.com
+        createdAt:
+          type: string
+          format: date-time
+          example: 2026-06-02T10:00:00Z
+      required:
+        - id
+        - organizationId
+        - host
+        - createdAt
+    SubscriberDeliveryStats:
+      type: object
+      properties:
+        subscriber_id:
+          type: string
+          format: uuid
+          example: 123e4567-e89b-12d3-a456-426614174000
+        window:
+          type: string
+          example: 24h
+        window_start:
+          type: string
+          format: date-time
+          example: 2026-06-01T10:00:00Z
+        window_end:
+          type: string
+          format: date-time
+          example: 2026-06-02T10:00:00Z
+        attempt_count:
+          type: number
+          example: 120
+        success_count:
+          type: number
+          example: 118
+        failure_count:
+          type: number
+          example: 2
+        success_rate:
+          type: number
+          example: 0.9833
+        p50_latency_ms:
+          type:
+            - number
+            - "null"
+          example: 45
+        p95_latency_ms:
+          type:
+            - number
+            - "null"
+          example: 120
+        last_failure_reason:
+          type:
+            - string
+            - "null"
+          example: ETIMEDOUT
+        breaker_state:
+          type:
+            - string
+            - "null"
+          example: CLOSED
+      required:
+        - subscriber_id
+        - window
+        - window_start
+        - window_end
+        - attempt_count
+        - success_count
+        - failure_count
+        - success_rate
+        - p50_latency_ms
+        - p95_latency_ms
+        - last_failure_reason
+        - breaker_state
   parameters: {}
 paths:
   /api/health:
@@ -1326,4 +1605,1058 @@ paths:
                       - warnings
                 required:
                   - data
+  /api/webhooks:
+    post:
+      operationId: createWebhookSubscription
+      summary: Create a webhook subscription for an organization
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            description: Organization ID
+            example: org_123
+          required: true
+          description: Organization ID
+          name: orgId
+          in: query
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWebhookRequest"
+      responses:
+        "201":
+          description: Webhook subscription created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateWebhookResponse"
+        "400":
+          description: Bad request (missing orgId or invalid body)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (member access required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "422":
+          description: Unprocessable entity (URL not permitted by egress policy)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+    get:
+      operationId: listWebhookSubscriptions
+      summary: List webhook subscriptions for an organization
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            description: Organization ID
+            example: org_123
+          required: true
+          description: Organization ID
+          name: orgId
+          in: query
+      responses:
+        "200":
+          description: List of webhook subscriptions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscriptions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WebhookSubscription"
+                required:
+                  - subscriptions
+        "400":
+          description: Bad request (missing orgId)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (member access required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/webhooks/{id}:
+    get:
+      operationId: getWebhookSubscription
+      summary: Get a webhook subscription by ID
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Webhook subscription ID (UUID)
+        - name: orgId
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Organization ID
+      responses:
+        "200":
+          description: Webhook subscription details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscription:
+                    $ref: "#/components/schemas/WebhookSubscription"
+                required:
+                  - subscription
+        "400":
+          description: Bad request (invalid ID format or missing orgId)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (member access required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Webhook subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+    delete:
+      operationId: deleteWebhookSubscription
+      summary: Delete a webhook subscription
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Webhook subscription ID (UUID)
+        - name: orgId
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Organization ID
+      responses:
+        "200":
+          description: Webhook subscription deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                    example: true
+                required:
+                  - deleted
+        "400":
+          description: Bad request (invalid ID format or missing orgId)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (member access required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Webhook subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/webhooks/{id}/rotate-secret:
+    post:
+      operationId: rotateWebhookSecret
+      summary: Rotate signing secret for a webhook subscription
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Webhook subscription ID (UUID)
+        - name: orgId
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Organization ID
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              description: Empty body expected
+      responses:
+        "200":
+          description: Webhook secret rotated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateWebhookSecretResponse"
+        "400":
+          description: Bad request (invalid ID format or missing orgId)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (member access required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Webhook subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/admin/webhooks/dead-letters:
+    get:
+      operationId: listWebhookDeadLetters
+      summary: List webhook dead-letter queue entries (admin)
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type:
+              - number
+              - "null"
+            default: 50
+            example: 50
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type:
+              - number
+              - "null"
+            default: 0
+            example: 0
+          required: false
+          name: offset
+          in: query
+        - schema:
+            type: string
+            example: 123e4567-e89b-12d3-a456-426614174000
+          required: false
+          name: subscriber_id
+          in: query
+      responses:
+        "200":
+          description: List of dead-letter deliveries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhook_dead_letters:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WebhookDeadLetter"
+                  count:
+                    type: number
+                    example: 10
+                  total:
+                    type: number
+                    example: 25
+                  limit:
+                    type: number
+                    example: 50
+                  offset:
+                    type: number
+                    example: 0
+                  has_more:
+                    type: boolean
+                    example: false
+                required:
+                  - webhook_dead_letters
+                  - count
+                  - total
+                  - limit
+                  - offset
+                  - has_more
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/admin/webhooks/dead-letters/{id}/replay:
+    post:
+      operationId: replayWebhookDeadLetter
+      summary: Replay a specific dead-letter webhook delivery (admin)
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Dead letter entry ID
+      responses:
+        "202":
+          description: Dead letter replayed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  replayed:
+                    type: boolean
+                    example: true
+                required:
+                  - replayed
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Dead letter not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/admin/webhooks/subscribers:
+    post:
+      operationId: upsertAdminWebhookSubscriber
+      summary: Idempotently register or update a subscriber (admin)
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                organization_id:
+                  type: string
+                  example: org_123
+                url:
+                  type: string
+                  format: uri
+                  example: https://example.com/webhook
+                secret:
+                  type: string
+                  example: sec_123
+                events:
+                  type: array
+                  items:
+                    type: string
+                  example:
+                    - vault.created
+              required:
+                - organization_id
+                - url
+                - secret
+      responses:
+        "200":
+          description: Webhook subscriber registered or updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminWebhookSubscriber"
+        "400":
+          description: Bad request (missing required fields)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "422":
+          description: Unprocessable entity (URL not permitted by egress policy)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+    get:
+      operationId: listAdminWebhookSubscribers
+      summary: List active subscribers for an organization (admin)
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            example: org_123
+          required: true
+          name: organization_id
+          in: query
+      responses:
+        "200":
+          description: List of active subscribers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscribers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AdminWebhookSubscriber"
+                required:
+                  - subscribers
+        "400":
+          description: Bad request (missing organization_id)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/admin/webhooks/subscribers/{id}/rotate-secret:
+    post:
+      operationId: rotateAdminWebhookSubscriberSecret
+      summary: Rotate signing secret for a subscriber with grace window (admin)
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Subscriber ID
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                organization_id:
+                  type: string
+                  example: org_123
+                new_secret:
+                  type: string
+                  example: new_sec_123
+              required:
+                - organization_id
+                - new_secret
+      responses:
+        "200":
+          description: Secret rotated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: 123e4567-e89b-12d3-a456-426614174000
+                  rotated_at:
+                    type: string
+                    format: date-time
+                    example: 2026-06-02T10:00:00Z
+                required:
+                  - id
+                  - rotated_at
+        "400":
+          description: Bad request (missing organization_id or new_secret)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Subscriber not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/admin/webhooks/pause/status:
+    get:
+      operationId: getWebhookPauseStatus
+      summary: Get current webhook delivery pause status (admin)
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current delivery pause status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  paused:
+                    type: boolean
+                    example: false
+                required:
+                  - paused
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/admin/webhooks/pause:
+    post:
+      operationId: pauseWebhookDelivery
+      summary: Halt all outbound webhook delivery (admin)
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Webhook delivery paused
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  paused:
+                    type: boolean
+                    enum:
+                      - true
+                    example: true
+                required:
+                  - paused
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/admin/webhooks/resume:
+    post:
+      operationId: resumeWebhookDelivery
+      summary: Resume all outbound webhook delivery (admin)
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Webhook delivery resumed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  paused:
+                    type: boolean
+                    enum:
+                      - false
+                    example: false
+                required:
+                  - paused
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/admin/webhooks/{id}/replay:
+    post:
+      operationId: replayWebhookWindow
+      summary: Replay dead-letter entries for a subscriber within a time window (admin)
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Subscriber ID
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                start_time:
+                  type: string
+                  format: date-time
+                  example: 2026-06-01T00:00:00Z
+                end_time:
+                  type: string
+                  format: date-time
+                  example: 2026-06-02T00:00:00Z
+                replay_marker:
+                  type: string
+                  example: marker_abc
+                max_events:
+                  type: integer
+                  minimum: 1
+                  example: 500
+              required:
+                - start_time
+                - end_time
+      responses:
+        "200":
+          description: Window replay executed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  replayed:
+                    type: boolean
+                    example: true
+                  count:
+                    type: number
+                    example: 10
+                  success_count:
+                    type: number
+                    example: 10
+                  failure_count:
+                    type: number
+                    example: 0
+                  replay_marker:
+                    type: string
+                    example: marker_abc
+                required:
+                  - replayed
+                  - count
+                  - success_count
+                  - failure_count
+        "400":
+          description: Bad request (invalid timestamps or params)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Subscriber not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/admin/webhooks/egress-allowlist:
+    get:
+      operationId: listEgressAllowlist
+      summary: List egress allowlist entries for an organization (admin)
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - schema:
+            type: string
+            example: org_123
+          required: true
+          name: organization_id
+          in: query
+      responses:
+        "200":
+          description: List of egress allowlist entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  egress_allowlist:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/EgressAllowlistEntry"
+                required:
+                  - egress_allowlist
+        "400":
+          description: Bad request (missing organization_id)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+    post:
+      operationId: addEgressAllowlistEntry
+      summary: Add host to an organization egress allowlist (admin)
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                organization_id:
+                  type: string
+                  example: org_123
+                host:
+                  type: string
+                  example: api.example.com
+              required:
+                - organization_id
+                - host
+      responses:
+        "201":
+          description: Egress allowlist entry created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EgressAllowlistEntry"
+        "400":
+          description: Bad request (missing organization_id or host)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+    delete:
+      operationId: removeEgressAllowlistEntry
+      summary: Remove host from an organization egress allowlist (admin)
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                organization_id:
+                  type: string
+                  example: org_123
+                host:
+                  type: string
+                  example: api.example.com
+              required:
+                - organization_id
+                - host
+      responses:
+        "200":
+          description: Egress allowlist entry removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed:
+                    type: boolean
+                    example: true
+                required:
+                  - removed
+        "400":
+          description: Bad request (missing organization_id or host)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Entry not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/admin/webhooks/{id}/stats:
+    get:
+      operationId: getSubscriberDeliveryStats
+      summary: Get aggregated delivery analytics for a subscriber (admin)
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Subscriber ID
+        - name: window
+          in: query
+          required: false
+          schema:
+            type: string
+            default: 24h
+          description: Time window (e.g. 1h, 24h, 72h, 3d)
+      responses:
+        "200":
+          description: Subscriber delivery stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubscriberDeliveryStats"
+        "400":
+          description: Bad request (invalid window parameter)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Subscriber not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/admin/webhooks/subscribers/{id}/field-policy:
+    patch:
+      operationId: updateSubscriberFieldPolicy
+      summary: Update field masking policy for a subscriber (admin)
+      tags:
+        - Webhooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Subscriber ID
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                organization_id:
+                  type: string
+                  example: org_123
+                field_policy:
+                  $ref: "#/components/schemas/FieldPolicy"
+              required:
+                - organization_id
+                - field_policy
+      responses:
+        "200":
+          description: Field policy updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: 123e4567-e89b-12d3-a456-426614174000
+                  field_policy:
+                    $ref: "#/components/schemas/FieldPolicy"
+                required:
+                  - id
+                  - field_policy
+        "400":
+          description: Bad request (invalid organization_id or field_policy)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Subscriber not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
 webhooks: {}
