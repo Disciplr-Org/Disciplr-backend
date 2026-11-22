@@ -1,4 +1,5 @@
-import { jest, describe, it, expect, beforeEach, afterEach, beforeAll } from '@jest/globals'
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { jest, describe, it, expect, beforeEach, beforeAll } from '@jest/globals'
 import type { MilestoneReminderItem } from '../types/notification.js'
 
 // Mock data
@@ -428,13 +429,11 @@ describe('processDeferredReminders', () => {
 describe('digestRenderer', () => {
   // Import synchronously since we're not mocking digestRenderer
   let renderDigestTitle: (items: MilestoneReminderItem[]) => string
-  let renderDigestMessage: (options: { items: MilestoneReminderItem[]; locale?: string; timezone?: string }) => string
   let formatLeadTime: (leadTimeMs: number) => string
 
   beforeAll(async () => {
     const module = await import('../services/digestRenderer.js')
     renderDigestTitle = module.renderDigestTitle
-    renderDigestMessage = module.renderDigestMessage
     formatLeadTime = module.formatLeadTime
   })
 
