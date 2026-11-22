@@ -50,7 +50,6 @@ module.exports = {
     "<rootDir>/src/tests/expirationScheduler.overlap.test.ts",
     "<rootDir>/src/tests/exports.quota.concurrency.test.ts",
     "<rootDir>/src/tests/membership.roleTransition.test.ts",
-    "<rootDir>/src/tests/metricsAuth.test.ts",
     "<rootDir>/src/tests/prismaScope.concurrency.test.ts",
     "<rootDir>/src/tests/prismaScope.test.ts",
     "<rootDir>/src/tests/privacy-logger.allowlist.test.ts",
