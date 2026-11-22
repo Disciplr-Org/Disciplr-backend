@@ -106,7 +106,12 @@ export class MemoryStore {
   }
 
   async createVault(v) { this.vaults.push(v); return v }
-  async saveVault(v) { v.updatedAt = iso(Date.now()); return v }
+  async saveVault(v) {
+    v.updatedAt = iso(Date.now())
+    const idx = this.vaults.findIndex((x) => x.id === v.id)
+    if (idx >= 0) this.vaults[idx] = v
+    return v
+  }
   async addActivity(a) { this.activity.push(a); return a }
   async insertActivityTx(_tx, a) { return a }
   // Serialises read-check-write per vault so concurrent validate/fail requests cannot interleave.
