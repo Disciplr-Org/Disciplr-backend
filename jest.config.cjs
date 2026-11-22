@@ -84,7 +84,6 @@ module.exports = {
     "<rootDir>/src/tests/webhookVerify.test.ts",
     "<rootDir>/src/routes/apiKeys.test.ts",
     "<rootDir>/src/routes/oauth.test.ts",
-    "<rootDir>/src/routes/auth.test.ts",
     // Job suites written against an API this codebase does not expose: they
     // import `Queue`/`SchedulerRegistry`/`createJobsRouter` and a `../audit`
     // module that do not exist here, and rely on custom matchers
