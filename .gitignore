@@ -12,3 +12,4 @@ coverage/
 .opencode
 .vercel
 .env*
+data/*.db*
