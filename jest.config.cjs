@@ -54,7 +54,6 @@ module.exports = {
     "<rootDir>/src/tests/prismaScope.concurrency.test.ts",
     "<rootDir>/src/tests/prismaScope.test.ts",
     "<rootDir>/src/tests/privacy-logger.allowlist.test.ts",
-    "<rootDir>/src/tests/transactionETL.driftReport.test.ts",
     "<rootDir>/src/tests/vaultStore.concurrency.test.ts",
     "<rootDir>/tests/multiVerifier.test.ts",
     "<rootDir>/src/routes/auth.users.test.ts",
