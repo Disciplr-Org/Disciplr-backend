@@ -831,6 +831,451 @@ registry.registerPath({
   },
 })
 
+// ==================== ADMIN VERIFIERS ROUTES ====================
+
+const verifierStatusSchema = z
+  .enum(['pending', 'approved', 'suspended', 'deactivated'])
+  .openapi({
+    description:
+      'Verifier lifecycle status. Allowed transitions: pending→approved|deactivated, ' +
+      'approved→suspended|deactivated, suspended→approved|deactivated, deactivated→pending|approved.',
+    example: 'approved',
+  })
+
+const VerifierProfileSchema = registry.register(
+  'VerifierProfile',
+  z.object({
+    userId: z.string().openapi({
+      description: 'Stellar public key that identifies the verifier',
+      example: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+    }),
+    displayName: z.string().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+    status: verifierStatusSchema,
+    createdAt: z.string().datetime(),
+    approvedAt: z.string().datetime().nullable().optional(),
+    suspendedAt: z.string().datetime().nullable().optional(),
+    deactivatedAt: z.string().datetime().nullable().optional(),
+  })
+)
+
+const VerifierStatsSchema = registry.register(
+  'VerifierStats',
+  z.object({
+    totalVerifications: z.number().int().openapi({ example: 12 }),
+    approvals: z.number().int().openapi({ example: 9 }),
+    rejections: z.number().int().openapi({ example: 3 }),
+    disputes: z.number().int().openapi({ example: 1 }),
+    approvalRatio: z.number().openapi({ example: 0.75 }),
+    rejectionRatio: z.number().openapi({ example: 0.25 }),
+    disputeRate: z.number().openapi({ example: 0.0833 }),
+  })
+)
+
+const VerifierWithStatsSchema = registry.register(
+  'VerifierWithStats',
+  z.object({
+    profile: VerifierProfileSchema,
+    stats: VerifierStatsSchema,
+  })
+)
+
+const VerifierPaginationSchema = registry.register(
+  'VerifierPagination',
+  z.object({
+    limit: z.number().int().openapi({ description: 'Page size in effect (max 200)', example: 50 }),
+    offset: z.number().int().openapi({ description: 'Zero-based offset of the first item', example: 0 }),
+    count: z.number().int().openapi({ description: 'Number of items in this page', example: 2 }),
+    hasMore: z.boolean().openapi({ description: 'Whether another page is likely available', example: false }),
+  })
+)
+
+const VerifierListResponseSchema = registry.register(
+  'VerifierListResponse',
+  z.object({
+    verifiers: z.array(VerifierWithStatsSchema),
+    pagination: VerifierPaginationSchema,
+  })
+)
+
+const VerifierCreateResponseSchema = registry.register(
+  'VerifierCreateResponse',
+  z.object({
+    profile: VerifierProfileSchema,
+    stats: VerifierStatsSchema,
+    auditLogId: z.string().optional().openapi({ description: 'Audit log entry id when one was written' }),
+  })
+)
+
+const VerifierMutationResponseSchema = registry.register(
+  'VerifierMutationResponse',
+  z.object({
+    profile: VerifierProfileSchema,
+    stats: VerifierStatsSchema,
+    auditLogId: z.string().nullable().openapi({
+      description: 'Audit log entry id, or null when the request was a no-op',
+    }),
+    changedFields: z.array(z.string()).openapi({
+      description: 'Profile fields changed by this request',
+      example: ['status'],
+    }),
+  })
+)
+
+const CreateVerifierRequestSchema = registry.register(
+  'CreateVerifierRequest',
+  z.object({
+    userId: z.string().min(1).openapi({
+      description: 'Stellar public key of the verifier to create',
+      example: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+    }),
+    displayName: z.string().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+    status: verifierStatusSchema.optional(),
+    reason: z.string().optional().openapi({ description: 'Reason recorded on the audit log entry' }),
+  })
+)
+
+const UpdateVerifierRequestSchema = registry.register(
+  'UpdateVerifierRequest',
+  z.object({
+    displayName: z.string().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+    status: verifierStatusSchema.optional(),
+    reason: z.string().optional().openapi({ description: 'Reason recorded on the audit log entry' }),
+  })
+)
+
+const VerifierReasonRequestSchema = registry.register(
+  'VerifierReasonRequest',
+  z.object({
+    reason: z.string().optional().openapi({ description: 'Reason recorded on the audit log entry' }),
+  })
+)
+
+const VerifierErrorResponseSchema = registry.register(
+  'VerifierErrorResponse',
+  z.object({
+    error: z.string().openapi({ example: 'verifier not found' }),
+  })
+)
+
+// Route handlers respond with `{ error: string }`; errors handed to the global
+// error handler (e.g. AppError.validation for an invalid Stellar key) use the
+// shared ErrorEnvelope instead, so both shapes are documented for those codes.
+const VerifierOrEnvelopeErrorSchema = z.union([
+  ErrorEnvelope,
+  VerifierErrorResponseSchema,
+])
+
+const verifierUserIdParameter = {
+  name: 'userId',
+  in: 'path' as const,
+  required: true,
+  schema: { type: 'string' as const },
+  description: 'Verifier identifier (Stellar public key)',
+}
+
+const verifierSecurity = [{ bearerAuth: [] }]
+
+const verifierErrorResponse = (
+  description: string,
+  schema: z.ZodTypeAny = VerifierErrorResponseSchema,
+) => ({
+  description,
+  content: { 'application/json': { schema } },
+})
+
+const requestIdHeader = {
+  'X-Request-Id': {
+    description: 'Request correlation id; echoes the inbound x-request-id header when supplied',
+    schema: { type: 'string' as const },
+  },
+}
+
+// GET /api/admin/verifiers
+registry.registerPath({
+  method: 'get',
+  path: '/api/admin/verifiers',
+  operationId: 'adminListVerifiers',
+  summary: 'List verifier profiles with aggregate stats',
+  description:
+    'Returns verifier profiles ordered by the underlying table order. `limit` is ' +
+    'clamped to 200 and defaults to 50; invalid values fall back to the defaults.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [
+    { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 } },
+    { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } },
+  ],
+  responses: {
+    200: {
+      description: 'Paginated verifier profiles with aggregate verification stats',
+      content: { 'application/json': { schema: VerifierListResponseSchema } },
+    },
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    500: verifierErrorResponse('Unexpected server error', VerifierOrEnvelopeErrorSchema),
+  },
+})
+
+// GET /api/admin/verifiers/:userId
+registry.registerPath({
+  method: 'get',
+  path: '/api/admin/verifiers/{userId}',
+  operationId: 'adminGetVerifier',
+  summary: 'Get a verifier profile and its stats',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  responses: {
+    200: {
+      description: 'Verifier profile and aggregate stats',
+      content: { 'application/json': { schema: VerifierWithStatsSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    500: verifierErrorResponse('Unexpected server error', VerifierOrEnvelopeErrorSchema),
+  },
+})
+
+// POST /api/admin/verifiers
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers',
+  operationId: 'adminCreateVerifier',
+  summary: 'Create a verifier profile',
+  description:
+    '`userId` must be a valid Stellar public key. When `status` is omitted the ' +
+    'profile is created as `pending`. A unique-constraint violation returns 409.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  request: {
+    body: { content: { 'application/json': { schema: CreateVerifierRequestSchema } } },
+  },
+  responses: {
+    201: {
+      description: 'Verifier profile created',
+      content: { 'application/json': { schema: VerifierCreateResponseSchema } },
+    },
+    400: verifierErrorResponse(
+      'Missing userId, invalid Stellar public key, non-string displayName, non-object metadata or invalid status',
+      VerifierOrEnvelopeErrorSchema,
+    ),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    409: verifierErrorResponse('Verifier already exists'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// PATCH /api/admin/verifiers/:userId
+registry.registerPath({
+  method: 'patch',
+  path: '/api/admin/verifiers/{userId}',
+  operationId: 'adminUpdateVerifier',
+  summary: 'Update a verifier profile',
+  description:
+    'Only the provided fields are updated. `displayName` and `metadata` accept ' +
+    '`null` to clear them. Status changes follow the verifier transition matrix; ' +
+    'an illegal transition returns 409.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: UpdateVerifierRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Updated verifier profile',
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Non-string displayName, non-object metadata or invalid status'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// DELETE /api/admin/verifiers/:userId
+registry.registerPath({
+  method: 'delete',
+  path: '/api/admin/verifiers/{userId}',
+  operationId: 'adminDeleteVerifier',
+  summary: 'Delete a verifier profile',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: {
+      required: false,
+      content: { 'application/json': { schema: VerifierReasonRequestSchema } },
+    },
+  },
+  responses: {
+    204: { description: 'Verifier profile deleted; no content returned' },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/approve
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/approve',
+  operationId: 'adminApproveVerifier',
+  summary: 'Approve a verifier',
+  description:
+    'Creates the verifier profile as `approved` when it does not exist yet, ' +
+    'otherwise transitions the existing profile. A second in-flight transition ' +
+    'for the same verifier returns 429.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier approved',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    429: verifierErrorResponse('A concurrent transition for this verifier is already in progress'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/suspend
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/suspend',
+  operationId: 'adminSuspendVerifier',
+  summary: 'Suspend a verifier',
+  description:
+    'Creates the verifier profile as `suspended` when it does not exist yet, ' +
+    'otherwise transitions the existing profile. A second in-flight transition ' +
+    'for the same verifier returns 429.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier suspended',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    429: verifierErrorResponse('A concurrent transition for this verifier is already in progress'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/reinstate
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/reinstate',
+  operationId: 'adminReinstateVerifier',
+  summary: 'Reinstate a suspended or deactivated verifier',
+  description:
+    'Restores a previously approved verifier to `approved`, otherwise to ' +
+    '`pending`. Reinstating an already active (`approved`/`pending`) verifier ' +
+    'is a no-op returning an empty `changedFields` and a `null` `auditLogId`.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier reinstated (or already active)',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/deactivate
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/deactivate',
+  operationId: 'adminDeactivateVerifier',
+  summary: 'Deactivate a verifier',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier deactivated',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/reactivate
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/reactivate',
+  operationId: 'adminReactivateVerifier',
+  summary: 'Reactivate a deactivated verifier',
+  description: 'Transitions a deactivated verifier back to `pending`, pending re-approval.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier reactivated as pending',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
 // ==================== EXPORT ROUTES ====================
 
 const ExportRequestRef = registry.register('ExportRequest', ExportRequestSchema)
