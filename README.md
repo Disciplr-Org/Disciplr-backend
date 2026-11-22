@@ -103,7 +103,7 @@ Run migrations before deploying this API version. The activity-log migration upg
 ## Limitations
 
 - The public demo API has no authentication; the `verifier` address in the request body authorises validation. Do not use it for real funds.
-- With `SOROBAN_ENABLED=1` (plus `SOROBAN_RPC_URL`, `SOROBAN_NETWORK_PASSPHRASE`, `VAULT_CONTRACT_ID`, `VAULT_TOKEN_ID`), `POST /vaults` returns unsigned `create_vault` XDR for the creator's wallet; the signed XDR goes to `POST /vaults/:id/onchain/submit`, then `POST /vaults/:id/onchain/stake` + submit funds the vault. Activity rows carry the real tx hash and ledger. The server never holds user keys. Verifier/claim/slash settlement remains simulated.
+- With `SOROBAN_ENABLED=1` (plus `SOROBAN_RPC_URL`, `SOROBAN_NETWORK_PASSPHRASE`, `VAULT_CONTRACT_ID`, `VAULT_TOKEN_ID`), `POST /vaults` returns unsigned `create_vault` XDR for the creator's wallet; the signed XDR goes to `POST /vaults/:id/onchain/submit`, then `POST /vaults/:id/onchain/stake` + submit funds the vault. Settlement operations (`claim_milestone`, `slash_on_miss`, `withdraw`) follow the same sign-and-submit pattern via `POST /vaults/:id/onchain/claim-milestone`, `POST /vaults/:id/onchain/slash`, and `POST /vaults/:id/onchain/withdraw`, verified against `expectedArgs` and idempotently recorded by tx hash with real hashes and ledgers. The server never holds user keys.
 - Without it, settlement in the deployed API is simulated (activity rows with random hashes, status `simulated`). On-chain settlement is part of the Soroban contracts in `contracts/`, which are not wired to the serverless API.
 - The pgvector-dependent `milestone_embeddings` migration is skipped when the extension is unavailable.
 

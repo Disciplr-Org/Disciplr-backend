@@ -12,6 +12,10 @@ const CREATOR = 'GBVAQKGA5P4TIZSZJBS5AW3XNJOTYG6I3Y5CLIGCBBUZDHMVF7YE7XCQ'
 const API_PREFIX = '/api/v1'
 
 const PG_URL = process.env.DATABASE_URL || 'postgresql://postgres:postgres@127.0.0.1:5432/disciplr'
+const originalWriteIpMax = process.env.RATE_LIMIT_WRITE_IP_MAX
+const originalWriteAddrMax = process.env.RATE_LIMIT_WRITE_ADDR_MAX
+process.env.RATE_LIMIT_WRITE_IP_MAX = '1000'
+process.env.RATE_LIMIT_WRITE_ADDR_MAX = '1000'
 
 async function hasPostgres() {
   const url = PG_URL
@@ -29,7 +33,13 @@ async function hasPostgres() {
 const postgresReady = await hasPostgres()
 const postgresTest = postgresReady ? test : test.skip
 
-after(() => resetStore())
+after(() => {
+  resetStore()
+  if (originalWriteIpMax === undefined) delete process.env.RATE_LIMIT_WRITE_IP_MAX
+  else process.env.RATE_LIMIT_WRITE_IP_MAX = originalWriteIpMax
+  if (originalWriteAddrMax === undefined) delete process.env.RATE_LIMIT_WRITE_ADDR_MAX
+  else process.env.RATE_LIMIT_WRITE_ADDR_MAX = originalWriteAddrMax
+})
 
 async function seedVault(vault) {
   const s = await getStore()
@@ -111,7 +121,7 @@ async function scenarioA(kind, usePg = false) {
   assert.equal(updated.status, 'completed')
   assert.ok(updated.milestones.every((milestone) => milestone.status === 'completed'))
 
-  const activity = await store.listActivity({ vaultId: vault.id })
+  const activity = (await store.listActivity({ vaultId: vault.id })).items
   assert.equal(activity.filter((item) => item.type === 'release').length, 1)
   assert.equal(activity.filter((item) => item.type === 'validate').length, 20)
 
@@ -153,7 +163,7 @@ async function scenarioB(kind, usePg = false) {
   assert.equal(updated.milestones.filter((milestone) => milestone.status === 'completed').length, 1)
   assert.equal(updated.status, 'active')
 
-  const activity = await store.listActivity({ vaultId: vault.id })
+  const activity = (await store.listActivity({ vaultId: vault.id })).items
   assert.equal(activity.filter((item) => item.type === 'validate').length, 1)
   assert.equal(activity.filter((item) => item.type === 'release').length, 0)
 
@@ -196,7 +206,7 @@ async function scenarioC(kind, usePg = false) {
   assert.ok(updated.status === 'completed' || updated.status === 'failed')
   assert.ok(updated.status === 'completed' ? updated.milestones.every((milestone) => milestone.status === 'completed') : updated.milestones.every((milestone) => milestone.status !== 'pending'))
 
-  const activity = await store.listActivity({ vaultId: vault.id })
+  const activity = (await store.listActivity({ vaultId: vault.id })).items
   const releaseCount = activity.filter((item) => item.type === 'release').length
   const redirectCount = activity.filter((item) => item.type === 'redirect').length
   assert.equal(releaseCount + redirectCount, 1)
@@ -236,7 +246,7 @@ async function scenarioD(usePg = false) {
   assert.deepEqual(after.status, before.status)
   assert.deepEqual(after.milestones.map((item) => ({ id: item.id, status: item.status })), before.milestones.map((item) => ({ id: item.id, status: item.status })))
 
-  const activity = await store.listActivity({ vaultId: vault.id })
+  const activity = (await store.listActivity({ vaultId: vault.id })).items
   assert.equal(activity.filter((item) => item.vaultId === vault.id).length, 0)
 
   store.insertActivityTx = originalInsert
@@ -246,6 +256,7 @@ async function scenarioD(usePg = false) {
 const memoryScenarioA = () => scenarioA('memory', false)
 const memoryScenarioB = () => scenarioB('memory', false)
 const memoryScenarioC = () => scenarioC('memory', false)
+const memoryScenarioD = () => scenarioD(false)
 const pgScenarioA = () => scenarioA('postgres', true)
 const pgScenarioB = () => scenarioB('postgres', true)
 const pgScenarioC = () => scenarioC('postgres', true)
@@ -271,4 +282,8 @@ test('Memory store concurrency: scenarios A-C', async () => {
   await memoryScenarioA()
   await memoryScenarioB()
   await memoryScenarioC()
+})
+
+test('Memory store transaction rollback on activity insert failure', async () => {
+  await memoryScenarioD()
 })

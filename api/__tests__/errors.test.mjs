@@ -33,7 +33,14 @@ describe('Error Handling Middleware and Query Validation', () => {
   })
 
   test('GET /api/vaults?creator=notakey -> 400; ?creator=a&creator=b -> 400', async () => {
-    const { app } = buildApp()
+    let listVaultsCalled = false
+    const customStore = new MemoryStore()
+    customStore.listVaults = async (...args) => {
+      listVaultsCalled = true
+      return MemoryStore.prototype.listVaults.apply(customStore, args)
+    }
+
+    const { app } = buildApp(customStore)
 
     const res1 = await request(app)
       .get('/api/vaults?creator=notakey')
@@ -53,6 +60,7 @@ describe('Error Handling Middleware and Query Validation', () => {
     assert.match(res2.body.error, /creator/i)
     assert(Array.isArray(res2.body.details))
     assert.match(res2.body.details[0], /array/i)
+    assert.equal(listVaultsCalled, false, 'Store listVaults should not be called on creator validation failure')
   })
 
   test('GET /api/vaults?status= (empty string) is treated as absent', async () => {
