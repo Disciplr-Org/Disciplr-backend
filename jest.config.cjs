@@ -107,7 +107,6 @@ module.exports = {
     "<rootDir>/src/tests/csrf.protection.test.ts",
     "<rootDir>/src/tests/orgAnalytics.risk.test.ts",
     "<rootDir>/src/tests/auth.rateLimiter.test.ts",
-    "<rootDir>/src/tests/orgInvitations.test.ts",
   ],
   moduleDirectories: ["node_modules", "<rootDir>/node_modules"],
   clearMocks: true,

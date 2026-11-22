@@ -6,16 +6,44 @@ import crypto from 'crypto'
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-const dbMock: any = jest.fn()
-dbMock._rows = [] as any[]
+interface MockInvitationRow {
+  id: string
+  org_id: string
+  email: string
+  token_hash: string
+  role: string
+  expires_at: Date
+  accepted_at: Date | null
+  [key: string]: unknown
+}
+
+interface MockQueryBuilder {
+  _table: string
+  _inserted?: Record<string, unknown>
+  insert: jest.Mock
+  returning: jest.Mock
+  where: jest.Mock
+  whereNull: jest.Mock
+  first: jest.Mock
+  update: jest.Mock
+}
+
+type DbMock = jest.Mock & {
+  _rows: Record<string, unknown>[]
+  _pending: MockInvitationRow | null
+}
+
+const dbMock = jest.fn() as DbMock
+dbMock._rows = []
 dbMock._pending = null
 
-dbMock.mockImplementation((table: string) => {
-  const qb: any = {
-    _table: table,
-    insert: jest.fn().mockImplementation((row: any) => {
-      dbMock._rows.push({ ...row, id: crypto.randomUUID() })
-      qb._inserted = row
+dbMock.mockImplementation((table: unknown) => {
+  const qb: MockQueryBuilder = {
+    _table: String(table),
+    insert: jest.fn().mockImplementation((row: unknown) => {
+      const record = row as Record<string, unknown>
+      dbMock._rows.push({ ...record, id: crypto.randomUUID() })
+      qb._inserted = record
       return qb
     }),
     returning: jest.fn().mockImplementation(() => {
@@ -55,7 +83,7 @@ jest.unstable_mockModule('../services/membership.js', async () => ({
 }))
 
 jest.unstable_mockModule('../middleware/orgAuth.js', async () => ({
-  requireOrgAccess: (..._roles: string[]) =>
+  requireOrgAccess: () =>
     (_req: Request, _res: Response, next: NextFunction) => next(),
 }))
 
@@ -74,7 +102,7 @@ function mockAuthenticate(req: Request, res: Response, next: NextFunction): void
     return
   }
   try {
-    req.user = jwt.verify(authHeader.slice(7), JWT_SECRET) as any
+    req.user = jwt.verify(authHeader.slice(7), JWT_SECRET) as Request['user']
     next()
   } catch {
     res.status(401).json({ error: 'Invalid token' })
