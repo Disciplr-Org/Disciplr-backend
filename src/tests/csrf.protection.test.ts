@@ -1,18 +1,19 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { csrfProtection } from '../../src/middleware/auth.js'
+// Register ESM mocks before dynamically importing the middleware under test.
+import { describe, it, expect, jest, beforeEach } from '@jest/globals'
 import type { Request, Response, NextFunction } from 'express'
 
-vi.mock('../../src/lib/auth-utils.js', () => ({
-  verifyAccessToken: vi.fn(),
-  getJwtSecret: vi.fn().mockReturnValue('test-secret'),
+jest.unstable_mockModule('../lib/auth-utils.js', () => ({
+  verifyAccessToken: jest.fn(),
+  getJwtSecret: jest.fn().mockReturnValue('test-secret'),
 }))
 
-vi.mock('../../src/config/index.js', () => ({
+jest.unstable_mockModule('../config/index.js', () => ({
   config: { corsOrigins: ['https://app.example.com'] },
 }))
 
-import { verifyAccessToken } from '../../src/lib/auth-utils.js'
-const mockedVerifyAccessToken = vi.mocked(verifyAccessToken)
+const { csrfProtection } = await import('../middleware/auth.js')
+const { verifyAccessToken } = await import('../lib/auth-utils.js')
+const mockedVerifyAccessToken = jest.mocked(verifyAccessToken)
 
 describe('csrfProtection', () => {
   let req: Partial<Request>
@@ -20,16 +21,16 @@ describe('csrfProtection', () => {
   let next: NextFunction
 
   beforeEach(() => {
-    vi.clearAllMocks()
+    jest.clearAllMocks()
     req = {
       method: 'POST',
       headers: {},
     }
     res = {
-      status: vi.fn().mockReturnThis(),
-      json: vi.fn().mockReturnThis(),
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn().mockReturnThis(),
     }
-    next = vi.fn()
+    next = jest.fn<NextFunction>()
   })
 
   describe('Bearer token exemption', () => {
@@ -37,7 +38,7 @@ describe('csrfProtection', () => {
       req.headers = {
         authorization: 'Bearer valid.jwt.token',
       }
-      mockedVerifyAccessToken.mockReturnValue({ userId: 'u1', role: 'USER' } as any)
+      mockedVerifyAccessToken.mockReturnValue({ userId: 'u1', role: 'USER' })
 
       csrfProtection(req as Request, res as Response, next)
 
