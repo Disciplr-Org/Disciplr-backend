@@ -1,8 +1,8 @@
-import { describe, it, expect, jest, beforeEach, mock } from 'bun:test'
+import { describe, it, expect, jest, beforeEach } from '@jest/globals'
 
 // ── mock the singleton so we can distinguish it from a scoped client ──────────
 const mockSingleton = { tag: 'singleton' } as any
-mock.module('../lib/prisma.js', () => ({ prisma: mockSingleton }))
+jest.unstable_mockModule('../lib/prisma.js', () => ({ prisma: mockSingleton }))
 
 const { prismaStorage, getPrisma } = await import('../lib/prismaScope.js')
 const { withRequestPrisma } = await import('../middleware/withRequestPrisma.js')
