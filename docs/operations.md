@@ -380,6 +380,7 @@ curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
 
 | Scenario | Runbook |
 |---|---|
+| JWT, field-encryption, or webhook secret rotation | [secret-rotation.md](runbooks/secret-rotation.md) |
 | Horizon listener stalls; slash backlog builds | [horizon-stall.md](runbooks/horizon-stall.md) |
 | Persisted export jobs fail and enter the export DLQ | [export-dlq.md](runbooks/export-dlq.md) |
 | Background jobs dead-letter or the queue backs up | [jobs-dead-letters.md](runbooks/jobs-dead-letters.md) |
