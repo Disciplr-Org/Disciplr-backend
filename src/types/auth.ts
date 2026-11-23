@@ -7,6 +7,8 @@ export interface AuthenticatedUser {
 export enum ApiScope {
   ReadAnalytics = 'read:analytics',
   ReadVaults = 'read:vaults',
+  WriteAnalytics = 'write:analytics',
+  WriteVaults = 'write:vaults',
 }
 
 export interface ApiKeyAuthContext {
@@ -29,6 +31,10 @@ export interface ApiKeyRecord {
   lastUsedAt?: string | null
   requestCount?: number
   lastIp?: string | null
+  /** The key hash of the previous secret during a rotation grace window. */
+  previousKeyHash?: string | null
+  /** When the previous secret's grace window expires. */
+  previousValidUntil?: string | null
 }
 
 export interface JWTPayload {

@@ -23,7 +23,9 @@ const mockPrisma = {
     const sql = strings.join('?')
     if (sql.includes('INSERT INTO "webauthn_credentials"')) {
       const [userId, credentialId, publicKey] = values as [string, string, string]
+      if (credentialStore.has(credentialId)) return 0
       credentialStore.set(credentialId, { userId, publicKey, counter: 0 })
+      return 1
     } else if (sql.includes('UPDATE "webauthn_credentials"')) {
       const [newCounter, credentialId] = values as [number, string]
       const existing = credentialStore.get(credentialId)

@@ -1,6 +1,9 @@
 import { allMilestonesVerified } from './milestones.js'
 import { type Knex } from 'knex';
 import { UserRole } from '../types/user.js';
+import { getEnv } from '../config/index.js'
+import { toUTCDate } from '../utils/timestamps.js'
+import { VAULT_TRANSITIONS } from '../../shared/vaultMachine.mjs'
 
 type TerminalStatus = 'completed' | 'failed' | 'cancelled';
 
@@ -28,14 +31,10 @@ export interface TransitionResult {
   error?: string;
 }
 
-export const ALLOWED_TRANSITIONS: Record<string, string[]> = {
-  draft: ['active', 'cancelled'],
-  active: ['completed', 'failed', 'cancelled', 'disputed'],
-  disputed: ['active', 'completed', 'failed'],
-  completed: [],
-  failed: [],
-  cancelled: [],
-};
+// The deployed API and this module share one transition table; re-exporting the
+// imported object (rather than copying it) keeps `ALLOWED_TRANSITIONS` identity-equal to
+// `shared/vaultMachine.mjs`.
+export const ALLOWED_TRANSITIONS: typeof VAULT_TRANSITIONS = VAULT_TRANSITIONS;
 
 // Utility function for exhaustive type checking
 function assertNever(x: never): never {
@@ -80,13 +79,24 @@ export const getTransitionError = (
         return 'Cannot complete vault: not all milestones are verified';
       }
       return null;
-    case 'failed':
-      const now = new Date();
-      const end = new Date(vault.endTimestamp);
-      if (end > now) {
+    case 'failed': {
+      const now = Date.now();
+      const endMs = toUTCDate(vault.endTimestamp).getTime();
+      let skewMs = 10_000; // fallback if env is not yet initialized
+      try {
+        skewMs = getEnv().VAULT_TRANSITION_SKEW_MS;
+      } catch {
+        // env not initialized in tests; use the fallback default
+      }
+      // Allow the transition when endTimestamp has already passed OR is within
+      // the clock-skew window (end - now <= skewMs).  This prevents a vault
+      // whose deadline was reached on a slightly-ahead scheduler from being
+      // incorrectly rejected by a server whose clock is a few seconds behind.
+      if (endMs - now > skewMs) {
         return 'Cannot fail vault: endTimestamp has not passed yet';
       }
       return null;
+    }
     case 'cancelled':
       if (!requesterId || requesterId !== vault.creator) {
         return 'Cannot cancel vault: only the creator can cancel';
@@ -130,7 +140,7 @@ export const checkExpiredVaults = (): string[] => {
   const failed: string[] = [];
   for (const vault of memoryVaults) {
     if (vault.status !== 'active') continue;
-    const end = new Date(vault.endTimestamp);
+    const end = toUTCDate(vault.endTimestamp);
     if (end <= now) {
       vault.status = 'failed';
       failed.push(vault.id);
@@ -152,7 +162,7 @@ export const getVaultState = (vaultId: string) => {
 export const getAllowedNextStates = (vaultId: string): string[] => {
   const vault = findVault(vaultId);
   if (!vault) return [];
-  return ALLOWED_TRANSITIONS[vault.status] || [];
+  return [...(ALLOWED_TRANSITIONS[vault.status] ?? [])];
 };
 
 export const transitionVaultStatus = async (

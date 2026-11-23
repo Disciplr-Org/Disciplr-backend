@@ -124,7 +124,7 @@ const DEL_SCRIPT = `
 function getCacheProvider() {
   if (!initialized) {
     const redisUrl = process.env.REDIS_URL;
-    if (redisUrl && (redisUrl.startsWith('redis://') || redisUrl.startsWith('rediss://'))) {
+    if (redisUrl && (redisUrl.startsWith('redis://') || redisUrl.startsWith('redisses://'))) {
       redisClient = new Redis(redisUrl, {
         maxRetriesPerRequest: 3,
       });

@@ -6,7 +6,7 @@ exports.up = async function up(knex) {
     table.uuid('id').primary().defaultTo(knex.raw('gen_random_uuid()'))
     table.uuid('subscriber_id').notNullable()
       .references('id').inTable('webhook_subscribers').onDelete('CASCADE')
-    table.string('replay_marker', 255).notNullable().unique()
+    table.string('replay_marker', 255).notNullable()
     table.timestamp('start_time', { useTz: true }).notNullable()
     table.timestamp('end_time', { useTz: true }).notNullable()
     table.string('status', 32).notNullable().defaultTo('in_progress')
@@ -16,6 +16,7 @@ exports.up = async function up(knex) {
     table.jsonb('errors').nullable()
     table.timestamp('created_at', { useTz: true }).notNullable().defaultTo(knex.fn.now())
     table.timestamp('completed_at', { useTz: true }).nullable()
+    table.unique(['subscriber_id', 'replay_marker'])
   })
 }
 

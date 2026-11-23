@@ -1,5 +1,7 @@
 import { z } from 'zod'
-import { KNOWN_EVENT_TYPES } from '../services/webhooks.js'
+import { KNOWN_EVENT_TYPES, EgressAllowlistEntry } from '../services/webhooks.js'
+
+export type { EgressAllowlistEntry }
 
 export const webhookCreateSchema = z
   .object({

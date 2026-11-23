@@ -124,5 +124,18 @@ describe('HorizonListener', () => {
 
       expect(() => validateHorizonListenerConfig(invalidConfig)).toThrow(HorizonListenerConfigError)
     })
+
+    it('should throw an error for negative numeric fields', () => {
+      const negativeConfig = {
+        ...config,
+        retryMaxAttempts: -1,
+        retryBackoffMs: -100,
+        shutdownTimeoutMs: -30000,
+        lagThreshold: -30,
+        startLedger: -1000,
+      }
+
+      expect(() => validateHorizonListenerConfig(negativeConfig)).toThrow(HorizonListenerConfigError)
+    })
   })
 })

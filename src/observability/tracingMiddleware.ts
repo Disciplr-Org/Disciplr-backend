@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import { getTracer, parseTraceparent, serializeTraceparent, generateTraceId, generateSpanId, type TraceContext } from './tracing.js'
+import { transitionOperation, isTerminal } from './observabilityState.js'
 
 /**
  * Augmented Express Request carrying trace context.
@@ -38,10 +39,20 @@ export function tracingMiddleware(req: Request, res: Response, next: NextFunctio
   }
 
   // ── Correlation ID ──
-  const correlationId =
-    (req.headers['x-correlation-id'] as string) ||
-    (req.headers['x-request-id'] as string) ||
-    traceCtx.traceId
+  const rawCorrelationId = (req.headers['x-correlation-id'] as string) || (req.headers['x-request-id'] as string)
+  let correlationId = traceCtx.traceId
+  
+  if (rawCorrelationId && typeof rawCorrelationId === 'string') {
+    // Validate correlation ID: only allow reasonable alphanumeric/uuid values, max 100 chars.
+    // Explicitly reject strings matching Stellar wallet addresses (G or M followed by 55 alphanumeric characters)
+    // to prevent adversarial injection of wallet identities into traces.
+    if (!/^[GM][A-Z2-7]{55}$/.test(rawCorrelationId) && /^[a-zA-Z0-9\-_]{1,100}$/.test(rawCorrelationId)) {
+      correlationId = rawCorrelationId
+    }
+  }
+
+  // Mark tracing as in-progress
+  transitionOperation(req, 'tracing', 'in_progress')
 
   // ── Start server span ──
   const span = tracer.startSpan(
@@ -49,7 +60,7 @@ export function tracingMiddleware(req: Request, res: Response, next: NextFunctio
     { traceId: traceCtx.traceId, spanId: traceCtx.spanId },
     {
       'http.method': req.method,
-      'http.url': req.originalUrl,
+      'http.url': (req.originalUrl || req.url).split('?')[0],
       'http.target': req.path,
       'http.host': req.hostname,
       'http.scheme': req.protocol,
@@ -74,17 +85,31 @@ export function tracingMiddleware(req: Request, res: Response, next: NextFunctio
   res.setHeader('traceparent', outgoingTraceparent)
 
   // ── Record response metrics on finish ──
+  // Wrapped in try/catch so that a failure in attribute setting or
+  // span.end() never leaves the span in a dangling (un-ended) state.
+  // The span.end() call is idempotent — calling it twice is safe.
   res.on('finish', () => {
-    span.setAttribute('http.status_code', res.statusCode)
-    span.setAttribute('http.response_content_length', Number(res.getHeader('content-length') ?? 0))
+    try {
+      span.setAttribute('http.status_code', res.statusCode)
+      span.setAttribute('http.response_content_length', Number(res.getHeader('content-length') ?? 0))
 
-    if (res.statusCode >= 400) {
-      span.setStatus({ code: 'ERROR', message: `HTTP ${res.statusCode}` })
-    } else {
-      span.setStatus({ code: 'OK' })
+      if (res.statusCode >= 400) {
+        span.setStatus({ code: 'ERROR', message: `HTTP ${res.statusCode}` })
+      } else {
+        span.setStatus({ code: 'OK' })
+      }
+    } catch {
+      // If attribute setting fails, record the failure as a span event
+      // but still attempt to end the span to prevent resource leaks.
+      try {
+        span.addEvent('span.finish.error', { error: 'setAttribute failed' })
+      } catch { /* best-effort */ }
     }
 
+    // Always end the span — even if attribute setting failed.
+    // span.end() is idempotent (safe to call multiple times).
     span.end()
+    transitionOperation(req, 'tracing', 'done')
   })
 
   next()

@@ -69,7 +69,7 @@ export const requireOrgRole = (roles: (OrgRole | string)[]) => {
     next: NextFunction,
   ) => {
     const orgId = req.params.orgId || (req.query.orgId as string);
-    const userId = req.user?.userId || (req.user as any)?.sub;
+    const userId = getAuthenticatedUserId(req);
 
     if (!orgId || !userId) {
       res.status(401).json({ error: "Auth/Org info missing" });
@@ -77,6 +77,15 @@ export const requireOrgRole = (roles: (OrgRole | string)[]) => {
     }
 
     try {
+      // Prove the target org exists before looking up membership, so a
+      // cross-organization reference cannot be mistaken for an authorization
+      // denial (or leak existence only as a 403).
+      const org = await db("organizations").where({ id: orgId }).first();
+      if (!org) {
+        res.status(404).json({ error: "Organization not found" });
+        return;
+      }
+
       const membership = await db("org_members")
         .where({ org_id: orgId, user_id: userId })
         .first();
@@ -107,7 +116,7 @@ export const requireTeamRole = (roles: (OrgRole | string)[]) => {
     next: NextFunction,
   ) => {
     const teamId = req.params.teamId || (req.query.teamId as string);
-    const userId = req.user?.userId || (req.user as any)?.sub;
+    const userId = getAuthenticatedUserId(req);
 
     if (!teamId || !userId) {
       res.status(401).json({ error: "Auth/Team info missing" });
@@ -115,6 +124,12 @@ export const requireTeamRole = (roles: (OrgRole | string)[]) => {
     }
 
     try {
+      const team = await db("teams").where({ id: teamId }).first();
+      if (!team) {
+        res.status(404).json({ error: "Team not found" });
+        return;
+      }
+
       const membership = await db("team_members")
         .where({ team_id: teamId, user_id: userId })
         .first();

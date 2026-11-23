@@ -5,11 +5,13 @@ exports.up = async function up(knex) {
   await knex.schema.alterTable('vaults', (table) => {
     table.uuid('organization_id').nullable().references('id').inTable('organizations').onDelete('SET NULL')
     table.index(['organization_id'], 'idx_vaults_organization_id')
+    table.index(['organization_id', 'created_at'], 'idx_vaults_org_id_created_at')
   })
 }
 
 exports.down = async function down(knex) {
   await knex.schema.alterTable('vaults', (table) => {
+    table.dropIndex(['organization_id', 'created_at'], 'idx_vaults_org_id_created_at')
     table.dropIndex(['organization_id'], 'idx_vaults_organization_id')
     table.dropColumn('organization_id')
   })

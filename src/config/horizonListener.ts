@@ -23,6 +23,32 @@ export class HorizonListenerConfigError extends Error {
   }
 }
 
+const CONTRACT_ADDRESS_PATTERN = /^[A-Za-z0-9_-]{1,256}$/
+
+/**
+ * Validates a single contract address string format.
+ */
+export function isValidContractAddressString(address: unknown): address is string {
+  return typeof address === 'string' && address.trim().length > 0 && CONTRACT_ADDRESS_PATTERN.test(address.trim())
+}
+
+/**
+ * Sanitizes and deduplicates an array of contract addresses.
+ */
+export function sanitizeContractAddresses(addresses: string[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const raw of addresses) {
+    if (typeof raw !== 'string') continue
+    const trimmed = raw.trim()
+    if (trimmed.length > 0 && !seen.has(trimmed)) {
+      seen.add(trimmed)
+      result.push(trimmed)
+    }
+  }
+  return result
+}
+
 /**
  * Load configuration from validated environment.
  * The validation is already performed by initEnv().
@@ -33,7 +59,7 @@ export function loadHorizonListenerConfig(): HorizonListenerConfig {
   const contractAddressRaw = env.CONTRACT_ADDRESS
   
   const contractAddresses = contractAddressRaw
-    ? contractAddressRaw.split(',').map((addr) => addr.trim()).filter((addr) => addr.length > 0)
+    ? sanitizeContractAddresses(contractAddressRaw.split(','))
     : []
 
   return {
@@ -54,14 +80,103 @@ export function loadHorizonListenerConfig(): HorizonListenerConfig {
 export function validateHorizonListenerConfig(config: HorizonListenerConfig): void {
   const errors: string[] = []
 
-  if (!config.horizonUrl || config.horizonUrl.trim().length === 0) {
+  // 1. Horizon URL validation
+  if (!config.horizonUrl || typeof config.horizonUrl !== 'string' || config.horizonUrl.trim().length === 0) {
     errors.push('HORIZON_URL is required but not set')
-  } else if (!/^https?:\/\/.+/.test(config.horizonUrl)) {
-    errors.push('HORIZON_URL must be a valid HTTP or HTTPS URL')
+  } else {
+    try {
+      const parsedUrl = new URL(config.horizonUrl.trim())
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        errors.push('HORIZON_URL must use http or https protocol')
+      }
+      if (!parsedUrl.hostname || parsedUrl.hostname.trim().length === 0) {
+        errors.push('HORIZON_URL must contain a valid hostname')
+      }
+      if (parsedUrl.username || parsedUrl.password) {
+        errors.push('HORIZON_URL must not contain embedded user credentials')
+      }
+    } catch {
+      errors.push('HORIZON_URL must be a valid HTTP or HTTPS URL')
+    }
   }
 
-  if (!config.contractAddresses || config.contractAddresses.length === 0) {
+  // 2. Contract addresses validation
+  if (!config.contractAddresses || !Array.isArray(config.contractAddresses) || config.contractAddresses.length === 0) {
     errors.push('CONTRACT_ADDRESS is required but not set or empty')
+  } else {
+    const invalidAddresses = config.contractAddresses.filter(
+      (addr) => !isValidContractAddressString(addr),
+    )
+    if (invalidAddresses.length > 0) {
+      errors.push(`CONTRACT_ADDRESS contains invalid contract address formats: ${invalidAddresses.join(', ')}`)
+    }
+  }
+
+  // 3. Numeric bounds validation
+  if (config.startLedger !== undefined) {
+    if (
+      typeof config.startLedger !== 'number' ||
+      !Number.isSafeInteger(config.startLedger) ||
+      config.startLedger < 0
+    ) {
+      errors.push('startLedger must be a non-negative safe integer')
+    }
+  }
+
+  if (
+    config.retryMaxAttempts !== undefined &&
+    (typeof config.retryMaxAttempts !== 'number' ||
+      !Number.isSafeInteger(config.retryMaxAttempts) ||
+      config.retryMaxAttempts < 1 ||
+      config.retryMaxAttempts > 100)
+  ) {
+    errors.push('retryMaxAttempts must be a safe integer between 1 and 100')
+  }
+
+  if (
+    config.retryBackoffMs !== undefined &&
+    (typeof config.retryBackoffMs !== 'number' ||
+      !Number.isSafeInteger(config.retryBackoffMs) ||
+      config.retryBackoffMs < 0 ||
+      config.retryBackoffMs > 300_000)
+  ) {
+    errors.push('retryBackoffMs must be a safe integer between 0 and 300000ms')
+  }
+
+  if (
+    config.shutdownTimeoutMs !== undefined &&
+    (typeof config.shutdownTimeoutMs !== 'number' ||
+      !Number.isSafeInteger(config.shutdownTimeoutMs) ||
+      config.shutdownTimeoutMs < 1_000 ||
+      config.shutdownTimeoutMs > 300_000)
+  ) {
+    errors.push('shutdownTimeoutMs must be a safe integer between 1000 and 300000ms')
+  }
+
+  if (
+    config.lagThreshold !== undefined &&
+    (typeof config.lagThreshold !== 'number' ||
+      !Number.isSafeInteger(config.lagThreshold) ||
+      config.lagThreshold < 0 ||
+      config.lagThreshold > 100_000)
+  ) {
+    errors.push('lagThreshold must be a safe integer between 0 and 100000')
+  }
+
+  if (config.retryMaxAttempts !== undefined && config.retryMaxAttempts < 0) {
+    errors.push('RETRY_MAX_ATTEMPTS must be non-negative')
+  }
+  if (config.retryBackoffMs !== undefined && config.retryBackoffMs < 0) {
+    errors.push('RETRY_BACKOFF_MS must be non-negative')
+  }
+  if (config.shutdownTimeoutMs !== undefined && config.shutdownTimeoutMs < 0) {
+    errors.push('HORIZON_SHUTDOWN_TIMEOUT_MS must be non-negative')
+  }
+  if (config.lagThreshold !== undefined && config.lagThreshold < 0) {
+    errors.push('HORIZON_LAG_THRESHOLD must be non-negative')
+  }
+  if (config.startLedger !== undefined && config.startLedger < 0) {
+    errors.push('START_LEDGER must be non-negative')
   }
 
   if (errors.length > 0) {
@@ -88,3 +203,4 @@ export function getValidatedConfig(): HorizonListenerConfig {
   validateHorizonListenerConfig(config)
   return config
 }
+

@@ -20,6 +20,14 @@ function nonEnterpriseToken() {
   )
 }
 
+function enterpriseTokenWithoutId() {
+  return jwt.sign(
+    { userId: 'user-1', role: UserRole.USER, isEnterprise: true },
+    JWT_SECRET,
+    { expiresIn: '1h' },
+  )
+}
+
 describe('enterprise vault routes authorization', () => {
   const protectedPaths = [
     '/vaults/vault-123',
@@ -39,5 +47,14 @@ describe('enterprise vault routes authorization', () => {
 
     expect(response.status).toBe(403)
     expect(response.body.error).toBe('Forbidden')
+  })
+
+  test.each(protectedPaths)('rejects enterprise users without an enterprise ID from %s', async (path) => {
+    const response = await request(buildApp())
+      .get(path)
+      .set('Authorization', `Bearer ${enterpriseTokenWithoutId()}`)
+
+    expect(response.status).toBe(403)
+    expect(response.body.message).toBe('Enterprise configuration missing in auth context.')
   })
 })

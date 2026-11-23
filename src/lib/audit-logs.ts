@@ -9,6 +9,7 @@ export type AuditLog = {
   id: string
   actor_user_id: string
   organization_id?: string
+  chain_seq?: string | number
   action: string
   target_type: string
   target_id: string
@@ -130,11 +131,12 @@ export const computeAuditLogHash = (row: AuditLog, previousHash: string): string
 
 export const lookupPreviousAuditLogHash = async (
   organization_id?: string,
+  trx?: Knex.Transaction,
 ): Promise<string> => {
   const chainKey = organization_id || null
 
-  let query = db('audit_logs')
-    .orderBy('created_at', 'desc')
+  let query = (trx ?? db)('audit_logs')
+    .orderBy('chain_seq', 'desc')
     .orderBy('id', 'desc')
 
   query = chainKey === null ? query.whereNull('organization_id') : query.where('organization_id', chainKey)
@@ -145,6 +147,7 @@ export const lookupPreviousAuditLogHash = async (
 
 export const createAuditLog = async (
   entry: Omit<AuditLog, 'id' | 'created_at'> & { organization_id?: string },
+  trx?: Knex.Transaction,
 ): Promise<AuditLog> => {
   if (auditLogWriterOverride) {
     return auditLogWriterOverride(entry)
@@ -171,8 +174,23 @@ export const createAuditLog = async (
     metadata: normalizedMetadata,
   }
 
-  return await db.transaction(async (trx) => {
-    const prevHash = await lookupPreviousAuditLogHash(auditLog.organization_id)
+  const writeAuditLog = async (client: Knex.Transaction): Promise<AuditLog> => {
+    const organizationId = auditLog.organization_id || null
+    const lockKey = organizationId === null
+      ? 'audit_logs:organization:null'
+      : `audit_logs:organization:${organizationId}`
+    await client.raw('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [lockKey])
+
+    let previousQuery = client('audit_logs')
+      .select('row_hash', 'chain_seq')
+      .orderBy('chain_seq', 'desc')
+      .orderBy('id', 'desc')
+    previousQuery = organizationId === null
+      ? previousQuery.whereNull('organization_id')
+      : previousQuery.where('organization_id', organizationId)
+    const previous = await previousQuery.first()
+    const prevHash = previous?.row_hash ?? AUDIT_LOG_GENESIS_HASH
+    const chainSeq = previous ? BigInt(previous.chain_seq) + 1n : 1n
     const rowHash = computeAuditLogHash(auditLog, prevHash)
 
     const insertPayload: Record<string, unknown> = {
@@ -183,6 +201,7 @@ export const createAuditLog = async (
       target_id: auditLog.target_id,
       metadata: auditLog.metadata,
       created_at: auditLog.created_at,
+      chain_seq: chainSeq.toString(),
       prev_hash: prevHash,
       row_hash: rowHash,
     }
@@ -191,9 +210,15 @@ export const createAuditLog = async (
       insertPayload.organization_id = auditLog.organization_id
     }
 
-    const [insertedLog] = await trx('audit_logs').insert(insertPayload).returning('*')
+    const [insertedLog] = await client('audit_logs').insert(insertPayload).returning('*')
     return insertedLog
-  })
+  }
+
+  if (trx) {
+    return writeAuditLog(trx)
+  }
+
+  return await db.transaction(writeAuditLog)
 }
 
 export const listAuditLogs = async (filters: AuditLogFilters = {}): Promise<AuditLog[]> => {
@@ -242,7 +267,7 @@ export const getAuditLogById = async (id: string): Promise<AuditLog | undefined>
 export type AuditLogIntegrityFailure = {
   id: string
   index: number
-  reason: 'missing_hash' | 'prev_hash_mismatch' | 'row_hash_mismatch'
+  reason: 'missing_hash' | 'prev_hash_mismatch' | 'row_hash_mismatch' | 'fork_detected'
   expected?: string
   actual?: string | null
 }
@@ -260,12 +285,13 @@ export const verifyAuditLogChain = async (
   organizationId?: string | null,
 ): Promise<AuditLogVerificationResult> => {
   const chainKey = getOrganizationChainKey(organizationId)
-  let query = db('audit_logs').select('*').orderBy('created_at', 'asc').orderBy('id', 'asc')
+  let query = db('audit_logs').select('*').orderBy('chain_seq', 'asc').orderBy('id', 'asc')
   query = chainKey === null ? query.whereNull('organization_id') : query.where('organization_id', chainKey)
 
   const rows = await query
   let expectedPrevHash = AUDIT_LOG_GENESIS_HASH
   const failures: AuditLogIntegrityFailure[] = []
+  const seenPreviousHashes = new Set<string>()
 
   rows.forEach((row: AuditLog, index: number) => {
     if (!row.prev_hash || !row.row_hash) {
@@ -277,6 +303,16 @@ export const verifyAuditLogChain = async (
       expectedPrevHash = row.row_hash ?? expectedPrevHash
       return
     }
+
+    if (seenPreviousHashes.has(row.prev_hash)) {
+      failures.push({
+        id: row.id,
+        index,
+        reason: 'fork_detected',
+        actual: row.prev_hash,
+      })
+    }
+    seenPreviousHashes.add(row.prev_hash)
 
     if (row.prev_hash !== expectedPrevHash) {
       failures.push({
@@ -328,7 +364,7 @@ export const exportAuditLogsForOrganization = async (organizationId: string): Pr
   const rows = await db('audit_logs')
     .select('*')
     .where('organization_id', organizationId)
-    .orderBy('created_at', 'asc')
+    .orderBy('chain_seq', 'asc')
     .orderBy('id', 'asc')
 
   const chain = await verifyAuditLogChain(organizationId)

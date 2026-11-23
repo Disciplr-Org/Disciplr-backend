@@ -15,9 +15,17 @@ const mockScopeIdempotencyKey = jest.fn<any>()
 
 const mockTrx = { isMockTrx: true }
 const mockDbTransaction = jest.fn<any>(async (cb: (trx: any) => Promise<any>) => cb(mockTrx))
+// The route calls db('verifications').where(...).delete() in its evidence-
+// failure cleanup path, so the mock `db` must be callable, not just an object.
+const mockDb = Object.assign(
+  jest.fn<any>().mockReturnValue({
+    where: jest.fn<any>().mockReturnValue({ delete: jest.fn<any>().mockResolvedValue(undefined) }),
+  }),
+  { transaction: mockDbTransaction },
+)
 
 jest.unstable_mockModule('../db/knex.js', () => ({
-  db: { transaction: mockDbTransaction },
+  db: mockDb,
   closeDatabase: jest.fn<any>(),
 }))
 
@@ -228,6 +236,21 @@ describe('verifications idempotency: first request with key', () => {
         verification: expect.objectContaining({ id: 'ver-1' }),
         idempotency: { key: 'my-key-1', replayed: false },
       }),
+    )
+  })
+
+  test('writes evidence reference inside the verification transaction', async () => {
+    await request(app)
+      .post('/api/verifications')
+      .set('idempotency-key', 'my-key-1')
+      .send(VALID_BODY)
+      .expect(201)
+
+    expect(mockCreateEvidenceReference).toHaveBeenCalledWith(
+      'ver-1',
+      HASH,
+      REF_URL,
+      mockTrx,
     )
   })
 

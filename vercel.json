@@ -1,0 +1,13 @@
+{
+  "framework": null,
+  "installCommand": "npm install --ignore-scripts --omit=dev --no-audit --no-fund",
+  "buildCommand": "echo \"serverless API: no build step\"",
+  "outputDirectory": "public",
+  "rewrites": [{ "source": "/api/(.*)", "destination": "/api/index.mjs" }],
+  "crons": [
+    {
+      "path": "/api/cron/expire-vaults",
+      "schedule": "*/10 * * * *"
+    }
+  ]
+}

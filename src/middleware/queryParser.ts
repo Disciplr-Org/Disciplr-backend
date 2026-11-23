@@ -12,7 +12,7 @@ export interface QueryParserOptions {
 }
 
 const PROTECTED_QUERY_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
-const RESERVED_QUERY_KEYS = new Set(['page', 'pageSize', 'cursor', 'limit', 'sortBy', 'sortOrder'])
+const RESERVED_QUERY_KEYS = new Set(['page', 'pageSize', 'cursor', 'limit', 'sortBy', 'sortOrder', 'all'])
 
 function validateQueryParams(req: Request, options: QueryParserOptions) {
   const allowedFilterFields = options.allowedFilterFields ?? []

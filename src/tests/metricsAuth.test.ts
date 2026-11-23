@@ -1,8 +1,16 @@
-import { jest, describe, it, expect, beforeEach, mock } from 'bun:test'
+// Jest ESM port of the original bun:test suite.
+//
+// The env module is mocked with jest.unstable_mockModule() BEFORE the
+// dynamic import below: the mock must be registered first, otherwise the
+// real ../config/env.js loads and getEnv() throws. Only cases not already
+// covered by metrics.access.test.ts are kept here (IPv6 CIDR, audit-log
+// lines, and token-configured + allowlisted IP).
+import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals'
 
-const mockGetEnv = jest.fn()
-mock.module('../config/env.js', () => ({
-  getEnv: mockGetEnv
+const mockGetEnv = jest.fn<any>()
+
+jest.unstable_mockModule('../config/env.js', () => ({
+  getEnv: mockGetEnv,
 }))
 
 const { metricsAuth, _test } = await import('../middleware/metricsAuth.js')
@@ -17,46 +25,63 @@ describe('metricsAuth middleware', () => {
     req = {
       ip: '192.168.1.100',
       socket: { remoteAddress: '192.168.1.100' },
-      headers: {}
+      headers: {},
     }
     res = {
       status: jest.fn().mockReturnThis(),
-      json: jest.fn()
+      json: jest.fn(),
     }
     next = jest.fn()
-    
+
     mockGetEnv.mockReturnValue({
       METRICS_TOKEN: undefined,
-      METRICS_ALLOWLIST: undefined
+      METRICS_ALLOWLIST: undefined,
     })
 
     _test.resetThrottle()
     consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => {})
   })
 
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
   describe('IP Allowlist Enforcement', () => {
     it('allows access if IP matches exact allowlist entry', () => {
       mockGetEnv.mockReturnValue({ METRICS_ALLOWLIST: '192.168.1.100, 10.0.0.1' })
       metricsAuth(req, res, next)
-      
+
       expect(next).toHaveBeenCalled()
       expect(res.status).not.toHaveBeenCalled()
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('"allowed":true'))
     })
 
-    it('allows access if IP matches CIDR allowlist entry', () => {
-      mockGetEnv.mockReturnValue({ METRICS_ALLOWLIST: '192.168.1.0/24' })
-      req.ip = '192.168.1.150'
+    it('allows a native IPv6 client inside an IPv6 CIDR range', () => {
+      mockGetEnv.mockReturnValue({ METRICS_ALLOWLIST: '2001:db8:1234::/48' })
+      req.ip = '2001:db8:1234::42'
+
       metricsAuth(req, res, next)
-      
+
       expect(next).toHaveBeenCalled()
       expect(res.status).not.toHaveBeenCalled()
+      expect(_test.matchesCidr(req.ip, '2001:db8:1234::/48')).toBe(true)
+    })
+
+    it('denies a native IPv6 client outside the configured range', () => {
+      mockGetEnv.mockReturnValue({ METRICS_ALLOWLIST: '2001:db8:1234::/48' })
+      req.ip = '2001:db8:5678::42'
+
+      metricsAuth(req, res, next)
+
+      expect(next).not.toHaveBeenCalled()
+      expect(res.status).toHaveBeenCalledWith(401)
+      expect(_test.matchesCidr(req.ip, '2001:db8:1234::/48')).toBe(false)
     })
 
     it('denies access if IP is not in allowlist and no token configured', () => {
       mockGetEnv.mockReturnValue({ METRICS_ALLOWLIST: '10.0.0.0/8' })
       metricsAuth(req, res, next)
-      
+
       expect(next).not.toHaveBeenCalled()
       expect(res.status).toHaveBeenCalledWith(401)
       expect(res.json).toHaveBeenCalledWith({ error: 'Unauthorized: access denied' })
@@ -64,46 +89,15 @@ describe('metricsAuth middleware', () => {
     })
   })
 
-  describe('Bearer Token Enforcement', () => {
-    beforeEach(() => {
-      mockGetEnv.mockReturnValue({ METRICS_TOKEN: 'secret-token' })
-    })
-
-    it('allows access with valid bearer token', () => {
-      req.headers.authorization = 'Bearer secret-token'
-      metricsAuth(req, res, next)
-      
-      expect(next).toHaveBeenCalled()
-      expect(res.status).not.toHaveBeenCalled()
-    })
-
-    it('denies access with invalid bearer token', () => {
-      req.headers.authorization = 'Bearer wrong-token'
-      metricsAuth(req, res, next)
-      
-      expect(next).not.toHaveBeenCalled()
-      expect(res.status).toHaveBeenCalledWith(401)
-      expect(res.json).toHaveBeenCalledWith({ error: 'Unauthorized: invalid metrics token' })
-    })
-
-    it('denies access when token is required but missing', () => {
-      metricsAuth(req, res, next)
-      
-      expect(next).not.toHaveBeenCalled()
-      expect(res.status).toHaveBeenCalledWith(401)
-      expect(res.json).toHaveBeenCalledWith({ error: 'Unauthorized: metrics token required' })
-    })
-  })
-
   describe('Combined enforcement', () => {
     it('allows access if token is missing but IP is allowlisted', () => {
-      mockGetEnv.mockReturnValue({ 
+      mockGetEnv.mockReturnValue({
         METRICS_TOKEN: 'secret-token',
-        METRICS_ALLOWLIST: '192.168.1.0/24'
+        METRICS_ALLOWLIST: '192.168.1.0/24',
       })
-      
+
       metricsAuth(req, res, next)
-      
+
       expect(next).toHaveBeenCalled()
       expect(res.status).not.toHaveBeenCalled()
     })

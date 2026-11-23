@@ -168,6 +168,7 @@ export const envSchema = z
     SOROBAN_RPC_TIMEOUT_MS: positiveInt(30_000),
     SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS: positiveInt(5_000),
     SOROBAN_SUBMIT_TIMEOUT_MS: positiveInt(60_000),
+    SOROBAN_TX_TIMEOUT_SECS: positiveInt(30),
     STELLAR_NETWORK_PASSPHRASE: z.string().optional(),
 
     // ── Job system ───────────────────────────────────────────────
@@ -222,6 +223,18 @@ export const envSchema = z
     HORIZON_LAG_THRESHOLD: nonNegativeInt(10),
     HORIZON_SHUTDOWN_TIMEOUT_MS: positiveInt(30_000),
 
+    // ── Vault transitions ────────────────────────────────────
+    /**
+     * Clock-skew tolerance (ms) applied when validating the 'failed'
+     * transition in getTransitionError. A vault whose endTimestamp is in
+     * the future by at most this many milliseconds is still accepted as
+     * expired to account for drift between scheduler/client clocks and the
+     * server wall clock.
+     *
+     * Default: 10 000 ms (10 s). Override via VAULT_TRANSITION_SKEW_MS.
+     */
+    VAULT_TRANSITION_SKEW_MS: positiveInt(10_000),
+
     // ── Trust proxy ─────────────────────────────────────────
     // Controls Express's "trust proxy" setting.
     //
@@ -247,9 +260,21 @@ export const envSchema = z
     // ── Webhooks ────────────────────────────────────────────
     WEBHOOK_INBOUND_SECRET: z.string().optional(),
     WEBHOOK_INBOUND_SKEW_MS: positiveInt(300_000),
+    // Hard upper bound (bytes) for inbound webhook payload bodies. Requests
+    // larger than this are rejected with 413 before JSON parsing or HMAC work.
+    WEBHOOK_INBOUND_MAX_BODY_BYTES: positiveInt(500_000),
+    // Maximum number of distinct (timestamp, nonce) tuples retained for
+    // replay protection. A strict cap guarantees deduplication memory stays
+    // bounded under high churn even if the sweeping interval lags.
+    WEBHOOK_REPLAY_CACHE_SIZE: positiveInt(10_000),
     WEBHOOK_CIRCUIT_BREAKER_THRESHOLD: positiveInt(5),
     WEBHOOK_CIRCUIT_BREAKER_WINDOW_MS: positiveInt(60_000),
     WEBHOOK_CIRCUIT_BREAKER_HALF_OPEN_TIMEOUT_MS: positiveInt(30_000),
+    // When "true", permits loopback/private egress destinations for webhooks
+    // and evidence fetching. Intended for tests and local development only.
+    // The default (unset) is fail-closed: private destinations are blocked.
+    // Refusing to start in production with this flag enabled is enforced below.
+    WEBHOOK_ALLOW_PRIVATE: z.string().optional(),
 
     // ── Export S3 ───────────────────────────────────────────
     EXPORT_S3_BUCKET: z.string().optional(),
@@ -302,6 +327,19 @@ export const envSchema = z
       }),
     LOG_SLOW_THRESHOLD_MS: positiveInt(1000),
     LOG_ALWAYS_LOG_STATUS: z.string().default("500,502,503"),
+
+    // ── Mock login / Dev/Test utilities ────────────────────────────
+    // Explicit flag to enable credential-free userId login. This is a
+    // development/test helper that bypasses password checks. Default: false.
+    // SECURITY: Setting this to true in production is forbidden and will
+    // cause startup to fail.
+    ENABLE_MOCK_LOGIN: z
+      .string()
+      .optional()
+      .transform((v) => {
+        if (v === undefined || v === "") return false;
+        return ["1", "true", "yes", "on"].includes(v.trim().toLowerCase());
+      }),
   })
   .superRefine((data, ctx) => {
     // Existing CORS warning
@@ -310,6 +348,15 @@ export const envSchema = z
         code: z.ZodIssueCode.custom,
         path: ["CORS_ORIGINS"],
         message: 'CORS_ORIGINS cannot be "*" in production environment',
+      });
+    }
+
+    // Forbid mock login in production
+    if (data.NODE_ENV === "production" && data.ENABLE_MOCK_LOGIN === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["ENABLE_MOCK_LOGIN"],
+        message: "ENABLE_MOCK_LOGIN cannot be enabled in production environment",
       });
     }
 
@@ -331,6 +378,16 @@ export const envSchema = z
     }
 
     // Additional validation for JWT_KEYS could be added here if needed
+
+    // WEBHOOK_ALLOW_PRIVATE must never be enabled in production: private
+    // egress destinations must remain blocked. Fail fast at startup.
+    if (data.NODE_ENV === "production" && data.WEBHOOK_ALLOW_PRIVATE === "true") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["WEBHOOK_ALLOW_PRIVATE"],
+        message: 'WEBHOOK_ALLOW_PRIVATE cannot be enabled in production environment',
+      });
+    }
   });
 
 export type Env = z.infer<typeof envSchema>;

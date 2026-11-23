@@ -1,18 +1,23 @@
 import { createHash } from 'node:crypto'
 import { NotificationService } from '../services/notifications/factory.js'
 import { processJob as processExportJob } from '../services/exportQueue.js'
-import type { EnqueueOptions, JobHandler, JobPayloadByType, JobType } from './types.js'
+import type { EnqueueOptions, JobHandler, JobHandlerRegistry, JobPayloadByType, JobType } from './types.js'
 import { TransactionETLService } from '../services/transactionETL.js'
 import { MilestoneEmbeddingSource, ReindexCursorStore } from '../services/evidenceReindex.js'
 import { EmbeddingProvider } from '../services/embeddingProvider.js'
-import { buildSlashOnMissPayload } from '../services/soroban.js'
+import { submitSlash } from '../services/soroban.js'
 import {
-  markVaultExpiries,
+  confirmSettlementOperation,
+  markSettlementSubmitted,
+  recordSettlementAttemptFailure,
+} from '../services/settlementOperations.js'
+import {
   sendMilestoneReminders,
   sendMilestoneDigestReminders,
   processDeferredReminders,
 } from '../services/vaultExpiry.service.js'
 import { cleanupExpiredSessions } from '../services/session.js'
+import { cleanupExpiredRotationGrace } from '../services/apiKeys.js'
 import { purgeSoftDeletedVaults } from '../services/retention.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { relayOutboxBatch } from '../services/outboxRelay.js'
@@ -38,10 +43,6 @@ export type JobEnqueuer = <T extends JobType>(
   options?: EnqueueOptions,
 ) => void
 
-type JobHandlerRegistry = {
-  [K in JobType]: JobHandler<K>
-}
-
 const sleep = async (ms: number): Promise<void> => {
   await new Promise((resolve) => {
     setTimeout(resolve, ms)
@@ -52,6 +53,16 @@ const logJob = (type: JobType, message: string): void => {
   console.log(`[jobs:${type}] ${message}`)
 }
 
+/**
+ * Default job handler registry for the queue's retry and dead-letter flow.
+ *
+ * Retry/dead-letter contract:
+ * - Handlers must throw on transient failures so the queue can retry them.
+ * - Batch handlers fan out through `enqueueJob` when available so each unit
+ *   has independent retry and dead-letter visibility.
+ * - Handlers must use deterministic artifact keys so operator replays do not
+ *   create duplicate side effects.
+ */
 export const createDefaultJobHandlers = (
   notificationService: NotificationService,
   embeddingReindex: EmbeddingReindexDependencies,
@@ -82,20 +93,97 @@ export const createDefaultJobHandlers = (
 
   jobHandlers['deadline.check'] = async (payload, context) => {
     await sleep(30)
-    const expiredCount = await markVaultExpiries({ limit: 100 })
     const target = payload.vaultId ?? 'all-active-vaults'
     const deadline = payload.deadlineIso ?? 'not-provided'
     logJob(
       'deadline.check',
-      `checked target=${target} deadline=${deadline} expired=${expiredCount} source=${payload.triggerSource} attempt=${context.attempt}`,
+      `checked target=${target} deadline=${deadline} source=${payload.triggerSource} attempt=${context.attempt}`,
     )
-    if (payload.vaultId) {
-      const sorobanPayload = buildSlashOnMissPayload(payload.vaultId)
-      logJob(
-        'deadline.check',
-        `slash_on_miss built vault=${payload.vaultId} status=${sorobanPayload.submission.status}`,
-      )
+  }
+
+  jobHandlers['settlement.process'] = async (payload, context) => {
+    if (process.env.DRY_RUN === 'true') {
+      logJob('settlement.process', `DRY_RUN: submission skipped attempt=${context.attempt}`)
+      return
     }
+
+    const batchSize = Math.min(Math.max(payload.batchSize ?? 20, 1), 100)
+    const maxAttempts = 5
+    await db.transaction(async (trx) => {
+      const operations = await trx('settlement_operations')
+        .whereIn('status', ['pending', 'submitted'])
+        .whereNotNull('vault_id')
+        .orderBy('created_at')
+        .limit(batchSize)
+        .forUpdate()
+        .skipLocked()
+
+      for (const operation of operations) {
+        if (operation.status === 'submitted') {
+          await confirmSettlementOperation(operation.id, operation.transaction_hash, trx)
+          logJob('settlement.process', `recovered confirmation operation=${operation.id} tx=${operation.transaction_hash}`)
+          continue
+        }
+
+        try {
+          const result = await submitSlash(operation.vault_id, operation.target_milestone_id)
+          if (result.submission.status === 'success' && result.submission.txHash) {
+            await markSettlementSubmitted(operation.id, result.submission.txHash, trx)
+            await confirmSettlementOperation(operation.id, result.submission.txHash, trx)
+            logJob('settlement.process', `confirmed operation=${operation.id} tx=${result.submission.txHash}`)
+            continue
+          }
+
+          const message = result.submission.error ?? 'Soroban submission is not configured'
+          const nonRetryable = /contract|notactive|disputed|paused|deadline.?not.?reached/i.test(message)
+          const networkFailure = /network|connection|timeout|rpc|fetch|socket/i.test(message)
+          const nextAttempt = Number(operation.attempt_count) + 1
+          const terminal = nonRetryable || nextAttempt >= maxAttempts
+          const failureCode = nonRetryable ? 'CONTRACT_REJECTED' :
+            result.submission.status === 'not_configured' ? 'SOROBAN_NOT_CONFIGURED' :
+              networkFailure ? 'NETWORK_ERROR' : 'SOROBAN_SUBMISSION_FAILED'
+          const updated = await recordSettlementAttemptFailure(
+            operation.id,
+            terminal && !nonRetryable ? 'RETRY_LIMIT_EXCEEDED' : failureCode,
+            message.slice(0, 2000),
+            terminal,
+            trx,
+          )
+          if (terminal) {
+            console.error(JSON.stringify({
+              level: 'alert',
+              message: 'settlement_operation_dead_lettered',
+              operation_id: operation.id,
+              vault_id: operation.vault_id,
+              attempts: updated.attemptCount,
+              failure_code: updated.failureCode,
+            }))
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          const nextAttempt = Number(operation.attempt_count) + 1
+          const nonRetryable = /contract|notactive|disputed|paused|deadline.?not.?reached/i.test(message)
+          const terminal = nonRetryable || nextAttempt >= maxAttempts
+          const updated = await recordSettlementAttemptFailure(
+            operation.id,
+            nonRetryable ? 'CONTRACT_REJECTED' : terminal ? 'RETRY_LIMIT_EXCEEDED' : 'NETWORK_ERROR',
+            message.slice(0, 2000) || 'Soroban submission failed',
+            terminal,
+            trx,
+          )
+          if (terminal) {
+            console.error(JSON.stringify({
+              level: 'alert',
+              message: 'settlement_operation_dead_lettered',
+              operation_id: operation.id,
+              vault_id: operation.vault_id,
+              attempts: updated.attemptCount,
+              failure_code: updated.failureCode,
+            }))
+          }
+        }
+      }
+    })
   }
 
   jobHandlers['oracle.call'] = async (payload, context) => {
@@ -134,6 +222,15 @@ export const createDefaultJobHandlers = (
     )
   }
 
+  jobHandlers['apiKeys.cleanup'] = async (payload, context) => {
+    const batchSize = payload.batchSize ?? 1000
+    const cleared = await cleanupExpiredRotationGrace(batchSize)
+    logJob(
+      'apiKeys.cleanup',
+      `cleared=${cleared} batchSize=${batchSize} attempt=${context.attempt}`,
+    )
+  }
+
   jobHandlers['vault.reconcile'] = async (payload, context) => {
     const etlConfig = {
       horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org',
@@ -153,11 +250,8 @@ export const createDefaultJobHandlers = (
   }
 
   jobHandlers['outbox.relay'] = async (payload, context) => {
-    const count = await relayOutboxBatch()
-    logJob(
-      'outbox.relay',
-      `relayed=${count} attempt=${context.attempt}`,
-    )
+    const relayed = await relayOutboxBatch(payload.batchSize)
+    logJob('outbox.relay', `relayed=${relayed} attempt=${context.attempt}`)
   }
 
   jobHandlers['embeddings.reindex'] = async (payload, context) => {
@@ -175,17 +269,83 @@ export const createDefaultJobHandlers = (
     )
   }
 
-  if (enqueueJob) {
-    jobHandlers['milestone.reminders'] = async (payload, context) => {
-      const remindersSent = await sendMilestoneReminders({
-        leadTimesMs: payload.leadTimesMs,
-        limit: payload.limit,
-      })
+  jobHandlers['milestone.reminders'] = async (payload, context) => {
+    const remindersSent = await sendMilestoneReminders({
+      leadTimesMs: payload.leadTimesMs,
+      limit: payload.limit,
+    })
+    logJob(
+      'milestone.reminders',
+      `sent ${remindersSent} reminders attempt=${context.attempt}`,
+    )
+  }
+
+  jobHandlers['milestone.reminders.digest'] = async (payload, context) => {
+    const result = await sendMilestoneDigestReminders({
+      leadTimesMs: payload.leadTimesMs,
+      limit: payload.limit,
+    })
+    logJob(
+      'milestone.reminders.digest',
+      `sent=${result.digestsSent} deferred=${result.digestsDeferred} milestones=${result.totalMilestones} attempt=${context.attempt}`,
+    )
+  }
+
+  jobHandlers['milestone.reminders.deferred'] = async (payload, context) => {
+    const delivered = await processDeferredReminders({
+      batchSize: payload.batchSize,
+    })
+    logJob(
+      'milestone.reminders.deferred',
+      `delivered=${delivered} attempt=${context.attempt}`,
+    )
+  }
+
+  jobHandlers['analytics.report.generate'] = async (payload, context) => {
+    const orgIds = payload.orgIds ?? (await getAllOrgIds())
+    if (enqueueJob && orgIds.length > 1) {
+      for (const orgId of orgIds) {
+        enqueueJob('analytics.report.generate', { ...payload, orgIds: [orgId] })
+      }
       logJob(
-        'milestone.reminders',
-        `sent ${remindersSent} reminders attempt=${context.attempt}`,
+        'analytics.report.generate',
+        `enqueued=${orgIds.length} attempt=${context.attempt}`,
       )
+      return
     }
+    const s3Config = resolveS3Config()
+    let generated = 0
+    let skipped = 0
+    for (const orgId of orgIds) {
+      if (!(await checkAndIncrementReportQuota(orgId))) {
+        skipped += 1
+        continue
+      }
+      const snapshot = await renderOrgAnalyticsSnapshot(orgId)
+      const key = `analytics/${orgId}/${new Date().toISOString()}.json`
+      const body = Buffer.from(JSON.stringify(snapshot))
+      if (s3Config) {
+        await uploadToS3(s3Config, key, body, 'application/json')
+        await saveOrgReport({ orgId, s3Key: key, snapshotAt: new Date().toISOString(), sizeBytes: body.length })
+      } else {
+        await saveOrgReport({ orgId, localBuffer: new Uint8Array(body), snapshotAt: new Date().toISOString(), sizeBytes: body.length })
+      }
+      generated += 1
+    }
+    logJob(
+      'analytics.report.generate',
+      `generated=${generated} skipped=${skipped} attempt=${context.attempt}`,
+    )
+  }
+
+  jobHandlers['retention.purge'] = async (payload, context) => {
+    const purged = await purgeSoftDeletedVaults(payload.organizationId, payload.batchSize)
+    logJob('retention.purge', `purged=${purged} attempt=${context.attempt}`)
+  }
+
+  jobHandlers['saved-search.evaluate'] = async (payload, context) => {
+    // Placeholder for saved-search evaluation (restored: handler was dropped by an earlier merge)
+    logJob('saved-search.evaluate', `evaluated=${payload.searchId} attempt=${context.attempt}`)
   }
 
   return jobHandlers

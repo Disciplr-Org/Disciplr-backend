@@ -158,6 +158,28 @@ The server hashes the request body using SHA-256 over a canonicalised (key-sorte
 
 ---
 
+## Boundary Hardening (vault creation)
+
+The vault-creation boundary (`src/routes/vaults.ts` + `src/services`) enforces the following invariants for normal and adversarial inputs:
+
+### Actor identity is never inferred from client state
+
+The audit-log actor and the idempotency-key scoping prefix are derived **only** from the verified principal (`req.user.userId` from the JWT, or `req.apiKeyAuth.userId`). Client-supplied `x-user-id` headers and `creator` body fields are ignored for identity purposes, so a hostile client cannot have its actions recorded under (or collide with) another user's key. A request that reaches the handler without a verified principal is rejected with `401` (disconnected-wallet boundary).
+
+### Wrong-network requests are rejected at the boundary
+
+A client-supplied `onChain.networkPassphrase` must equal the server-configured network passphrase (`SOROBAN_NETWORK_PASSPHRASE`, defaulting to the testnet passphrase); anything else is a `400 VALIDATION_ERROR` before any vault row is written. The same schema validates `onChain.contractId` (C... strkey format) and `onChain.sourceAccount` (G.../M... strkey).
+
+### Malformed stored responses fail closed
+
+The stored idempotency response is JSON-parsed and shape-checked (`assertValidVaultCreateResponse`) before it is replayed. A corrupt or tampered reservation row — or a broken payload builder — produces a generic `500` instead of forwarding garbage to the client; the reservation is never replayed twice with a malformed body.
+
+### Route parameters are validated
+
+`/api/vaults/:id*` routes reject ids that are not UUIDs with `400`, and `/api/vaults/user/:address` rejects addresses that are not Stellar public keys, before any store lookup runs.
+
+---
+
 ## Security Assumptions
 
 ### Cross-user isolation (owner binding)
@@ -209,6 +231,7 @@ Rows present before the migration receive `NULL` for both columns and are treate
 | Route integration (vaults) | `src/routes/vaults.ts` → `POST /` handler (owner extracted from `req.user` / `req.apiKeyAuth`) |
 | Route integration (verifications) | `src/routes/verifications.ts` → `POST /` handler |
 | Unit tests | `src/tests/eventIdempotency.test.ts` |
+| Boundary tests (vaults) | `src/routes/vaults.idempotency.test.ts`, `src/services/vaultValidation.test.ts`, `src/services/vaultCreationIdempotency.test.ts` |
 | Route-level tests (vaults) | `tests/vaults.test.ts` and `src/routes/vaults.test.ts` |
 | Route-level tests (verifications) | `src/tests/verifications.idempotency.test.ts` |
 | Owner-binding tests | `src/tests/idempotency.ownerBinding.test.ts` |

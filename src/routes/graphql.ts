@@ -204,6 +204,8 @@ const schema = new GraphQLSchema({ query: RootQuery })
 
 export const graphqlRouter = Router()
 
+const MAX_ORG_VAULT_IDS = 5000
+
 graphqlRouter.use(
   authenticate,
   requireOrgAccess('admin', 'member', 'viewer'),
@@ -233,7 +235,7 @@ graphqlRouter.use(
           for (const m of v.milestones) orgVaultIds.add(m.id)
         }
         pageCursor = page.nextCursor ?? undefined
-      } while (pageCursor)
+      } while (pageCursor && orgVaultIds.size < MAX_ORG_VAULT_IDS)
 
       return {
         user: raw?.user,

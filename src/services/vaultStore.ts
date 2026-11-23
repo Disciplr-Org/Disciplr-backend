@@ -7,8 +7,11 @@ import type {
   PersistedVault,
 } from "../types/vaults.js";
 import { VaultStatus } from "../types/vault.js";
+import { UserRole } from "../types/user.js";
+import { canReadVault, type VaultActor } from "./vaultAccess.js";
 import { getOrSet, getOrLoad, invalidate, invalidatePrefix } from "../lib/cache.js";
 import { encodeCursor, decodeCursor } from "../utils/pagination.js";
+import { normalizeTimestamp, toUTCDate } from "../utils/timestamps.js";
 
 type UpdateableVaultField =
   | "amount"
@@ -70,29 +73,31 @@ const memoryVaultRevisions = new Map<string, number>();
 const mapVaultRow = (row: {
   id: string;
   amount: string;
-  start_date: string;
-  end_date: string;
+  start_date: string | Date;
+  end_date: string | Date;
   verifier: string;
   success_destination: string;
   failure_destination: string;
   creator: string | null;
   status: PersistedVault["status"];
-  created_at: string;
+  created_at: string | Date;
   late_check_in_window_secs?: number | null;
   organization_id?: string | null;
+  deleted_at?: string | Date | null;
 }): Omit<PersistedVault, "milestones"> => ({
   id: row.id,
   amount: row.amount,
-  startDate: row.start_date,
-  endDate: row.end_date,
+  startDate: normalizeTimestamp(row.start_date),
+  endDate: normalizeTimestamp(row.end_date),
   verifier: row.verifier,
   successDestination: row.success_destination,
   failureDestination: row.failure_destination,
   creator: row.creator,
   status: row.status,
-  createdAt: row.created_at,
+  createdAt: normalizeTimestamp(row.created_at),
   lateCheckInWindowSecs: row.late_check_in_window_secs ?? 0,
   orgId: row.organization_id ?? undefined,
+  deletedAt: row.deleted_at ? normalizeTimestamp(row.deleted_at) : null,
 });
 
 export const createVaultWithMilestones = async (
@@ -111,7 +116,7 @@ export const createVaultWithMilestones = async (
       vaultId,
       title: milestone.title,
       description: milestone.description?.trim() || null,
-      dueDate: milestone.dueDate,
+      dueDate: normalizeTimestamp(milestone.dueDate),
       amount: milestone.amount,
       sortOrder: index,
       verifierUserId: input.verifier, // Assign the vault's verifier to each milestone
@@ -241,13 +246,76 @@ export const createVaultWithMilestones = async (
   }
 };
 
-export const listVaults = async (): Promise<PersistedVault[]> => {
+export interface ListVaultsOptions {
+  actor?: VaultActor | null;
+  all?: boolean;
+}
+
+export const listVaults = async (options?: ListVaultsOptions): Promise<PersistedVault[]> => {
   const pool = getPgPool();
+  const actor = options?.actor;
+  const isAdmin =
+    actor?.role === UserRole.ADMIN ||
+    actor?.role === "ADMIN" ||
+    actor?.role?.toUpperCase() === "ADMIN";
+  const canSeeAll = isAdmin && Boolean(options?.all);
+
   if (!pool) {
-    return memoryVaults.map((vault) => ({
+    let vaults = memoryVaults;
+    if (actor) {
+      if (canSeeAll) {
+        vaults = memoryVaults;
+      } else {
+        vaults = memoryVaults.filter((vault) => canReadVault(actor, vault));
+      }
+    }
+    return vaults.map((vault) => ({
       ...vault,
       milestones: vault.milestones.map((milestone) => ({ ...milestone })),
     }));
+  }
+
+  let whereClause = "";
+  const params: any[] = [];
+
+  if (actor && !canSeeAll) {
+    const actorIds = [actor.userId, actor.walletAddress].filter(Boolean) as string[];
+    if (actorIds.length === 0 && !actor.orgId) {
+      return [];
+    }
+
+    const conditions: string[] = [];
+    if (actorIds.length > 0) {
+      params.push(actorIds);
+      const actorParamIdx = params.length;
+      conditions.push(`(
+        creator = ANY($${actorParamIdx})
+        OR verifier = ANY($${actorParamIdx})
+        OR EXISTS (
+          SELECT 1 FROM milestones m
+          WHERE m.vault_id = vaults.id
+            AND (
+              m.verifier_user_id = ANY($${actorParamIdx})
+              OR EXISTS (
+                SELECT 1 FROM milestone_approvals ma
+                WHERE ma.milestone_id = m.id
+                  AND ma.verifier_user_id = ANY($${actorParamIdx})
+              )
+            )
+        )
+      )`);
+    }
+
+    if (actor.orgId) {
+      params.push(actor.orgId);
+      const orgParamIdx = params.length;
+      conditions.push(`organization_id = $${orgParamIdx}`);
+    }
+
+    whereClause = `WHERE (${conditions.join(" OR ")})`;
+    if (!isAdmin) {
+      whereClause += ` AND deleted_at IS NULL`;
+    }
   }
 
   const vaultRows = await pool.query<{
@@ -263,10 +331,17 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
     created_at: string;
     late_check_in_window_secs: number | null;
     organization_id: string | null;
+    deleted_at: string | null;
   }>(
-    "SELECT id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at, late_check_in_window_secs, organization_id FROM vaults ORDER BY created_at DESC",
+    `SELECT id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at, late_check_in_window_secs, organization_id, deleted_at FROM vaults ${whereClause ? `${whereClause} ` : ""}ORDER BY created_at DESC`,
+    params,
   );
 
+  if (vaultRows.rows.length === 0) {
+    return [];
+  }
+
+  const vaultIds = vaultRows.rows.map((row) => row.id);
   const milestoneRows = await pool.query<{
     id: string;
     vault_id: string;
@@ -274,9 +349,12 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
     description: string | null;
     due_date: string;
     amount: string;
-    sort_order: number;    verifier_user_id: string | null;    created_at: string;
+    sort_order: number;
+    verifier_user_id: string | null;
+    created_at: string;
   }>(
-    "SELECT id, vault_id, title, description, due_date, amount::text, sort_order, verifier_user_id, created_at FROM milestones ORDER BY sort_order ASC",
+    "SELECT id, vault_id, title, description, due_date, amount::text, sort_order, verifier_user_id, created_at FROM milestones WHERE vault_id = ANY($1) ORDER BY sort_order ASC",
+    [vaultIds],
   );
 
   const milestonesByVault = new Map<string, PersistedMilestone[]>();
@@ -286,11 +364,11 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
       vaultId: milestone.vault_id,
       title: milestone.title,
       description: milestone.description,
-      dueDate: milestone.due_date,
+      dueDate: normalizeTimestamp(milestone.due_date),
       amount: milestone.amount,
       sortOrder: milestone.sort_order,
       verifierUserId: milestone.verifier_user_id,
-      createdAt: milestone.created_at,
+      createdAt: normalizeTimestamp(milestone.created_at),
     };
 
     const existing = milestonesByVault.get(milestone.vault_id);
@@ -301,21 +379,7 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
     }
   }
 
-  const rows: Array<{
-    id: string;
-    amount: string;
-    start_date: string;
-    end_date: string;
-    verifier: string;
-    success_destination: string;
-    failure_destination: string;
-    creator: string | null;
-    status: PersistedVault["status"];
-    created_at: string;
-    late_check_in_window_secs: number | null;
-  }> = vaultRows.rows;
-
-  return rows.map((row) => ({
+  return vaultRows.rows.map((row) => ({
     ...mapVaultRow(row),
     milestones: milestonesByVault.get(row.id) ?? [],
   }));
@@ -352,7 +416,7 @@ export const listVaultsByOrg = async (
       .filter((v) => v.orgId === orgId)
       .sort((a, b) => {
         const timeDiff =
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+          toUTCDate(b.createdAt).getTime() - toUTCDate(a.createdAt).getTime();
         if (timeDiff !== 0) return timeDiff;
         return b.id < a.id ? -1 : b.id > a.id ? 1 : 0;
       });
@@ -362,8 +426,8 @@ export const listVaultsByOrg = async (
       const { timestamp, id } = decodeCursor(cursor);
       startIdx = orgVaults.findIndex(
         (v) =>
-          new Date(v.createdAt).getTime() < timestamp.getTime() ||
-          (new Date(v.createdAt).getTime() === timestamp.getTime() &&
+          toUTCDate(v.createdAt).getTime() < timestamp.getTime() ||
+          (toUTCDate(v.createdAt).getTime() === timestamp.getTime() &&
             v.id < id),
       );
       if (startIdx === -1) startIdx = orgVaults.length;
@@ -379,7 +443,7 @@ export const listVaultsByOrg = async (
     const last = items[items.length - 1];
     const nextCursor =
       hasNextPage && last
-        ? encodeCursor(new Date(last.createdAt), last.id)
+        ? encodeCursor(toUTCDate(last.createdAt), last.id)
         : null;
 
     return { vaults: items, nextCursor, hasNextPage };
@@ -462,11 +526,11 @@ export const listVaultsByOrg = async (
         vaultId: m.vault_id,
         title: m.title,
         description: m.description,
-        dueDate: m.due_date,
+        dueDate: normalizeTimestamp(m.due_date),
         amount: m.amount,
         sortOrder: m.sort_order,
         verifierUserId: m.verifier_user_id,
-        createdAt: m.created_at,
+        createdAt: normalizeTimestamp(m.created_at),
       };
       const existing = milestonesByVault.get(m.vault_id);
       if (existing) {
@@ -485,7 +549,7 @@ export const listVaultsByOrg = async (
   const last = vaults[vaults.length - 1];
   const nextCursor =
     hasNextPage && last
-      ? encodeCursor(new Date(last.createdAt), last.id)
+      ? encodeCursor(toUTCDate(last.createdAt), last.id)
       : null;
 
   return { vaults, nextCursor, hasNextPage };
@@ -593,11 +657,11 @@ export const updateVaultById = async (
       vaultId: milestone.vault_id,
       title: milestone.title,
       description: milestone.description,
-      dueDate: milestone.due_date,
+      dueDate: normalizeTimestamp(milestone.due_date),
       amount: milestone.amount,
       sortOrder: milestone.sort_order,
       verifierUserId: milestone.verifier_user_id,
-      createdAt: milestone.created_at,
+      createdAt: normalizeTimestamp(milestone.created_at),
     }),
   );
 

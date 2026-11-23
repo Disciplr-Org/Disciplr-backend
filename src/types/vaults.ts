@@ -59,6 +59,9 @@ export interface PersistedVault {
   /** Grace window in seconds after a milestone dueDate during which check-in is still accepted. Bounded by vault endDate. */
   lateCheckInWindowSecs: number
   orgId?: string
+  organization_id?: string
+  deletedAt?: string | null
+  deleted_at?: string | null
 }
 
 export interface StakeInput {
@@ -142,7 +145,7 @@ export interface VaultCreateResponse {
       attempted: boolean
       status: 'not_requested' | 'not_configured' | 'success' | 'error'
       txHash?: string
-      error?: string | { code: string; message: string; details?: unknown }
+      error?: string | { code: string; message: string; details?: unknown; retryable?: boolean }
     }
   }
   idempotency: {

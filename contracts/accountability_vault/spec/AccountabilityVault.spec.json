@@ -7,14 +7,12 @@
                 "String",
                 "Address",
                 "VerifierSet",
-                "Option<Address>",
                 "Address",
                 "i128",
-                "Address",
-                "Address",
+                "Destinations",
                 "u64",
                 "Vec<Milestone>",
-                "Address"
+                "VaultOptions"
             ],
             "result": "Result<(), Error>"
         },
@@ -55,12 +53,15 @@
         },
         {
             "name": "slash_on_miss",
-            "params": [],
+            "params": [
+                "String"
+            ],
             "result": "Result<(), Error>"
         },
         {
             "name": "claim",
             "params": [
+                "String",
                 "Address"
             ],
             "result": "Result<(), Error>"
@@ -68,6 +69,7 @@
         {
             "name": "claim_milestone",
             "params": [
+                "String",
                 "Address",
                 "u32"
             ],
@@ -93,7 +95,8 @@
             "name": "admin_dispute",
             "params": [
                 "String",
-                "Address"
+                "Address",
+                "u64"
             ],
             "result": "Result<(), Error>"
         },
@@ -109,13 +112,16 @@
         {
             "name": "emergency_pause",
             "params": [
-                "Address"
+                "String",
+                "Address",
+                "u64"
             ],
             "result": "Result<(), Error>"
         },
         {
             "name": "emergency_unpause",
             "params": [
+                "String",
                 "Address"
             ],
             "result": "Result<(), Error>"
@@ -126,20 +132,6 @@
                 "String"
             ],
             "result": "Result<Vault, Error>"
-        },
-        {
-            "name": "reclaim_after_settlement",
-            "params": [
-                "Address"
-            ],
-            "result": "Result<(), Error>"
-        },
-        {
-            "name": "configure_window",
-            "params": [
-                "u64"
-            ],
-            "result": "()"
         },
         {
             "name": "dispute_milestone",

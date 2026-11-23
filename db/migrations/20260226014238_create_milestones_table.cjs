@@ -39,8 +39,23 @@ exports.up = async function(knex) {
  * @returns { Promise<void> }
  */
 exports.down = async function(knex) {
-  // Use CASCADE because earlier migrations (validations, etc.) may have
-  // foreign keys referencing milestones that haven't been dropped yet at
-  // this point in the rollback order.
-  await knex.raw('DROP TABLE IF EXISTS milestones CASCADE');
+  // Why this down changed:
+  // If the milestones table was created by the earlier migration (20260225200000_create_milestones.cjs),
+  // dropping it here with CASCADE would drop a table this migration did not create and would break
+  // rollback ordering for earlier dependent tables (such as validations). When the earlier migration is
+  // present (recorded in knex_migrations or indicated by the presence of target_amount), this down is a no-op,
+  // leaving the table to be dropped by 20260225200000_create_milestones in proper sequence.
+  const hasEarlierMigration = await knex.schema.hasTable('knex_migrations').then(async (exists) => {
+    if (!exists) return false
+    const row = await knex('knex_migrations')
+      .where('name', 'like', '%20260225200000_create_milestones%')
+      .first()
+    return !!row
+  }).catch(() => false)
+
+  const hasTargetAmount = await knex.schema.hasColumn('milestones', 'target_amount').catch(() => false)
+
+  if (!hasEarlierMigration && !hasTargetAmount) {
+    await knex.raw('DROP TABLE IF EXISTS milestones CASCADE')
+  }
 };

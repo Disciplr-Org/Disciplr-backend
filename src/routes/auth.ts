@@ -11,8 +11,16 @@ import { AUTH_JSON_MAX_BYTES } from '../middleware/requestBodyLimits.js'
 import { AppError } from '../middleware/errorHandler.js'
 import { prisma } from '../lib/prisma.js'
 import { UserRole } from '../types/user.js'
+import { requestTelemetry } from '../middleware/telemetry.js'
+import { authRateLimiter, accountLoginLimiter } from '../middleware/rateLimiter.js'
+import { getEnv } from '../config/env.js'
+import { generateAccessToken } from '../lib/auth-utils.js'
+import { recordSession } from '../services/session.js'
+import { randomUUID } from 'node:crypto'
 
 export const authRouter = Router();
+authRouter.use(requestTelemetry);
+
 const authJson = requireJson({ maxBytes: AUTH_JSON_MAX_BYTES });
 
 const userIdOnlyLoginSchema = z.object({
@@ -27,21 +35,71 @@ const userIdParamSchema = z.object({
   id: z.string().uuid('id must be a valid UUID'),
 })
 
+const logoutSchema = z.object({
+  refreshToken: z.string().min(1, 'refreshToken must be a non-empty string.').max(4096, 'refreshToken is too long.').optional(),
+})
+
+const webauthnAssertSchema = z.object({
+  nonce: z.string().uuid('nonce must be a valid UUID'),
+  credentialId: z
+    .string()
+    .min(16, 'credentialId is too short.')
+    .max(1024, 'credentialId is too long.')
+    .regex(/^[A-Za-z0-9_-]+$/, 'credentialId contains invalid characters.'),
+  publicKey: z
+    .string()
+    .min(1, 'publicKey is required.')
+    .max(8192, 'publicKey is too long.'),
+})
+
+/**
+ * The userId-only login path is a development/testing helper that impersonates
+ * a user by id without credentials. It must be explicitly enabled via
+ * ENABLE_MOCK_LOGIN=true and is forbidden in production (the env validation
+ * will fail startup if both NODE_ENV=production and ENABLE_MOCK_LOGIN=true).
+ */
+const isMockLoginAllowed = (): boolean => {
+  try {
+    const env = getEnv()
+    return env.ENABLE_MOCK_LOGIN === true
+  } catch {
+    // If env not initialised, fall back to checking the raw env var (tests).
+    // Production is always refused, even when env validation failed.
+    if (process.env.NODE_ENV === 'production') return false
+    const raw = process.env.ENABLE_MOCK_LOGIN
+    if (!raw) return false
+    return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase())
+  }
+}
+
+// Mock-login tokens are real, short-lived access tokens. Keep the recorded
+// session lifetime in sync with the access-token TTL (15 minutes by default).
+const MOCK_LOGIN_TOKEN_TTL_MS = 15 * 60 * 1000
+
 const authUserSelect = {
   id: true,
   role: true,
   lastLoginAt: true,
 } as const
 
-const formatAuthUser = (user: { id: string; role: string; lastLoginAt: Date | null }) => ({
+const formatAuthUser = (user: { id: string; role: string; lastLoginAt: Date | null }) =>
+ ({
   id: user.id,
   role: user.role as UserRole,
   lastLoginAt: user.lastLoginAt?.toISOString() ?? null,
 })
 
+const PRISMA_RECORD_NOT_FOUND = 'P2025'
+
+const isRecordNotFound = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  'code' in error &&
+  (error as { code?: unknown }).code === PRISMA_RECORD_NOT_FOUND
+
 // ------------- Endpoints -------------
 
-authRouter.post('/register', authJson, async (req, res, next) => {
+authRouter.post('/register', authJson, authRateLimiter, async (req, res, next) => {
     const result = registerSchema.safeParse(req.body)
     if (!result.success) {
         return next(AppError.validation('Validation failed', result.error.format()))
@@ -50,36 +108,52 @@ authRouter.post('/register', authJson, async (req, res, next) => {
     try {
         const user = await AuthService.register(result.data)
         res.status(201).json(user)
-    } catch (error: any) {
-        return next(AppError.badRequest(error.message))
+    } catch (error) {
+        const message = error instanceof Error ? error.message : 'Registration failed'
+        return next(AppError.badRequest(message))
     }
 })
 
-authRouter.post('/login', authJson, async (req, res, next) => {
-    // Support mock login if only userId is provided (from audit-logs feature branch)
+authRouter.post('/login', authJson, authRateLimiter, accountLoginLimiter, async (req, res, next) => {
     if (req.body.userId && !req.body.email && !req.body.password) {
+        if (!isMockLoginAllowed()) {
+            return next(AppError.forbidden('Mock login is disabled'))
+        }
+
         const result = userIdOnlyLoginSchema.safeParse(req.body)
         if (!result.success) {
             return next(AppError.validation('Validation failed', result.error.format()))
         }
 
-        const user = await prisma.user.findUnique({
-          where: { id: result.data.userId },
-          select: authUserSelect,
-        })
-        if (!user) {
-          return next(AppError.notFound('User not found'))
+        let updatedUser
+        try {
+          updatedUser = await prisma.user.update({
+            where: { id: result.data.userId },
+            data: { lastLoginAt: new Date() },
+            select: authUserSelect,
+          })
+        } catch (error: unknown) {
+          if (isRecordNotFound(error)) {
+            return next(AppError.notFound('User not found'))
+          }
+          throw error
         }
 
-        const updatedUser = await prisma.user.update({
-          where: { id: user.id },
-          data: { lastLoginAt: new Date() },
-          select: authUserSelect,
+        // Issue a real JWT so the token works with `authenticate`-protected
+        // routes such as GET /api/vaults. This mirrors the credential login
+        // path: a jti is embedded and the matching session row is recorded,
+        // so the token is revocable via POST /api/auth/logout.
+        const jti = randomUUID()
+        const accessToken = generateAccessToken({
+          userId: updatedUser.id,
+          role: updatedUser.role,
+          jti,
         })
+        await recordSession(updatedUser.id, jti, new Date(Date.now() + MOCK_LOGIN_TOKEN_TTL_MS))
 
         const auditLog = await createAuditLog({
           actor_user_id: updatedUser.id,
-          action: "auth.login",
+          action: "auth.mock_login_used",
           target_type: "user",
           target_id: updatedUser.id,
           metadata: {
@@ -90,13 +164,12 @@ authRouter.post('/login', authJson, async (req, res, next) => {
 
         res.status(200).json({
           user: formatAuthUser(updatedUser),
-          token: `mock-token-${updatedUser.id}`,
+          token: accessToken,
           auditLogId: auditLog.id,
         });
         return;
     }
 
-    // Real login flow
     const result = loginSchema.safeParse(req.body)
     if (!result.success) {
         return next(AppError.validation('Validation failed', result.error.format()))
@@ -105,12 +178,16 @@ authRouter.post('/login', authJson, async (req, res, next) => {
     try {
         const data = await AuthService.login(result.data)
         res.json(data)
-    } catch (error: any) {
-        return next(AppError.unauthorized(error.message))
+    } catch (error) {
+        const message = error instanceof Error ? error.message : 'Invalid credentials'
+        // Mark the response for the account limiter: a failed login should NOT
+        // skip the account rate limit (only successful logins are skipped via
+        // skipSuccessfulRequests: true in the limiter config)
+        return next(AppError.unauthorized(message))
     }
 })
 
-authRouter.post('/refresh', authJson, async (req, res, next) => {
+authRouter.post('/refresh', authJson, authRateLimiter, async (req, res, next) => {
     const result = refreshSchema.safeParse(req.body)
     if (!result.success) {
         return next(AppError.validation('Validation failed', result.error.format()))
@@ -119,8 +196,11 @@ authRouter.post('/refresh', authJson, async (req, res, next) => {
     try {
         const data = await AuthService.refresh(result.data.refreshToken)
         res.json(data)
-    } catch (error: any) {
-        return next(AppError.unauthorized(error.message))
+    } catch (error) {
+        if (error instanceof AppError) {
+            return next(error)
+        }
+        return next(AppError.unauthorized(error instanceof Error ? error.message : 'Invalid refresh token'))
     }
 })
 
@@ -128,9 +208,13 @@ authRouter.post(
   "/logout",
   authJson,
   authenticate,
-  async (req: Request, res: Response) => {
-    // 1. AuthService refresh token logout
-    const { refreshToken } = req.body;
+  async (req: Request, res: Response, next: NextFunction) => {
+    const result = logoutSchema.safeParse(req.body)
+    if (!result.success) {
+      return next(AppError.validation('Validation failed', result.error.format()))
+    }
+
+    const { refreshToken } = result.data;
     if (refreshToken) {
       try {
         await AuthService.logout(refreshToken);
@@ -139,7 +223,6 @@ authRouter.post(
       }
     }
 
-    // 2. Database access token session revocation
     const jti = req.user?.jti;
     if (jti) {
       await revokeSession(jti);
@@ -168,18 +251,28 @@ authRouter.post('/webauthn/challenge', authenticate, async (req, res, next) => {
   res.status(200).json(challenge)
 })
 
-authRouter.post('/webauthn/assert', authenticate, async (req, res, next) => {
+authRouter.post('/webauthn/assert', authJson, authenticate, async (req, res, next) => {
   const { nonce, credentialId, publicKey } = req.body as { nonce?: string; credentialId?: string; publicKey?: string }
   if (!req.user?.userId || !nonce || !credentialId || !publicKey) {
     return next(AppError.badRequest('Missing WebAuthn assertion data'))
   }
 
-  const recorded = await AuthService.recordStepUpAssertion(nonce, req.user.userId)
+  // Strict boundary validation: nonce must be a UUID, credential material must
+  // be bounded and well-formed so oversized or malformed assertions are
+  // rejected before they reach the credential store.
+  const bodyResult = webauthnAssertSchema.safeParse(req.body)
+  if (!bodyResult.success) {
+    return next(AppError.validation('Validation failed', bodyResult.error.format()))
+  }
+
+  const validated = bodyResult.data
+
+  const recorded = await AuthService.recordStepUpAssertion(validated.nonce, req.user.userId)
   if (!recorded) {
     return next(AppError.unauthorized('Invalid or expired step-up assertion'))
   }
 
-  await AuthService.registerWebAuthnCredential(req.user.userId, credentialId, publicKey)
+  await AuthService.registerWebAuthnCredential(req.user.userId, validated.credentialId, validated.publicKey)
   res.status(200).json({ success: true })
 })
 
@@ -196,38 +289,84 @@ authRouter.post('/users/:id/role', requireJson, authenticate, requireStepUp(), a
     return next(AppError.validation('Validation failed', paramsResult.error.format()))
   }
 
+  if (req.user.userId === paramsResult.data.id) {
+    return next(AppError.badRequest('Cannot change your own role'))
+  }
+
   const bodyResult = userRoleUpdateSchema.safeParse(req.body)
   if (!bodyResult.success) {
     return next(AppError.validation('Validation failed', bodyResult.error.format()))
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: paramsResult.data.id },
-    select: authUserSelect,
+  const targetUserId = paramsResult.data.id
+  const nextRole = bodyResult.data.role
+
+  const outcome = await prisma.$transaction(async (tx: any) => {
+    const existing = await tx.user.findUnique({
+      where: { id: targetUserId },
+      select: authUserSelect,
+    })
+    if (!existing) {
+      return { kind: 'not_found' as const }
+    }
+
+    if (existing.role === nextRole) {
+      return { kind: 'noop' as const, user: existing }
+    }
+
+    const updateResult = await tx.user.updateMany({
+      where: { id: targetUserId, role: existing.role },
+      data: { role: nextRole },
+    })
+    if (updateResult.count === 0) {
+      return { kind: 'conflict' as const }
+    }
+
+    const updated = await tx.user.findUnique({
+      where: { id: targetUserId },
+      select: authUserSelect,
+    })
+    if (!updated) {
+      return { kind: 'not_found' as const }
+    }
+
+    return { kind: 'updated' as const, previousRole: existing.role, user: updated }
   })
-  if (!user) {
+
+  if (outcome.kind === 'not_found') {
     return next(AppError.notFound('User not found'))
   }
 
-  const updatedUser = await prisma.user.update({
-    where: { id: user.id },
-    data: { role: bodyResult.data.role },
-    select: authUserSelect,
-  })
+  if (outcome.kind === 'conflict') {
+    return next(
+      AppError.badRequest(
+        'Role was modified concurrently; please re-read the current role and retry',
+      ),
+    )
+  }
+
+  if (outcome.kind === 'noop') {
+    res.status(200).json({
+      user: formatAuthUser(outcome.user),
+      auditLogId: null,
+      idempotent: true,
+    })
+    return
+  }
 
   const auditLog = await createAuditLog({
     actor_user_id: req.user.userId,
     action: "auth.role_changed",
     target_type: "user",
-    target_id: user.id,
+    target_id: targetUserId,
     metadata: {
-      previousRole: user.role,
-      newRole: updatedUser.role,
+      previousRole: outcome.previousRole,
+      newRole: outcome.user.role,
     },
   });
 
   res.status(200).json({
-    user: formatAuthUser(updatedUser),
+    user: formatAuthUser(outcome.user),
     auditLogId: auditLog.id,
   });
 });

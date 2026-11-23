@@ -519,6 +519,44 @@ describe('tracingMiddleware', () => {
     expect(span.attributes['correlation.id']).toBe(span.traceId)
   })
 
+  it('rejects a correlation ID that matches a stellar wallet address', () => {
+    const req = makeReq({
+      path: '/api/vaults',
+      headers: { 'x-correlation-id': 'GABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABC' },
+    })
+    const res = makeRes()
+    runMiddleware(req, res)
+    res.emit('finish')
+    
+    const span = exporter.spans[0]
+    expect(span.attributes['correlation.id']).toBe(span.traceId)
+  })
+
+  it('rejects a correlation ID with invalid characters', () => {
+    const req = makeReq({
+      path: '/api/vaults',
+      headers: { 'x-correlation-id': '<script>alert(1)</script>' },
+    })
+    const res = makeRes()
+    runMiddleware(req, res)
+    res.emit('finish')
+    
+    const span = exporter.spans[0]
+    expect(span.attributes['correlation.id']).toBe(span.traceId)
+  })
+
+  it('redacts query parameters from http.url span attribute', () => {
+    const req = makeReq({
+      path: '/api/vaults',
+      originalUrl: '/api/vaults?secret=123',
+    })
+    const res = makeRes()
+    runMiddleware(req, res)
+    res.emit('finish')
+
+    expect(exporter.spans[0].attributes['http.url']).toBe('/api/vaults')
+  })
+
   it('records http.status_code after the response finishes', () => {
     const req = makeReq({ path: '/api/vaults', method: 'POST' })
     const res = makeRes()

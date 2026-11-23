@@ -55,6 +55,9 @@ notificationsRouter.patch('/:id/read', async (req: Request, res: Response, next:
     return next(AppError.unauthorized('Unauthenticated'))
   }
 
+  // Wrapped in try/catch so transient errors (e.g. DB failures) are forwarded
+  // to the centralized errorHandler via next(error) rather than causing an
+  // unhandled promise rejection in Express 4.
   try {
     const notification = await markAsRead(req.params.id, req.user.userId)
 
@@ -73,6 +76,9 @@ notificationsRouter.post('/read-all', async (req: Request, res: Response, next: 
     return next(AppError.unauthorized('Unauthenticated'))
   }
 
+  // Wrapped in try/catch so transient errors (e.g. DB failures) are forwarded
+  // to the centralized errorHandler via next(error) rather than causing an
+  // unhandled promise rejection in Express 4.
   try {
     const updated = await markAllAsRead(req.user.userId)
     res.json({ updated })

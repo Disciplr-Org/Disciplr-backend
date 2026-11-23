@@ -19,6 +19,14 @@ jest.unstable_mockModule('../db/knex.js', () => ({ db: mockDb }))
 
 jest.unstable_mockModule('../jobs/system.js', () => ({}))
 
+const mockGetPendingCount = jest.fn<any>().mockResolvedValue(5)
+const mockGetDueCount = jest.fn<any>().mockResolvedValue(2)
+
+jest.unstable_mockModule('../services/deferredReminders.service.js', () => ({
+  getPendingCount: mockGetPendingCount,
+  getDueCount: mockGetDueCount,
+}))
+
 // ─── Subject under test ───────────────────────────────────────────────────────
 
 const { healthService } = await import('../services/healthService.js')
@@ -114,5 +122,38 @@ describe('healthService.checkHorizonListener thresholds', () => {
     const result = await healthService.checkHorizonListener()
     expect(result.status).toBe('down')
     expect(result.error).toBe('DB connection lost')
+  })
+})
+
+describe('healthService.checkDeferredReminders', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    mockGetPendingCount.mockResolvedValue(5)
+    mockGetDueCount.mockResolvedValue(2)
+  })
+
+  it('returns up with pending and due counts', async () => {
+    const result = await healthService.checkDeferredReminders()
+    expect(result.status).toBe('up')
+    expect(result.pendingCount).toBe(5)
+    expect(result.dueCount).toBe(2)
+  })
+
+  it('returns down when getPendingCount throws', async () => {
+    mockGetPendingCount.mockRejectedValueOnce(new Error('table missing'))
+    const result = await healthService.checkDeferredReminders()
+    expect(result.status).toBe('down')
+    expect(result.pendingCount).toBe(0)
+    expect(result.dueCount).toBe(0)
+    expect(result.error).toBe('table missing')
+  })
+
+  it('returns down when getDueCount throws', async () => {
+    mockGetDueCount.mockRejectedValueOnce(new Error('query timeout'))
+    const result = await healthService.checkDeferredReminders()
+    expect(result.status).toBe('down')
+    expect(result.pendingCount).toBe(0)
+    expect(result.dueCount).toBe(0)
+    expect(result.error).toBe('query timeout')
   })
 })

@@ -5,6 +5,26 @@ export { flattenZodErrors } from '../lib/validation.js'
 
 const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/
 
+/** Soroban contract addresses (C...) use the same strkey alphabet as G... accounts. */
+const CONTRACT_ADDRESS_RE = /^C[A-Z2-7]{55}$/
+
+/**
+ * Network passphrase this backend is configured to build payloads for.
+ * Mirrors the default in `src/services/soroban.ts`; the route rejects
+ * client-supplied passphrases that differ so a vault payload can never be
+ * built for the wrong network.
+ */
+export const DEFAULT_NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015'
+
+export function getConfiguredNetworkPassphrase(): string {
+  return process.env.SOROBAN_NETWORK_PASSPHRASE ?? DEFAULT_NETWORK_PASSPHRASE
+}
+
+/** Lazy format check for Soroban contract addresses (C..., 56 chars). */
+export function isValidContractAddress(value: string): boolean {
+  return typeof value === 'string' && CONTRACT_ADDRESS_RE.test(value)
+}
+
 // ─── Soroban-aligned constants ───────────────────────────────────────────────
 
 /** Minimum vault / milestone amount (inclusive). Maps to contract lower-bound. */
@@ -144,10 +164,24 @@ const amountStringSchema = z.preprocess(
       'must be a positive number',
     )
     .refine(
+      (v) => /^\d+(?:\.\d{1,7})?$/.test(v),
+      'must be a decimal amount with at most 7 fractional digits',
+    )
+    .refine(
       (v) => { const n = Number(v); return n >= VAULT_AMOUNT_MIN && n <= VAULT_AMOUNT_MAX },
       `must be between ${VAULT_AMOUNT_MIN} and ${VAULT_AMOUNT_MAX.toLocaleString()}`,
     ),
 )
+
+const AMOUNT_SCALE = 10_000_000n
+const DECIMAL_AMOUNT_RE = /^\d+(?:\.\d{1,7})?$/
+
+/** Convert an already grammar-validated decimal into exact seven-place units. */
+function amountToUnits(value: string): bigint | null {
+  if (!DECIMAL_AMOUNT_RE.test(value)) return null
+  const [whole, fraction = ''] = value.split('.')
+  return BigInt(whole) * AMOUNT_SCALE + BigInt(fraction.padEnd(7, '0'))
+}
 
 // ─── Milestone schema ────────────────────────────────────────────────────────
 
@@ -174,6 +208,11 @@ export const milestoneSchema = z.object({
   dueDate: utcTimestampSchema,
   amount: amountStringSchema,
 })
+
+/** Single entry point for standalone milestone creation validation. */
+export function parseMilestoneInput(input: unknown) {
+  return milestoneSchema.safeParse(input)
+}
 
 // ─── Root vault schema ───────────────────────────────────────────────────────
 
@@ -208,9 +247,24 @@ export const createVaultSchema = z
     onChain: z
       .object({
         mode: z.enum(['build', 'submit']).optional().default('build'),
-        contractId: z.string().optional(),
-        networkPassphrase: z.string().optional(),
-        sourceAccount: z.string().optional(),
+        contractId: z
+          .string()
+          .refine(isValidContractAddress, 'must be a valid Stellar contract address (C...)')
+          .optional(),
+        networkPassphrase: z
+          .string()
+          .refine(
+            (val) => val === getConfiguredNetworkPassphrase(),
+            'does not match the configured network passphrase',
+          )
+          .optional(),
+        sourceAccount: z
+          .string()
+          .refine(
+            (val) => StrKey.isValidEd25519PublicKey(val) || StrKey.isValidMed25519PublicKey(val),
+            'must be a valid Stellar account address (G... or M...)',
+          )
+          .optional(),
       })
       .optional(),
   })
@@ -241,11 +295,13 @@ export const createVaultSchema = z
       })
     }
 
-    // Total milestone amounts must not exceed vault amount
-    const vaultAmount = Number(data.amount)
-    if (Number.isFinite(vaultAmount)) {
-      const total = data.milestones.reduce((acc, m) => acc + Number(m.amount), 0)
-      if (total > vaultAmount) {
+    // Compare scaled decimal units exactly; Number summation can drift at the
+    // seventh decimal place and reject a schedule that exactly fits.
+    const vaultAmountUnits = amountToUnits(data.amount)
+    const milestoneUnits = data.milestones.map((milestone) => amountToUnits(milestone.amount))
+    if (vaultAmountUnits !== null && milestoneUnits.every((units): units is bigint => units !== null)) {
+      const total = milestoneUnits.reduce((acc, units) => acc + units, 0n)
+      if (total > vaultAmountUnits) {
         ctx.addIssue({
           code: 'custom',
           message: 'Total milestone amount cannot exceed vault amount',
@@ -345,5 +401,43 @@ export async function isValidStellarAddress(address: string): Promise<boolean> {
   } catch (err) {
     // If the import fails for any reason, conservatively treat as invalid.
     return false
+  }
+}
+
+/**
+ * Guards the server-generated vault-creation response before it is sent to a
+ * client (or replayed from an idempotency reservation).
+ *
+ * The replayed response is parsed from a stored JSON row, so a corrupt or
+ * truncated reservation must never be forwarded as if it were a valid vault.
+ * Throws on malformed shapes; callers map the failure to a generic 500 so no
+ * internals leak to the client.
+ */
+export function assertValidVaultCreateResponse(value: unknown): void {
+  if (value === null || typeof value !== 'object') {
+    throw new Error('vault create response must be an object')
+  }
+  const body = value as Record<string, unknown>
+
+  const vault = body.vault
+  if (vault === null || typeof vault !== 'object') {
+    throw new Error('vault create response is missing the vault object')
+  }
+  const vaultId = (vault as Record<string, unknown>).id
+  if (typeof vaultId !== 'string' || vaultId.length === 0) {
+    throw new Error('vault create response is missing a vault id')
+  }
+
+  const onChain = body.onChain
+  if (onChain === null || typeof onChain !== 'object') {
+    throw new Error('vault create response is missing the onChain payload')
+  }
+  const payload = (onChain as Record<string, unknown>).payload
+  if (
+    payload === null ||
+    typeof payload !== 'object' ||
+    (payload as Record<string, unknown>).method !== 'create_vault'
+  ) {
+    throw new Error('vault create response onChain payload is malformed')
   }
 }

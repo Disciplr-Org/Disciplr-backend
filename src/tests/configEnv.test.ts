@@ -71,4 +71,30 @@ describe('Environment Loader', () => {
       ).toThrow(/must be at least 16 characters/);
     });
   });
+  describe('Warnings', () => {
+    it('returns warnings with a populated field for insecure defaults', () => {
+      // Simulate production to trigger insecure default warnings
+      const { warnings } = initEnv({
+        ...BASE_ENV,
+        NODE_ENV: 'production',
+        JWT_SECRET: 'change-me-in-production-long-secret', // Insecure default
+      } as any);
+
+      const warning = warnings.find((w) => w.field === 'JWT_SECRET');
+      expect(warning).toBeDefined();
+      expect(warning?.field).toBe('JWT_SECRET');
+    });
+
+    it('returns warnings with a populated field for partial Soroban configuration', () => {
+      const { warnings } = initEnv({
+        ...BASE_ENV,
+        SOROBAN_CONTRACT_ID: 'C1234567890123456789012345678901234567890123456789012345',
+        // Omitting other SOROBAN_* vars triggers partial configuration warning
+      } as any);
+
+      const warning = warnings.find((w) => w.field === 'SOROBAN_*');
+      expect(warning).toBeDefined();
+      expect(warning?.field).toBe('SOROBAN_*');
+    });
+  });
 });

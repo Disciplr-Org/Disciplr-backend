@@ -67,9 +67,11 @@ export const arbitraryLedgerNumber = (): fc.Arbitrary<number> =>
 export const arbitraryEventIndex = (): fc.Arbitrary<number> =>
   fc.integer({ min: 0, max: 100 })
 
-// Generate a future date (for deadlines and end timestamps)
+// Generate a future date (for deadlines and end timestamps). The minimum is
+// offset forward so a generated value can never land on the current millisecond
+// and fail a strict `> Date.now()` boundary assertion.
 export const arbitraryFutureDate = (): fc.Arbitrary<Date> =>
-  fc.date({ min: new Date(), max: new Date('2030-12-31') })
+  fc.date({ min: new Date(Date.now() + 60_000), max: new Date('2030-12-31') })
 
 // Generate a past or present date (for start timestamps and validated_at)
 export const arbitraryPastDate = (): fc.Arbitrary<Date> =>

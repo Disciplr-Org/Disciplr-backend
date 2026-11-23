@@ -1,5 +1,7 @@
+import { isIP } from 'node:net'
 import { prisma } from '../lib/prisma.js'
-import { isUrlAllowed } from './webhooks.js'
+import { isPublicAddress } from '../security/egressGuard.js'
+import type { Knex } from 'knex'
 
 export class EvidenceReferenceValidationError extends Error {
   constructor(message: string) {
@@ -44,16 +46,64 @@ function validateEvidenceUrlSafety(
   url: string,
   allowedHosts?: string[],
 ): void {
-  // Use EVIDENCE_ALLOWLIST if configured, else fall back to WEBHOOK_ALLOWED_HOSTS
-  const hosts = allowedHosts ?? (process.env.EVIDENCE_ALLOWLIST ?? '')
-    .split(',')
-    .map((h) => h.trim())
-    .filter(Boolean)
-
-  if (!isUrlAllowed(url, hosts)) {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
     // Do not log the URL to avoid leaking internal topology
     console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
     throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  // Never forward embedded credentials to an evidence host.
+  if (parsed.username !== '' || parsed.password !== '') {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  const hostname = parsed.hostname
+  if (hostname === '') {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  const lower = hostname.toLowerCase().replace(/\.$/, '')
+
+  // Block loopback/localtest.me by name (these never resolve to a public egress target).
+  if (
+    lower === 'localhost' ||
+    lower.endsWith('.localhost') ||
+    /(?:^|\.)localtest\.me$/.test(lower)
+  ) {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  // If the host is a literal IP, classify it with the shared guard. DNS
+  // hostnames are not resolved here (this validator is synchronous); they are
+  // resolved and pinned at fetch time by fetchEvidenceContent.
+  const unbracketedHostname = hostname.replace(/^\[|\]$/g, '')
+  if (isIP(unbracketedHostname) !== 0 && !isPublicAddress(unbracketedHostname)) {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  // Use EVIDENCE_ALLOWLIST if configured, else fall back to WEBHOOK_ALLOWED_HOSTS
+  const hosts = allowedHosts ?? (process.env.EVIDENCE_ALLOWLIST ?? '')
+    .split(',')
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean)
+
+  if (hosts.length > 0) {
+    if (!hosts.some((h) => lower === h || lower.endsWith(`.${h}`))) {
+      console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+      throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+    }
   }
 }
 
@@ -159,10 +209,36 @@ export async function createEvidenceReference(
   verificationId: string,
   evidenceHash: string,
   evidenceReferenceUrl: string,
+  trx?: Knex.Transaction,
 ): Promise<EvidenceReference> {
   const normalizedHash = normalizeEvidenceHash(evidenceHash)
-  const expiresAt = validateSignedObjectStorageUrl(evidenceReferenceUrl.trim())
+  const cleanReferenceUrl = evidenceReferenceUrl.trim()
+  const expiresAt = validateSignedObjectStorageUrl(cleanReferenceUrl)
   const now = new Date()
+
+  if (trx) {
+    const [row] = await trx('evidence_references')
+      .insert({
+        verification_id: verificationId,
+        evidence_hash: normalizedHash,
+        reference_url: cleanReferenceUrl,
+        expires_at: expiresAt,
+        created_at: now,
+      })
+      .onConflict('verification_id')
+      .merge({
+        evidence_hash: normalizedHash,
+        reference_url: cleanReferenceUrl,
+        expires_at: expiresAt,
+      })
+      .returning(['id', 'verification_id', 'evidence_hash', 'reference_url', 'expires_at', 'created_at'])
+
+    if (!row) {
+      throw new Error('Failed to persist evidence reference')
+    }
+
+    return mapEvidenceReferenceRow(row)
+  }
 
   const rows = await prisma.$queryRaw<
     Array<{
@@ -183,7 +259,7 @@ export async function createEvidenceReference(
     ) VALUES (
       ${verificationId},
       ${normalizedHash},
-      ${evidenceReferenceUrl.trim()},
+      ${cleanReferenceUrl},
       ${expiresAt},
       ${now}
     )
@@ -200,34 +276,41 @@ export async function createEvidenceReference(
     throw new Error('Failed to persist evidence reference')
   }
 
+  return mapEvidenceReferenceRow(row)
+}
+
+function mapEvidenceReferenceRow(row: {
+  id: string
+  verification_id: string
+  evidence_hash: string
+  reference_url: string
+  expires_at: Date | string
+  created_at: Date | string
+}): EvidenceReference {
   return {
     id: row.id,
     verificationId: row.verification_id,
     evidenceHash: row.evidence_hash,
     referenceUrl: row.reference_url,
-    expiresAt: row.expires_at.toISOString(),
-    createdAt: row.created_at.toISOString(),
+    expiresAt: row.expires_at instanceof Date ? row.expires_at.toISOString() : new Date(row.expires_at).toISOString(),
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : new Date(row.created_at).toISOString(),
   }
 }
 
 /**
  * Fetches evidence content from a stored evidence reference URL.
  *
- * @security SSRF protected — the URL has already been validated during reference creation
- * (validateSignedObjectStorageUrl checks against private IPs, loopback, link-local, and
- * allowlist enforcement). This function serves as the access point for any code that needs
- * to retrieve evidence content, ensuring the security posture is maintained.
+ * @security SSRF protected — the URL is validated by the shared egress guard
+ * (resolve-validate-pin) before fetching. DNS is resolved once, every returned
+ * address is classified as public, and the socket is pinned to the validated
+ * IP so DNS rebinding cannot redirect the connection to an internal address.
  *
- * DNS rebinding attacks are mitigated by the underlying fetch implementation which resolves
- * DNS at request time, and isUrlAllowed performs hostname validation before resolution.
+ * Redirects are not followed: any 3xx response is refused.
  *
  * @param referenceUrl - The evidence URL to fetch from (assumed to be pre-validated)
  * @param timeoutMs - Optional timeout in milliseconds (default: 10000)
  * @returns The response body as text
- * @throws {Error} if the fetch fails or times out
- *
- * @internal This is a placeholder for future evidence retrieval logic.
- * Currently unused, but documented here for security audit completeness.
+ * @throws {Error} if the fetch fails, is blocked, or times out
  */
 export async function fetchEvidenceContent(
   referenceUrl: string,
@@ -238,13 +321,23 @@ export async function fetchEvidenceContent(
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const abortPromise = new Promise<never>((_resolve, reject) => {
+    controller.signal.addEventListener(
+      'abort',
+      () => reject(new Error(`Evidence fetch timed out after ${timeoutMs}ms`)),
+      { once: true },
+    )
+  })
 
   try {
-    const response = await fetch(referenceUrl, {
-      method: 'GET',
-      redirect: 'manual', // Do not follow redirects to prevent redirect-based SSRF
-      signal: controller.signal,
-    })
+    const response = await Promise.race([
+      fetch(referenceUrl, {
+        method: 'GET',
+        redirect: 'manual',
+        signal: controller.signal,
+      }),
+      abortPromise,
+    ])
 
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location')

@@ -25,13 +25,14 @@
         "helmet": "^7.2.0",
         "ioredis": "^5.11.1",
         "jsonwebtoken": "^9.0.3",
+        "nodemailer": "^9.0.6",
         "pg": "^8.20.0",
         "pino": "^9.4.0",
         "prom-client": "^15.0.0",
         "zod": "^4.3.6",
       },
       "devDependencies": {
-        "@asteasolutions/zod-to-openapi": "^8.5.0",
+        "@asteasolutions/zod-to-openapi": "^9.1.0",
         "@eslint/js": "^9.39.5",
         "@redocly/cli": "^2.40.0",
         "@types/bcryptjs": "^2.4.6",
@@ -74,7 +75,7 @@
     "qs": "^6.15.2",
   },
   "packages": {
-    "@asteasolutions/zod-to-openapi": ["@asteasolutions/zod-to-openapi@8.5.0", "", { "dependencies": { "openapi3-ts": "^4.1.2" }, "peerDependencies": { "zod": "^4.0.0" } }, ""],
+    "@asteasolutions/zod-to-openapi": ["@asteasolutions/zod-to-openapi@9.1.0", "", { "dependencies": { "openapi3-ts": "^4.6.0" }, "peerDependencies": { "zod": "^4.0.0" } }, "sha512-pLMeRgRYS7/vZIgAAkOe2P6+XGTifR1MT9pqDoxZ11EmcJJ+DPmdPqLN8ZZF4U8R9KHCCQCS9c2wtuE8wSrfkw=="],
 
     "@aws-sdk/checksums": ["@aws-sdk/checksums@3.1000.19", "", { "dependencies": { "@aws-sdk/core": "^3.976.0", "@aws-sdk/types": "^3.974.2", "@smithy/core": "^3.29.4", "@smithy/types": "^4.16.1", "tslib": "^2.6.2" } }, ""],
 
@@ -1197,6 +1198,8 @@
     "node-int64": ["node-int64@0.4.0", "", {}, ""],
 
     "node-releases": ["node-releases@2.0.51", "", {}, ""],
+
+    "nodemailer": ["nodemailer@9.1.1", "", {}, "sha512-izw9mVKFix6YSnC9eLgV6g1opl9DUlRio9ZNcq+Wu9Ujn2UwF+8Nl0B8nz22kEC+CTZCvinkxwJ0DeFbb6NwcQ=="],
 
     "normalize-path": ["normalize-path@3.0.0", "", {}, ""],
 

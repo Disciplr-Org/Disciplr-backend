@@ -115,6 +115,9 @@ exports.up = async function up(knex) {
   }
   log('fix_end_date_index', 'success')
 
+  // Step 4b (org pagination index) moved to 20260425140000_add_organization_id_to_vaults,
+  // because the org column does not exist yet at this point in the migration order.
+
   // ── Step 5: add 'draft' to vault_status enum ───────────────────────────────
   // ALTER TYPE … ADD VALUE cannot run inside a transaction on PG < 12.
   log('add_draft_enum_value', 'start')
@@ -201,6 +204,15 @@ exports.down = async function down(knex) {
     })
   }
   log('restore_end_timestamp_index', 'success')
+
+  // ── Step 4b: drop org pagination index ────────────────────────────────────
+  log('drop_org_pagination_index', 'start')
+  if (await indexExists(knex, 'idx_vaults_org_id_created_at')) {
+    await knex.schema.alterTable('vaults', (t) => {
+      t.dropIndex(['org_id', 'created_at'], 'idx_vaults_org_id_created_at')
+    })
+  }
+  log('drop_org_pagination_index', 'success')
 
   // ── Step 5: drop updated_at ────────────────────────────────────────────────
   log('drop_updated_at', 'start')

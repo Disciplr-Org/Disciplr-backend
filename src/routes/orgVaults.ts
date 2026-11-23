@@ -8,6 +8,7 @@ import { listVaults } from '../services/vaultStore.js'
 import db from '../db/index.js'
 import type { Knex } from 'knex'
 import { createHash } from 'node:crypto'
+import { isValidISO8601, normalizeTimestamp, toUTCDate } from '../utils/timestamps.js'
 
 export const orgVaultsRouter = Router()
 
@@ -67,12 +68,12 @@ orgVaultsRouter.get(
       creator: v.creator,
       amount: v.amount,
       status: v.status,
-      startTimestamp: v.start_date,
-      endTimestamp: v.end_date,
+      startTimestamp: normalizeTimestamp(v.start_date),
+      endTimestamp: normalizeTimestamp(v.end_date),
       successDestination: v.success_destination,
       failureDestination: v.failure_destination,
       verifier: v.verifier,
-      createdAt: v.created_at,
+      createdAt: normalizeTimestamp(v.created_at),
       orgId: v.organization_id
     }))
 
@@ -100,10 +101,10 @@ orgVaultsRouter.get(
         amount: row.amount,
         status: row.status,
         orgId: row.organization_id,
-        startTimestamp: row.start_date,
-        endTimestamp: row.end_date,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
+        startTimestamp: normalizeTimestamp(row.start_date),
+        endTimestamp: normalizeTimestamp(row.end_date),
+        createdAt: normalizeTimestamp(row.created_at),
+        updatedAt: normalizeTimestamp(row.updated_at),
       }));
 
       if (req.filters) {
@@ -142,6 +143,20 @@ const VALID_SORT_FIELDS = new Set([
   "status",
 ]);
 const VALID_SORT_ORDERS = new Set(["asc", "desc"]);
+
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** True when value is a real calendar date in YYYY-MM-DD form. */
+function isValidDateOnly(value: string): boolean {
+  if (!DATE_ONLY_RE.test(value)) return false
+  const [y, m, d] = value.split("-").map(Number)
+  const probe = new Date(Date.UTC(y, m - 1, d))
+  return (
+    probe.getUTCFullYear() === y &&
+    probe.getUTCMonth() === m - 1 &&
+    probe.getUTCDate() === d
+  )
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -234,10 +249,13 @@ export function validateAndSanitizeQueryDefinition(
 
   for (const field of ["date_from", "date_to"] as const) {
     if (input[field] !== undefined) {
-      if (
-        typeof input[field] !== "string" ||
-        isNaN(Date.parse(input[field] as string))
-      ) {
+      // Accept either a date-only ISO 8601 string (YYYY-MM-DD) or a full
+      // timestamp with an explicit timezone. The downstream `new Date()`
+      // consumption handles both, and the API contract exposes `format: date`.
+      const valid =
+        typeof input[field] === "string" &&
+        (isValidDateOnly(input[field]) || isValidISO8601(input[field]));
+      if (!valid) {
         errors.push(`${field} must be a valid ISO 8601 date string`);
       } else {
         sanitized[field] = input[field] as string;
@@ -696,11 +714,19 @@ orgVaultsRouter.get(
       let nextCursor: string | undefined;
       if (hasMore && results.length > 0) {
         const last = results[results.length - 1];
-        nextCursor = encodeCursor(new Date(last.created_at), last.id);
+        nextCursor = encodeCursor(toUTCDate(last.created_at), last.id);
       }
 
+      const normalizedResults = results.map((row) => ({
+        ...row,
+        start_date: normalizeTimestamp(row.start_date),
+        end_date: normalizeTimestamp(row.end_date),
+        created_at: normalizeTimestamp(row.created_at),
+        updated_at: normalizeTimestamp(row.updated_at),
+      }));
+
       res.json({
-        data: results,
+        data: normalizedResults,
         pagination: {
           limit,
           cursor: rawCursor,

@@ -11,7 +11,7 @@ import { getCohortRetention } from '../services/cohortRetention.js'
 import { getTeamRollup } from '../services/team.js'
 import { getOrgReports } from '../services/analyticsReports.js'
 import { resolveS3Config, getExportSignedUrl } from '../services/exportS3.js'
-import { parsePaginationParams, paginateArray } from '../utils/pagination.js'
+import { parsePaginationParams } from '../utils/pagination.js'
 import db from '../db/index.js'
 
 export const orgAnalyticsRouter = Router()
@@ -130,8 +130,22 @@ orgAnalyticsRouter.get(
     const pagination = parsePaginationParams(req)
     const s3Config = resolveS3Config()
 
-    const { data: allReports } = await getOrgReports(orgId)
-    const paginated = paginateArray(allReports, pagination)
+    const offset = (pagination.page - 1) * pagination.pageSize
+    const { data: reports, total } = await getOrgReports(orgId, {
+      limit: pagination.pageSize,
+      offset,
+    })
+    const totalPages = Math.ceil(total / pagination.pageSize)
+    const paginated = {
+      data: reports,
+      pagination: {
+        ...pagination,
+        total,
+        totalPages,
+        hasNext: pagination.page < totalPages,
+        hasPrev: pagination.page > 1,
+      },
+    }
 
     const items = await Promise.all(
       paginated.data.map(async (r) => {

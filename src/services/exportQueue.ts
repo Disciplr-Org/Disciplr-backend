@@ -3,8 +3,8 @@ import { Buffer } from 'node:buffer'
 import { stringify as csvStringify } from 'csv-stringify/sync'
 import type { Knex } from 'knex'
 import type { BackgroundJobSystem } from '../jobs/system.js'
-import { Readable, Transform } from 'node:stream'
-import { createGzip, gzipSync } from 'node:zlib'
+import { Readable } from 'node:stream'
+import { createGzip } from 'node:zlib'
 import { maskPii, sanitizePrivacyPayload, sanitizePrivacyString } from '../utils/privacy.js'
 import { resolveS3Config, uploadToS3, sanitizeS3KeySegment } from '../services/exportS3.js'
 
@@ -735,6 +735,59 @@ function ndjsonGzipReadable(data: ExportData): Readable {
   return source.pipe(createGzip())
 }
 
+const csvCellOptions = {
+  cast: { string: (value: string) => (value && /^[=+\-@\t\r]/.test(value) ? `'${value}` : value) },
+}
+
+/**
+ * Creates a backpressure-aware export stream for formats that can be emitted
+ * record by record. The generator yields one bounded chunk per row, so S3
+ * uploads and disconnected HTTP consumers do not require a second complete
+ * copy of the export in memory.
+ */
+export function createStreamingExportReadable(
+  data: ExportData,
+  format: Exclude<ExportFormat, 'json'>,
+  columns?: Record<keyof ExportData, string[]>,
+): { readable: Readable; filename: string } {
+  const filteredData = filterExportData(data, columns)
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+
+  if (format === 'ndjson') {
+    return {
+      readable: ndjsonGzipReadable(filteredData),
+      filename: `export-${timestamp}.ndjson.gz`,
+    }
+  }
+
+  const generator = async function* () {
+    yield CSV_UTF8_BOM
+    for (const sectionName of EXPORT_SECTION_ORDER) {
+      const rows = filteredData[sectionName]
+      if (!rows || rows.length === 0) continue
+
+      const schema = filterCsvSchema(CSV_SCHEMAS[sectionName], columns?.[sectionName])
+      yield `# ${sectionName.toUpperCase()}\n`
+      for (let index = 0; index < rows.length; index += 1) {
+        const row = rows[index]
+        yield csvStringify([row], {
+          ...csvCellOptions,
+          header: index === 0,
+          columns: schema.columns,
+        })
+      }
+      yield '\n'
+    }
+  }
+
+  return {
+    readable: Readable.from(generator(), {
+      highWaterMark: EXPORT_STREAM_CONFIG.CHUNK_SIZE_BYTES,
+    }),
+    filename: `export-${timestamp}.csv`,
+  }
+}
+
 function filterExportData(
   data: ExportData,
   columns?: Record<keyof ExportData, string[]>,
@@ -791,9 +844,22 @@ export function serializeExportData(
   }
 
   if (format === 'ndjson') {
-    const filename = `export-${timestamp}.ndjson.gz`
-    const readable = ndjsonGzipReadable(filteredData)
-    return { filename, readable }
+    // Local (non-S3) storage uses the compatibility buffer serializer. NDJSON is
+    // gzip-compressed only on the object-store streaming path
+    // (createStreamingExportReadable); here we emit plain newline-delimited JSON
+    // so the completed job always carries a downloadable result.
+    const lines: string[] = []
+    for (const sectionName of EXPORT_SECTION_ORDER) {
+      const rows = filteredData[sectionName]
+      if (!rows) continue
+      for (const row of rows) {
+        lines.push(JSON.stringify(row))
+      }
+    }
+    return {
+      buffer: Buffer.from(lines.length > 0 ? `${lines.join('\n')}\n` : '', 'utf8'),
+      filename: `export-${timestamp}.ndjson`,
+    }
   }
 
   const parts: string[] = [CSV_UTF8_BOM]
@@ -886,11 +952,17 @@ export async function processJob(
     const data = vaultsStore
       ? buildExportDataFromVaultStore(job.scope, scopedUserId, vaultsStore)
       : await buildExportDataFromDatabase(job.scope, scopedUserId)
+    const s3Config = resolveS3Config()
     _stage = 'serialization'
-    const { buffer, filename, readable } = serializeExportData(data, job.format, job.columns)
+    const streamed = s3Config && job.format !== 'json'
+      ? createStreamingExportReadable(data, job.format, job.columns)
+      : undefined
+    const serialized = streamed
+      ? { filename: streamed.filename, readable: streamed.readable }
+      : serializeExportData(data, job.format, job.columns)
+    const { buffer, filename, readable } = serialized
     _stage = undefined
 
-    const s3Config = resolveS3Config()
     let s3Key: string | undefined
     if (s3Config) {
       const safeJobId = sanitizeS3KeySegment(job.id)
@@ -901,7 +973,7 @@ export async function processJob(
         : job.format === 'json'
         ? 'application/json; charset=utf-8'
         : 'application/x-ndjson'
-      if (job.format === 'ndjson' && readable) {
+      if (readable) {
         await uploadToS3(s3Config, key, readable, contentType)
       } else if (buffer) {
         await uploadToS3(s3Config, key, buffer, contentType)
@@ -914,7 +986,7 @@ export async function processJob(
       attempts: nextAttempt,
       completedAt: new Date().toISOString(),
       error: undefined,
-      result: job.format === 'ndjson' ? undefined : buffer,
+      result: buffer,
       filename,
       s3Key,
     })
@@ -937,7 +1009,7 @@ export async function processJob(
     const sanitizedMessage = sanitizePrivacyString(message, exportPiiValues(job))
     const retryable = nextAttempt < job.maxAttempts
 
-    await exportJobRepository.update({
+    const updatedJob: ExportJob = {
       ...job,
       status: retryable ? 'pending' : 'failed',
       attempts: nextAttempt,
@@ -945,7 +1017,9 @@ export async function processJob(
       error: sanitizedMessage,
       result: undefined,
       filename: undefined,
-    })
+    }
+
+    await exportJobRepository.update(updatedJob)
 
     console.error(
       JSON.stringify(sanitizeExportTelemetry({
@@ -1011,3 +1085,235 @@ export const recoverPendingExportJobs = async (jobSystem: BackgroundJobSystem): 
 export const isExportIdempotencyConflictError = (error: unknown): error is ExportIdempotencyConflictError => {
   return error instanceof ExportIdempotencyConflictError
 }
+
+/*
+// ---------------------------------------------------------------------------
+// Legacy duplicate DLQ implementation
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MAX_DLQ_SIZE = 100
+
+/** Produce a short opaque token from a raw user ID (no PII in output). * /
+const toOpaqueToken = (raw: string): string =>
+  crypto.createHash('sha256').update(raw).digest('hex').slice(0, 8)
+
+const classifyError = (error: unknown): FailureReason => {
+  if (!(error instanceof Error)) return 'unknown_error'
+  const msg = error.message.toLowerCase()
+  if (msg.includes('serial') || msg.includes('csv') || msg.includes('json')) return 'serialization_error'
+  if (msg.includes('fetch') || msg.includes('query') || msg.includes('database') || msg.includes('db')) return 'data_fetch_error'
+  return 'unknown_error'
+}
+
+// In-memory DLQ store — ordered insertion (oldest first).
+const dlqStore: DlqEntry[] = []
+let dlqMaxSize = DEFAULT_MAX_DLQ_SIZE
+let dlqMetricsHook: MetricsHook | undefined
+
+const fireDlqHook = (event: DlqMetricsEvent): void => {
+  if (!dlqMetricsHook) return
+  try {
+    dlqMetricsHook(event)
+  } catch (hookError) {
+    console.warn(
+      JSON.stringify({
+        level: 'warn',
+        event: 'exports.dlq_hook_error',
+        error: hookError instanceof Error ? hookError.message : String(hookError),
+        timestamp: new Date().toISOString(),
+      }),
+    )
+  }
+}
+
+/**
+ * Configure the DLQ metrics hook and optional max size.
+ * Call once at startup (or in tests before exercising the DLQ).
+ * /
+export const configureDlq = (opts: { metricsHook?: MetricsHook; maxDlqSize?: number } = {}): void => {
+  if (opts.metricsHook !== undefined) dlqMetricsHook = opts.metricsHook
+  if (opts.maxDlqSize !== undefined) dlqMaxSize = Math.max(1, opts.maxDlqSize)
+}
+
+/** Reset the DLQ state (used in tests). * /
+export const resetDlq = (): void => {
+  dlqStore.length = 0
+  dlqMetricsHook = undefined
+  dlqMaxSize = DEFAULT_MAX_DLQ_SIZE
+}
+
+/** Add a job to the DLQ after permanent failure. Called internally by processJob. * /
+export const addToDlq = (job: ExportJob, error: unknown): void => {
+  try {
+    const failureReason = classifyError(error)
+    const entry: DlqEntry = {
+      jobId: job.id,
+      jobType: `${job.scope}:${job.format}`,
+      failureReason,
+      errorMessage: error instanceof Error ? error.message : String(error),
+      attemptCount: job.attempts,
+      failedAt: new Date().toISOString(),
+      sanitisedContext: {
+        userToken: toOpaqueToken(job.userId),
+        targetUserToken: job.targetUserId ? toOpaqueToken(job.targetUserId) : undefined,
+        scope: job.scope,
+        format: job.format,
+      },
+    }
+
+    // Enforce cap — evict oldest entry if at max.
+    if (dlqStore.length >= dlqMaxSize) {
+      dlqStore.shift()
+    }
+    dlqStore.push(entry)
+
+    console.warn(
+      JSON.stringify({
+        level: 'warn',
+        event: 'exports.dlq_entry_added',
+        jobId: entry.jobId,
+        failureReason: entry.failureReason,
+        errorMessage: entry.errorMessage,
+        attemptCount: entry.attemptCount,
+        dlqDepth: dlqStore.length,
+        timestamp: new Date().toISOString(),
+      }),
+    )
+
+    fireDlqHook({
+      event: 'dlq.entry_added',
+      jobId: entry.jobId,
+      failureReason: entry.failureReason,
+      dlqDepth: dlqStore.length,
+      timestamp: new Date().toISOString(),
+    })
+  } catch (storageError) {
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'exports.dlq_storage_error',
+        jobId: job.id,
+        error: storageError instanceof Error ? storageError.message : String(storageError),
+        timestamp: new Date().toISOString(),
+      }),
+    )
+  }
+}
+
+/** Returns a read-only snapshot of all DLQ entries, newest-first. * /
+export const getDlqEntries = (): DlqEntry[] => [...dlqStore].reverse()
+
+/** Returns the DLQ entry for jobId, or undefined. * /
+export const getDlqEntry = (jobId: string): DlqEntry | undefined =>
+  dlqStore.find((e) => e.jobId === jobId)
+
+/** Returns the current number of entries in the DLQ. * /
+export const getDlqDepth = (): number => dlqStore.length
+
+/**
+ * Re-queue a DLQ entry — removes from DLQ and re-creates the ExportJob as pending.
+ * Returns true on success, false if jobId not found.
+ * /
+export const requeueDlqEntry = async (jobId: string): Promise<boolean> => {
+  const idx = dlqStore.findIndex((e) => e.jobId === jobId)
+  if (idx === -1) return false
+
+  const entry = dlqStore[idx]
+  dlqStore.splice(idx, 1)
+
+  // Re-create the job with reset attempts — restore original userId from context is not
+  // possible (it was hashed), so we create a minimal placeholder job that is processable.
+  // In practice callers hold a reference to the original ExportJob before it was DLQ'd.
+  await exportJobRepository.create({
+    userId: entry.sanitisedContext.userToken,
+    isAdmin: false,
+    targetUserId: entry.sanitisedContext.targetUserToken,
+    scope: entry.sanitisedContext.scope,
+    format: entry.sanitisedContext.format,
+    result: undefined,
+    filename: undefined,
+    completedAt: undefined,
+    error: undefined,
+    maxAttempts: 3,
+    idempotencyKey: undefined,
+    requestHash: `requeued-${jobId}`,
+  })
+
+  console.info(
+    JSON.stringify({
+      level: 'info',
+      event: 'exports.dlq_entry_requeued',
+      jobId,
+      dlqDepth: dlqStore.length,
+      timestamp: new Date().toISOString(),
+    }),
+  )
+
+  fireDlqHook({
+    event: 'dlq.entry_requeued',
+    jobId,
+    dlqDepth: dlqStore.length,
+    timestamp: new Date().toISOString(),
+  })
+
+  return true
+}
+
+/**
+ * Permanently discard a DLQ entry.
+ * Returns true on success, false if jobId not found.
+ * /
+export const discardDlqEntry = (jobId: string): boolean => {
+  const idx = dlqStore.findIndex((e) => e.jobId === jobId)
+  if (idx === -1) return false
+
+  dlqStore.splice(idx, 1)
+
+  console.info(
+    JSON.stringify({
+      level: 'info',
+      event: 'exports.dlq_entry_discarded',
+      jobId,
+      dlqDepth: dlqStore.length,
+      timestamp: new Date().toISOString(),
+    }),
+  )
+
+  fireDlqHook({
+    event: 'dlq.entry_discarded',
+    jobId,
+    dlqDepth: dlqStore.length,
+    timestamp: new Date().toISOString(),
+  })
+
+  return true
+}
+
+/**
+ * Remove all entries from the DLQ.
+ * Returns the count of removed entries.
+ * /
+export const clearDlq = (): number => {
+  const count = dlqStore.length
+  dlqStore.length = 0
+
+  console.info(
+    JSON.stringify({
+      level: 'info',
+      event: 'exports.dlq_cleared',
+      count,
+      dlqDepth: 0,
+      timestamp: new Date().toISOString(),
+    }),
+  )
+
+  fireDlqHook({
+    event: 'dlq.cleared',
+    jobId: '',
+    dlqDepth: 0,
+    timestamp: new Date().toISOString(),
+  })
+
+  return count
+}
+*/

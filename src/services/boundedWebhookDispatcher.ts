@@ -2,6 +2,13 @@ import type { WebhookSubscriber, WebhookDeliveryPayload, WebhookDeliveryResult }
 import { checkBreaker, recordBreakerSuccess, recordBreakerFailure, getCircuitBreakerConfig, breakerCache, deadLetter } from './webhooks.js'
 import { retryWithBackoff } from '../utils/retry.js'
 import { getTracer } from '../observability/tracing.js'
+import {
+  EgressBlockedError,
+  fetchPinnedTarget,
+  isPrivateOverrideEnabled,
+  resolvePublicTarget,
+  type EgressTarget,
+} from '../security/egressGuard.js'
 
 // ── Concurrency configuration ────────────────────────────────────────────────
 
@@ -219,6 +226,24 @@ export class BoundedWebhookDispatcher {
           let attempts = 0
           let lastStatusCode: number | undefined
 
+          // ── Egress guard (delivery-time enforcement) ─────────────────
+          // Resolve and validate before any socket is opened. Blocked
+          // destinations are recorded as `egress_blocked` and are not treated
+          // as transient network errors, so they are not retried. The socket
+          // is pinned to the validated IP for every attempt below.
+          let target: EgressTarget
+          try {
+            target = await resolvePublicTarget(subscriber.url, {
+              allowPrivate: isPrivateOverrideEnabled(),
+            })
+          } catch (err: any) {
+            const reason = `egress_blocked: ${
+              err instanceof EgressBlockedError ? err.message : err?.message ?? 'blocked egress target'
+            }`
+            await deadLetter(subscriber.id, payload, reason, 0)
+            return
+          }
+
           // ── Circuit breaker check ──────────────────────────────
           const breaker = await checkBreaker(subscriber.id, config)
           if (!breaker.allowed) {
@@ -245,7 +270,7 @@ export class BoundedWebhookDispatcher {
             await retryWithBackoff(
               async () => {
                 attempts += 1
-                lastStatusCode = await this.deliverOnce(subscriber, payload)
+                lastStatusCode = await this.deliverOnce(subscriber, payload, 10_000, target)
               },
               {
                 maxAttempts: 3,
@@ -300,13 +325,14 @@ export class BoundedWebhookDispatcher {
   }
 
   /**
-   * Single HTTP delivery attempt (exact copy of existing deliverOnce).
-   * Extracted here to avoid circular dependency with webhooks module.
+   * Single HTTP delivery attempt. The socket is pinned to a validated public
+   * IP via the shared egress guard; redirects are not followed.
    */
   private async deliverOnce(
     subscriber: WebhookSubscriber,
     payload: WebhookDeliveryPayload,
     timeoutMs = 10_000,
+    target?: EgressTarget,
   ): Promise<number> {
     // Import functions needed for delivery
     const { buildVersionedPayload, signPayload } = await import('./webhooks.js')
@@ -314,13 +340,26 @@ export class BoundedWebhookDispatcher {
     const body = buildVersionedPayload(subscriber, payload)
     const signature = signPayload(subscriber.secret, body)
 
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    // Resolve and validate the destination unless a pre-validated target was
+    // supplied. Pin the socket to the validated IP; a blocked destination
+    // throws EgressBlockedError before any socket is opened.
+    let resolved = target
+    if (!resolved) {
+      try {
+        resolved = await resolvePublicTarget(subscriber.url, {
+          allowPrivate: isPrivateOverrideEnabled(),
+        })
+      } catch (err: any) {
+        if (err instanceof EgressBlockedError) throw err
+        throw new Error(
+          `Egress resolution failed for ${subscriber.url}: ${err?.message ?? err}`,
+        )
+      }
+    }
 
     try {
-      const response = await fetch(subscriber.url, {
+      const response = await fetchPinnedTarget(resolved, {
         method: 'POST',
-        redirect: 'manual',
         headers: {
           'content-type': 'application/json',
           'x-disciplr-signature': signature,
@@ -329,21 +368,21 @@ export class BoundedWebhookDispatcher {
           'x-disciplr-delivery-timestamp': payload.timestamp,
         },
         body,
-        signal: controller.signal,
+        timeoutMs,
       })
 
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get('location')
+      if (response.statusCode >= 300 && response.statusCode < 400) {
+        const location = response.headers['location']
         throw new Error(`Webhook redirect refused${location ? `: ${location}` : ''}`)
       }
 
-      if (response.status >= 400) {
-        throw new Error(`HTTP ${response.status}`)
+      if (response.statusCode >= 400) {
+        throw new Error(`HTTP ${response.statusCode}`)
       }
 
-      return response.status
+      return response.statusCode
     } finally {
-      clearTimeout(timer)
+      // fetchPinnedTarget consumes the response body and destroys its socket.
     }
   }
 
