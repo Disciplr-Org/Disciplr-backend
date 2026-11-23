@@ -1,19 +1,23 @@
-import { beforeEach, describe, expect, it, jest, mock } from 'bun:test'
-import {
-  checkAndIncrementExportQuota,
-  configureOrgQuotaRepository,
-  resetOrgQuotas,
-  utcDateString,
-  EXPORT_QUOTA_METRIC,
-} from '../services/exportQuota.js'
+import { beforeEach, describe, expect, it } from '@jest/globals'
+import { checkAndIncrementExportQuota, resetOrgQuotas } from '../services/exportQuota.js'
 
-/** Mock auth to avoid dependencies */
-mock.module('../middleware/auth.js', () => ({
-  authenticate: (_req: any, _res: any, next: () => void) => next(),
-  requireAdmin: (_req: any, _res: any, next: () => void) => next(),
-  signDownloadToken: () => 'mock-token',
-  verifyDownloadToken: () => null,
-}))
+const runConcurrently = async <T>(
+  count: number,
+  operation: (index: number) => Promise<T>,
+): Promise<T[]> => {
+  let release!: () => void
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve
+  })
+
+  const requests = Array.from({ length: count }, async (_, index) => {
+    await barrier
+    return operation(index)
+  })
+  release()
+
+  return Promise.all(requests)
+}
 
 /**
  * Concurrency tests for export quota enforcement.
@@ -21,8 +25,8 @@ mock.module('../middleware/auth.js', () => ({
  * Proves that concurrent export requests cannot exceed the quota
  * limit (no over-grant) even under burst conditions.
  *
- * Uses Promise.all to fire N requests simultaneously, then asserts
- * exactly K accepted and N-K rejected with proper error codes.
+ * Releases all N requests through a barrier, then asserts exactly K accepted
+ * and N-K rejected.
  */
 describe('Export Quota Concurrency Tests', () => {
   const QUOTA_LIMIT = 10
@@ -39,35 +43,23 @@ describe('Export Quota Concurrency Tests', () => {
   describe('Exact-K Accept', () => {
     it('accepts exactly K requests out of K concurrent', async () => {
       const N = QUOTA_LIMIT
-      const results = await Promise.all(
-        Array.from({ length: N }, () =>
-          checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT)
-            .then(() => 'accepted')
-            .catch((e: any) => e.code ?? 'rejected'),
-        ),
+      const results = await runConcurrently(N, () =>
+        checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
       )
 
-      const accepted = results.filter((r) => r === 'accepted').length
-      const rejected = results.filter((r) => r !== 'accepted').length
+      const accepted = results.filter((result) => result.allowed).length
+      const rejected = results.filter((result) => !result.allowed).length
 
       expect(accepted).toBe(QUOTA_LIMIT)
       expect(rejected).toBe(0)
     })
 
     it('counter equals exactly K after K accepted requests', async () => {
-      await Promise.all(
-        Array.from({ length: QUOTA_LIMIT }, () =>
-          checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT).catch(() => {}),
-        ),
+      const results = await runConcurrently(QUOTA_LIMIT, () =>
+        checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
       )
-
-      // Verify final count via direct repository access
-      const repo = await checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT).then(
-        () => null,
-        () => null,
-      )
-      // Next check should fail if at limit
       const overflow = await checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT)
+      expect(results.filter((result) => result.allowed)).toHaveLength(QUOTA_LIMIT)
       expect(overflow.allowed).toBe(false)
     })
   })
@@ -80,16 +72,10 @@ describe('Export Quota Concurrency Tests', () => {
       const N = QUOTA_LIMIT * 3 // 3x the limit
       const K = QUOTA_LIMIT
 
-      const results = await Promise.all(
-        Array.from({ length: N }, () =>
-          checkAndIncrementExportQuota(ORG_ID, K)
-            .then(() => 'accepted')
-            .catch(() => 'rejected'),
-        ),
-      )
+      const results = await runConcurrently(N, () => checkAndIncrementExportQuota(ORG_ID, K))
 
-      const accepted = results.filter((r) => r === 'accepted').length
-      const rejected = results.filter((r) => r === 'rejected').length
+      const accepted = results.filter((result) => result.allowed).length
+      const rejected = results.filter((result) => !result.allowed).length
 
       // Exactly K accepted — never more
       expect(accepted).toBe(K)
@@ -99,14 +85,10 @@ describe('Export Quota Concurrency Tests', () => {
 
     it('counter never exceeds K after N concurrent requests', async () => {
       const N = QUOTA_LIMIT * 5
-      let acceptedCount = 0
-
-      await Promise.all(
-        Array.from({ length: N }, async () => {
-          const result = await checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT)
-          if (result.allowed) acceptedCount++
-        }),
+      const results = await runConcurrently(N, () =>
+        checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
       )
+      const acceptedCount = results.filter((result) => result.allowed).length
 
       // Counter must NEVER exceed the limit
       expect(acceptedCount).toBeLessThanOrEqual(QUOTA_LIMIT)
@@ -115,18 +97,10 @@ describe('Export Quota Concurrency Tests', () => {
 
     it('no over-grant: accepted count never exceeds K', async () => {
       const N = 100 // large burst
-      let acceptedCount = 0
-
-      await Promise.all(
-        Array.from({ length: N }, async () => {
-          try {
-            const result = await checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT)
-            if (result.allowed) acceptedCount++
-          } catch {
-            // rejected — expected
-          }
-        }),
+      const results = await runConcurrently(N, () =>
+        checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
       )
+      const acceptedCount = results.filter((result) => result.allowed).length
 
       // The critical assertion — never over-grant
       expect(acceptedCount).toBeLessThanOrEqual(QUOTA_LIMIT)
@@ -142,23 +116,19 @@ describe('Export Quota Concurrency Tests', () => {
       // Fire way more than limit
       const N = QUOTA_LIMIT * 10
 
-      await Promise.all(
-        Array.from({ length: N }, () =>
-          checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT).catch(() => {}),
-        ),
+      const results = await runConcurrently(N, () =>
+        checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
       )
 
-      // Now count should be exactly at limit
+      expect(results.filter((result) => result.allowed)).toHaveLength(QUOTA_LIMIT)
       const result = await checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT)
       expect(result.allowed).toBe(false)
     })
 
     it('subsequent sequential requests after burst are all rejected', async () => {
       // Fill quota with burst
-      await Promise.all(
-        Array.from({ length: QUOTA_LIMIT }, () =>
-          checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT).catch(() => {}),
-        ),
+      await runConcurrently(QUOTA_LIMIT, () =>
+        checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
       )
 
       // Sequential requests after quota is full — all should be rejected
@@ -176,14 +146,9 @@ describe('Export Quota Concurrency Tests', () => {
       const N = QUOTA_LIMIT * 2
 
       // Burst both orgs simultaneously
-      await Promise.all([
-        ...Array.from({ length: N }, () =>
-          checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT).catch(() => {}),
-        ),
-        ...Array.from({ length: N }, () =>
-          checkAndIncrementExportQuota(OTHER_ORG_ID, QUOTA_LIMIT).catch(() => {}),
-        ),
-      ])
+      await runConcurrently(N * 2, (index) =>
+        checkAndIncrementExportQuota(index < N ? ORG_ID : OTHER_ORG_ID, QUOTA_LIMIT),
+      )
 
       // Each org independently should be at limit
       const resultOrg1 = await checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT)
@@ -200,10 +165,8 @@ describe('Export Quota Concurrency Tests', () => {
   describe('Reset Window Behavior', () => {
     it('quota refreshes after reset', async () => {
       // Fill quota
-      await Promise.all(
-        Array.from({ length: QUOTA_LIMIT }, () =>
-          checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
-        ),
+      await runConcurrently(QUOTA_LIMIT, () =>
+        checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
       )
 
       // Verify quota is full
@@ -220,10 +183,8 @@ describe('Export Quota Concurrency Tests', () => {
 
     it('concurrent burst after reset respects new window limit', async () => {
       // First window — fill quota
-      await Promise.all(
-        Array.from({ length: QUOTA_LIMIT }, () =>
-          checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
-        ),
+      await runConcurrently(QUOTA_LIMIT, () =>
+        checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
       )
 
       // Reset window
@@ -231,14 +192,10 @@ describe('Export Quota Concurrency Tests', () => {
 
       // Second window — concurrent burst (3x limit)
       const N = QUOTA_LIMIT * 2
-      let acceptedCount = 0
-
-      await Promise.all(
-        Array.from({ length: N }, async () => {
-          const result = await checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT)
-          if (result.allowed) acceptedCount++
-        }),
+      const results = await runConcurrently(N, () =>
+        checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
       )
+      const acceptedCount = results.filter((result) => result.allowed).length
 
       // Still capped at K
       expect(acceptedCount).toBe(QUOTA_LIMIT)
@@ -254,20 +211,17 @@ describe('Export Quota Concurrency Tests', () => {
         // Reset for fresh run
         await resetOrgQuotas()
         const N = QUOTA_LIMIT * 3
-        let acceptedCount = 0
-
-        await Promise.all(
-          Array.from({ length: N }, async () => {
-            const result = await checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT)
-            if (result.allowed) acceptedCount++
-          }),
+        const results = await runConcurrently(N, () =>
+          checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
         )
-
-        return acceptedCount
+        return results.filter((result) => result.allowed).length
       }
 
-      // Run burst 5 times — always exactly K accepted
-      const runs = await Promise.all(Array.from({ length: 5 }, () => runBurst()))
+      // Reset and burst each run in sequence because they share the same repository.
+      const runs: number[] = []
+      for (let i = 0; i < 5; i++) {
+        runs.push(await runBurst())
+      }
 
       runs.forEach((accepted) => {
         expect(accepted).toBe(QUOTA_LIMIT)
@@ -281,10 +235,8 @@ describe('Export Quota Concurrency Tests', () => {
   describe('Error Response Format', () => {
     it('rejected requests have retryAfter > 0', async () => {
       // Fill quota
-      await Promise.all(
-        Array.from({ length: QUOTA_LIMIT }, () =>
-          checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
-        ),
+      await runConcurrently(QUOTA_LIMIT, () =>
+        checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
       )
 
       // Next request is rejected
@@ -300,13 +252,11 @@ describe('Export Quota Concurrency Tests', () => {
     it('all rejected concurrent requests have valid retryAfter', async () => {
       const N = QUOTA_LIMIT * 2
 
-      const results = await Promise.all(
-        Array.from({ length: N }, () =>
-          checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
-        ),
+      const results = await runConcurrently(N, () =>
+        checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
       )
 
-      const rejected = results.filter((r) => !r.allowed)
+      const rejected = results.filter((result) => !result.allowed)
       expect(rejected.length).toBe(N - QUOTA_LIMIT)
 
       rejected.forEach((result) => {
@@ -325,19 +275,9 @@ describe('Export Quota Concurrency Tests', () => {
     it('handles 1000 concurrent requests with exact K accepted', async () => {
       const N = 1000
       const K = QUOTA_LIMIT
-      let acceptedCount = 0
-      let rejectedCount = 0
-
-      await Promise.all(
-        Array.from({ length: N }, async () => {
-          const result = await checkAndIncrementExportQuota(ORG_ID, K)
-          if (result.allowed) {
-            acceptedCount++
-          } else {
-            rejectedCount++
-          }
-        }),
-      )
+      const results = await runConcurrently(N, () => checkAndIncrementExportQuota(ORG_ID, K))
+      const acceptedCount = results.filter((result) => result.allowed).length
+      const rejectedCount = results.filter((result) => !result.allowed).length
 
       expect(acceptedCount).toBe(K)
       expect(rejectedCount).toBe(N - K)
@@ -350,16 +290,10 @@ describe('Export Quota Concurrency Tests', () => {
 
       const perOrgResults = await Promise.all(
         ORGS.map(async (orgId) => {
-          let acceptedCount = 0
-
-          await Promise.all(
-            Array.from({ length: N }, async () => {
-              const result = await checkAndIncrementExportQuota(orgId, K)
-              if (result.allowed) acceptedCount++
-            }),
+          const results = await runConcurrently(N, () =>
+            checkAndIncrementExportQuota(orgId, K),
           )
-
-          return acceptedCount
+          return results.filter((result) => result.allowed).length
         }),
       )
 
@@ -377,14 +311,10 @@ describe('Export Quota Concurrency Tests', () => {
     it('quota limit of 1 — only first concurrent request is accepted', async () => {
       const N = 10
       const LIMIT = 1
-      let acceptedCount = 0
-
-      await Promise.all(
-        Array.from({ length: N }, async () => {
-          const result = await checkAndIncrementExportQuota(ORG_ID, LIMIT)
-          if (result.allowed) acceptedCount++
-        }),
+      const results = await runConcurrently(N, () =>
+        checkAndIncrementExportQuota(ORG_ID, LIMIT),
       )
+      const acceptedCount = results.filter((result) => result.allowed).length
 
       expect(acceptedCount).toBe(LIMIT)
     })
@@ -392,14 +322,10 @@ describe('Export Quota Concurrency Tests', () => {
     it('quota limit of 0 — all requests rejected immediately', async () => {
       const N = 5
       const LIMIT = 0
-      let acceptedCount = 0
-
-      await Promise.all(
-        Array.from({ length: N }, async () => {
-          const result = await checkAndIncrementExportQuota(ORG_ID, LIMIT)
-          if (result.allowed) acceptedCount++
-        }),
+      const results = await runConcurrently(N, () =>
+        checkAndIncrementExportQuota(ORG_ID, LIMIT),
       )
+      const acceptedCount = results.filter((result) => result.allowed).length
 
       expect(acceptedCount).toBe(0)
     })
@@ -407,14 +333,10 @@ describe('Export Quota Concurrency Tests', () => {
     it('very large quota (1000) — all concurrent requests accepted', async () => {
       const N = 100
       const LIMIT = 1000
-      let acceptedCount = 0
-
-      await Promise.all(
-        Array.from({ length: N }, async () => {
-          const result = await checkAndIncrementExportQuota(ORG_ID, LIMIT)
-          if (result.allowed) acceptedCount++
-        }),
+      const results = await runConcurrently(N, () =>
+        checkAndIncrementExportQuota(ORG_ID, LIMIT),
       )
+      const acceptedCount = results.filter((result) => result.allowed).length
 
       expect(acceptedCount).toBe(N)
     })
@@ -435,13 +357,10 @@ describe('Export Quota Concurrency Tests', () => {
       }
 
       // Concurrent: burst (should accept only remaining slots)
-      let burstAccepted = 0
-      await Promise.all(
-        Array.from({ length: BURST }, async () => {
-          const result = await checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT)
-          if (result.allowed) burstAccepted++
-        }),
+      const results = await runConcurrently(BURST, () =>
+        checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
       )
+      const burstAccepted = results.filter((result) => result.allowed).length
 
       const remaining = QUOTA_LIMIT - HALF
       expect(burstAccepted).toBe(remaining)
@@ -449,13 +368,10 @@ describe('Export Quota Concurrency Tests', () => {
 
     it('burst concurrent, then sequential rejections', async () => {
       // Fill quota with burst
-      let burstAccepted = 0
-      await Promise.all(
-        Array.from({ length: QUOTA_LIMIT * 3 }, async () => {
-          const result = await checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT)
-          if (result.allowed) burstAccepted++
-        }),
+      const results = await runConcurrently(QUOTA_LIMIT * 3, () =>
+        checkAndIncrementExportQuota(ORG_ID, QUOTA_LIMIT),
       )
+      const burstAccepted = results.filter((result) => result.allowed).length
 
       expect(burstAccepted).toBe(QUOTA_LIMIT)
 

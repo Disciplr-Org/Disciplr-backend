@@ -43,7 +43,6 @@ module.exports = {
     "<rootDir>/src/tests/evidence.service.test.ts",
     "<rootDir>/src/tests/expirationScheduler.heartbeat.test.ts",
     "<rootDir>/src/tests/expirationScheduler.overlap.test.ts",
-    "<rootDir>/src/tests/exports.quota.concurrency.test.ts",
     "<rootDir>/src/tests/privacy-logger.allowlist.test.ts",
     "<rootDir>/tests/multiVerifier.test.ts",
     "<rootDir>/src/routes/auth.users.test.ts",
