@@ -5,7 +5,6 @@ import {
 } from '@asteasolutions/zod-to-openapi'
 import { z } from 'zod'
 import { registerSchema, loginSchema } from '../lib/validation.js'
-import { UserRole } from '../types/user.js'
 
 extendZodWithOpenApi(z)
 
@@ -1278,9 +1277,9 @@ registry.registerPath({
 
 // ==================== EXPORT ROUTES ====================
 
-const ExportRequestRef = registry.register('ExportRequest', ExportRequestSchema)
-const ExportJobResponseRef = registry.register('ExportJobResponse', ExportJobResponseSchema)
-const ExportJobStatusRef = registry.register('ExportJobStatus', ExportJobStatusSchema)
+export const ExportRequestRef = registry.register('ExportRequest', ExportRequestSchema)
+export const ExportJobResponseRef = registry.register('ExportJobResponse', ExportJobResponseSchema)
+export const ExportJobStatusRef = registry.register('ExportJobStatus', ExportJobStatusSchema)
 
 // POST /api/exports/me
 registry.registerPath({
