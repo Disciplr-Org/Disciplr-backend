@@ -20,6 +20,7 @@
     "migrate:latest": "knex migrate:latest --knexfile knexfile.cjs",
     "migrate:rollback": "knex migrate:rollback --knexfile knexfile.cjs",
     "migrate:status": "knex migrate:status --knexfile knexfile.cjs",
+    "lint:migrations": "node scripts/lint-migrations.cjs",
     "openapi:generate": "tsx src/docs/generate-spec.ts",
     "openapi:lint": "redocly lint docs/openapi.yaml",
     "openapi:validate": "redocly stats docs/openapi.yaml"

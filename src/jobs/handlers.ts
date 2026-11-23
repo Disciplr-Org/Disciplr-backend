@@ -3,6 +3,7 @@ import { processJob as processExportJob } from '../services/exportQueue.js'
 import type { JobHandler, JobType } from './types.js'
 import { markVaultExpiries } from '../services/vaultExpiry.service.js'
 import { cleanupExpiredSessions } from '../services/session.js'
+import { cleanupExpiredStepUpNonces } from '../services/stepUpStore.js'
 
 type JobHandlerRegistry = {
   [K in JobType]: JobHandler<K>
@@ -69,9 +70,10 @@ export const createDefaultJobHandlers = (
   'sessions.cleanup': async (payload, context) => {
     const batchSize = payload.batchSize ?? 1000
     const deleted = await cleanupExpiredSessions(batchSize)
+    const deletedStepUpNonces = await cleanupExpiredStepUpNonces(batchSize)
     logJob(
       'sessions.cleanup',
-      `deleted=${deleted} batchSize=${batchSize} attempt=${context.attempt}`,
+      `deleted=${deleted} deletedStepUpNonces=${deletedStepUpNonces} batchSize=${batchSize} attempt=${context.attempt}`,
     )
   },
 })
