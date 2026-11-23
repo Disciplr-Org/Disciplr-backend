@@ -5,7 +5,6 @@ import {
 } from '@asteasolutions/zod-to-openapi'
 import { z } from 'zod'
 import { registerSchema, loginSchema } from '../lib/validation.js'
-import { UserRole } from '../types/user.js'
 import { ApiScope } from '../types/auth.js'
 import {
   apiKeyIdParamSchema,
@@ -50,7 +49,7 @@ registry.registerComponent('securitySchemes', 'bearerAuth', {
 })
 
 // --- Shared Schemas ---
-const PaginationCursor = registry.register('PaginationCursor', z.object({
+export const PaginationCursor = registry.register('PaginationCursor', z.object({
   limit: z.number(),
   cursor: z.string().optional(),
   next_cursor: z.string().optional(),
@@ -1284,9 +1283,9 @@ registry.registerPath({
 
 // ==================== EXPORT ROUTES ====================
 
-const ExportRequestRef = registry.register('ExportRequest', ExportRequestSchema)
-const ExportJobResponseRef = registry.register('ExportJobResponse', ExportJobResponseSchema)
-const ExportJobStatusRef = registry.register('ExportJobStatus', ExportJobStatusSchema)
+export const ExportRequestRef = registry.register('ExportRequest', ExportRequestSchema)
+export const ExportJobResponseRef = registry.register('ExportJobResponse', ExportJobResponseSchema)
+export const ExportJobStatusRef = registry.register('ExportJobStatus', ExportJobStatusSchema)
 
 // POST /api/exports/me
 registry.registerPath({
