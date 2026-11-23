@@ -44,6 +44,8 @@ const mockHasVerifierVoted = jest.fn<any>()
 const mockGetMilestoneApprovalProgress = jest.fn<any>()
 const mockRecordMilestoneApproval = jest.fn<any>()
 const mockGetMilestoneApprovals = jest.fn<any>()
+const mockGetPgPool = jest.fn<() => object | null>()
+let dbQueryError: Error | null = null
 
 // DB rows served to the (mocked) milestone repository.
 const dbState: Record<string, any[]> = {
@@ -62,7 +64,8 @@ function makeDb() {
       select: jest.fn().mockReturnThis(),
       first: jest.fn().mockResolvedValue(rows[0] ?? null),
     }
-    q.then = (onFulfilled: any, onRejected: any) => Promise.resolve(rows).then(onFulfilled, onRejected)
+    q.then = (onFulfilled: any, onRejected: any) =>
+      (dbQueryError ? Promise.reject(dbQueryError) : Promise.resolve(rows)).then(onFulfilled, onRejected)
     return q
   }
   db.transaction = async (cb: any) => cb({})
@@ -89,6 +92,10 @@ jest.unstable_mockModule('../services/vaultTransitions.js', () => ({
 
 jest.unstable_mockModule('../db/index.js', () => ({
   default: makeDb(),
+}))
+
+jest.unstable_mockModule('../db/pool.js', () => ({
+  getPgPool: mockGetPgPool,
 }))
 
 jest.unstable_mockModule('../services/verifiers.js', () => ({
@@ -138,6 +145,8 @@ function reset() {
   dbState.milestones = []
   dbState.milestone_events = []
   dbState.milestone_approvals = []
+  dbQueryError = null
+  mockGetPgPool.mockReturnValue({})
   authenticatedUser = { userId: 'user-1', role: 'USER' }
   currentVault = { id: VAULT_ID, status: 'active', creator: 'user-1', verifier: 'verifier-1' }
   mockGetVaultById.mockResolvedValue(currentVault)
@@ -264,6 +273,38 @@ describe('GET /api/vaults/:vaultId/milestones — list', () => {
 
     expect(res.status).toBe(200)
     expect(res.body.milestones).toEqual([])
+  })
+
+  it('uses the in-memory milestones when PostgreSQL is not configured', async () => {
+    mockGetPgPool.mockReturnValue(null)
+    currentVault = {
+      ...currentVault,
+      milestones: [{ id: 'memory-1', vaultId: VAULT_ID, title: 'Memory milestone', createdAt: '2030-01-01T00:00:00.000Z' }],
+    }
+    mockGetVaultById.mockResolvedValue(currentVault)
+
+    const res = await request(app).get(`/api/vaults/${VAULT_ID}/milestones`)
+
+    expect(res.status).toBe(200)
+    expect(res.body.milestones).toMatchObject([{ id: 'memory-1', title: 'Memory milestone' }])
+  })
+
+  it('returns a server error when the configured database fails', async () => {
+    mockGetPgPool.mockReturnValue({})
+    dbQueryError = new Error('database unavailable')
+    const logError = jest.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      const res = await request(app).get(`/api/vaults/${VAULT_ID}/milestones`)
+
+      expect(res.status).toBe(500)
+      expect(logError).toHaveBeenCalledWith(
+        'Failed to fetch milestones for vault from PostgreSQL',
+        { vaultId: VAULT_ID, error: 'database unavailable' },
+      )
+    } finally {
+      logError.mockRestore()
+    }
   })
 
   it('returns 404 for an unknown vault (failure)', async () => {
