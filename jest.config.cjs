@@ -89,7 +89,6 @@ module.exports = {
     // vitest (imports describe/it/expect/vi from 'vitest', which collides
     // with Jest's own globals/expect instance when loaded in the same
     // worker — "Cannot redefine property: Symbol($$jest-matchers-object)")
-    "<rootDir>/src/tests/sorobanEnv.test.ts",
     "<rootDir>/src/tests/vaultExpiry.digest.test.ts",
     "<rootDir>/src/tests/webhookVerify.test.ts",
     "<rootDir>/src/routes/apiKeys.test.ts",
@@ -112,9 +111,8 @@ module.exports = {
     "<rootDir>/src/tests/admin.dualControl.test.ts",
     "<rootDir>/src/tests/orgVaultIsolation.test.ts",
     "<rootDir>/src/tests/vaultTransitions.test.ts",
-    "<rootDir>/src/tests/jobs.system.handlers.test.ts",
-    "<rootDir>/src/tests/orgAnalytics.risk.test.ts",
-    "<rootDir>/src/tests/orgInvitations.test.ts",
+    "<rootDir>/src/tests/csrf.protection.test.ts",
+    "<rootDir>/src/tests/auth.rateLimiter.test.ts",
   ],
   moduleDirectories: ["node_modules", "<rootDir>/node_modules"],
   clearMocks: true,
