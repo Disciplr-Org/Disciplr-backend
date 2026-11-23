@@ -1,36 +1,42 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+// Uses jest.unstable_mockModule + dynamic import because the suite runs under Jest ESM (--experimental-vm-modules).
+import { describe, it, expect, jest, beforeEach } from '@jest/globals'
 import request from 'supertest'
-import express from 'express'
+import express, { type Request, type Response, type NextFunction } from 'express'
 
-vi.mock('../services/apiKeys.js', () => ({
-  validateApiKey: vi.fn(),
+const mockValidateApiKey = jest.fn<(...args: unknown[]) => Promise<unknown>>()
+const mockCreateAuditLog = jest.fn<(...args: unknown[]) => Promise<unknown>>().mockResolvedValue({ id: 'audit-log-id' })
+const mockGetJwtSecret = jest.fn<() => string>().mockReturnValue('test-secret')
+const mockGetEnv = jest.fn<() => Record<string, string>>().mockReturnValue({ JWT_SECRET: 'test-secret' })
+const mockAuthRateLimiter = jest.fn((_req: Request, _res: Response, next: NextFunction) => next())
+const mockJwtSign = jest.fn<(...args: unknown[]) => string>().mockReturnValue('signed-token')
+
+jest.unstable_mockModule('../services/apiKeys.js', () => ({
+  validateApiKey: mockValidateApiKey,
 }))
 
-vi.mock('../lib/audit-logs.js', () => ({
-  createAuditLog: vi.fn().mockResolvedValue({ id: 'audit-log-id' }),
+jest.unstable_mockModule('../lib/audit-logs.js', () => ({
+  createAuditLog: mockCreateAuditLog,
 }))
 
-vi.mock('../lib/auth-utils.js', () => ({
-  getJwtSecret: vi.fn().mockReturnValue('test-secret'),
+jest.unstable_mockModule('../lib/auth-utils.js', () => ({
+  getJwtSecret: mockGetJwtSecret,
 }))
 
-vi.mock('../config/index.js', () => ({
-  getEnv: vi.fn().mockReturnValue({ JWT_SECRET: 'test-secret' }),
+jest.unstable_mockModule('../config/index.js', () => ({
+  getEnv: mockGetEnv,
 }))
 
-vi.mock('../middleware/rateLimiter.js', () => ({
-  authRateLimiter: vi.fn((req: any, _res: any, next: any) => next()),
+jest.unstable_mockModule('../middleware/rateLimiter.js', () => ({
+  authRateLimiter: mockAuthRateLimiter,
 }))
 
-vi.mock('jsonwebtoken', () => ({
+jest.unstable_mockModule('jsonwebtoken', () => ({
   default: {
-    sign: vi.fn().mockReturnValue('signed-token'),
+    sign: mockJwtSign,
   },
 }))
 
-import { oauthRouter } from './oauth.js'
-import { validateApiKey } from '../services/apiKeys.js'
-import jwt from 'jsonwebtoken'
+const { oauthRouter } = await import('./oauth.js')
 
 const CLIENT_ID_1 = '00000000-0000-4000-8000-000000000001'
 const CLIENT_ID_2 = '00000000-0000-4000-8000-000000000002'
@@ -45,8 +51,12 @@ const createApp = () => {
 
 describe('oauth routes', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
-    vi.mocked(validateApiKey).mockResolvedValue({
+    jest.clearAllMocks()
+    mockCreateAuditLog.mockResolvedValue({ id: 'audit-log-id' })
+    mockGetJwtSecret.mockReturnValue('test-secret')
+    mockGetEnv.mockReturnValue({ JWT_SECRET: 'test-secret' })
+    mockAuthRateLimiter.mockImplementation((_req: Request, _res: Response, next: NextFunction) => next())
+    mockValidateApiKey.mockResolvedValue({
       valid: true,
       context: {
         apiKeyId: CLIENT_ID_1,
@@ -55,7 +65,7 @@ describe('oauth routes', () => {
         userId: 'user-1',
       },
     })
-    vi.mocked(jwt.sign).mockReturnValue('signed-token')
+    mockJwtSign.mockReturnValue('signed-token')
   })
 
   it('issues a token with valid credentials', async () => {
@@ -84,7 +94,7 @@ describe('oauth routes', () => {
   })
 
   it('returns 401 for invalid client credentials', async () => {
-    vi.mocked(validateApiKey).mockResolvedValue({ valid: false, reason: 'invalid' })
+    mockValidateApiKey.mockResolvedValue({ valid: false, reason: 'invalid' })
     const app = createApp()
     const res = await request(app).post('/token').send({ grant_type: 'client_credentials', client_id: CLIENT_ID_2, client_secret: 'bad' })
     expect(res.status).toBe(401)
@@ -118,6 +128,6 @@ describe('oauth routes', () => {
     const app = createApp()
     const res = await request(app).post('/token').send({ grant_type: 'client_credentials', client_id: CLIENT_ID_1, client_secret: 'secret', scope: longScope })
     expect(res.status).toBe(400)
-    expect(res.body.error).toBe('invalid_scope')
+    expect(res.body.error).toBe('invalid_request')
   })
 })

@@ -10,6 +10,7 @@ export const JOB_TYPES = [
   'export.generate',
   'vault.reconcile',
   'sessions.cleanup',
+  'apiKeys.cleanup',
   'retention.purge',
   'outbox.relay',
   'embeddings.reindex',
@@ -74,6 +75,10 @@ export interface SessionsCleanupJobPayload {
   batchSize?: number
 }
 
+export interface ApiKeysCleanupJobPayload {
+  batchSize?: number
+}
+
 export interface RetentionPurgeJobPayload {
   organizationId: string
   batchSize?: number
@@ -107,6 +112,7 @@ export interface JobPayloadByType {
   'export.generate': ExportGenerateJobPayload
   'vault.reconcile': VaultReconcileJobPayload
   'sessions.cleanup': SessionsCleanupJobPayload
+  'apiKeys.cleanup': ApiKeysCleanupJobPayload
   'retention.purge': RetentionPurgeJobPayload
   'outbox.relay': OutboxRelayJobPayload
   'embeddings.reindex': EmbeddingsReindexJobPayload
@@ -257,6 +263,8 @@ export const isPayloadForJobType = (
         (payload.batchSize === undefined || typeof payload.batchSize === 'number')
       )
     case 'sessions.cleanup':
+      return payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0)
+    case 'apiKeys.cleanup':
       return payload.batchSize === undefined || (typeof payload.batchSize === 'number' && payload.batchSize > 0)
     case 'retention.purge':
       return (

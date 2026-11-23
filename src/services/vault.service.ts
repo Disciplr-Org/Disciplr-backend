@@ -1,5 +1,6 @@
 import { Vault, CreateVaultDTO, VaultStatus } from '../types/vault.js';
 import { pool, db } from '../db/index.js';
+import { getPgPool } from '../db/pool.js';
 import { listVaults } from './vaultStore.js';
 
 export interface TimelineItem {
@@ -54,22 +55,24 @@ export class VaultService {
   }
 
   static async getVaultsByUser(creator: string): Promise<Vault[]> {
-    try {
-      if (pool) {
-        const result = await pool.query(
-          'SELECT * FROM vaults WHERE creator = $1',
-          [creator],
-        );
-        if (result?.rows) return result.rows;
-      }
-    } catch {
-      // In-memory fallback
-    }
-    try {
+    const pgPool = getPgPool();
+    if (!pgPool) {
       const all = await listVaults();
-      return all.filter((v) => v.creator === creator) as any;
-    } catch {
-      return [];
+      return all.filter((v) => v.creator === creator) as unknown as Vault[];
+    }
+
+    try {
+      const result = await pgPool.query(
+        'SELECT * FROM vaults WHERE creator = $1',
+        [creator],
+      );
+      return result.rows;
+    } catch (error) {
+      console.error('Failed to fetch user vaults from PostgreSQL', {
+        creator,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
   }
 
