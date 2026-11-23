@@ -1,6 +1,31 @@
-import type { CreateVaultInput, PersistedVault, VaultCreateResponse } from '../types/vaults.js'
+import type {
+  CreateVaultInput,
+  PersistedVault,
+  StakeInput,
+  StakeResponse,
+  StakeWithMemoInput,
+  StakeWithMemoResponse,
+  VaultCreateResponse,
+} from '../types/vaults.js'
+import { MemoTooLongError } from '../types/vaults.js'
 import { retryWithBackoff, sleep, type RetryConfig } from '../utils/retry.js'
+import { StrKey } from '@stellar/stellar-sdk'
 import { AppError, SorobanTimeoutError } from '../middleware/errorHandler.js'
+import { getTracer } from '../observability/tracing.js'
+import { runInSubmitLane } from './sorobanSubmitLane.js'
+import { recordSorobanTransaction } from '../observability/sorobanMetrics.js'
+
+export function normalizeToClassicAddress(address: string): string {
+  try {
+    if (StrKey.isValidMed25519PublicKey(address)) {
+      const decoded = StrKey.decodeMed25519PublicKey(address)
+      return StrKey.encodeEd25519PublicKey(decoded.slice(0, 32))
+    }
+  } catch {
+    // ignore
+  }
+  return address
+}
 
 const DEFAULT_CONTRACT_ID = 'CONTRACT_ID_NOT_CONFIGURED'
 const DEFAULT_SOURCE_ACCOUNT = 'SOURCE_ACCOUNT_NOT_CONFIGURED'
@@ -12,6 +37,13 @@ const DEFAULT_SUBMIT_RETRY_BACKOFF_MS = 100
 const DEFAULT_SUBMIT_RETRY_MAX_BACKOFF_MS = 5_000
 const DEFAULT_SUBMIT_RETRY_BACKOFF_MULTIPLIER = 2
 const DEFAULT_SUBMIT_RETRY_JITTER_FACTOR = 0.5
+
+export const MEMO_MAX_BYTES = 28
+
+// ─── RPC pool constants ──────────────────────────────────────────────────────
+const DEFAULT_RPC_FAILURE_THRESHOLD = 3
+const DEFAULT_RPC_PROBE_INTERVAL_MS = 30_000
+const DEFAULT_RPC_PROBE_TIMEOUT_MS = 5_000
 
 // ─── Soroban configuration resolved from env ────────────────────────────────
 
@@ -26,6 +58,8 @@ export interface SorobanConfig {
   submitPollMaxAttempts: number
   rpcTimeoutMs: number
   submitTimeoutMs: number
+  /** Transaction validity window in seconds (SOROBAN_TX_TIMEOUT_SECS). Default 30. */
+  txTimeoutSecs?: number
   submitRetry: RetryConfig
 }
 
@@ -37,19 +71,36 @@ const positiveIntFromEnv = (key: string, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
-const getSubmitRetryConfig = (): RetryConfig => ({
-  maxAttempts: positiveIntFromEnv('RETRY_MAX_ATTEMPTS', DEFAULT_SUBMIT_RETRY_MAX_ATTEMPTS),
-  initialBackoffMs: positiveIntFromEnv('RETRY_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_BACKOFF_MS),
-  maxBackoffMs: positiveIntFromEnv('SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_MAX_BACKOFF_MS),
-  backoffMultiplier: DEFAULT_SUBMIT_RETRY_BACKOFF_MULTIPLIER,
-  jitterFactor: DEFAULT_SUBMIT_RETRY_JITTER_FACTOR,
-})
+let _cachedSubmitRetryConfig: RetryConfig | null = null
+
+const getSubmitRetryConfig = (): RetryConfig => {
+  if (_cachedSubmitRetryConfig) return _cachedSubmitRetryConfig
+  _cachedSubmitRetryConfig = {
+    maxAttempts: positiveIntFromEnv('RETRY_MAX_ATTEMPTS', DEFAULT_SUBMIT_RETRY_MAX_ATTEMPTS),
+    initialBackoffMs: positiveIntFromEnv('RETRY_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_BACKOFF_MS),
+    maxBackoffMs: positiveIntFromEnv('SOROBAN_SUBMIT_RETRY_MAX_BACKOFF_MS', DEFAULT_SUBMIT_RETRY_MAX_BACKOFF_MS),
+    backoffMultiplier: DEFAULT_SUBMIT_RETRY_BACKOFF_MULTIPLIER,
+    jitterFactor: DEFAULT_SUBMIT_RETRY_JITTER_FACTOR,
+  }
+  return _cachedSubmitRetryConfig
+}
+
+/**
+ * Resolved once per process — env is static for the process lifetime.
+ * `undefined` means not yet resolved; `null` means submit mode unavailable.
+ */
+let cachedSorobanConfig: SorobanConfig | null | undefined
 
 /**
  * Returns the Soroban config only when ALL required env vars are present.
  * Acts as the feature-flag: if any var is missing, submit mode is unavailable.
+ * Result is cached for the process lifetime (see `resetSorobanConfig` for tests).
  */
 export const getSorobanConfig = (): SorobanConfig | null => {
+  if (cachedSorobanConfig !== undefined) {
+    return cachedSorobanConfig
+  }
+
   const contractId = process.env.SOROBAN_CONTRACT_ID
   const networkPassphrase = process.env.SOROBAN_NETWORK_PASSPHRASE
   const sourceAccount = process.env.SOROBAN_SOURCE_ACCOUNT
@@ -57,10 +108,11 @@ export const getSorobanConfig = (): SorobanConfig | null => {
   const secretKey = process.env.SOROBAN_SECRET_KEY
 
   if (!contractId || !networkPassphrase || !sourceAccount || !rpcUrls || rpcUrls.length === 0 || !secretKey) {
-    return null
+    cachedSorobanConfig = null
+    return cachedSorobanConfig
   }
 
-  return {
+  cachedSorobanConfig = {
     contractId,
     networkPassphrase,
     sourceAccount,
@@ -71,8 +123,15 @@ export const getSorobanConfig = (): SorobanConfig | null => {
     submitPollMaxAttempts: positiveIntFromEnv('SOROBAN_SUBMIT_POLL_MAX_ATTEMPTS', DEFAULT_SUBMIT_POLL_MAX_ATTEMPTS),
     rpcTimeoutMs: positiveIntFromEnv('SOROBAN_RPC_TIMEOUT_MS', DEFAULT_RPC_TIMEOUT_MS),
     submitTimeoutMs: positiveIntFromEnv('SOROBAN_SUBMIT_TIMEOUT_MS', 60_000),
+    txTimeoutSecs: positiveIntFromEnv('SOROBAN_TX_TIMEOUT_SECS', 30),
     submitRetry: getSubmitRetryConfig(),
   }
+  return cachedSorobanConfig
+}
+
+/** Clear cached Soroban config. For testing only. */
+export const resetSorobanConfig = (): void => {
+  cachedSorobanConfig = undefined
 }
 
 /**
@@ -81,77 +140,458 @@ export const getSorobanConfig = (): SorobanConfig | null => {
  */
 export const isSorobanSubmitEnabled = (): boolean => getSorobanConfig() !== null
 
-// ─── Internal helper for transaction submission ───────────────────────────────
+// ─── RPC endpoint pool ────────────────────────────────────────────────────────
 
-/**
- * Common transaction submission logic shared by all contract methods.
- * Handles prepare, sign, send, and poll for completion.
- */
+export type EndpointStatus = 'healthy' | 'degraded' | 'down'
+
+export interface RpcEndpointHealth {
+  maskedUrl: string
+  status: EndpointStatus
+  failureCount: number
+  lastFailureAt: string | null
+  lastProbeAt: string | null
+}
+
+interface EndpointState {
+  url: string
+  status: EndpointStatus
+  consecutiveFailures: number
+  lastFailureAt: number | null
+  lastProbeAt: number | null
+}
+
+type ProbeFunction = (url: string, timeoutMs: number) => Promise<boolean>
+
+const maskUrl = (url: string): string => {
+  try {
+    const parsed = new URL(url)
+    return `${parsed.protocol}//${parsed.host}`
+  } catch {
+    return '[invalid-url]'
+  }
+}
+
+const defaultProbe: ProbeFunction = async (url: string, timeoutMs: number): Promise<boolean> => {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'getHealth', id: 1 }),
+      signal: controller.signal,
+    })
+    return res.ok
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+export class SorobanRpcPool {
+  private readonly states: EndpointState[]
+  readonly failureThreshold: number
+  readonly probeIntervalMs: number
+  readonly probeTimeoutMs: number
+  private readonly probeFn: ProbeFunction
+  private timer: ReturnType<typeof setInterval> | null = null
+
+  constructor(
+    urls: string[],
+    options?: {
+      failureThreshold?: number
+      probeIntervalMs?: number
+      probeTimeoutMs?: number
+      probe?: ProbeFunction
+    },
+  ) {
+    if (urls.length === 0) throw new Error('SorobanRpcPool requires at least one URL')
+    this.states = urls.map((url) => ({
+      url,
+      status: 'healthy' as EndpointStatus,
+      consecutiveFailures: 0,
+      lastFailureAt: null,
+      lastProbeAt: null,
+    }))
+    this.failureThreshold = options?.failureThreshold ?? DEFAULT_RPC_FAILURE_THRESHOLD
+    this.probeIntervalMs = options?.probeIntervalMs ?? DEFAULT_RPC_PROBE_INTERVAL_MS
+    this.probeTimeoutMs = options?.probeTimeoutMs ?? DEFAULT_RPC_PROBE_TIMEOUT_MS
+    this.probeFn = options?.probe ?? defaultProbe
+  }
+
+  /** Returns URLs ordered by health — healthy first, degraded next, down last. */
+  getOrderedUrls(): string[] {
+    const order: Record<EndpointStatus, number> = { healthy: 0, degraded: 1, down: 2 }
+    return [...this.states]
+      .sort((a, b) => order[a.status] - order[b.status])
+      .map((s) => s.url)
+  }
+
+  isAvailable(url: string): boolean {
+    const state = this.states.find((s) => s.url === url)
+    return !!state && state.status !== 'down'
+  }
+
+  recordSuccess(url: string): void {
+    const state = this.states.find((s) => s.url === url)
+    if (!state) return
+    state.status = 'healthy'
+    state.consecutiveFailures = 0
+  }
+
+  recordFailure(url: string): void {
+    const state = this.states.find((s) => s.url === url)
+    if (!state) return
+    state.consecutiveFailures += 1
+    state.lastFailureAt = Date.now()
+    if (state.consecutiveFailures >= this.failureThreshold) {
+      state.status = 'down'
+    } else {
+      state.status = 'degraded'
+    }
+  }
+
+  getHealthStatuses(): RpcEndpointHealth[] {
+    return this.states.map((s) => ({
+      maskedUrl: maskUrl(s.url),
+      status: s.status,
+      failureCount: s.consecutiveFailures,
+      lastFailureAt: s.lastFailureAt ? new Date(s.lastFailureAt).toISOString() : null,
+      lastProbeAt: s.lastProbeAt ? new Date(s.lastProbeAt).toISOString() : null,
+    }))
+  }
+
+  startProbing(): void {
+    if (this.timer) return
+    this.timer = setInterval(() => void this._probeDownEndpoints(), this.probeIntervalMs)
+    if (typeof (this.timer as any).unref === 'function') {
+      (this.timer as any).unref()
+    }
+  }
+
+  stopProbing(): void {
+    if (this.timer) {
+      clearInterval(this.timer)
+      this.timer = null
+    }
+  }
+
+  /** Force-probe all down endpoints immediately (useful in tests). */
+  async probeNow(): Promise<void> {
+    await this._probeDownEndpoints()
+  }
+
+  private async _probeDownEndpoints(): Promise<void> {
+    // Probe both 'down' and 'degraded' endpoints.
+    //
+    // 'degraded' endpoints are deprioritised by getOrderedUrls(), so they stop
+    // receiving organic traffic once healthier alternatives exist. Without
+    // explicit probing here they have no path back to 'healthy': organic
+    // calls won't reach them (ordering steers requests elsewhere) and the
+    // background job previously only checked 'down'. Including 'degraded'
+    // ensures recovery is possible for any non-healthy endpoint.
+    const probes = this.states
+      .filter((s) => s.status === 'down' || s.status === 'degraded')
+      .map(async (state) => {
+        state.lastProbeAt = Date.now()
+        const healthy = await this.probeFn(state.url, this.probeTimeoutMs)
+        if (healthy) {
+          state.status = 'healthy'
+          state.consecutiveFailures = 0
+          log('info', 'soroban.rpc_pool.endpoint_recovered', { endpoint: maskUrl(state.url) })
+        }
+      })
+    await Promise.all(probes)
+  }
+}
+
+// ─── Module-level pool ────────────────────────────────────────────────────────
+
+let _rpcPool: SorobanRpcPool | null = null
+
+const getOrCreatePool = (config: SorobanConfig): SorobanRpcPool => {
+  if (!_rpcPool) {
+    _rpcPool = new SorobanRpcPool(config.rpcUrls, {
+      failureThreshold: positiveIntFromEnv('SOROBAN_RPC_FAILURE_THRESHOLD', DEFAULT_RPC_FAILURE_THRESHOLD),
+      probeIntervalMs: positiveIntFromEnv('SOROBAN_RPC_PROBE_INTERVAL_MS', DEFAULT_RPC_PROBE_INTERVAL_MS),
+      probeTimeoutMs: positiveIntFromEnv('SOROBAN_RPC_PROBE_TIMEOUT_MS', DEFAULT_RPC_PROBE_TIMEOUT_MS),
+    })
+    _rpcPool.startProbing()
+  }
+  return _rpcPool
+}
+
+/** Create an isolated pool (primarily for testing). */
+export const createRpcPool = (
+  urls: string[],
+  options?: ConstructorParameters<typeof SorobanRpcPool>[1],
+): SorobanRpcPool => new SorobanRpcPool(urls, options)
+
+/** Stop background probing and clear the module-level pool. For testing. */
+export const resetRpcPool = (): void => {
+  if (_rpcPool) {
+    _rpcPool.stopProbing()
+    _rpcPool = null
+  }
+}
+
+/** Returns per-endpoint health for external health checks. Null when not yet initialised. */
+export const getRpcPoolHealth = (): RpcEndpointHealth[] | null =>
+  _rpcPool ? _rpcPool.getHealthStatuses() : null
+
+const DEFAULT_TX_TIMEOUT_SECS = 30
+const MAX_TRY_AGAIN_RESENDS = 3
+const LEDGER_CLOSE_MARGIN_MS = 5_000
+
+export type SorobanTxErrorKind = 'contract' | 'tx' | 'expired'
+
+/** Structured submission failure: `{ kind: 'contract', code }`, `{ kind: 'tx', code }` or `{ kind: 'expired' }`. */
+export class SorobanTxError extends Error {
+  constructor(message: string, readonly kind: SorobanTxErrorKind, readonly code: string) {
+    super(message)
+    this.name = 'SorobanTxError'
+  }
+}
+
+/** Decode a TransactionResult (object or base64 XDR) into a structured code. */
+export function decodeTxResult(
+  raw: unknown,
+  xdr: any,
+): { kind: 'contract' | 'tx'; code: string } | null {
+  if (!raw) return null
+  try {
+    const res: any = typeof raw === 'string' ? xdr.TransactionResult.fromXDR(raw, 'base64') : raw
+    const code: string = res.result().switch().name
+    if (code === 'txFailed') {
+      const op = res.result().results()?.[0]?.tr?.()
+      const opCode: string | undefined = op?.value?.()?.switch?.()?.name
+      if (opCode && opCode !== 'invokeHostFunctionSuccess') return { kind: 'contract', code: opCode }
+    }
+    return { kind: 'tx', code }
+  } catch {
+    return null
+  }
+}
+
+/** Serialises submissions per source account, then runs the real submit. */
 async function submitTransaction(
   config: SorobanConfig,
   methodName: string,
   scVals: any[],
   loadSdk: StellarSdkLoader = () => import('@stellar/stellar-sdk'),
+  pool?: SorobanRpcPool,
 ): Promise<{ txHash: string }> {
-  const {
-    Keypair,
-    Contract,
-    rpc: SorobanRpc,
-    TransactionBuilder,
-    nativeToScVal,
-    BASE_FEE,
-  } = await loadSdk()
-
-  const keypair = Keypair.fromSecret(config.secretKey)
-  const contract = new Contract(config.contractId)
-  const callOp = contract.call(methodName, ...scVals)
-
-  const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: config.networkPassphrase,
-  })
-    .addOperation(callOp)
-    .setTimeout(30)
-    .build()
-
-  const prepared = await server.prepareTransaction(tx)
-  prepared.sign(keypair)
-
-  const response = await server.sendTransaction(prepared)
-
-  if (response.status === 'ERROR') {
-    throw new Error(`Soroban sendTransaction failed: ${response.status}`)
-  }
-
-  const deadline = Date.now() + config.submitTimeoutMs
-  const pollConfig: RetryConfig = {
-    maxAttempts: config.submitPollMaxAttempts,
-    initialBackoffMs: config.submitPollIntervalMs,
-    maxBackoffMs: config.submitPollIntervalMs,
-    backoffMultiplier: 1,
-    jitterFactor: 0,
-  }
-
-  let getResponse = await retryWithBackoff(
-    async () => {
-      if (Date.now() >= deadline) {
-        throw new SorobanTimeoutError(response.hash, config.submitTimeoutMs)
-      }
-      const result = await server.getTransaction(response.hash)
-      if (result.status === 'NOT_FOUND') {
-        throw Object.assign(new Error('transaction_pending'), { retryable: true })
-      }
-      return result
-    },
-    pollConfig,
-    (err) => !!(err as any).retryable,
+  return runInSubmitLane(config.sourceAccount, () =>
+    submitTransactionInLane(config, methodName, scVals, loadSdk, pool),
   )
+}
 
-  if (getResponse.status !== 'SUCCESS') {
-    throw new Error(`Soroban transaction did not succeed: ${getResponse.status}`)
-  }
+// ─── Internal helper for transaction submission ───────────────────────────────
 
-  throw lastError || new Error('All RPC nodes failed')
+/**
+ * Common transaction submission logic shared by all contract methods.
+ * Handles prepare, sign, send, and poll for completion.
+ *
+ * Accepts an optional pool. When omitted, uses (or lazily creates) the
+ * module-level pool so production calls are covered automatically.
+ *
+ * Failover strategy:
+ *  - Pre-send steps (getAccount, prepareTransaction) use per-call retryRpc.
+ *    If all retries fail with a network error the endpoint is demoted and the
+ *    next healthy pool endpoint is tried.
+ *  - Once sendTransaction returns a response (committed), the endpoint is
+ *    locked in for the polling phase to avoid double-submission.
+ */
+async function submitTransactionInLane(
+  config: SorobanConfig,
+  methodName: string,
+  scVals: any[],
+  loadSdk: StellarSdkLoader = () => import('@stellar/stellar-sdk'),
+  pool?: SorobanRpcPool,
+): Promise<{ txHash: string }> {
+  const tracer = getTracer()
+  return tracer.withSpan(
+    `soroban.${methodName}`,
+    async (span) => {
+      const startedAt = Date.now()
+      let outcome: 'success' | 'failure' = 'failure'
+      try {
+      span.setAttribute('soroban.method', methodName)
+      span.setAttribute('soroban.contract_id', config.contractId)
+
+      const {
+        Keypair,
+        Contract,
+        rpc: SorobanRpc,
+        TransactionBuilder,
+        BASE_FEE,
+        xdr,
+      } = await loadSdk()
+
+      const keypair = Keypair.fromSecret(config.secretKey)
+      const contract = new Contract(config.contractId)
+      const callOp = contract.call(methodName, ...scVals)
+
+      const activePool = pool ?? getOrCreatePool(config)
+      const orderedUrls = activePool.getOrderedUrls()
+
+      span.setAttribute('soroban.rpc_endpoints', orderedUrls.length)
+
+      let lastError: Error = new Error('All RPC endpoints failed')
+
+      for (const url of orderedUrls) {
+        if (!activePool.isAvailable(url)) continue
+
+        // Tracks whether sendTransaction returned a result. Once set, we must not
+        // switch endpoints — the transaction may already be in the mempool.
+        let responseHash: string | null = null
+
+        try {
+          const server = new SorobanRpc.Server(url)
+
+          const txTimeoutSecs = config.txTimeoutSecs ?? DEFAULT_TX_TIMEOUT_SECS
+
+          const buildSigned = async (): Promise<any> => {
+            const account = await retryRpc('getAccount', config, () =>
+              server.getAccount(config.sourceAccount),
+            )
+            const tx = new TransactionBuilder(account, {
+              fee: BASE_FEE,
+              networkPassphrase: config.networkPassphrase,
+            })
+              .addOperation(callOp)
+              .setTimeout(txTimeoutSecs)
+              .build()
+            const p: any = await retryRpc('prepareTransaction', config, () =>
+              server.prepareTransaction(tx),
+            )
+            p.sign(keypair)
+            return p
+          }
+
+          let prepared = await buildSigned()
+          let maxTimeMs = Date.now() + txTimeoutSecs * 1000
+          let rebuilt = false
+          let resends = 0
+          let response: any
+
+          // sendTransaction is retried on the SAME endpoint for transient network
+          // errors; switching endpoints only happens if it never returns at all.
+          for (;;) {
+            response = await retryRpc('sendTransaction', config, () =>
+              server.sendTransaction(prepared),
+            )
+            if (response.status === 'TRY_AGAIN_LATER') {
+              // Not accepted: resend the SAME signed envelope (no new sequence).
+              if (resends >= MAX_TRY_AGAIN_RESENDS) {
+                throw new SorobanTxError('try_again_later_exhausted', 'tx', 'try_again_later_exhausted')
+              }
+              resends += 1
+              await sleep(config.submitRetry.initialBackoffMs * 2 ** (resends - 1))
+              continue
+            }
+            if (response.status === 'ERROR') {
+              const decoded = decodeTxResult(response.errorResult, xdr)
+              if (decoded?.code === 'txBadSeq' && !rebuilt) {
+                rebuilt = true
+                prepared = await buildSigned()
+                maxTimeMs = Date.now() + txTimeoutSecs * 1000
+                continue
+              }
+              activePool.recordFailure(url)
+              throw new SorobanTxError(
+                `Soroban sendTransaction failed: ${decoded?.code ?? response.status}`,
+                decoded?.kind ?? 'tx',
+                decoded?.code ?? 'error',
+              )
+            }
+            break
+          }
+          // PENDING and DUPLICATE are both accepted: poll the hash. No resend after this.
+          responseHash = response.hash
+
+          const deadline = Date.now() + config.submitTimeoutMs
+          const pollConfig: RetryConfig = {
+            maxAttempts: config.submitPollMaxAttempts,
+            initialBackoffMs: config.submitPollIntervalMs,
+            maxBackoffMs: config.submitPollIntervalMs,
+            backoffMultiplier: 1,
+            jitterFactor: 0,
+          }
+
+          const getResponse = await retryWithBackoff(
+            async () => {
+              if (Date.now() >= maxTimeMs + LEDGER_CLOSE_MARGIN_MS) {
+                throw new SorobanTxError('Soroban transaction expired before inclusion', 'expired', 'expired')
+              }
+              if (Date.now() >= deadline) {
+                throw new SorobanTimeoutError(response.hash, config.submitTimeoutMs)
+              }
+              const result: any = await server.getTransaction(response.hash)
+              if (result.status === 'NOT_FOUND') {
+                throw Object.assign(new Error('transaction_pending'), { retryable: true })
+              }
+              return result
+            },
+            pollConfig,
+            (err) => !!(err as any).retryable,
+          )
+
+          if (getResponse.status !== 'SUCCESS') {
+            const decoded = decodeTxResult(getResponse.resultXdr, xdr)
+            throw new SorobanTxError(
+              `Soroban transaction did not succeed: ${getResponse.status}${decoded ? ` (${decoded.code})` : ''}`,
+              decoded?.kind ?? 'tx',
+              decoded?.code ?? String(getResponse.status),
+            )
+          }
+
+          activePool.recordSuccess(url)
+          span.setAttribute('soroban.tx_hash', response.hash)
+          span.setStatus({ code: 'OK' } as any)
+          outcome = 'success'
+          return { txHash: response.hash }
+
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err))
+          lastError = error
+
+          // sendTransaction already returned a response — the tx is committed to
+          // this endpoint. Do not switch (prevents double-submit).
+          if (responseHash !== null) {
+            span.recordException(error)
+            span.setStatus({ code: 'ERROR', message: error.message })
+            throw error
+          }
+
+          // Network error before sendTransaction committed → demote and try next endpoint.
+          if (isRetryableSorobanRpcError(error)) {
+            activePool.recordFailure(url)
+            span.addEvent('rpc_failover', { 'rpc.endpoint': maskUrl(url), 'error.message': error.message })
+            log('warn', 'soroban.rpc_pool.failover', {
+              endpoint: maskUrl(url),
+              error: error.message,
+              method: methodName,
+            })
+            continue
+          }
+
+          // Non-network error (contract error, invalid args, etc.) → propagate.
+          span.recordException(error)
+          span.setStatus({ code: 'ERROR', message: error.message })
+          throw error
+        }
+      }
+
+      span.recordException(lastError)
+      span.setStatus({ code: 'ERROR', message: lastError.message })
+      throw lastError
+      } finally {
+        recordSorobanTransaction(methodName, outcome, Date.now() - startedAt)
+      }
+    },
+  )
 }
 
 // ─── Soroban SDK abstraction (mockable for tests) ───────────────────────────
@@ -166,6 +606,10 @@ export interface SorobanClient {
     args: Record<string, unknown>,
   ): Promise<{ txHash: string }>
   submitStake(
+    config: SorobanConfig,
+    args: Record<string, unknown>,
+  ): Promise<{ txHash: string }>
+  submitStakeWithMemo(
     config: SorobanConfig,
     args: Record<string, unknown>,
   ): Promise<{ txHash: string }>
@@ -185,6 +629,19 @@ export interface SorobanClient {
     config: SorobanConfig,
     args: Record<string, unknown>,
   ): Promise<{ txHash: string }>
+  getVault(
+    config: SorobanConfig,
+    vaultId: string,
+  ): Promise<OnChainVaultState | null>
+}
+
+export interface OnChainVaultState {
+  vault_id: string
+  amount: string
+  verifier: string
+  success_destination: string
+  failure_destination: string
+  status: 'active' | 'completed' | 'failed' | 'cancelled'
 }
 
 type StellarSdkLoader = () => Promise<any>
@@ -246,9 +703,13 @@ const retryRpc = async <T>(
  * Default production client that calls the real Stellar SDK.
  * Imported lazily so the module loads even when @stellar/stellar-sdk
  * is not fully configured (e.g. in unit test environments).
+ *
+ * An optional `pool` can be supplied to override the module-level endpoint
+ * pool — useful in tests that need deterministic endpoint routing.
  */
 export const createDefaultSorobanClient = (
   loadSdk: StellarSdkLoader = () => import('@stellar/stellar-sdk'),
+  pool?: SorobanRpcPool,
 ): SorobanClient => ({
   async submitVaultCreation(config, args) {
     const { nativeToScVal } = await loadSdk()
@@ -263,6 +724,7 @@ export const createDefaultSorobanClient = (
         nativeToScVal(args.failureDestination, { type: 'string' }),
       ],
       loadSdk,
+      pool,
     )
   },
 
@@ -276,6 +738,25 @@ export const createDefaultSorobanClient = (
         nativeToScVal(args.amount, { type: 'string' }),
       ],
       loadSdk,
+      pool,
+    )
+  },
+
+  async submitStakeWithMemo(config, args) {
+    const { nativeToScVal, xdr } = await loadSdk()
+    const memoHex = typeof args.memo === 'string' ? args.memo : ''
+    const memoBytes = Buffer.from(memoHex, 'hex')
+    const memoScVal = xdr.ScVal.scvBytes(memoBytes)
+    return submitTransaction(
+      config,
+      'stake_with_memo',
+      [
+        nativeToScVal(args.vaultId, { type: 'string' }),
+        nativeToScVal(args.amount, { type: 'string' }),
+        memoScVal,
+      ],
+      loadSdk,
+      pool,
     )
   },
 
@@ -294,6 +775,7 @@ export const createDefaultSorobanClient = (
         evidenceHashScVal,
       ],
       loadSdk,
+      pool,
     )
   },
 
@@ -307,6 +789,7 @@ export const createDefaultSorobanClient = (
         nativeToScVal(args.milestoneId, { type: 'string' }),
       ],
       loadSdk,
+      pool,
     )
   },
 
@@ -317,6 +800,7 @@ export const createDefaultSorobanClient = (
       'claim',
       [nativeToScVal(args.vaultId, { type: 'string' })],
       loadSdk,
+      pool,
     )
   },
 
@@ -327,7 +811,43 @@ export const createDefaultSorobanClient = (
       'withdraw',
       [nativeToScVal(args.vaultId, { type: 'string' })],
       loadSdk,
+      pool,
     )
+  },
+  async getVault(config, vaultId) {
+    const {
+      Contract,
+      rpc: SorobanRpc,
+      nativeToScVal,
+      scValToNative,
+    } = await import('@stellar/stellar-sdk')
+
+    const server = new SorobanRpc.Server(config.rpcUrl as string)
+    const contract = new Contract(config.contractId)
+
+    try {
+      const callOp: any = contract.call('get_vault', nativeToScVal(vaultId, { type: 'string' }))
+
+      const result: any = await server.simulateTransaction(callOp)
+
+      if (result.result === undefined || result.result === null) {
+        return null
+      }
+
+      const decoded = scValToNative(result.result)
+
+      return {
+        vault_id: decoded.vault_id || vaultId,
+        amount: decoded.amount || '0',
+        verifier: decoded.verifier || '',
+        success_destination: decoded.success_destination || '',
+        failure_destination: decoded.failure_destination || '',
+        status: decoded.status || 'active',
+      }
+    } catch (error) {
+      log('error', 'soroban.get_vault_error', { vaultId, error: error instanceof Error ? error.message : 'Unknown error' })
+      return null
+    }
   },
 })
 
@@ -343,6 +863,92 @@ export const setSorobanClient = (client: SorobanClient): void => {
 export const resetSorobanClient = (): void => {
   _client = defaultSorobanClient
 }
+
+export const getSorobanClient = (): SorobanClient => _client
+
+/**
+ * Builds the on-chain staking payload descriptor for a vault.
+ * Mirrors `buildPayload` (vault creation) but operates on the
+ * `StakeInput` shape — no persisted vault is required because the
+ * stake path derives everything it needs from the input itself.
+ *
+ * Repeated calls with the same `StakeInput` produce identical payloads
+ * (idempotent client-side). On-chain idempotency is a contract concern.
+ */
+const buildStakePayload = (input: StakeInput): StakeResponse['payload'] => {
+  return {
+    contractId: input.onChain?.contractId ?? process.env.SOROBAN_CONTRACT_ID ?? DEFAULT_CONTRACT_ID,
+    networkPassphrase:
+      input.onChain?.networkPassphrase ??
+      process.env.SOROBAN_NETWORK_PASSPHRASE ??
+      'Test SDF Network ; September 2015',
+    sourceAccount: input.onChain?.sourceAccount ?? process.env.SOROBAN_SOURCE_ACCOUNT ?? DEFAULT_SOURCE_ACCOUNT,
+    method: 'stake',
+    args: {
+      vaultId: input.vaultId,
+      amount: input.amount,
+      user: input.user,
+    },
+  }
+}
+
+/**
+ * Builds the on-chain staking-with-memo payload descriptor for a vault.
+ * The memo is a hex-encoded Bytes payload (e.g. an idempotency key
+ * derived from `vaultId + amount`). It is bound to the on-chain funding
+ * event for off-chain correlation.
+ *
+ * `memo` on the input is optional. When absent or empty, the payload
+ * simply omits the memo argument — no throw. When present, the memo
+ * must be a valid even-length hex string whose decoded byte length
+ * falls in `[1, MEMO_MAX_BYTES]`; otherwise the function throws so
+ * callers see the failure synchronously rather than after a chain
+ * submission.
+ */
+const buildStakeWithMemoPayload = (
+  input: StakeWithMemoInput,
+): StakeWithMemoResponse['payload'] => {
+  const baseArgs: Record<string, unknown> = {
+    vaultId: input.vaultId,
+    amount: input.amount,
+    user: input.user,
+  }
+
+  if (input.memo !== undefined && input.memo !== null && input.memo !== '') {
+    const memoHex = input.memo
+    if (memoHex.length % 2 !== 0) {
+      throw new Error('Memo must be an even-length hex string')
+    }
+    const memoBytes = Buffer.from(memoHex, 'hex')
+    // Buffer.from silently drops non-hex characters; verify the re-encoded
+    // length matches so malformed input (e.g. 'zz') is reliably rejected.
+    if (memoBytes.length * 2 !== memoHex.length) {
+      throw new Error('Memo contains non-hex characters')
+    }
+    if (memoBytes.length === 0) {
+      throw new Error('Memo cannot decode to zero bytes')
+    }
+    if (memoBytes.length > MEMO_MAX_BYTES) {
+      throw new MemoTooLongError(memoBytes.length, MEMO_MAX_BYTES)
+    }
+    baseArgs.memo = memoBytes.toString('hex')
+  }
+
+  return {
+    contractId: input.onChain?.contractId ?? process.env.SOROBAN_CONTRACT_ID ?? DEFAULT_CONTRACT_ID,
+    networkPassphrase:
+      input.onChain?.networkPassphrase ??
+      process.env.SOROBAN_NETWORK_PASSPHRASE ??
+      'Test SDF Network ; September 2015',
+    sourceAccount: input.onChain?.sourceAccount ?? process.env.SOROBAN_SOURCE_ACCOUNT ?? DEFAULT_SOURCE_ACCOUNT,
+    method: 'stake_with_memo',
+    args: baseArgs,
+  }
+}
+
+// Re-export the validators so callers can detect memo-size violations
+// without importing from ../types/vaults if they only need this module.
+export { buildStakePayload, buildStakeWithMemoPayload }
 
 /**
  * Builds the on-chain payload for staking into a vault.
@@ -484,9 +1090,9 @@ const buildPayload = (
     args: {
       vaultId: vault.id,
       amount: vault.amount,
-      verifier: vault.verifier,
-      successDestination: vault.successDestination,
-      failureDestination: vault.failureDestination,
+      verifier: normalizeToClassicAddress(vault.verifier),
+      successDestination: normalizeToClassicAddress(vault.successDestination),
+      failureDestination: normalizeToClassicAddress(vault.failureDestination),
       token: input.onChain?.token,
       milestones: vault.milestones.map((milestone) => ({
         id: milestone.id,
@@ -569,7 +1175,7 @@ export const buildVaultCreationPayload = async (
         submission: { 
           attempted: true, 
           status: 'error', 
-          error: { code: appError.code, message: appError.message, details: appError.details } 
+          error: { code: appError.code, message: appError.message, details: appError.details, retryable: appError.retryable }
         },
       }
     }

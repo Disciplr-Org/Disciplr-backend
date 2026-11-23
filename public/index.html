@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Disciplr API</title>
+<style>
+:root{--bg:#0b1020;--card:#141b34;--fg:#e8ecf8;--mut:#9aa6c8;--acc:#7c9cff;--ok:#3ddc97}
+@media(prefers-color-scheme:light){:root{--bg:#f5f7fd;--card:#fff;--fg:#10162b;--mut:#55608a;--acc:#3b5bdb;--ok:#0a8f5b}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:48px 16px}h1{font-size:2.2rem;margin:0 0 6px}p.lead{color:var(--mut);margin-top:0}
+.card{background:var(--card);border-radius:12px;padding:16px 20px;margin:14px 0;border:1px solid #ffffff14}
+code,pre{font-family:ui-monospace,Menlo,monospace;font-size:.88rem}pre{overflow:auto;background:#00000030;padding:12px;border-radius:8px}
+.m{display:inline-block;min-width:54px;font-weight:700;color:var(--ok)}a{color:var(--acc)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}.btn{padding:8px 14px;border-radius:8px;background:var(--acc);color:#fff;text-decoration:none;font-weight:600}
+#h{color:var(--ok)}
+</style></head><body><main>
+<h1>Disciplr API</h1>
+<p class="lead">Commitment vaults on Stellar. Lock funds against milestones, a verifier validates progress, funds release on success or redirect on failure.</p>
+<div class="row"><a class="btn" href="/api/openapi.json">OpenAPI spec</a><a class="btn" href="/api/health">Health</a><a class="btn" href="/api/vaults">GET /api/vaults</a><a class="btn" href="https://github.com/Disciplr-Org/Disciplr-backend">Source</a></div>
+<div class="card">Status: <b id="h">checking...</b></div>
+<h2>Endpoints</h2>
+<div class="card"><span class="m">GET</span><code>/api/health</code> service and active data store</div>
+<div class="card"><span class="m">GET</span><code>/api/vaults?creator=&amp;status=</code> list vaults</div>
+<div class="card"><span class="m">POST</span><code>/api/vaults</code> create a vault with milestones</div>
+<div class="card"><span class="m">GET</span><code>/api/vaults/:id</code> vault detail with activity</div>
+<div class="card"><span class="m">POST</span><code>/api/vaults/:id/milestones/:mid/validate</code> verifier validates a milestone</div>
+<div class="card"><span class="m">POST</span><code>/api/vaults/:id/fail</code> verifier fails a vault, funds redirect</div>
+<div class="card"><span class="m">GET</span><code>/api/transactions</code> activity feed</div>
+<div class="card"><span class="m">GET</span><code>/api/stats</code> aggregate statistics</div>
+<h2>Example</h2>
+<pre>curl -X POST $BASE/api/vaults -H 'content-type: application/json' -d '{
+  "creator": "G...56 chars", "verifier": "G...56 chars", "amount": 500,
+  "endDate": "2027-01-01",
+  "milestones": [{"title":"Ship v1","amount":250},{"title":"Launch","amount":250}]
+}'</pre>
+<p style="color:var(--mut)">Public demo API: no authentication; the verifier address in the request body authorises validation. Settlement is simulated; see the README for the on-chain contract status.</p>
+</main>
+<script>fetch('/api/health').then(r=>r.json()).then(j=>{h.textContent='ok, store: '+j.store}).catch(()=>{h.textContent='unreachable';h.style.color='#e5484d'})</script>
+</body></html>

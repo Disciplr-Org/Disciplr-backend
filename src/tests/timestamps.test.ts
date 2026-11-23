@@ -130,7 +130,7 @@ describe('parseAndNormalizeToUTC', () => {
   })
 
   it('throws on unparseable timestamp with invalid offset', () => {
-    expect(() => parseAndNormalizeToUTC('2025-01-01T00:00:00+99:99')).toThrow('Unparseable timestamp')
+    expect(() => parseAndNormalizeToUTC('2025-01-01T00:00:00+99:99')).toThrow('Invalid ISO 8601 timestamp')
   })
 
   // DST edge cases: explicit offsets encode DST state at parse time.
@@ -302,6 +302,6 @@ describe('formatTimestamp', () => {
   })
 
   it('throws on invalid timestamp', () => {
-    expect(() => formatTimestamp('garbage')).toThrow('Invalid timestamp for formatting')
+    expect(() => formatTimestamp('garbage')).toThrow('Invalid UTC timestamp')
   })
 })

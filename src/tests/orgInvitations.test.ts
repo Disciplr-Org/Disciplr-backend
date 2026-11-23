@@ -6,16 +6,44 @@ import crypto from 'crypto'
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-const dbMock: any = jest.fn()
-dbMock._rows = [] as any[]
+interface MockInvitationRow {
+  id: string
+  org_id: string
+  email: string
+  token_hash: string
+  role: string
+  expires_at: Date
+  accepted_at: Date | null
+  [key: string]: unknown
+}
+
+interface MockQueryBuilder {
+  _table: string
+  _inserted?: Record<string, unknown>
+  insert: jest.Mock
+  returning: jest.Mock
+  where: jest.Mock
+  whereNull: jest.Mock
+  first: jest.Mock
+  update: jest.Mock
+}
+
+type DbMock = jest.Mock & {
+  _rows: Record<string, unknown>[]
+  _pending: MockInvitationRow | null
+}
+
+const dbMock = jest.fn() as DbMock
+dbMock._rows = []
 dbMock._pending = null
 
-dbMock.mockImplementation((table: string) => {
-  const qb: any = {
-    _table: table,
-    insert: jest.fn().mockImplementation((row: any) => {
-      dbMock._rows.push({ ...row, id: crypto.randomUUID() })
-      qb._inserted = row
+dbMock.mockImplementation((table: unknown) => {
+  const qb: MockQueryBuilder = {
+    _table: String(table),
+    insert: jest.fn().mockImplementation((row: unknown) => {
+      const record = row as Record<string, unknown>
+      dbMock._rows.push({ ...record, id: crypto.randomUUID() })
+      qb._inserted = record
       return qb
     }),
     returning: jest.fn().mockImplementation(() => {
@@ -45,12 +73,17 @@ jest.unstable_mockModule('../services/membership.js', async () => ({
   listOrgMemberships: jest.fn(),
   createMembership: jest.fn().mockResolvedValue({ role: 'member' }),
   removeMembership: jest.fn(),
-  updateMemberRole: jest.fn(),
+  changeRole: jest.fn(),
+  transferOwnership: jest.fn(),
+  resendInvitation: jest.fn(),
+  revokeInvitation: jest.fn(),
+  InvitationNotFoundError: class InvitationNotFoundError extends Error {},
+  InvitationAcceptedError: class InvitationAcceptedError extends Error {},
   LastAdminError: class LastAdminError extends Error {},
 }))
 
 jest.unstable_mockModule('../middleware/orgAuth.js', async () => ({
-  requireOrgAccess: (..._roles: string[]) =>
+  requireOrgAccess: () =>
     (_req: Request, _res: Response, next: NextFunction) => next(),
 }))
 
@@ -69,7 +102,7 @@ function mockAuthenticate(req: Request, res: Response, next: NextFunction): void
     return
   }
   try {
-    req.user = jwt.verify(authHeader.slice(7), JWT_SECRET) as any
+    req.user = jwt.verify(authHeader.slice(7), JWT_SECRET) as Request['user']
     next()
   } catch {
     res.status(401).json({ error: 'Invalid token' })
@@ -90,14 +123,16 @@ app.use(errorHandler)
 
 // ── Helpers ─────────────────────────────────────────────────────────────────--
 
-function seedPendingInvitation(tokenHash: string, orgId = 'org-abc') {
+function seedPendingInvitation(tokenHash: string, orgId = 'org-abc', overrides: Partial<Record<string, unknown>> = {}) {
   dbMock._pending = {
     id: 'inv-1',
     org_id: orgId,
     email: 'invitee@example.com',
     token_hash: tokenHash,
+    role: 'member',
     expires_at: new Date(Date.now() + 86400_000),
     accepted_at: null,
+    ...overrides,
   }
 }
 
@@ -185,7 +220,7 @@ describe('POST /api/organizations/:orgId/invitations/accept', () => {
       .post('/api/organizations/org-abc/invitations/accept')
       .send({ token: 'deadbeef'.repeat(8), userId: 'user-2' })
     expect(res.status).toBe(400)
-    expect(res.body.error).toMatch(/invalid or expired/i)
+    expect(res.body.error.message).toMatch(/invalid or expired/i)
   })
 
   it('returns 400 when token hash does not match', async () => {
@@ -213,7 +248,7 @@ describe('POST /api/organizations/:orgId/invitations/accept', () => {
     expect(res.body.role).toBe('member')
   })
 
-  it('defaults role to member when not specified', async () => {
+  it('defaults role to member when not specified at creation', async () => {
     const rawToken = crypto.randomBytes(32).toString('hex')
     const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex')
     seedPendingInvitation(tokenHash)

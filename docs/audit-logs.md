@@ -18,9 +18,26 @@ CREATE TABLE audit_logs (
   target_type STRING NOT NULL,
   target_id STRING NOT NULL,
   metadata JSONB DEFAULT '{}',
-  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  organization_id UUID NULL,
+  chain_seq BIGINT NOT NULL,
+  prev_hash VARCHAR(64),
+  row_hash VARCHAR(64)
 );
 ```
+
+### Hash-chain ordering and concurrency
+
+Each organization has an independent hash chain; rows without an organization share
+a separate chain. Appends acquire a transaction-scoped PostgreSQL advisory lock for
+that chain before reading its head. The database also enforces unique sequence
+numbers and predecessor hashes within each chain, including the organization-less
+chain.
+
+`chain_seq` is the canonical ordering for chain verification and exports. It is
+backfilled from the existing `created_at`, then `id`, order. `created_at` remains
+part of the hashed row content and retains its existing application-generated
+timestamp behavior, but it no longer determines chain order.
 
 ### Performance Indexes
 

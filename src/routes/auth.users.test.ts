@@ -1,4 +1,3 @@
-import { jest } from '@jest/globals'
 import express from 'express'
 import request from 'supertest'
 import { UserRole } from '../types/user.js'
@@ -51,9 +50,9 @@ const prisma = {
   },
 }
 
-jest.unstable_mockModule('../lib/prisma.js', () => ({ prisma }))
-jest.unstable_mockModule('../lib/audit-logs.js', () => ({ createAuditLog }))
-jest.unstable_mockModule('../middleware/auth.js', () => ({
+mock.module('../lib/prisma.js', () => ({ prisma }))
+mock.module('../lib/audit-logs.js', () => ({ createAuditLog }))
+mock.module('../middleware/auth.js', () => ({
   authenticate: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
     req.user = {
       userId: req.header('x-test-user-id') ?? 'admin-user-id',
@@ -62,7 +61,7 @@ jest.unstable_mockModule('../middleware/auth.js', () => ({
     next()
   },
 }))
-jest.unstable_mockModule('../services/auth.service.js', () => ({
+mock.module('../services/auth.service.js', () => ({
   AuthService: {
     register: jest.fn(),
     login: jest.fn(),
@@ -70,7 +69,9 @@ jest.unstable_mockModule('../services/auth.service.js', () => ({
     logout: jest.fn(),
   },
 }))
-jest.unstable_mockModule('../services/session.js', () => ({
+mock.module('../services/session.js', () => ({
+  recordSession: jest.fn(async () => undefined),
+  validateSession: jest.fn(async () => true),
   revokeSession: jest.fn(),
   revokeAllUserSessions: jest.fn(),
 }))
@@ -119,16 +120,20 @@ describe('auth router persisted user role paths', () => {
         id: '11111111-1111-1111-1111-111111111111',
         role: UserRole.VERIFIER,
       },
-      token: 'mock-token-11111111-1111-1111-1111-111111111111',
+      token: expect.any(String),
       auditLogId: 'audit-1',
     })
+
+    // The mock-login token is a real signed JWT (issue #1842), not `mock-token-<id>`.
+    expect(response.body.token).not.toMatch(/^mock-token-/)
+    expect(response.body.token.split('.')).toHaveLength(3)
 
     expect(typeof response.body.user.lastLoginAt).toBe('string')
     expect(new Date(response.body.user.lastLoginAt).getTime()).toBeGreaterThan(new Date('2026-01-01T00:00:00.000Z').getTime())
     expect(users.get('11111111-1111-1111-1111-111111111111')?.role).toBe(UserRole.VERIFIER)
     expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
       actor_user_id: '11111111-1111-1111-1111-111111111111',
-      action: 'auth.login',
+      action: 'auth.mock_login_used',
       metadata: expect.objectContaining({
         userAgent: 'unknown',
       }),

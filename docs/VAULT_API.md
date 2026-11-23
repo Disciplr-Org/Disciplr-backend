@@ -323,6 +323,11 @@ invalid `verifier` value:
 - Authorization checks for vault cancellation (creator or admin only)
 - Input validation for all parameters
 - Idempotency support for vault creation
+- **Stellar Destination Address & Memo Hardening**:
+  - Accepts both classic (`G...`) and muxed (`M...`) account addresses.
+  - Rejects contract addresses (`C...`) where user/escrow accounts are required (e.g. verifier and destinations).
+  - Rejects unsafe zero/burn and all-ones addresses to prevent routing slashed funds irrecoverably.
+  - Enforces muxed addresses (`M...`) for known exchange destinations requiring a memo.
 
 ## Testing
 

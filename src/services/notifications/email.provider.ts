@@ -1,15 +1,82 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NotificationProvider } from './provider.js'
 import { retryWithBackoff, DEFAULT_RETRY_CONFIG, isRetryable } from '../../utils/retry.js'
-import { recordBounce } from './bounceStore.js'
+import { recordBounce, hasBounced } from './bounceStore.js'
+import { getEnv } from '../../config/index.js'
+
+type TransporterType = { sendMail: (opts: any) => Promise<any> }
+type TransportOptions = {
+  host: string
+  port: number
+  secure: boolean
+  auth: {
+    user: string
+    pass: string
+  }
+}
+
+export type EmailTransportFactory = (options: TransportOptions) => Promise<TransporterType>
+
+const defaultTransportFactory: EmailTransportFactory = async (options) => {
+  const nodemailer = await import('nodemailer')
+  return nodemailer.createTransport(options) as TransporterType
+}
 
 /**
  * EmailNotificationProvider implements the NotificationProvider interface.
- * It sends email notifications. Currently this is a stub that simulates latency.
+ * It sends email notifications via SMTP using nodemailer.
+ *
+ * Configuration (all optional):
+ * - SMTP_HOST: SMTP server hostname (e.g., smtp.gmail.com)
+ * - SMTP_PORT: SMTP server port (default: 587)
+ * - SMTP_USER: SMTP authentication username
+ * - SMTP_PASS: SMTP authentication password
+ * - SMTP_FROM: Default sender address
+ * - SMTP_SECURE: 'true' to use TLS (default: false for port 587 STARTTLS)
+ *
+ * If SMTP_HOST is not configured, sends are logged to console with a warning.
  * Transient SMTP 4xx errors are retried using exponential backoff with jitter.
  * 5xx errors are considered permanent and are not retried, preserving dead‑letter semantics.
  */
 export class EmailNotificationProvider implements NotificationProvider {
-  readonly name = 'email';
+  readonly name = 'email'
+  private transporter: TransporterType | null = null
+  private initialized: boolean = false
+
+  constructor(
+    private readonly transportFactory: EmailTransportFactory = defaultTransportFactory,
+  ) {}
+
+  /**
+   * Lazy-initialize the SMTP transporter on first send.
+   */
+  private async ensureTransporter(): Promise<void> {
+    if (this.initialized) {
+      return
+    }
+
+    this.initialized = true
+
+    const env = getEnv()
+    const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE } = env
+
+    if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
+      this.transporter = await this.transportFactory({
+        host: SMTP_HOST,
+        port: SMTP_PORT,
+        secure: SMTP_SECURE === 'true',
+        auth: {
+          user: SMTP_USER,
+          pass: SMTP_PASS,
+        },
+      })
+    } else {
+      console.warn(
+        '[EmailProvider] SMTP not configured (missing SMTP_HOST, SMTP_USER, or SMTP_PASS). ' +
+        'Emails will be logged to console instead of being sent.',
+      )
+    }
+  }
 
   /**
    * Classify whether an error represents a permanent bounce
@@ -30,25 +97,68 @@ export class EmailNotificationProvider implements NotificationProvider {
     return false
   }
 
-  async send(recipient: string, subject: string, body: string): Promise<void> {
-    // Wrap the actual send operation in the shared retry utility
-    const operation = async () => {
-      // In a real implementation, call the SMTP / provider SDK here.
-      // Simulate network latency for the stubbed provider.
-      await new Promise((resolve) => setTimeout(resolve, 50))
+  private escapeHtml(str: string): string {
+    return str.replace(/[&<>"']/g, (match) => {
+      switch (match) {
+        case '&': return '&amp;';
+        case '<': return '&lt;';
+        case '>': return '&gt;';
+        case '"': return '&quot;';
+        case "'": return '&#39;';
+        default: return match;
+      }
+    });
+  }
 
-      // For now, we log the send; the real provider should replace this.
-      console.log(`[EmailProvider] Sent to ${recipient}: ${subject}`)
+  private async performSend(recipient: string, subject: string, body: string, htmlBody?: string): Promise<void> {
+    await this.ensureTransporter()
+
+    if (this.transporter) {
+      const { SMTP_FROM } = getEnv()
+      await this.transporter.sendMail({
+        from: SMTP_FROM,
+        to: recipient,
+        subject,
+        text: body,
+        html: htmlBody,
+      })
+      return
     }
 
+    console.log(`[EmailProvider] Sent to ${recipient}: ${subject} (body: ${body.length} chars, htmlBody: ${htmlBody?.length ?? 0} chars)`)
+  }
+
+  async send(recipient: string, subject: string, body: string): Promise<void> {
+    // 1. Assert CRLF in recipient is rejected
+    if (/[\r\n]/.test(recipient)) {
+      throw new Error('CRLF injection detected in recipient');
+    }
+
+    // 2. Assert CRLF in subject is stripped (replaced with space)
+    const sanitizedSubject = subject.replace(/[\r\n]+/g, ' ');
+
+    // 3. Escape HTML in dynamic body content
+    const escapedBody = this.escapeHtml(body);
+    const htmlBody = `<html><body><p>${escapedBody}</p></body></html>`;
+
+    // Wrap the actual send operation in the shared retry utility
+    const operation = async () => {
+      await this.performSend(recipient, sanitizedSubject, body, htmlBody);
+    };
+
     try {
-      await retryWithBackoff(operation, DEFAULT_RETRY_CONFIG, (err) => {
-        // Treat classified permanent bounces as non-retryable
-        if (this.isPermanentBounce(err)) {
+      await retryWithBackoff(operation, DEFAULT_RETRY_CONFIG, (err: any) => {
+        // Treat classified permanent bounces or 5xx errors as non-retryable
+        if (this.isPermanentBounce(err) || (err.statusCode && err.statusCode >= 500)) {
           ;(err as any).nonRetryable = true
           // record the bounce for later inspection and to stop retries
-          try { recordBounce(recipient, err.message) } catch (_) { /* ignore */ }
+          try { recordBounce(recipient, err.message) } catch { /* ignore */ }
           return false
+        }
+
+        // Treat transient SMTP 4xx errors as retryable
+        if (err.statusCode && err.statusCode >= 400 && err.statusCode < 500) {
+          return true
         }
 
         // Otherwise fall back to the shared isRetryable predicate

@@ -291,7 +291,7 @@ export function generateTestUser(index: number) {
  */
 export function generateTestVault(index: number, userId: string) {
   const now = Date.now()
-  const statuses = ['DRAFT', 'ACTIVE', 'COMPLETED', 'FAILED', 'CANCELLED']
+  const statuses = ['draft', 'active', 'completed', 'failed', 'cancelled', 'disputed']
   
   return {
     id: `vault-perf-${index.toString().padStart(10, '0')}`,

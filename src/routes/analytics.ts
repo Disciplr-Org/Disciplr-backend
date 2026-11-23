@@ -1,11 +1,18 @@
 import { Router } from 'express'
 import { authenticate } from '../middleware/auth.js'
 import { authenticateApiKey } from '../middleware/apiKeyAuth.js'
-import { listMilestoneEvents } from '../services/milestones.js'
+import { ApiScope } from '../types/auth.js'
+import { MilestoneService } from '../services/milestonesDb.js'
+import { MilestoneRepositoryEnhanced } from '../repositories/milestoneRepositoryEnhanced.js'
 import { utcNow } from '../utils/timestamps.js'
+import { db as knexDb } from '../db/index.js'
 import { readAnalyticsSummary } from '../db/database.js'
 
 export const analyticsRouter = Router()
+
+// Initialize milestone service with database connection
+const milestoneRepository = new MilestoneRepositoryEnhanced(knexDb)
+const milestoneService = new MilestoneService(milestoneRepository)
 
 type TrendGroupBy = 'day' | 'week'
 
@@ -49,7 +56,7 @@ const buildTrendBuckets = (
   from: Date,
   to: Date,
   groupBy: TrendGroupBy,
-  events: ReturnType<typeof listMilestoneEvents>,
+  events: any[],
 ): TrendBucket[] => {
   const bucketDuration = getBucketDuration(groupBy)
   const buckets = new Map<number, TrendBucket>()
@@ -96,14 +103,14 @@ analyticsRouter.get('/summary', authenticate, async (_req, res) => {
   }
 })
 
-analyticsRouter.get('/overview', authenticateApiKey(['read:analytics']), (_req, res) => {
+analyticsRouter.get('/overview', authenticateApiKey([ApiScope.ReadAnalytics]), (_req, res) => {
   res.status(200).json({
     generatedAt: utcNow(),
     status: 'ok',
   })
 })
 
-analyticsRouter.get('/vaults', authenticateApiKey(['read:vaults']), (_req, res) => {
+analyticsRouter.get('/vaults', authenticateApiKey([ApiScope.ReadVaults]), (_req, res) => {
   res.status(200).json({
     vaults: [],
     generatedAt: utcNow(),
@@ -118,7 +125,7 @@ analyticsRouter.get('/vaults/:id', authenticate, (req, res) => {
   })
 })
 
-analyticsRouter.get('/milestones/trends', authenticateApiKey(['read:analytics']), (req, res) => {
+analyticsRouter.get('/milestones/trends', authenticateApiKey([ApiScope.ReadAnalytics]), async (req, res) => {
   const from = parseIsoDate(req.query.from)
   const to = parseIsoDate(req.query.to)
   const groupBy = req.query.groupBy === 'week' ? 'week' : 'day'
@@ -142,7 +149,7 @@ analyticsRouter.get('/milestones/trends', authenticateApiKey(['read:analytics'])
     return
   }
 
-  const events = listMilestoneEvents({
+  const events = await milestoneService.listMilestoneEvents({
     from: from.toISOString(),
     to: to.toISOString(),
   })
@@ -163,7 +170,7 @@ analyticsRouter.get('/milestones/trends', authenticateApiKey(['read:analytics'])
   })
 })
 
-analyticsRouter.get('/behavior', authenticateApiKey(['read:analytics']), (req, res) => {
+analyticsRouter.get('/behavior', authenticateApiKey([ApiScope.ReadAnalytics]), async (req, res) => {
   const userId = typeof req.query.userId === 'string' ? req.query.userId.trim() : ''
   const baseScorePerSuccess = Number(req.query.baseScorePerSuccess ?? 10)
   const penaltyPerFailure = Number(req.query.penaltyPerFailure ?? 5)
@@ -202,7 +209,7 @@ analyticsRouter.get('/behavior', authenticateApiKey(['read:analytics']), (req, r
     return
   }
 
-  const events = listMilestoneEvents({
+  const events = await milestoneService.listMilestoneEvents({
     userId,
     from: from?.toISOString(),
     to: to?.toISOString(),

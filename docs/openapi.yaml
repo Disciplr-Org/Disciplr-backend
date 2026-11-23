@@ -5,6 +5,7 @@ info:
   description: API documentation for Disciplr backend
 servers:
   - url: /api
+security: []
 components:
   securitySchemes:
     bearerAuth:
@@ -13,99 +14,43 @@ components:
       bearerFormat: JWT
   schemas:
     PaginationCursor:
-      def:
-        type: object
-        shape:
-          limit:
-            def:
-              type: number
-              checks: []
-            type: number
-            minValue: -.inf
-            maxValue: .inf
-            isInt: false
-            isFinite: true
-            format: null
-          cursor:
-            def:
-              type: optional
-              innerType:
-                def:
-                  type: string
-                type: string
-                format: null
-                minLength: null
-                maxLength: null
-            type: optional
-          next_cursor:
-            def:
-              type: optional
-              innerType:
-                def:
-                  type: string
-                type: string
-                format: null
-                minLength: null
-                maxLength: null
-            type: optional
-          has_more:
-            def:
-              type: boolean
-            type: boolean
-          count:
-            def:
-              type: number
-              checks: []
-            type: number
-            minValue: -.inf
-            maxValue: .inf
-            isInt: false
-            isFinite: true
-            format: null
       type: object
+      properties:
+        limit:
+          type: number
+        cursor:
+          type: string
+        next_cursor:
+          type: string
+        has_more:
+          type: boolean
+        count:
+          type: number
+      required:
+        - limit
+        - has_more
+        - count
     ErrorEnvelope:
-      def:
-        type: object
-        shape:
-          error:
-            def:
-              type: object
-              shape:
-                code:
-                  def:
-                    type: string
-                  type: string
-                  format: null
-                  minLength: null
-                  maxLength: null
-                message:
-                  def:
-                    type: string
-                  type: string
-                  format: null
-                  minLength: null
-                  maxLength: null
-                details:
-                  def:
-                    type: optional
-                    innerType:
-                      def:
-                        type: unknown
-                      type: unknown
-                  type: optional
-                requestId:
-                  def:
-                    type: optional
-                    innerType:
-                      def:
-                        type: string
-                      type: string
-                      format: null
-                      minLength: null
-                      maxLength: null
-                  type: optional
-            type: object
       type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: VALIDATION_ERROR
+            message:
+              type: string
+              example: Invalid request parameters
+            details: {}
+            requestId:
+              type: string
+              example: req_123
+          required:
+            - code
+            - message
+      required:
+        - error
     Vault:
       type: object
       properties:
@@ -174,6 +119,239 @@ components:
         - description
         - status
         - createdAt
+    VerifierProfile:
+      type: object
+      properties:
+        userId:
+          type: string
+          description: Stellar public key that identifies the verifier
+          example: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
+        displayName:
+          type:
+            - string
+            - "null"
+        metadata:
+          type:
+            - object
+            - "null"
+          additionalProperties: {}
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - suspended
+            - deactivated
+          description: "Verifier lifecycle status. Allowed transitions:
+            pending→approved|deactivated, approved→suspended|deactivated,
+            suspended→approved|deactivated, deactivated→pending|approved."
+          example: approved
+        createdAt:
+          type: string
+          format: date-time
+        approvedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        suspendedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        deactivatedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+      required:
+        - userId
+        - status
+        - createdAt
+    VerifierStats:
+      type: object
+      properties:
+        totalVerifications:
+          type: integer
+          example: 12
+        approvals:
+          type: integer
+          example: 9
+        rejections:
+          type: integer
+          example: 3
+        disputes:
+          type: integer
+          example: 1
+        approvalRatio:
+          type: number
+          example: 0.75
+        rejectionRatio:
+          type: number
+          example: 0.25
+        disputeRate:
+          type: number
+          example: 0.0833
+      required:
+        - totalVerifications
+        - approvals
+        - rejections
+        - disputes
+        - approvalRatio
+        - rejectionRatio
+        - disputeRate
+    VerifierWithStats:
+      type: object
+      properties:
+        profile:
+          $ref: "#/components/schemas/VerifierProfile"
+        stats:
+          $ref: "#/components/schemas/VerifierStats"
+      required:
+        - profile
+        - stats
+    VerifierPagination:
+      type: object
+      properties:
+        limit:
+          type: integer
+          description: Page size in effect (max 200)
+          example: 50
+        offset:
+          type: integer
+          description: Zero-based offset of the first item
+          example: 0
+        count:
+          type: integer
+          description: Number of items in this page
+          example: 2
+        hasMore:
+          type: boolean
+          description: Whether another page is likely available
+          example: false
+      required:
+        - limit
+        - offset
+        - count
+        - hasMore
+    VerifierListResponse:
+      type: object
+      properties:
+        verifiers:
+          type: array
+          items:
+            $ref: "#/components/schemas/VerifierWithStats"
+        pagination:
+          $ref: "#/components/schemas/VerifierPagination"
+      required:
+        - verifiers
+        - pagination
+    VerifierCreateResponse:
+      type: object
+      properties:
+        profile:
+          $ref: "#/components/schemas/VerifierProfile"
+        stats:
+          $ref: "#/components/schemas/VerifierStats"
+        auditLogId:
+          type: string
+          description: Audit log entry id when one was written
+      required:
+        - profile
+        - stats
+    VerifierMutationResponse:
+      type: object
+      properties:
+        profile:
+          $ref: "#/components/schemas/VerifierProfile"
+        stats:
+          $ref: "#/components/schemas/VerifierStats"
+        auditLogId:
+          type:
+            - string
+            - "null"
+          description: Audit log entry id, or null when the request was a no-op
+        changedFields:
+          type: array
+          items:
+            type: string
+          description: Profile fields changed by this request
+          example:
+            - status
+      required:
+        - profile
+        - stats
+        - auditLogId
+        - changedFields
+    CreateVerifierRequest:
+      type: object
+      properties:
+        userId:
+          type: string
+          minLength: 1
+          description: Stellar public key of the verifier to create
+          example: GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF
+        displayName:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: {}
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - suspended
+            - deactivated
+          description: "Verifier lifecycle status. Allowed transitions:
+            pending→approved|deactivated, approved→suspended|deactivated,
+            suspended→approved|deactivated, deactivated→pending|approved."
+          example: approved
+        reason:
+          type: string
+          description: Reason recorded on the audit log entry
+      required:
+        - userId
+    UpdateVerifierRequest:
+      type: object
+      properties:
+        displayName:
+          type:
+            - string
+            - "null"
+        metadata:
+          type:
+            - object
+            - "null"
+          additionalProperties: {}
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - suspended
+            - deactivated
+          description: "Verifier lifecycle status. Allowed transitions:
+            pending→approved|deactivated, approved→suspended|deactivated,
+            suspended→approved|deactivated, deactivated→pending|approved."
+          example: approved
+        reason:
+          type: string
+          description: Reason recorded on the audit log entry
+    VerifierReasonRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: Reason recorded on the audit log entry
+    VerifierErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: verifier not found
+      required:
+        - error
     ExportRequest:
       type: object
       properties:
@@ -258,6 +436,517 @@ components:
         - status
         - attempts
         - maxAttempts
+    PagePagination:
+      type: object
+      properties:
+        page:
+          type: integer
+          example: 1
+        pageSize:
+          type: integer
+          example: 20
+        total:
+          type: integer
+          example: 42
+        totalPages:
+          type: integer
+          example: 3
+        hasNext:
+          type: boolean
+        hasPrev:
+          type: boolean
+      required:
+        - page
+        - pageSize
+        - total
+        - totalPages
+        - hasNext
+        - hasPrev
+    OrgVault:
+      type: object
+      properties:
+        id:
+          type: string
+        creator:
+          type: string
+        verifier:
+          type: string
+        amount:
+          type: string
+          example: "100.0000000"
+        status:
+          type: string
+          enum:
+            - draft
+            - active
+            - completed
+            - failed
+            - cancelled
+        orgId:
+          type: string
+        startTimestamp:
+          type: string
+          format: date-time
+        endTimestamp:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - creator
+        - verifier
+        - amount
+        - status
+        - orgId
+        - startTimestamp
+        - endTimestamp
+        - createdAt
+        - updatedAt
+    SavedSearchQueryDefinition:
+      type: object
+      properties:
+        q:
+          type: string
+          maxLength: 200
+          description: Free-text search term (sanitized)
+        status:
+          type: string
+          enum:
+            - draft
+            - active
+            - completed
+            - failed
+            - cancelled
+        verifier:
+          type: string
+          maxLength: 256
+        amount_min:
+          type: string
+          pattern: ^\d+(\.\d+)?$
+          description: Inclusive lower amount bound
+        amount_max:
+          type: string
+          pattern: ^\d+(\.\d+)?$
+          description: Inclusive upper amount bound
+        date_from:
+          type: string
+          description: ISO 8601 date or timestamp (inclusive lower created_at bound)
+        date_to:
+          type: string
+          description: ISO 8601 date or timestamp (inclusive upper created_at bound)
+        sort_by:
+          type: string
+          enum:
+            - created_at
+            - amount
+            - end_date
+            - status
+        sort_order:
+          type: string
+          enum:
+            - asc
+            - desc
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+    OrgVaultSearch:
+      type: object
+      properties:
+        id:
+          type: string
+        org_id:
+          type: string
+        name:
+          type: string
+          example: High-value active vaults
+        query_definition:
+          $ref: "#/components/schemas/SavedSearchQueryDefinition"
+        alerts_enabled:
+          type: boolean
+        alert_recipient:
+          type:
+            - string
+            - "null"
+        alert_frequency_ms:
+          type: integer
+          example: 3600000
+        last_evaluated_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        last_result_hash:
+          type:
+            - string
+            - "null"
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - org_id
+        - name
+        - query_definition
+        - alerts_enabled
+        - alert_recipient
+        - alert_frequency_ms
+        - last_evaluated_at
+        - last_result_hash
+        - created_by
+        - created_at
+        - updated_at
+    OrgVaultSearchResult:
+      type: object
+      properties:
+        id:
+          type: string
+        creator:
+          type: string
+        verifier:
+          type: string
+        amount:
+          type: string
+        status:
+          type: string
+          enum:
+            - draft
+            - active
+            - completed
+            - failed
+            - cancelled
+        organization_id:
+          type: string
+        start_date:
+          type: string
+          format: date-time
+        end_date:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - creator
+        - verifier
+        - amount
+        - status
+        - organization_id
+        - start_date
+        - end_date
+        - created_at
+        - updated_at
+    OrgAnalytics:
+      type: object
+      properties:
+        orgId:
+          type: string
+        analytics:
+          type: object
+          properties:
+            totalCapital:
+              type: string
+              example: "4200.0000000"
+            successRate:
+              type: number
+              description: completed / (completed + failed)
+              example: 0.75
+            activeVaults:
+              type: integer
+            completedVaults:
+              type: integer
+            failedVaults:
+              type: integer
+          required:
+            - totalCapital
+            - successRate
+            - activeVaults
+            - completedVaults
+            - failedVaults
+        teamPerformance:
+          type: array
+          items:
+            type: object
+            properties:
+              creator:
+                type: string
+              vaultCount:
+                type: integer
+              totalAmount:
+                type: string
+              successRate:
+                type: number
+            required:
+              - creator
+              - vaultCount
+              - totalAmount
+              - successRate
+        generatedAt:
+          type: string
+          format: date-time
+      required:
+        - orgId
+        - analytics
+        - teamPerformance
+        - generatedAt
+    OrgRiskAnalytics:
+      type: object
+      properties:
+        orgId:
+          type: string
+        generatedAt:
+          type: string
+          format: date-time
+        range:
+          type: object
+          properties:
+            startDate:
+              type: string
+              format: date-time
+            endDate:
+              type: string
+              format: date-time
+          required:
+            - startDate
+            - endDate
+        analytics:
+          type: object
+          properties:
+            totalVaults:
+              type: integer
+            activeVaults:
+              type: integer
+            resolvedVaults:
+              type: integer
+            slashedVaults:
+              type: integer
+            slashRate:
+              type: number
+            capitalAtRisk:
+              type: string
+          required:
+            - totalVaults
+            - activeVaults
+            - resolvedVaults
+            - slashedVaults
+            - slashRate
+            - capitalAtRisk
+      required:
+        - orgId
+        - generatedAt
+        - range
+        - analytics
+    CohortRetention:
+      type: object
+      properties:
+        cohorts:
+          type: array
+          items:
+            type: object
+            properties:
+              cohort_period:
+                type: string
+                example: 2026-01
+              cohort_size:
+                type: integer
+              retained_count:
+                type: integer
+              retention_rate:
+                type: number
+                description: Fraction in [0, 1]
+            required:
+              - cohort_period
+              - cohort_size
+              - retained_count
+              - retention_rate
+        range:
+          type:
+            - integer
+            - "null"
+        generatedAt:
+          type: string
+          format: date-time
+      required:
+        - cohorts
+        - range
+        - generatedAt
+    TeamRollup:
+      type: object
+      properties:
+        orgId:
+          type: string
+        teams:
+          type: array
+          items:
+            type: object
+            properties:
+              teamId:
+                type: string
+              name:
+                type: string
+              slug:
+                type: string
+              vaultCount:
+                type: integer
+              totalCapital:
+                type: string
+              activeVaults:
+                type: integer
+              completedVaults:
+                type: integer
+              failedVaults:
+                type: integer
+              milestoneCount:
+                type: integer
+              milestonesCompleted:
+                type: integer
+              slashRate:
+                type: number
+            required:
+              - teamId
+              - name
+              - slug
+              - vaultCount
+              - totalCapital
+              - activeVaults
+              - completedVaults
+              - failedVaults
+              - milestoneCount
+              - milestonesCompleted
+              - slashRate
+        orgTotals:
+          type: object
+          properties:
+            vaultCount:
+              type: integer
+            totalCapital:
+              type: string
+            activeVaults:
+              type: integer
+            completedVaults:
+              type: integer
+            failedVaults:
+              type: integer
+            milestoneCount:
+              type: integer
+            milestonesCompleted:
+              type: integer
+            slashRate:
+              type: number
+            teamCount:
+              type: integer
+          required:
+            - vaultCount
+            - totalCapital
+            - activeVaults
+            - completedVaults
+            - failedVaults
+            - milestoneCount
+            - milestonesCompleted
+            - slashRate
+            - teamCount
+        generatedAt:
+          type: string
+          format: date-time
+      required:
+        - orgId
+        - teams
+        - orgTotals
+        - generatedAt
+    OrgAnalyticsReport:
+      type: object
+      properties:
+        id:
+          type: string
+        orgId:
+          type: string
+        snapshotAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        sizeBytes:
+          type: integer
+        downloadUrl:
+          type:
+            - string
+            - "null"
+          description: Signed S3 URL or local download path
+      required:
+        - id
+        - orgId
+        - snapshotAt
+        - createdAt
+        - sizeBytes
+        - downloadUrl
+    ApiKeyMetadata:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type:
+            - string
+            - "null"
+        orgId:
+          type:
+            - string
+            - "null"
+          format: uuid
+        label:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+            enum:
+              - read:analytics
+              - read:vaults
+              - write:analytics
+              - write:vaults
+        createdAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        lastUsedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        requestCount:
+          type: integer
+        lastIp:
+          type:
+            - string
+            - "null"
+      required:
+        - id
+        - userId
+        - orgId
+        - label
+        - scopes
+        - createdAt
+        - revokedAt
   parameters: {}
 paths:
   /api/health:
@@ -281,11 +970,14 @@ paths:
                     format: date-time
                   uptime:
                     type: number
+                  service:
+                    type: string
                   jobs: {}
                 required:
                   - status
                   - timestamp
                   - uptime
+                  - service
   /api/auth/register:
     post:
       summary: Register a new user
@@ -339,6 +1031,7 @@ paths:
                   format: email
                 password:
                   type: string
+                  minLength: 8
               required:
                 - email
                 - password
@@ -362,13 +1055,19 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: List of vaults
+          description: Paginated list of vaults
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Vault"
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Vault"
+                  pagination: {}
+                required:
+                  - data
     post:
       summary: Create a new vault
       tags:
@@ -929,26 +1628,16 @@ paths:
         content:
           application/json:
             schema:
-              def:
-                type: object
-                shape:
-                  role:
-                    def:
-                      type: enum
-                      entries:
-                        USER: USER
-                        VERIFIER: VERIFIER
-                        ADMIN: ADMIN
-                    type: enum
-                    enum:
-                      USER: USER
-                      VERIFIER: VERIFIER
-                      ADMIN: ADMIN
-                    options:
-                      - USER
-                      - VERIFIER
-                      - ADMIN
               type: object
+              properties:
+                role:
+                  type: string
+                  enum:
+                    - USER
+                    - VERIFIER
+                    - ADMIN
+              required:
+                - role
       responses:
         "200":
           description: Role updated
@@ -973,26 +1662,16 @@ paths:
         content:
           application/json:
             schema:
-              def:
-                type: object
-                shape:
-                  status:
-                    def:
-                      type: enum
-                      entries:
-                        ACTIVE: ACTIVE
-                        INACTIVE: INACTIVE
-                        SUSPENDED: SUSPENDED
-                    type: enum
-                    enum:
-                      ACTIVE: ACTIVE
-                      INACTIVE: INACTIVE
-                      SUSPENDED: SUSPENDED
-                    options:
-                      - ACTIVE
-                      - INACTIVE
-                      - SUSPENDED
               type: object
+              properties:
+                status:
+                  type: string
+                  enum:
+                    - ACTIVE
+                    - INACTIVE
+                    - SUSPENDED
+              required:
+                - status
       responses:
         "200":
           description: Status updated
@@ -1155,71 +1834,26 @@ paths:
         content:
           application/json:
             schema:
-              def:
-                type: object
-                shape:
-                  reasonCode:
-                    def:
-                      type: enum
-                      entries:
-                        USER_REQUEST: USER_REQUEST
-                        FRAUD_DETECTED: FRAUD_DETECTED
-                        SYSTEM_ERROR: SYSTEM_ERROR
-                        POLICY_VIOLATION: POLICY_VIOLATION
-                        EMERGENCY_ADMIN_ACTION: EMERGENCY_ADMIN_ACTION
-                        COMPLIANCE_REQUIREMENT: COMPLIANCE_REQUIREMENT
-                        TESTING_CLEANUP: TESTING_CLEANUP
-                    type: enum
-                    enum:
-                      USER_REQUEST: USER_REQUEST
-                      FRAUD_DETECTED: FRAUD_DETECTED
-                      SYSTEM_ERROR: SYSTEM_ERROR
-                      POLICY_VIOLATION: POLICY_VIOLATION
-                      EMERGENCY_ADMIN_ACTION: EMERGENCY_ADMIN_ACTION
-                      COMPLIANCE_REQUIREMENT: COMPLIANCE_REQUIREMENT
-                      TESTING_CLEANUP: TESTING_CLEANUP
-                    options:
-                      - USER_REQUEST
-                      - FRAUD_DETECTED
-                      - SYSTEM_ERROR
-                      - POLICY_VIOLATION
-                      - EMERGENCY_ADMIN_ACTION
-                      - COMPLIANCE_REQUIREMENT
-                      - TESTING_CLEANUP
-                  reason:
-                    def:
-                      type: optional
-                      innerType:
-                        def:
-                          type: string
-                        type: string
-                        format: null
-                        minLength: null
-                        maxLength: null
-                    type: optional
-                  idempotencyKey:
-                    def:
-                      type: optional
-                      innerType:
-                        def:
-                          type: string
-                        type: string
-                        format: null
-                        minLength: null
-                        maxLength: null
-                    type: optional
-                  details:
-                    def:
-                      type: optional
-                      innerType:
-                        def:
-                          type: string
-                        type: string
-                        format: null
-                        minLength: null
-                        maxLength: null
-                    type: optional
               type: object
+              properties:
+                reasonCode:
+                  type: string
+                  enum:
+                    - USER_REQUEST
+                    - FRAUD_DETECTED
+                    - SYSTEM_ERROR
+                    - POLICY_VIOLATION
+                    - EMERGENCY_ADMIN_ACTION
+                    - COMPLIANCE_REQUIREMENT
+                    - TESTING_CLEANUP
+                reason:
+                  type: string
+                idempotencyKey:
+                  type: string
+                details:
+                  type: string
+              required:
+                - reasonCode
       responses:
         "200":
           description: Vault cancelled
@@ -1229,6 +1863,653 @@ paths:
           description: Vault not found
         "409":
           description: Vault already cancelled or not cancellable
+  /api/admin/verifiers:
+    get:
+      operationId: adminListVerifiers
+      summary: List verifier profiles with aggregate stats
+      description: Returns verifier profiles ordered by the underlying table order.
+        `limit` is clamped to 200 and defaults to 50; invalid values fall back
+        to the defaults.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Paginated verifier profiles with aggregate verification stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierListResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/ErrorEnvelope"
+                  - $ref: "#/components/schemas/VerifierErrorResponse"
+    post:
+      operationId: adminCreateVerifier
+      summary: Create a verifier profile
+      description: "`userId` must be a valid Stellar public key. When `status` is
+        omitted the profile is created as `pending`. A unique-constraint
+        violation returns 409."
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVerifierRequest"
+      responses:
+        "201":
+          description: Verifier profile created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierCreateResponse"
+        "400":
+          description: Missing userId, invalid Stellar public key, non-string displayName,
+            non-object metadata or invalid status
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/ErrorEnvelope"
+                  - $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Verifier already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}:
+    get:
+      operationId: adminGetVerifier
+      summary: Get a verifier profile and its stats
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      responses:
+        "200":
+          description: Verifier profile and aggregate stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierWithStats"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/ErrorEnvelope"
+                  - $ref: "#/components/schemas/VerifierErrorResponse"
+    patch:
+      operationId: adminUpdateVerifier
+      summary: Update a verifier profile
+      description: Only the provided fields are updated. `displayName` and `metadata`
+        accept `null` to clear them. Status changes follow the verifier
+        transition matrix; an illegal transition returns 409.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateVerifierRequest"
+      responses:
+        "200":
+          description: Updated verifier profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Non-string displayName, non-object metadata or invalid status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+    delete:
+      operationId: adminDeleteVerifier
+      summary: Delete a verifier profile
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "204":
+          description: Verifier profile deleted; no content returned
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/approve:
+    post:
+      operationId: adminApproveVerifier
+      summary: Approve a verifier
+      description: Creates the verifier profile as `approved` when it does not exist
+        yet, otherwise transitions the existing profile. A second in-flight
+        transition for the same verifier returns 429.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier approved
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "429":
+          description: A concurrent transition for this verifier is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/suspend:
+    post:
+      operationId: adminSuspendVerifier
+      summary: Suspend a verifier
+      description: Creates the verifier profile as `suspended` when it does not exist
+        yet, otherwise transitions the existing profile. A second in-flight
+        transition for the same verifier returns 429.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier suspended
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "429":
+          description: A concurrent transition for this verifier is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/reinstate:
+    post:
+      operationId: adminReinstateVerifier
+      summary: Reinstate a suspended or deactivated verifier
+      description: Restores a previously approved verifier to `approved`, otherwise to
+        `pending`. Reinstating an already active (`approved`/`pending`) verifier
+        is a no-op returning an empty `changedFields` and a `null` `auditLogId`.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier reinstated (or already active)
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/deactivate:
+    post:
+      operationId: adminDeactivateVerifier
+      summary: Deactivate a verifier
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier deactivated
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+  /api/admin/verifiers/{userId}/reactivate:
+    post:
+      operationId: adminReactivateVerifier
+      summary: Reactivate a deactivated verifier
+      description: Transitions a deactivated verifier back to `pending`, pending
+        re-approval.
+      tags:
+        - Admin Verifiers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Verifier identifier (Stellar public key)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifierReasonRequest"
+      responses:
+        "200":
+          description: Verifier reactivated as pending
+          headers:
+            X-Request-Id:
+              description: Request correlation id; echoes the inbound x-request-id header when
+                supplied
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierMutationResponse"
+        "400":
+          description: Invalid userId (empty or longer than 128 characters)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "403":
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "404":
+          description: Verifier not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "409":
+          description: Invalid verifier status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifierErrorResponse"
   /api/exports/me:
     post:
       summary: Enqueue a personal data export job
@@ -1437,4 +2718,2035 @@ paths:
                       - warnings
                 required:
                   - data
+  /api/organizations/{orgId}/vaults:
+    get:
+      summary: List vaults belonging to an organization
+      description: Offset-paginated listing of the org's non-deleted vaults, with
+        optional status/creator filters and sorting.
+      tags:
+        - Org Vaults
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum:
+              - createdAt
+              - amount
+              - endTimestamp
+              - status
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - draft
+              - active
+              - completed
+              - failed
+              - cancelled
+        - name: creator
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Paginated org vaults
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgVault"
+                  pagination:
+                    $ref: "#/components/schemas/PagePagination"
+                required:
+                  - data
+                  - pagination
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Caller is not a member of the organization
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/organizations/{orgId}/vault-searches:
+    post:
+      summary: Create a saved vault search
+      description: Creates a saved search for the org. Requires owner/admin. Each org
+        may keep at most 20 saved searches; when alerts are enabled the
+        recipient is required and the frequency must be at least one hour.
+      tags:
+        - Org Vaults
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                query_definition:
+                  $ref: "#/components/schemas/SavedSearchQueryDefinition"
+                alerts_enabled:
+                  type: boolean
+                  default: false
+                alert_recipient:
+                  type: string
+                  description: Required when alerts_enabled is true
+                alert_frequency_ms:
+                  type: integer
+                  minimum: 3600000
+                  description: Minimum 3600000 (1 hour)
+                  example: 3600000
+              required:
+                - name
+                - query_definition
+      responses:
+        "201":
+          description: Saved search created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  search:
+                    $ref: "#/components/schemas/OrgVaultSearch"
+                required:
+                  - search
+        "400":
+          description: Invalid name, query_definition or alert settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "422":
+          description: Org has reached the saved-search limit (20)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+    get:
+      summary: List saved vault searches
+      tags:
+        - Org Vaults
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+      responses:
+        "200":
+          description: Saved searches, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  searches:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgVaultSearch"
+                required:
+                  - searches
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Caller is not a member of the organization
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/organizations/{orgId}/vault-searches/{searchId}:
+    get:
+      summary: Get a saved vault search
+      tags:
+        - Org Vaults
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: searchId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Saved search
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  search:
+                    $ref: "#/components/schemas/OrgVaultSearch"
+                required:
+                  - search
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Caller is not a member of the organization
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "404":
+          description: Saved search not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+    delete:
+      summary: Delete a saved vault search
+      tags:
+        - Org Vaults
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: searchId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Saved search deleted
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "404":
+          description: Saved search not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/organizations/{orgId}/vaults/search:
+    get:
+      summary: Search an organization's vaults
+      description: Full-text search (tsvector with an ILIKE fallback) plus structured
+        filters, cursor-paginated on (created_at DESC, id DESC).
+      tags:
+        - Org Vaults
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: q
+          in: query
+          schema:
+            type: string
+            maxLength: 200
+            description: Sanitized free-text term
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - draft
+              - active
+              - completed
+              - failed
+              - cancelled
+        - name: verifier
+          in: query
+          schema:
+            type: string
+        - name: amount_min
+          in: query
+          schema:
+            type: string
+        - name: amount_max
+          in: query
+          schema:
+            type: string
+        - name: date_from
+          in: query
+          schema:
+            type: string
+            description: ISO 8601 lower bound on created_at
+        - name: date_to
+          in: query
+          schema:
+            type: string
+            description: ISO 8601 upper bound on created_at
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            description: Opaque cursor from a previous page
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Matching vaults
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgVaultSearchResult"
+                  pagination:
+                    $ref: "#/components/schemas/PaginationCursor"
+                required:
+                  - data
+                  - pagination
+        "400":
+          description: Invalid cursor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Caller is not a member of the organization
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/analytics/risk:
+    get:
+      summary: Get org risk analytics
+      description: Slash rate, capital at risk and vault counts, optionally scoped to
+        a date window.
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            description: ISO 8601 window start
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            description: ISO 8601 window end
+      responses:
+        "200":
+          description: Risk analytics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgRiskAnalytics"
+        "400":
+          description: Invalid date range
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/analytics:
+    get:
+      summary: Get org vault analytics
+      description: Totals, success rate and a per-creator team-performance breakdown,
+        aggregated from Postgres.
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+      responses:
+        "200":
+          description: Org analytics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgAnalytics"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Failed to generate org analytics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/cohort-retention:
+    get:
+      summary: Get cohort retention
+      description: "Retention cohorts read from the vault_cohort_retention
+        materialized view. Note: the view is global, not scoped to the org."
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: range
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            description: Number of most-recent cohorts to return
+      responses:
+        "200":
+          description: Cohort retention data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  orgId:
+                    type: string
+                  data:
+                    $ref: "#/components/schemas/CohortRetention"
+                required:
+                  - success
+                  - orgId
+                  - data
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/teams/rollup:
+    get:
+      summary: Get org team rollup
+      description: Per-team vault, capital and milestone totals plus org-wide totals.
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+      responses:
+        "200":
+          description: Team rollup
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamRollup"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "500":
+          description: Failed to generate team rollup
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/orgs/{orgId}/analytics/reports:
+    get:
+      summary: List org analytics reports
+      description: Point-in-time analytics reports, newest first, with a signed
+        download URL when available.
+      tags:
+        - Org Analytics
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Paginated analytics reports
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgAnalyticsReport"
+                  pagination:
+                    $ref: "#/components/schemas/PagePagination"
+                required:
+                  - data
+                  - pagination
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+        "403":
+          description: Owner or admin role required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Internal server error
+                required:
+                  - error
+  /api/api-keys:
+    get:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: listApiKeysLegacy
+      summary: List the authenticated user’s API keys
+      deprecated: true
+      parameters:
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+            description: Page size. Supplied values are parsed and clamped to 1–100.
+          required: false
+          description: Page size. Supplied values are parsed and clamped to 1–100.
+          name: limit
+          in: query
+        - schema:
+            type: integer
+            minimum: 0
+            default: 0
+            description: Zero-based offset. Negative values are clamped to zero.
+          required: false
+          description: Zero-based offset. Negative values are clamped to zero.
+          name: offset
+          in: query
+      responses:
+        "200":
+          description: Page of API key metadata using offset pagination
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKeys:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ApiKeyMetadata"
+                  pagination:
+                    type: object
+                    properties:
+                      limit:
+                        type: integer
+                      offset:
+                        type: integer
+                      total:
+                        type: integer
+                    required:
+                      - limit
+                      - offset
+                      - total
+                required:
+                  - apiKeys
+                  - pagination
+        "401":
+          description: Missing, invalid, or expired bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "429":
+          description: Request rate limit exceeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    post:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: createApiKeyLegacy
+      summary: Create an API key
+      deprecated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                      - read:analytics
+                      - read:vaults
+                      - write:analytics
+                      - write:vaults
+                  minItems: 1
+                  maxItems: 20
+                  uniqueItems: true
+                orgId:
+                  type: string
+                  format: uuid
+              required:
+                - label
+                - scopes
+      responses:
+        "201":
+          description: API key created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey:
+                    type: string
+                    description: Secret returned only on creation or rotation.
+                  apiKeyMeta:
+                    $ref: "#/components/schemas/ApiKeyMetadata"
+                required:
+                  - apiKey
+                  - apiKeyMeta
+        "400":
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - VALIDATION_ERROR
+                      message:
+                        type: string
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            path:
+                              type: string
+                            message:
+                              type: string
+                            code:
+                              type: string
+                          required:
+                            - path
+                            - message
+                            - code
+                    required:
+                      - code
+                      - message
+                      - fields
+                required:
+                  - error
+        "401":
+          description: Missing, invalid, or expired bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Caller is not a member of the requested organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Organization not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "413":
+          description: Payload exceeds the applicable size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "415":
+          description: Request body must use UTF-8 JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Request rate limit exceeded
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/v1/api-keys:
+    get:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: listApiKeys
+      summary: List the authenticated user’s API keys
+      parameters:
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+            description: Page size. Supplied values are parsed and clamped to 1–100.
+          required: false
+          description: Page size. Supplied values are parsed and clamped to 1–100.
+          name: limit
+          in: query
+        - schema:
+            type: integer
+            minimum: 0
+            default: 0
+            description: Zero-based offset. Negative values are clamped to zero.
+          required: false
+          description: Zero-based offset. Negative values are clamped to zero.
+          name: offset
+          in: query
+      responses:
+        "200":
+          description: Page of API key metadata using offset pagination
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKeys:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ApiKeyMetadata"
+                  pagination:
+                    type: object
+                    properties:
+                      limit:
+                        type: integer
+                      offset:
+                        type: integer
+                      total:
+                        type: integer
+                    required:
+                      - limit
+                      - offset
+                      - total
+                required:
+                  - apiKeys
+                  - pagination
+        "401":
+          description: Missing, invalid, or expired bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "429":
+          description: Request rate limit exceeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    post:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: createApiKey
+      summary: Create an API key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                      - read:analytics
+                      - read:vaults
+                      - write:analytics
+                      - write:vaults
+                  minItems: 1
+                  maxItems: 20
+                  uniqueItems: true
+                orgId:
+                  type: string
+                  format: uuid
+              required:
+                - label
+                - scopes
+      responses:
+        "201":
+          description: API key created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey:
+                    type: string
+                    description: Secret returned only on creation or rotation.
+                  apiKeyMeta:
+                    $ref: "#/components/schemas/ApiKeyMetadata"
+                required:
+                  - apiKey
+                  - apiKeyMeta
+        "400":
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - VALIDATION_ERROR
+                      message:
+                        type: string
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            path:
+                              type: string
+                            message:
+                              type: string
+                            code:
+                              type: string
+                          required:
+                            - path
+                            - message
+                            - code
+                    required:
+                      - code
+                      - message
+                      - fields
+                required:
+                  - error
+        "401":
+          description: Missing, invalid, or expired bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Caller is not a member of the requested organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Organization not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "413":
+          description: Payload exceeds the applicable size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "415":
+          description: Request body must use UTF-8 JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Request rate limit exceeded
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/api-keys/{id}/rotate:
+    post:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: rotateApiKeyLegacy
+      summary: Rotate an API key
+      deprecated: true
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: API key rotated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey:
+                    type: string
+                    description: Secret returned only on creation or rotation.
+                  apiKeyMeta:
+                    $ref: "#/components/schemas/ApiKeyMetadata"
+                required:
+                  - apiKey
+                  - apiKeyMeta
+        "400":
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - VALIDATION_ERROR
+                      message:
+                        type: string
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            path:
+                              type: string
+                            message:
+                              type: string
+                            code:
+                              type: string
+                          required:
+                            - path
+                            - message
+                            - code
+                    required:
+                      - code
+                      - message
+                      - fields
+                required:
+                  - error
+        "401":
+          description: Missing, invalid, or expired bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "413":
+          description: Payload exceeds the applicable size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "415":
+          description: Request body must use UTF-8 JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Request rate limit exceeded
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/v1/api-keys/{id}/rotate:
+    post:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: rotateApiKey
+      summary: Rotate an API key
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: API key rotated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey:
+                    type: string
+                    description: Secret returned only on creation or rotation.
+                  apiKeyMeta:
+                    $ref: "#/components/schemas/ApiKeyMetadata"
+                required:
+                  - apiKey
+                  - apiKeyMeta
+        "400":
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - VALIDATION_ERROR
+                      message:
+                        type: string
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            path:
+                              type: string
+                            message:
+                              type: string
+                            code:
+                              type: string
+                          required:
+                            - path
+                            - message
+                            - code
+                    required:
+                      - code
+                      - message
+                      - fields
+                required:
+                  - error
+        "401":
+          description: Missing, invalid, or expired bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "413":
+          description: Payload exceeds the applicable size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "415":
+          description: Request body must use UTF-8 JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Request rate limit exceeded
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/api-keys/{id}/revoke:
+    post:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: revokeApiKeyLegacy
+      summary: Revoke an API key
+      description: Requires a valid step-up session. Supply it in the header or JSON body.
+      deprecated: true
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+        - schema:
+            type: string
+          required: false
+          name: X-Step-Up-Session-Id
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                stepUpSessionId:
+                  type: string
+      responses:
+        "200":
+          description: API key revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKeyMeta:
+                    $ref: "#/components/schemas/ApiKeyMetadata"
+                required:
+                  - apiKeyMeta
+        "400":
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - VALIDATION_ERROR
+                      message:
+                        type: string
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            path:
+                              type: string
+                            message:
+                              type: string
+                            code:
+                              type: string
+                          required:
+                            - path
+                            - message
+                            - code
+                    required:
+                      - code
+                      - message
+                      - fields
+                required:
+                  - error
+        "401":
+          description: Bearer authentication or step-up verification failed
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - type: object
+                    properties:
+                      error:
+                        type: string
+                      challenge:
+                        type: string
+                      stepUpRequired:
+                        type: boolean
+                        enum:
+                          - true
+                    required:
+                      - error
+                      - challenge
+                      - stepUpRequired
+                  - type: object
+                    properties:
+                      error:
+                        type: string
+                    required:
+                      - error
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "413":
+          description: Payload exceeds the applicable size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Request rate limit exceeded
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/v1/api-keys/{id}/revoke:
+    post:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: revokeApiKey
+      summary: Revoke an API key
+      description: Requires a valid step-up session. Supply it in the header or JSON body.
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+        - schema:
+            type: string
+          required: false
+          name: X-Step-Up-Session-Id
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                stepUpSessionId:
+                  type: string
+      responses:
+        "200":
+          description: API key revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKeyMeta:
+                    $ref: "#/components/schemas/ApiKeyMetadata"
+                required:
+                  - apiKeyMeta
+        "400":
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - VALIDATION_ERROR
+                      message:
+                        type: string
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            path:
+                              type: string
+                            message:
+                              type: string
+                            code:
+                              type: string
+                          required:
+                            - path
+                            - message
+                            - code
+                    required:
+                      - code
+                      - message
+                      - fields
+                required:
+                  - error
+        "401":
+          description: Bearer authentication or step-up verification failed
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - type: object
+                    properties:
+                      error:
+                        type: string
+                      challenge:
+                        type: string
+                      stepUpRequired:
+                        type: boolean
+                        enum:
+                          - true
+                    required:
+                      - error
+                      - challenge
+                      - stepUpRequired
+                  - type: object
+                    properties:
+                      error:
+                        type: string
+                    required:
+                      - error
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "413":
+          description: Payload exceeds the applicable size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Request rate limit exceeded
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/oauth/token:
+    post:
+      operationId: exchangeApiKeyForOAuthToken
+      summary: Exchange API key credentials for an OAuth access token
+      description: Describes the OAuth router contract. Availability depends on the
+        deployment mounting the router at this path.
+      tags:
+        - API Keys
+      security: []
+      servers:
+        - url: /
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                grant_type:
+                  type: string
+                  enum:
+                    - client_credentials
+                client_id:
+                  type: string
+                  format: uuid
+                client_secret:
+                  type: string
+                  minLength: 1
+                  maxLength: 512
+                  writeOnly: true
+                scope:
+                  type: string
+                  maxLength: 256
+                  description: Space-separated scopes. Omitted or blank uses all client grants. Up
+                    to 20 distinct scopes, each at most 64 characters.
+              required:
+                - grant_type
+                - client_id
+                - client_secret
+      responses:
+        "200":
+          description: Access token issued
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                  - no-store
+            Pragma:
+              schema:
+                type: string
+                enum:
+                  - no-cache
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  token_type:
+                    type: string
+                    enum:
+                      - Bearer
+                  expires_in:
+                    type: integer
+                    minimum: 60
+                    maximum: 43200
+                  scope:
+                    type: string
+                required:
+                  - access_token
+                  - token_type
+                  - expires_in
+                  - scope
+        "400":
+          description: Unsupported grant, malformed request, or invalid scope
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                  - no-store
+            Pragma:
+              schema:
+                type: string
+                enum:
+                  - no-cache
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  error_description:
+                    type: string
+                required:
+                  - error
+                  - error_description
+        "401":
+          description: Invalid client credentials
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                  - no-store
+            Pragma:
+              schema:
+                type: string
+                enum:
+                  - no-cache
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  error_description:
+                    type: string
+                required:
+                  - error
+                  - error_description
+        "413":
+          description: Payload exceeds the applicable size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "415":
+          description: Request body must use UTF-8 JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Request rate limit exceeded
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: OAuth token service is unavailable
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                  - no-store
+            Pragma:
+              schema:
+                type: string
+                enum:
+                  - no-cache
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  error_description:
+                    type: string
+                required:
+                  - error
+                  - error_description
 webhooks: {}

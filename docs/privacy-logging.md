@@ -20,6 +20,11 @@ Export job failure records and export queue structured events pass through the s
 The sanitizer replaces `userId`, `targetUserId`, Stellar account addresses, emails, `creator`, `successDestination`, and `failureDestination` with deterministic 8-character SHA-256 tokens.
 This keeps failed-job diagnostics and metrics correlation stable without exposing raw user identifiers to DLQ storage, logs, or downstream observability tooling.
 
+### Allowlist Mode (Fail Closed)
+The privacy logger runs in **allowlist mode** by default for request bodies, queries, and headers. This means **any field not explicitly allowlisted** is automatically redacted. This "fail closed" approach guarantees that newly added secrets (like webhook signing secrets, new API-key material, WebAuthn challenges, or JWTs) will never leak into the logs, even if they aren't manually added to the denylist.
+
+Safe operational fields (e.g. `requestId`, `status`, `method`, `host`, `user-agent`) are allowlisted and pass through. The explicit denylist continues to apply and takes precedence (i.e. a field on the denylist is always redacted).
+
 ### Automatic Redaction Paths
 The following paths are automatically redacted by Pino (value replaced with `***REDACTED***`):
 
@@ -130,13 +135,17 @@ Sensitive values are replaced with the string `"[REDACTED]"` (exported as `REDAC
 import { redact, maskIp, shouldRedact, privacyLogger, REDACTED } from './middleware/privacy-logger.js'
 ```
 
-### `redact<T>(value: T): T`
+### `redact<T>(value: T, seen = new WeakSet(), allowlistMode = false): T`
 
 Deep-copies `value` and replaces every sensitive field value and every string matching a PII pattern with `REDACTED`. Input is never mutated. Handles circular references, `Date`, `RegExp`, `Buffer`, nested objects, and arrays.
+If `allowlistMode` is `true`, any object field not present in the allowlist is also redacted.
 
 ```typescript
 redact({ password: 'secret', amount: 100 })
 // => { password: '[REDACTED]', amount: 100 }
+
+redact({ unknownField: 'val', requestId: '123' }, undefined, true)
+// => { unknownField: '[REDACTED]', requestId: '123' }
 
 redact({ nested: { email: 'a@b.com' } })
 // => { nested: { email: '[REDACTED]' } }

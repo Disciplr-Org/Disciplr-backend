@@ -19,40 +19,48 @@ All API errors return a consistent JSON envelope with the following structure:
 
 ### Field Descriptions
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `code` | string | Yes | Machine-readable error code for programmatic handling |
-| `message` | string | Yes | Human-readable error description |
-| `details` | object | No | Additional context (e.g., validation field errors). Only present for validation errors. |
-| `requestId` | string | No | Echoed from `x-request-id` header for request correlation |
+| Field       | Type   | Required | Description                                                                             |
+| ----------- | ------ | -------- | --------------------------------------------------------------------------------------- |
+| `code`      | string | Yes      | Machine-readable error code for programmatic handling                                   |
+| `message`   | string | Yes      | Human-readable error description                                                        |
+| `details`   | object | No       | Additional context (e.g., validation field errors). Only present for validation errors. |
+| `requestId` | string | No       | Echoed from `x-request-id` header for request correlation                               |
 
 ## Error Codes
 
 The following stable error codes are used across the API:
 
 ### 400 Bad Request
+
 - `BAD_REQUEST` - Generic bad request (malformed syntax, invalid parameters)
 - `VALIDATION_ERROR` - Request validation failed (includes field-level details)
 
 ### 401 Unauthorized
+
 - `UNAUTHORIZED` - Authentication required or failed
 
 ### 403 Forbidden
+
 - `FORBIDDEN` - Authenticated but not authorized for this resource
 
 ### 404 Not Found
+
 - `NOT_FOUND` - Resource does not exist
 
 ### 409 Conflict
+
 - `CONFLICT` - Resource conflict (e.g., duplicate entry)
 
 ### 422 Unprocessable Entity
+
 - `UNPROCESSABLE` - Business logic violation (e.g., cannot delete last admin)
 
 ### 429 Too Many Requests
+
 - `RATE_LIMITED` - Rate limit exceeded
 
 ### 500 Internal Server Error
+
 - `INTERNAL_ERROR` - Unexpected server error (safe message, no stack traces)
 
 ## Example Error Responses
@@ -171,16 +179,26 @@ Examples:
 
 ## Security Considerations
 
+### PII and Internal Detail Sanitization
+
+In production environments (`NODE_ENV=production`), all error responses are automatically sanitized to prevent the leakage of sensitive information. This includes:
+
+- **Internal Error Details**: For `500 Internal Server Error` responses, the original error message and stack trace are logged internally but are **never** included in the JSON response body. The client receives a generic "Internal server error" message.
+- **PII Redaction**: For validation errors (HTTP 400) that might echo back parts of the request payload in the `details` field, any values matching the PII taxonomy (e.g., email addresses, wallet addresses, sensitive keys) are automatically redacted.
+- **Correlation ID**: The `requestId` is always preserved, allowing for secure error correlation between the client and server-side logs.
+
+In non-production environments, error messages may contain more detail to aid in debugging.
+
 1. **No Stack Traces**: Stack traces are never exposed in production error responses
 2. **No Secrets**: Error messages never include tokens, API keys, database credentials, or raw SQL
 3. **Safe Messages**: Internal errors return generic "Internal server error" messages to prevent information leakage
-4. **Structured Logging**: Errors are logged server-side with full context for debugging
 
 ## Client Integration Guidelines
 
 ### Handling Errors
 
 Clients should:
+
 1. Check the HTTP status code first
 2. Use the `code` field for programmatic error handling (not the message)
 3. Display the `message` field to users
@@ -196,30 +214,30 @@ interface ApiError {
     message: string;
     details?: Record<string, unknown>;
     requestId?: string;
-  }
+  };
 }
 
 async function apiCall(): Promise<void> {
-  const response = await fetch('/api/resource', {
+  const response = await fetch("/api/resource", {
     headers: {
-      'x-request-id': generateRequestId() // For traceability
-    }
+      "x-request-id": generateRequestId(), // For traceability
+    },
   });
-  
+
   if (!response.ok) {
     const error: ApiError = await response.json();
-    
+
     // Handle by code, not message
     switch (error.error.code) {
-      case 'VALIDATION_ERROR':
+      case "VALIDATION_ERROR":
         // Show field-level errors
         showValidationErrors(error.error.details);
         break;
-      case 'UNAUTHORIZED':
+      case "UNAUTHORIZED":
         // Redirect to login
         redirectToLogin();
         break;
-      case 'NOT_FOUND':
+      case "NOT_FOUND":
         // Show 404 page
         showNotFound();
         break;
@@ -227,9 +245,9 @@ async function apiCall(): Promise<void> {
         // Generic error display
         showError(error.error.message);
     }
-    
+
     // Log requestId for support
-    console.error('Request ID:', error.error.requestId);
+    console.error("Request ID:", error.error.requestId);
   }
 }
 ```
@@ -239,28 +257,28 @@ async function apiCall(): Promise<void> {
 Route handlers use `AppError` factory methods for consistent errors:
 
 ```typescript
-import { AppError } from '../middleware/errorHandler.js';
+import { AppError } from "../middleware/errorHandler.js";
 
 // Validation error with details
-return next(AppError.validation('Invalid input', { field: 'email' }));
+return next(AppError.validation("Invalid input", { field: "email" }));
 
 // Simple bad request
-return next(AppError.badRequest('Missing required field'));
+return next(AppError.badRequest("Missing required field"));
 
 // Authentication required
-return next(AppError.unauthorized('Invalid token'));
+return next(AppError.unauthorized("Invalid token"));
 
 // Permission denied
-return next(AppError.forbidden('Admin access required'));
+return next(AppError.forbidden("Admin access required"));
 
 // Resource not found
-return next(AppError.notFound('User not found'));
+return next(AppError.notFound("User not found"));
 
 // Conflict
-return next(AppError.conflict('Email already registered'));
+return next(AppError.conflict("Email already registered"));
 
 // Business logic violation
-return next(AppError.unprocessable('Cannot delete last admin'));
+return next(AppError.unprocessable("Cannot delete last admin"));
 
 // Internal error (rarely used directly)
 return next(AppError.internal());
@@ -269,6 +287,7 @@ return next(AppError.internal());
 ## Testing
 
 Error responses are thoroughly tested in `src/tests/errorHandler.test.ts` with >95% coverage for:
+
 - All AppError factory methods
 - Error envelope structure validation
 - requestId echo behavior

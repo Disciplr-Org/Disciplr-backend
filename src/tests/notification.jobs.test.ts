@@ -121,7 +121,6 @@ describe('Notification Job Execution', () => {
       body: 'Content',
     }
 
-    const sendMock = mockNotificationService.send
     const err = new Error('550 5.1.1 User unknown')
     ;(err as any).nonRetryable = true
     sendMock.mockRejectedValueOnce(err)

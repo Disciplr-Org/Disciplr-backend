@@ -441,3 +441,397 @@ describe('Security Integration Tests', () => {
     })
   })
 })
+
+// ===========================================================================
+// RBAC Role-Matrix Tests — Issue #623
+//
+// Systematic coverage of every /api/admin/* endpoint across all three roles
+// (ADMIN / USER / VERIFIER) and unauthenticated requests.
+//
+// The role model is JWT-only: role is read exclusively from req.user.role set
+// by JWT verification — request headers are never trusted for role resolution.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Dedicated RBAC test app
+// Mirrors the production admin middleware stack in isolation so this suite
+// has no dependency on the database or other services.
+// ---------------------------------------------------------------------------
+
+const rbacApp = express()
+rbacApp.use(helmet())
+rbacApp.use(express.json())
+
+/** JWT-only authentication — identical logic to production auth.middleware.ts */
+const rbacAuthenticate = async (req: Request, res: Response, next: NextFunction) => {
+  const authHeader = req.headers.authorization
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' })
+  }
+  const token = authHeader.slice(7)
+  try {
+    const jwt = await import('jsonwebtoken')
+    const secret = process.env.JWT_ACCESS_SECRET || 'fallback-access-secret'
+    const payload = jwt.default.verify(token, secret, {
+      issuer: 'disciplr',
+      audience: 'disciplr-api',
+    }) as any
+    req.user = { userId: payload.userId || payload.sub, role: payload.role }
+    next()
+  } catch {
+    return res.status(401).json({ error: 'Unauthorized: Token expired or invalid' })
+  }
+}
+
+/** Admin-only guard — role read exclusively from req.user, never from headers */
+const rbacRequireAdmin = (req: Request, res: Response, next: NextFunction) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' })
+  if (req.user.role !== UserRole.ADMIN) {
+    return res.status(403).json({ error: 'Forbidden', message: 'Requires role: ADMIN' })
+  }
+  next()
+}
+
+/** Verifier-or-admin guard */
+const rbacRequireVerifier = (req: Request, res: Response, next: NextFunction) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' })
+  if (req.user.role !== UserRole.VERIFIER && req.user.role !== UserRole.ADMIN) {
+    return res.status(403).json({ error: 'Forbidden', message: 'Requires role: VERIFIER, ADMIN' })
+  }
+  next()
+}
+
+/** Any authenticated user guard */
+const rbacRequireUser = (req: Request, res: Response, next: NextFunction) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' })
+  next()
+}
+
+// --- Admin routes: all protected by rbacAuthenticate + rbacRequireAdmin ----
+
+rbacApp.use('/api/admin', rbacAuthenticate, rbacRequireAdmin)
+
+rbacApp.get('/api/admin/users', (_req, res) =>
+  res.json({ users: [], total: 0 }))
+
+rbacApp.patch('/api/admin/users/:id/role', (req, res) => {
+  const { role } = req.body
+  if (!role || !['USER', 'VERIFIER', 'ADMIN'].includes(role))
+    return res.status(400).json({ error: 'Invalid role' })
+  return res.json({ user: { id: req.params.id, role } })
+})
+
+rbacApp.patch('/api/admin/users/:id/status', (req, res) => {
+  const { status } = req.body
+  if (!status || !['ACTIVE', 'INACTIVE', 'SUSPENDED'].includes(status))
+    return res.status(400).json({ error: 'Invalid status' })
+  return res.json({ user: { id: req.params.id, status } })
+})
+
+rbacApp.delete('/api/admin/users/:id', (req, res) => {
+  if (req.params.id === 'self-id')
+    return res.status(400).json({ error: 'Cannot delete your own account' })
+  return res.json({ message: 'User soft-deleted', result: { deletionType: 'soft' } })
+})
+
+rbacApp.post('/api/admin/users/:id/restore', (_req, res) =>
+  res.json({ message: 'User restored' }))
+
+rbacApp.get('/api/admin/audit-logs', (_req, res) =>
+  res.json({ audit_logs: [], count: 0 }))
+
+rbacApp.get('/api/admin/audit-logs/:id', (_req, res) =>
+  res.status(404).json({ error: 'Audit log not found' }))
+
+rbacApp.post('/api/admin/overrides/vaults/:id/cancel', (req, res) => {
+  if (req.params.id === 'not-found')
+    return res.status(404).json({ error: 'Vault not found' })
+  return res.json({ vault: { id: req.params.id, status: 'cancelled' }, auditLogId: 'audit-1' })
+})
+
+rbacApp.post('/api/admin/users/:userId/revoke-sessions', (_req, res) =>
+  res.json({ message: 'Sessions revoked' }))
+
+// Admin verifier management
+rbacApp.get('/api/admin/verifiers', (_req, res) => res.json({ verifiers: [] }))
+rbacApp.get('/api/admin/verifiers/:userId', (_req, res) =>
+  res.status(404).json({ error: 'Verifier not found' }))
+rbacApp.post('/api/admin/verifiers', (req, res) => {
+  if (!req.body?.userId) return res.status(400).json({ error: 'Missing userId' })
+  return res.status(201).json({ verifier: { userId: req.body.userId } })
+})
+rbacApp.patch('/api/admin/verifiers/:userId', (_req, res) =>
+  res.json({ verifier: { userId: 'updated' } }))
+rbacApp.delete('/api/admin/verifiers/:userId', (_req, res) =>
+  res.json({ message: 'Verifier deleted' }))
+rbacApp.post('/api/admin/verifiers/:userId/approve', (_req, res) =>
+  res.json({ message: 'Verifier approved' }))
+rbacApp.post('/api/admin/verifiers/:userId/suspend', (_req, res) =>
+  res.json({ message: 'Verifier suspended' }))
+
+// Verifier-only route
+rbacApp.post('/api/verifications', rbacAuthenticate, rbacRequireVerifier, (_req, res) =>
+  res.status(201).json({ verification: { id: 'v-1' } }))
+rbacApp.get('/api/verifications', rbacAuthenticate, rbacRequireAdmin, (_req, res) =>
+  res.json({ verifications: [] }))
+
+// ---------------------------------------------------------------------------
+// Role-matrix table
+// ---------------------------------------------------------------------------
+
+interface MatrixEntry {
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE'
+  path: string           // concrete path (no :params)
+  body?: Record<string, unknown>
+  allowedRoles: UserRole[]
+}
+
+const ADMIN_MATRIX: MatrixEntry[] = [
+  { method: 'GET',    path: '/api/admin/users',                       allowedRoles: [UserRole.ADMIN] },
+  { method: 'PATCH',  path: '/api/admin/users/test-id/role',          body: { role: 'USER' },        allowedRoles: [UserRole.ADMIN] },
+  { method: 'PATCH',  path: '/api/admin/users/test-id/status',        body: { status: 'ACTIVE' },    allowedRoles: [UserRole.ADMIN] },
+  { method: 'DELETE', path: '/api/admin/users/target-id',             allowedRoles: [UserRole.ADMIN] },
+  { method: 'POST',   path: '/api/admin/users/target-id/restore',     allowedRoles: [UserRole.ADMIN] },
+  { method: 'GET',    path: '/api/admin/audit-logs',                  allowedRoles: [UserRole.ADMIN] },
+  { method: 'GET',    path: '/api/admin/audit-logs/some-id',          allowedRoles: [UserRole.ADMIN] },
+  { method: 'POST',   path: '/api/admin/overrides/vaults/vault-1/cancel', body: { reason: 'test' }, allowedRoles: [UserRole.ADMIN] },
+  { method: 'POST',   path: '/api/admin/users/target-id/revoke-sessions', allowedRoles: [UserRole.ADMIN] },
+  { method: 'GET',    path: '/api/admin/verifiers',                   allowedRoles: [UserRole.ADMIN] },
+  { method: 'GET',    path: '/api/admin/verifiers/test-user',         allowedRoles: [UserRole.ADMIN] },
+  { method: 'POST',   path: '/api/admin/verifiers',                   body: { userId: 'test-user' }, allowedRoles: [UserRole.ADMIN] },
+  { method: 'PATCH',  path: '/api/admin/verifiers/test-user',         body: { status: 'ACTIVE' },    allowedRoles: [UserRole.ADMIN] },
+  { method: 'DELETE', path: '/api/admin/verifiers/test-user',         allowedRoles: [UserRole.ADMIN] },
+  { method: 'POST',   path: '/api/admin/verifiers/test-user/approve', allowedRoles: [UserRole.ADMIN] },
+  { method: 'POST',   path: '/api/admin/verifiers/test-user/suspend', body: { reason: 'test' },      allowedRoles: [UserRole.ADMIN] },
+]
+
+const VERIFIER_MATRIX: MatrixEntry[] = [
+  { method: 'POST', path: '/api/verifications', body: { milestoneId: 'ms-1' }, allowedRoles: [UserRole.VERIFIER, UserRole.ADMIN] },
+  { method: 'GET',  path: '/api/verifications', allowedRoles: [UserRole.ADMIN] },
+]
+
+/** Fire a request against rbacApp for a given role token (or unauthenticated). */
+async function fireRbac(
+  entry: MatrixEntry,
+  token: string | null,
+): Promise<{ status: number }> {
+  let req = request(rbacApp)[entry.method.toLowerCase() as 'get' | 'post' | 'patch' | 'delete'](entry.path)
+  if (token) req = req.set('Authorization', `Bearer ${token}`)
+  if (entry.body) req = req.send(entry.body)
+  return req
+}
+
+// ---------------------------------------------------------------------------
+// RBAC Role-Matrix Tests
+// ---------------------------------------------------------------------------
+
+describe('RBAC Role-Matrix – all /api/admin/* endpoints (Issue #623)', () => {
+  // ── Req 2: Admin routes comprehensive coverage ──────────────────────────
+
+  describe('ADMIN token → 2xx/404 on all admin endpoints', () => {
+    for (const entry of ADMIN_MATRIX) {
+      it(`${entry.method} ${entry.path}`, async () => {
+        const res = await fireRbac(entry, adminToken())
+        expect([200, 201, 204, 400, 404, 409]).toContain(res.status)
+        expect(res.status).not.toBe(401)
+        expect(res.status).not.toBe(403)
+      })
+    }
+  })
+
+  describe('USER token → 403 on all admin endpoints', () => {
+    for (const entry of ADMIN_MATRIX) {
+      it(`${entry.method} ${entry.path}`, async () => {
+        const res = await fireRbac(entry, userToken())
+        expect(res.status).toBe(403)
+      })
+    }
+  })
+
+  describe('VERIFIER token → 403 on all admin endpoints', () => {
+    for (const entry of ADMIN_MATRIX) {
+      it(`${entry.method} ${entry.path}`, async () => {
+        const res = await fireRbac(entry, verifierToken())
+        expect(res.status).toBe(403)
+      })
+    }
+  })
+
+  describe('Unauthenticated → 401 on all admin endpoints', () => {
+    for (const entry of ADMIN_MATRIX) {
+      it(`${entry.method} ${entry.path}`, async () => {
+        const res = await fireRbac(entry, null)
+        expect(res.status).toBe(401)
+      })
+    }
+  })
+
+  // ── Req 3: Verifier workflow RBAC ─────────────────────────────────────
+
+  describe('Verifier endpoints role matrix', () => {
+    it('POST /api/verifications — VERIFIER token → 201', async () => {
+      const res = await fireRbac(VERIFIER_MATRIX[0], verifierToken())
+      expect(res.status).toBe(201)
+    })
+
+    it('POST /api/verifications — ADMIN token → 201', async () => {
+      const res = await fireRbac(VERIFIER_MATRIX[0], adminToken())
+      expect(res.status).toBe(201)
+    })
+
+    it('POST /api/verifications — USER token → 403', async () => {
+      const res = await fireRbac(VERIFIER_MATRIX[0], userToken())
+      expect(res.status).toBe(403)
+    })
+
+    it('POST /api/verifications — unauthenticated → 401', async () => {
+      const res = await fireRbac(VERIFIER_MATRIX[0], null)
+      expect(res.status).toBe(401)
+    })
+
+    it('GET /api/verifications — ADMIN token → 200', async () => {
+      const res = await fireRbac(VERIFIER_MATRIX[1], adminToken())
+      expect(res.status).toBe(200)
+    })
+
+    it('GET /api/verifications — VERIFIER token → 403', async () => {
+      const res = await fireRbac(VERIFIER_MATRIX[1], verifierToken())
+      expect(res.status).toBe(403)
+    })
+
+    it('GET /api/verifications — USER token → 403', async () => {
+      const res = await fireRbac(VERIFIER_MATRIX[1], userToken())
+      expect(res.status).toBe(403)
+    })
+  })
+
+  // ── Req 1: Security assumptions — role from JWT only ──────────────────
+
+  describe('Security assumptions — role header spoofing is rejected', () => {
+    const spoofHeaders: Array<{ name: string; headers: Record<string, string> }> = [
+      { name: 'x-user-role: ADMIN', headers: { 'x-user-role': 'ADMIN' } },
+      { name: 'x-requested-role: ADMIN', headers: { 'x-requested-role': 'ADMIN' } },
+      { name: 'role: ADMIN', headers: { 'role': 'ADMIN' } },
+      { name: 'x-auth-role: ADMIN', headers: { 'x-auth-role': 'ADMIN' } },
+      { name: 'multiple role headers', headers: { 'x-user-role': 'ADMIN', 'role': 'ADMIN' } },
+    ]
+
+    for (const { name, headers } of spoofHeaders) {
+      it(`USER token + ${name} → still 403 (not elevated to admin)`, async () => {
+        const req = request(rbacApp)
+          .get('/api/admin/users')
+          .set('Authorization', `Bearer ${userToken()}`)
+        for (const [k, v] of Object.entries(headers)) req.set(k, v)
+        const res = await req
+        expect(res.status).toBe(403)
+      })
+
+      it(`No token + ${name} → 401 (not authenticated by header)`, async () => {
+        const req = request(rbacApp).get('/api/admin/users')
+        for (const [k, v] of Object.entries(headers)) req.set(k, v)
+        const res = await req
+        expect(res.status).toBe(401)
+      })
+    }
+  })
+
+  // ── Req 5: Authentication always precedes authorization ────────────────
+
+  describe('Authentication precedes authorization invariant', () => {
+    it('missing Authorization header → 401, never 403', async () => {
+      const res = await request(rbacApp).get('/api/admin/users')
+      expect(res.status).toBe(401)
+    })
+
+    it('malformed Bearer token → 401, never 403', async () => {
+      const res = await request(rbacApp)
+        .get('/api/admin/users')
+        .set('Authorization', 'Bearer this.is.garbage')
+      expect(res.status).toBe(401)
+    })
+
+    it('wrong-secret token → 401, never 403', async () => {
+      const jwt = await import('jsonwebtoken')
+      const badToken = jwt.default.sign({ userId: 'u1', role: 'ADMIN' }, 'wrong-secret')
+      const res = await request(rbacApp)
+        .get('/api/admin/users')
+        .set('Authorization', `Bearer ${badToken}`)
+      expect(res.status).toBe(401)
+    })
+
+    it('expired token → 401, never 403', async () => {
+      const jwt = await import('jsonwebtoken')
+      const secret = process.env.JWT_ACCESS_SECRET || 'fallback-access-secret'
+      const expiredToken = jwt.default.sign(
+        { userId: 'u1', role: 'ADMIN', sub: 'u1' },
+        secret,
+        { expiresIn: '-1h', issuer: 'disciplr', audience: 'disciplr-api' },
+      )
+      const res = await request(rbacApp)
+        .get('/api/admin/users')
+        .set('Authorization', `Bearer ${expiredToken}`)
+      expect(res.status).toBe(401)
+    })
+
+    it('valid token but insufficient role → 403 (auth succeeded, authz failed)', async () => {
+      const res = await request(rbacApp)
+        .get('/api/admin/users')
+        .set('Authorization', `Bearer ${userToken()}`)
+      expect(res.status).toBe(403)
+    })
+  })
+
+  // ── Req 6: Error response consistency ─────────────────────────────────
+
+  describe('Error response envelope consistency', () => {
+    it('401 response has { error: string }', async () => {
+      const res = await request(rbacApp).get('/api/admin/users')
+      expect(res.status).toBe(401)
+      expect(res.body).toHaveProperty('error')
+      expect(typeof res.body.error).toBe('string')
+    })
+
+    it('403 response has { error: string }', async () => {
+      const res = await request(rbacApp)
+        .get('/api/admin/users')
+        .set('Authorization', `Bearer ${userToken()}`)
+      expect(res.status).toBe(403)
+      expect(res.body).toHaveProperty('error')
+      expect(typeof res.body.error).toBe('string')
+    })
+
+    it('403 response may include a message field with required role', async () => {
+      const res = await request(rbacApp)
+        .get('/api/admin/audit-logs')
+        .set('Authorization', `Bearer ${verifierToken()}`)
+      expect(res.status).toBe(403)
+      expect(res.body.message).toMatch(/ADMIN/)
+    })
+  })
+
+  // ── Path-param edge cases ──────────────────────────────────────────────
+
+  describe('Path-param edge cases', () => {
+    it('admin override on non-existent vault returns 404 (not RBAC error)', async () => {
+      const res = await request(rbacApp)
+        .post('/api/admin/overrides/vaults/not-found/cancel')
+        .set('Authorization', `Bearer ${adminToken()}`)
+        .send({ reason: 'test' })
+      expect(res.status).toBe(404)
+    })
+
+    it('audit log lookup for unknown id returns 404 (not RBAC error)', async () => {
+      const res = await request(rbacApp)
+        .get('/api/admin/audit-logs/unknown-log-id')
+        .set('Authorization', `Bearer ${adminToken()}`)
+      expect(res.status).toBe(404)
+    })
+
+    it('verifier lookup for unknown userId returns 404 (not RBAC error)', async () => {
+      const res = await request(rbacApp)
+        .get('/api/admin/verifiers/unknown-verifier')
+        .set('Authorization', `Bearer ${adminToken()}`)
+      expect(res.status).toBe(404)
+    })
+  })
+})

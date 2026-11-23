@@ -166,12 +166,125 @@ Every override operation generates a detailed audit log:
 - Non-cancellable statuses (completed, failed) return `409` with current status
 - All operations are logged even when no state change occurs
 
+## Confirmation-Token and Dual-Control Guard
+
+Several admin operations are irreversible or high-impact enough that a single compromised admin session could cause serious damage. These operations require a **confirmation token** — a short-lived, action-scoped secret issued by a separate prepare call — before they can execute. The highest-impact operations additionally require a **second-admin approval** (dual-control) before the token can be consumed.
+
+### Destructive Actions
+
+| Action | Routes guarded | Dual-control by default |
+|--------|---------------|------------------------|
+| `horizon.cursor.reset` | `POST /api/admin/horizon/listener/reset-cursor` | No |
+| `embeddings.force_resync` | `POST /api/admin/embeddings/reembed` | No |
+| `user.soft_delete` | `DELETE /api/admin/users/:id` | No |
+| `user.hard_delete` | `DELETE /api/admin/users/:id?hard=true` | **Yes** |
+
+The `DUAL_CONTROL_ACTIONS` environment variable (comma-separated list) controls which actions require a second approver. Default: `user.hard_delete`.
+
+### Confirmation-Token Flow (single-control)
+
+```
+1. Admin  →  POST /api/admin/confirm/prepare
+             Body: { "action": "horizon.cursor.reset", "scope": "CCONTRACT1" }
+             Response: { "tokenId": "<uuid>", "expiresAt": "...", "dualControlRequired": false }
+
+2. Admin  →  POST /api/admin/horizon/listener/reset-cursor
+             Header: x-confirmation-token: <tokenId>   (or body: { "confirmationToken": "<tokenId>" })
+             → 200 OK
+```
+
+### Dual-Control Flow (second-approver required)
+
+```
+1. Admin A →  POST /api/admin/confirm/prepare
+              Body: { "action": "user.hard_delete", "scope": "user-xyz" }
+              Response: { "tokenId": "<uuid>", "dualControlRequired": true,
+                          "approveUrl": "/api/admin/confirm/approve/<uuid>" }
+
+2. Admin B →  POST /api/admin/confirm/approve/<uuid>
+              Response: { "tokenId": "<uuid>", "approvedBy": "admin-B-id", "approvedAt": "..." }
+              (Admin B must be a different admin from Admin A — self-approval is rejected)
+
+3. Admin A →  DELETE /api/admin/users/user-xyz?hard=true
+              Header: x-confirmation-token: <uuid>
+              → 200 OK
+```
+
+### Prepare Endpoint
+
+```
+POST /api/admin/confirm/prepare
+Authorization: Bearer <admin-token>
+
+Body:
+{
+  "action": "user.hard_delete",   // required; one of VALID_DESTRUCTIVE_ACTIONS
+  "scope": "user-id-or-resource"  // optional; stored for audit trail
+}
+
+Response 201:
+{
+  "tokenId": "<uuid>",
+  "action": "user.hard_delete",
+  "scope": "user-id-or-resource",
+  "expiresAt": "2026-06-28T00:15:00.000Z",
+  "dualControlRequired": true,
+  "approveUrl": "/api/admin/confirm/approve/<uuid>"
+}
+```
+
+### Approve Endpoint (dual-control only)
+
+```
+POST /api/admin/confirm/approve/:tokenId
+Authorization: Bearer <second-admin-token>
+
+Response 200:
+{
+  "tokenId": "<uuid>",
+  "action": "user.hard_delete",
+  "approvedBy": "<admin-2-user-id>",
+  "approvedAt": "2026-06-28T00:02:00.000Z"
+}
+```
+
+### Error responses
+
+| Status | Reason |
+|--------|--------|
+| 400 | Missing or invalid `action` on prepare |
+| 403 | No confirmation token supplied to a guarded route |
+| 403 | Token is invalid, expired, wrong-scope, or already used |
+| 404 | Token not found on approve |
+| 409 | Self-approval, double-approval, or approve on non-dual-control action |
+
+### Audit trail
+
+Every step is recorded in the immutable audit log chain:
+
+| Event | `action` field | Actor |
+|-------|---------------|-------|
+| Token prepared | `admin.destructive_action.prepared` | Admin who prepared |
+| Token approved | `admin.destructive_action.approved` | Second admin who approved |
+| Destructive action executed | route-specific (e.g. `user.hard_delete`) | Admin who executed |
+
+### Token properties
+
+- **Action-scoped**: A token for `horizon.cursor.reset` is rejected on `embeddings.force_resync` and vice-versa.
+- **User-bound**: Only the admin who prepared the token can consume it.
+- **Single-use**: Once consumed the token is deleted; replay attempts are rejected.
+- **Short-lived**: 5 minutes for single-control actions; 15 minutes for dual-control (to allow the second admin time to review and approve).
+- **Self-approval prohibited**: The approver must be a different admin from the preparer.
+
 ## Testing
 
 Run the override-specific tests:
 
 ```bash
-# Run all admin tests including override tests
+# Dual-control and confirmation-token tests
+npm test -- src/tests/admin.dualControl.test.ts
+
+# All admin tests including override tests
 npm test -- tests/admin.test.ts
 
 # Run RBAC security tests
@@ -184,6 +297,7 @@ npm test -- --testNamePattern="Admin Override"
 ## Implementation Notes
 
 - In-memory idempotency tracking uses `Map` (use Redis in production)
+- Confirmation tokens use the same in-memory `Map` pattern as step-up nonces
 - Audit logs are stored in-memory for development; use persistent store in production
 - All metadata keys are normalized to snake_case
 - Nested objects in metadata are recursively sanitized

@@ -14,12 +14,13 @@ const checkpointRows = [
 ]
 
 let mutableCheckpoints = [...checkpointRows]
-let listenerState: any = {
+const confirmationTokens = new Map<string, Record<string, unknown>>()
+let listenerState = {
   last_processed_ledger: 120,
   last_processed_at: new Date(Date.now() - 10_000).toISOString(),
   updated_at: new Date('2026-06-26T10:00:05.000Z').toISOString(),
 }
-let failedEvent: any = {
+let failedEvent = {
   event_id: 'evt-1',
   error_message: 'parse failed',
   failed_at: new Date('2026-06-26T10:01:00.000Z').toISOString(),
@@ -27,11 +28,11 @@ let failedEvent: any = {
 }
 let maxProcessedLedger: string | number | null = 130
 
-const getAllCheckpoints = jest.fn<any>(async () => mutableCheckpoints)
-const getCheckpoint = jest.fn<any>(async (contractAddress: string) =>
+const getAllCheckpoints = jest.fn(async () => mutableCheckpoints)
+const getCheckpoint = jest.fn(async (contractAddress: string) =>
   mutableCheckpoints.find((checkpoint) => checkpoint.contractAddress === contractAddress) ?? null,
 )
-const resetCheckpoint = jest.fn<any>(async (contractAddress: string, ledger: number, pagingToken: string | null) => {
+const resetCheckpoint = jest.fn(async (contractAddress: string, ledger: number, pagingToken: string | null) => {
   const existing = mutableCheckpoints.find((checkpoint) => checkpoint.contractAddress === contractAddress)
   const updated = {
     id: existing?.id ?? 2,
@@ -47,12 +48,18 @@ const resetCheckpoint = jest.fn<any>(async (contractAddress: string, ledger: num
   ]
 })
 
-const createAuditLog = jest.fn<any>(async () => ({
+const createAuditLog = jest.fn(async () => ({
   id: 'audit-horizon-reset',
   created_at: '2026-06-26T11:00:00.000Z',
 }))
 
-const authMiddleware = jest.fn<any>((req: any, res: any, next: any) => {
+type AuthRequest = {
+  headers: { authorization?: string }
+  user?: { userId: string; role: 'ADMIN' | 'USER' }
+}
+type AuthResponse = { status: (code: number) => { json: (body: { error: string }) => void } }
+
+const authMiddleware = jest.fn((req: AuthRequest, res: AuthResponse, next: () => void) => {
   const authorization = req.headers.authorization
   if (!authorization?.startsWith('Bearer ')) {
     res.status(401).json({ error: 'Unauthorized: Missing or malformed Authorization header' })
@@ -77,43 +84,75 @@ const authMiddleware = jest.fn<any>((req: any, res: any, next: any) => {
 const makeDbChain = (tableName: string) => {
   if (tableName === 'listener_state') {
     return {
-      where: jest.fn<any>().mockReturnThis(),
-      select: jest.fn<any>().mockReturnThis(),
-      first: jest.fn<any>(async () => listenerState),
+      where: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      first: jest.fn(async () => listenerState),
     }
   }
 
   if (tableName === 'failed_events') {
     return {
-      select: jest.fn<any>().mockReturnThis(),
-      orderBy: jest.fn<any>().mockReturnThis(),
-      first: jest.fn<any>(async () => failedEvent),
+      select: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      first: jest.fn(async () => failedEvent),
     }
   }
 
   if (tableName === 'processed_events') {
     return {
-      max: jest.fn<any>().mockReturnThis(),
-      first: jest.fn<any>(async () => ({ max_ledger: maxProcessedLedger })),
+      max: jest.fn().mockReturnThis(),
+      first: jest.fn(async () => ({ max_ledger: maxProcessedLedger })),
     }
   }
 
   return {
-    count: jest.fn<any>().mockReturnThis(),
-    where: jest.fn<any>().mockReturnThis(),
-    first: jest.fn<any>(async () => undefined),
+    count: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    first: jest.fn(async () => undefined),
   }
 }
 
-const db = jest.fn<any>((tableName: string) => makeDbChain(tableName))
+const db = jest.fn((tableName: string) => {
+  if (tableName === 'confirmation_tokens') {
+    return {
+      insert: jest.fn(async (row: Record<string, unknown>) => {
+        confirmationTokens.set(String(row.token_id), { ...row })
+        return [1]
+      }),
+      where: jest.fn((conditions: Record<string, unknown>) => ({
+        first: jest.fn(async () => {
+          const token = confirmationTokens.get(String(conditions.token_id))
+          return token ? { ...token } : null
+        }),
+        update: jest.fn(async (changes: Record<string, unknown>) => {
+          const existing = confirmationTokens.get(String(conditions.token_id))
+          if (!existing) return 0
+          confirmationTokens.set(String(conditions.token_id), { ...existing, ...changes })
+          return 1
+        }),
+      })),
+      delete: jest.fn(async () => {
+        confirmationTokens.clear()
+        return 0
+      }),
+    }
+  }
+  return makeDbChain(tableName)
+})
 
+// ESM mocks must be registered before the dynamic import of the router.
+// The real confirmation-token middleware runs against an in-memory token table,
+// so cursor resets still require a valid, single-use action-scoped token.
 jest.unstable_mockModule('../middleware/auth.js', () => ({ authenticate: authMiddleware }))
-jest.unstable_mockModule('../middleware/rateLimiter.js', () => ({ metricsRateLimiter: (_req: any, _res: any, next: any) => next() }))
-jest.unstable_mockModule('../middleware/queryParser.js', () => ({ queryParser: () => (_req: any, _res: any, next: any) => next() }))
+jest.unstable_mockModule('../middleware/rateLimiter.js', () => ({ metricsRateLimiter: (_req: unknown, _res: unknown, next: () => void) => next() }))
+jest.unstable_mockModule('../middleware/queryParser.js', () => ({ queryParser: () => (_req: unknown, _res: unknown, next: () => void) => next() }))
+jest.unstable_mockModule('../middleware/stepUp.js', () => ({ requireStepUp: () => (_req: unknown, _res: unknown, next: () => void) => next() }))
 jest.unstable_mockModule('../lib/audit-logs.js', () => ({
   createAuditLog,
-  getAuditLogById: jest.fn<any>(),
-  listAuditLogs: jest.fn<any>(),
+  getAuditLogById: jest.fn(),
+  listAuditLogs: jest.fn(),
+  exportAuditLogsForOrganization: jest.fn(),
+  verifyAuditLogChain: jest.fn(),
 }))
 jest.unstable_mockModule('../services/checkpointStore.js', () => ({
   CheckpointStore: class {
@@ -124,18 +163,40 @@ jest.unstable_mockModule('../services/checkpointStore.js', () => ({
 }))
 jest.unstable_mockModule('../services/monitor.js', () => ({ getLatestListenerLag: () => 7 }))
 jest.unstable_mockModule('../db/knex.js', () => ({ db }))
-jest.unstable_mockModule('../db/index.js', () => ({ pool: {} }))
+jest.unstable_mockModule('../db/index.js', () => ({ db, default: db, pool: {} }))
 jest.unstable_mockModule('../services/user.service.js', () => ({ userService: {}, DeleteResult: {} }))
-jest.unstable_mockModule('../services/session.js', () => ({ forceRevokeUserSessions: jest.fn<any>() }))
-jest.unstable_mockModule('../services/vaultStore.js', () => ({ cancelVaultById: jest.fn<any>() }))
-jest.unstable_mockModule('../services/dbMetrics.js', () => ({ getDBHealthMetrics: jest.fn<any>() }))
-jest.unstable_mockModule('../services/featureFlags.js', () => ({
-  getFlag: jest.fn<any>(),
-  setFlag: jest.fn<any>(),
-  isValidFeatureFlag: jest.fn<any>(),
-  getAllFlags: jest.fn<any>(),
+jest.unstable_mockModule('../services/session.js', () => ({
+  forceRevokeUserSessions: jest.fn(),
+  recordSession: jest.fn(),
 }))
-jest.unstable_mockModule('../security/abuse-monitor.js', () => ({ getAbuseCategoryCounts: jest.fn<any>(() => ({})) }))
+jest.unstable_mockModule('../services/vaultStore.js', () => ({ cancelVaultById: jest.fn() }))
+jest.unstable_mockModule('../services/dbMetrics.js', () => ({
+  getDBHealthMetrics: jest.fn(),
+  getSlowQueryBuffer: jest.fn(),
+}))
+jest.unstable_mockModule('../services/featureFlags.js', () => ({
+  getFlag: jest.fn(),
+  setFlag: jest.fn(),
+  isValidFeatureFlag: jest.fn(),
+  getAllFlags: jest.fn(),
+}))
+jest.unstable_mockModule('../security/abuse-monitor.js', () => ({ getAbuseCategoryCounts: jest.fn(() => ({})) }))
+jest.unstable_mockModule('../lib/auth-utils.js', () => ({ generateImpersonationToken: jest.fn() }))
+jest.unstable_mockModule('../lib/prismaScope.js', () => ({ getPrisma: jest.fn() }))
+jest.unstable_mockModule('../services/embeddingProvider.js', () => ({
+  detectEmbeddingDrift: jest.fn(),
+  CURRENT_EMBEDDING_MODEL_VERSION: 'test',
+  createEmbeddingProvider: jest.fn(),
+}))
+jest.unstable_mockModule('../services/evidenceReindex.js', () => ({
+  runReindexBatches: jest.fn(),
+  EMBEDDING_REINDEX_JOB_NAME: 'test-reindex',
+}))
+jest.unstable_mockModule('../repositories/milestoneRepository.js', () => ({ MilestoneRepository: class {} }))
+jest.unstable_mockModule('../services/backfillCursorStore.js', () => ({ BackfillCursorStore: class {} }))
+jest.unstable_mockModule('../services/transactionETL.js', () => ({ TransactionETLService: class {} }))
+jest.unstable_mockModule('../services/etlWorker.js', () => ({ resolveETLConfig: jest.fn() }))
+jest.unstable_mockModule('../services/idempotency.js', () => ({ resetIdempotencyStore: jest.fn() }))
 
 const { adminRouter } = await import('../routes/admin.js')
 
@@ -143,10 +204,26 @@ const app = express()
 app.use(express.json())
 app.use('/api/admin', adminRouter)
 
+async function prepareResetToken(): Promise<string> {
+  const response = await request(app)
+    .post('/api/admin/confirm/prepare')
+    .set('Authorization', 'Bearer admin')
+    .send({ action: 'horizon.cursor.reset', scope: 'CCONTRACT1' })
+    .expect(201)
+
+  expect(response.body).toMatchObject({
+    action: 'horizon.cursor.reset',
+    scope: 'CCONTRACT1',
+    dualControlRequired: false,
+  })
+  return response.body.tokenId as string
+}
+
 describe('admin Horizon listener routes', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     mutableCheckpoints = [...checkpointRows]
+    confirmationTokens.clear()
     listenerState = {
       last_processed_ledger: 120,
       last_processed_at: new Date(Date.now() - 10_000).toISOString(),
@@ -186,9 +263,11 @@ describe('admin Horizon listener routes', () => {
   })
 
   it('resets the cursor and writes an audit log', async () => {
+    const tokenId = await prepareResetToken()
     const response = await request(app)
       .post('/api/admin/horizon/listener/reset-cursor')
       .set('Authorization', 'Bearer admin')
+      .set('X-Confirmation-Token', tokenId)
       .send({
         contractAddress: 'CCONTRACT1',
         ledger: 135,
@@ -218,9 +297,12 @@ describe('admin Horizon listener routes', () => {
   })
 
   it('refuses to move behind processed events unless forced', async () => {
+    const tokenId = await prepareResetToken()
+    createAuditLog.mockClear()
     const response = await request(app)
       .post('/api/admin/horizon/listener/reset-cursor')
       .set('Authorization', 'Bearer admin')
+      .set('X-Confirmation-Token', tokenId)
       .send({
         contractAddress: 'CCONTRACT1',
         ledger: 100,
@@ -237,9 +319,11 @@ describe('admin Horizon listener routes', () => {
   })
 
   it('allows forced backward cursor resets', async () => {
+    const tokenId = await prepareResetToken()
     const response = await request(app)
       .post('/api/admin/horizon/listener/reset-cursor')
       .set('Authorization', 'Bearer admin')
+      .set('X-Confirmation-Token', tokenId)
       .send({
         contractAddress: 'CCONTRACT1',
         ledger: 100,
@@ -252,6 +336,43 @@ describe('admin Horizon listener routes', () => {
     expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
       metadata: expect.objectContaining({ force: true }),
     }))
+  })
+
+  it('rejects cursor resets without an action-scoped confirmation token', async () => {
+    const noToken = await request(app)
+      .post('/api/admin/horizon/listener/reset-cursor')
+      .set('Authorization', 'Bearer admin')
+      .send({ contractAddress: 'CCONTRACT1', ledger: 135 })
+
+    expect(noToken.status).toBe(403)
+    expect(noToken.body).toMatchObject({
+      confirmationRequired: true,
+      action: 'horizon.cursor.reset',
+    })
+    expect(resetCheckpoint).not.toHaveBeenCalled()
+    expect(createAuditLog).not.toHaveBeenCalled()
+
+    const badToken = await request(app)
+      .post('/api/admin/horizon/listener/reset-cursor')
+      .set('Authorization', 'Bearer admin')
+      .set('X-Confirmation-Token', 'not-a-confirmation-token')
+      .send({ contractAddress: 'CCONTRACT1', ledger: 135 })
+
+    expect(badToken.status).toBe(403)
+    expect(resetCheckpoint).not.toHaveBeenCalled()
+  })
+
+  it('consumes a valid confirmation token only once', async () => {
+    const tokenId = await prepareResetToken()
+    const reset = () => request(app)
+      .post('/api/admin/horizon/listener/reset-cursor')
+      .set('Authorization', 'Bearer admin')
+      .set('X-Confirmation-Token', tokenId)
+      .send({ contractAddress: 'CCONTRACT1', ledger: 135 })
+
+    expect((await reset()).status).toBe(200)
+    expect((await reset()).status).toBe(403)
+    expect(resetCheckpoint).toHaveBeenCalledTimes(1)
   })
 
   it('keeps 401-before-403 for protected listener routes', async () => {

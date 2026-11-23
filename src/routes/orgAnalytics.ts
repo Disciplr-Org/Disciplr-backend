@@ -1,62 +1,176 @@
-import { orgAnalyticsRateLimiter } from '../middleware/rateLimiter.js'
-import { Router, Request, Response } from 'express'
+import { Router, type Request, type Response, type NextFunction } from 'express'
 import { authenticate } from '../middleware/auth.js'
-import { requireOrgAccess } from '../middleware/orgAuth.js'
-import { vaults, Vault } from './vaults.js'
+import { requireOrgAccess, requireOrgRole } from '../middleware/orgAuth.js'
+import { orgAnalyticsRateLimiter } from '../middleware/rateLimiter.js'
+import { getOrgRiskAnalytics } from '../services/analytics.service.js'
+import {
+  getOrgAnalytics,
+  listOrgVaultsForRiskAnalytics,
+} from '../services/orgAnalytics.js'
+import { getCohortRetention } from '../services/cohortRetention.js'
+import { getTeamRollup } from '../services/team.js'
+import { getOrgReports } from '../services/analyticsReports.js'
+import { resolveS3Config, getExportSignedUrl } from '../services/exportS3.js'
+import { parsePaginationParams } from '../utils/pagination.js'
+import db from '../db/index.js'
 
 export const orgAnalyticsRouter = Router()
 
+/**
+ * GET /:orgId/analytics/risk
+ *
+ * Risk analytics for the org: slash rate, capital at risk, vault counts.
+ * Accepts optional `startDate` / `endDate` query params to scope the window.
+ * Reads from the database — never from the in-memory vaults shim.
+ */
+orgAnalyticsRouter.get(
+  '/:orgId/analytics/risk',
+  authenticate,
+  requireOrgAccess('owner', 'admin'),
+  orgAnalyticsRateLimiter,
+  async (req: Request, res: Response) => {
+    const { orgId } = req.params
+    const startDate =
+      typeof req.query.startDate === 'string' ? req.query.startDate : undefined
+    const endDate =
+      typeof req.query.endDate === 'string' ? req.query.endDate : undefined
+
+    try {
+      const orgVaults = await listOrgVaultsForRiskAnalytics(orgId)
+      const result = getOrgRiskAnalytics(orgId, orgVaults, { startDate, endDate })
+      res.json(result)
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to generate risk analytics'
+      res.status(400).json({ error: message })
+    }
+  },
+)
+
+/**
+ * GET /:orgId/analytics
+ *
+ * Org-level vault analytics: total capital, success rate, active/completed/failed
+ * counts, and a per-creator team-performance breakdown. All figures are aggregated
+ * directly from Postgres — no in-memory vaults array.
+ */
 orgAnalyticsRouter.get(
   '/:orgId/analytics',
   authenticate,
   requireOrgAccess('owner', 'admin'),
-  orgAnalyticsRateLimiter, 
-  (req: Request, res: Response) => {
+  orgAnalyticsRateLimiter,
+  async (req: Request, res: Response) => {
     const { orgId } = req.params
-    const orgVaults = vaults.filter((v) => v.orgId === orgId)
 
-    const activeVaults = orgVaults.filter((v) => v.status === 'active').length
-    const completedVaults = orgVaults.filter((v) => v.status === 'completed').length
-    const failedVaults = orgVaults.filter((v) => v.status === 'failed').length
+    try {
+      const analytics = await getOrgAnalytics(orgId)
+      res.json(analytics)
+    } catch {
+      res.status(500).json({ error: 'Failed to generate org analytics' })
+    }
+  },
+)
 
-    const totalCapital = orgVaults
-      .reduce((sum, v) => sum + parseFloat(v.amount || '0'), 0)
-      .toString()
+orgAnalyticsRouter.get(
+  '/:orgId/cohort-retention',
+  authenticate,
+  requireOrgAccess('owner', 'admin'),
+  orgAnalyticsRateLimiter,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const range = req.query.range
+        ? parseInt(req.query.range as string, 10)
+        : undefined
 
-    const resolved = completedVaults + failedVaults
-    const successRate = resolved > 0 ? completedVaults / resolved : 0
+      const data = await getCohortRetention(db, range)
 
-    // Team performance: per-creator breakdown
-    const creatorMap = new Map<string, Vault[]>()
-    for (const v of orgVaults) {
-      const list = creatorMap.get(v.creator) ?? []
-      list.push(v)
-      creatorMap.set(v.creator, list)
+      return res.status(200).json({
+        success: true,
+        orgId: req.params.orgId,
+        data,
+      })
+    } catch (error) {
+      next(error)
+    }
+  },
+)
+
+orgAnalyticsRouter.get(
+  '/:orgId/teams/rollup',
+  authenticate,
+  requireOrgRole(['owner', 'admin']),
+  orgAnalyticsRateLimiter,
+  async (req: Request, res: Response) => {
+    const { orgId } = req.params
+
+    try {
+      const rollup = await getTeamRollup(orgId)
+      res.json(rollup)
+    } catch {
+      res.status(500).json({ error: 'Failed to generate team rollup' })
+    }
+  },
+)
+
+/**
+ * GET /:orgId/analytics/reports
+ *
+ * List all point-in-time analytics reports for the org. Each entry includes a
+ * signed, expiring download URL when S3 is configured, or a local download path
+ * otherwise. Paginated; newest reports appear first. Access is restricted to
+ * owner/admin members of the org (strict per-org isolation).
+ */
+orgAnalyticsRouter.get(
+  '/:orgId/analytics/reports',
+  authenticate,
+  requireOrgAccess('owner', 'admin'),
+  orgAnalyticsRateLimiter,
+  async (req: Request, res: Response) => {
+    const { orgId } = req.params
+    const pagination = parsePaginationParams(req)
+    const s3Config = resolveS3Config()
+
+    const offset = (pagination.page - 1) * pagination.pageSize
+    const { data: reports, total } = await getOrgReports(orgId, {
+      limit: pagination.pageSize,
+      offset,
+    })
+    const totalPages = Math.ceil(total / pagination.pageSize)
+    const paginated = {
+      data: reports,
+      pagination: {
+        ...pagination,
+        total,
+        totalPages,
+        hasNext: pagination.page < totalPages,
+        hasPrev: pagination.page > 1,
+      },
     }
 
-    const teamPerformance = Array.from(creatorMap.entries()).map(([creator, cvaults]) => {
-      const completed = cvaults.filter((v) => v.status === 'completed').length
-      const failed = cvaults.filter((v) => v.status === 'failed').length
-      const creatorResolved = completed + failed
-      return {
-        creator,
-        vaultCount: cvaults.length,
-        totalAmount: cvaults.reduce((s, v) => s + parseFloat(v.amount || '0'), 0).toString(),
-        successRate: creatorResolved > 0 ? completed / creatorResolved : 0,
-      }
-    })
+    const items = await Promise.all(
+      paginated.data.map(async (r) => {
+        let downloadUrl: string | null = null
+        if (r.s3Key && s3Config) {
+          try {
+            downloadUrl = await getExportSignedUrl(s3Config, r.s3Key)
+          } catch {
+            // signed URL generation failure is non-fatal; return null
+          }
+        } else if (r.localBuffer) {
+          downloadUrl = `/api/orgs/${orgId}/analytics/reports/${r.id}/download`
+        }
 
-    res.json({
-      orgId,
-      analytics: {
-        totalCapital,
-        successRate,
-        activeVaults,
-        completedVaults,
-        failedVaults,
-      },
-      teamPerformance,
-      generatedAt: new Date().toISOString(),
-    })
-  }
+        return {
+          id: r.id,
+          orgId: r.orgId,
+          snapshotAt: r.snapshotAt,
+          createdAt: r.createdAt,
+          sizeBytes: r.sizeBytes,
+          downloadUrl,
+        }
+      }),
+    )
+
+    res.json({ ...paginated, data: items })
+  },
 )

@@ -110,6 +110,7 @@ Run specific endpoint tests:
 npm test -- src/tests/performance/vaults.perf.test.ts
 npm test -- src/tests/performance/transactions.perf.test.ts
 npm test -- src/tests/performance/analytics.perf.test.ts
+npm test -- src/tests/performance/queryPlans.test.ts
 ```
 
 ### In CI
@@ -353,6 +354,43 @@ Tests emit structured JSON logs for monitoring:
 3. Use eager loading or joins to fetch related data
 4. Add query count assertions to tests
 
+## Query Plan Regression Benchmarks
+
+`src/tests/performance/queryPlans.test.ts` runs EXPLAIN-based checks against a
+bounded seeded dataset:
+
+| Dataset | Size |
+| --- | ---: |
+| Vaults | 240 rows in one organization |
+| Milestones | 240 rows, one per seeded vault |
+| Validations | 240 rows, one per seeded milestone |
+| Transactions | 960 rows split across two users |
+| Analytics summary | 1 row |
+
+The EXPLAIN assertions run inside a transaction with `SET LOCAL enable_seqscan = off`.
+This keeps the test focused on missing-index regressions: with the documented seed
+size PostgreSQL may prefer a sequential scan for cost reasons, but if an expected
+index is dropped or a predicate stops matching it, the plan will fail because no
+indexed path appears.
+
+Plan expectations:
+
+| Hot query | Required index path | Sequential scan allowed |
+| --- | --- | --- |
+| Vault list by tenant organization | `idx_vaults_organization_id` | No |
+| Transaction cursor page by user/timestamp | `idx_transactions_stellar_timestamp` | No |
+| Analytics summary by singleton id | `analytics_vault_summary_pkey` | No |
+
+The same test captures Knex `query` events for representative list shapes.
+Thresholds are intentionally tied to query shape rather than latency:
+
+| List shape | Page sizes compared | Expected query count |
+| --- | --- | ---: |
+| Vaults plus nested milestones and validations | 10 vs 80 vaults | 3 |
+| Transactions cursor list with count plus page fetch | 10 vs 80 transactions | 2 |
+
+Any increase in query count as page size grows is treated as an N+1 regression.
+
 ## Adding New Performance Tests
 
 ### 1. Create Test File
@@ -573,10 +611,217 @@ When adding performance tests:
 - [PostgreSQL EXPLAIN](https://www.postgresql.org/docs/current/sql-explain.html)
 - [Database Indexing Best Practices](https://use-the-index-luke.com/)
 
+## Cache Read Benchmark
+
+`src/tests/performance/cacheReads.perf.test.ts` benchmarks the cache-aside
+layer that fronts hot vault and analytics reads. It uses the in-memory LRU
+cache (no Redis) for fully deterministic measurement. See [cache architecture
+and invalidation patterns](cache.md) for background on the namespacing
+conventions exercised here.
+
+### Budget constants
+
+| Metric | Budget |
+| --- | ---: |
+| Hit ratio floor (after warm-up) | ≥ 95 % |
+| p95 in-memory hit latency | < 5 ms |
+
+### What is covered
+
+| Scenario | Assertion |
+| --- | --- |
+| Cold-cache miss path | Loader called exactly once; elapsed time includes loader overhead |
+| Warm-cache hit path | Loader never called after warm-up; returned value identical to cold read |
+| Hit ratio | ≥ 95 % of 100 reads served from cache after one warm-up miss |
+| Vault read: DB query count | `AnalyticsBatchLoader` issues exactly 2 queries (vault batch + milestone batch) on cold read |
+| Vault read: warm cache | `getOrSet` wrapping `getOrgAnalyticsBatched` issues 0 loader calls after warm-up |
+| Analytics read: warm cache | `getOrSet` wrapping the analytics loader issues 0 loader calls after warm-up |
+| p95 latency budget | p95 of 100 in-memory hits < 5 ms for both analytics and vault paths |
+| Latency advantage | Cache-hit p95 measurably lower than a 20 ms simulated cold-loader latency |
+| Cache-bypass regression | Loader call count stays at 1 as read volume grows (10 → 25 → 50 → 100 reads) |
+| Multi-tenant isolation | Warming org-A cache does not serve org-B; each org gets exactly one miss |
+
+### Running the cache benchmark
+
+```bash
+npm run test:perf -- --testPathPattern=cacheReads
+```
+
+Single-worker mode (required for latency accuracy):
+
+```bash
+npm run test:perf -- --testPathPattern=cacheReads --maxWorkers=1
+```
+
+### Threshold tuning
+
+The two budget constants live at the top of the test file:
+
+```typescript
+const HIT_RATIO_FLOOR    = 0.95  // raise if cache TTLs shorten significantly
+const HIT_LATENCY_P95_MS = 5     // raise only on constrained CI hardware
+```
+
+Latency thresholds are intentionally conservative (5 ms for a Map lookup)
+so that a regression that accidentally calls an async loader on every read
+is caught immediately — a genuine in-memory hit completes in < 1 ms in
+practice.
+
 ## Changelog
+
+### 2026-06-28
+- Added cache hit-ratio and read-latency benchmark (`cacheReads.perf.test.ts`)
+- Documented cache benchmark budgets and coverage in this file
+- Linked cache architecture doc from benchmark section
 
 ### 2026-04-25
 - Initial performance testing infrastructure
 - Added smoke tests for vaults, transactions, and analytics endpoints
 - Documented thresholds and best practices
 - Implemented helper utilities with 95% coverage requirement
+
+
+## Issue #754: Database Index and Query-Plan Audit for Hot Org-Scoped List Endpoints
+
+**Audit Date**: July 27, 2026  
+**Migration**: `20260727123000_add_org_scoped_list_indexes.cjs`  
+**Test File**: `src/tests/performance/orgListPlans.perf.test.ts`
+
+### Audit Scope
+
+The audit examined hot org-scoped list endpoints to ensure every paginated query uses a covering composite index, preventing sequential scans as data grows.
+
+### Tables and Indexes Added
+
+#### 1. **audit_logs**
+- **Existing Index**: `idx_audit_logs_organization_created` (created_at DESC only)
+- **New Index**: `idx_audit_logs_org_created_id` (organization_id, created_at, id)
+- **Covered Queries**:
+  - `listAuditLogs()` - WHERE organization_id = ? ORDER BY created_at DESC
+  - `lookupPreviousAuditLogHash()` - WHERE organization_id = ? ORDER BY created_at DESC, id DESC LIMIT 1
+  - `verifyAuditLogChain()` - WHERE organization_id = ? ORDER BY created_at ASC, id ASC
+  - `exportAuditLogsForOrganization()` - WHERE organization_id = ? ORDER BY created_at ASC, id ASC
+
+#### 2. **webhook_subscribers**
+- **Previous Index**: None for composite org-scoped queries
+- **New Index**: `idx_webhook_subscribers_org_active_created` (organization_id, active, created_at)
+- **Covered Queries**:
+  - `findByOrg()` - WHERE organization_id = ? AND active = true ORDER BY created_at ASC
+  - `findByEvent()` - Same base filter + JSONB containment on events
+
+#### 3. **vaults** ⭐ **CRITICAL ADDITION**
+- **Existing Index**: `idx_vaults_organization_id` (single column only)
+- **New Index**: `idx_vaults_org_deleted_created_id_desc` (organization_id, deleted_at, created_at DESC, id DESC)
+- **Covered Queries**:
+  - `listOrgVaults()` - WHERE organization_id = ? AND deleted_at IS NULL ORDER BY created_at DESC, id DESC
+  - **Cursor Pagination**: Supports keyset pagination with `(created_at, id) < (?, ?)` conditions
+
+#### 4. **notifications**
+- **Existing Index**: `idx_notifications_user_archived_created_id` (covers archived_at filter)
+- **New Index**: `idx_notifications_user_created_id` (user_id, created_at, id)
+- **Note**: This table is user-scoped, not org-scoped. The issue listing was updated to reflect this.
+
+#### 5. **transactions** ⚠️ **DEFERRED**
+- **Current State**: No organization_id column exists in transactions table
+- **Existing Indexes**: 
+  - `idx_transactions_stellar_timestamp`
+  - `idx_transactions_type_created_at`
+  - `idx_transactions_user_vault_type_created`
+- **Action**: If future work adds org-scoped transaction queries, an index on `(organization_id, created_at DESC, id DESC)` would be needed.
+
+### EXPLAIN-Based Regression Test
+
+**Test File**: `src/tests/performance/orgListPlans.perf.test.ts`
+
+The test verifies:
+1. **No Sequential Scans**: Each hot query uses an index scan, not seq scan
+2. **Large Dataset**: 6,000 rows per table with skewed distribution (1:50 ratio)
+3. **Multiple Query Patterns**: Tests both ASC and DESC ordering
+4. **Cursor Pagination**: Validates keyset pagination for vaults
+5. **Rollback Verification**: Ensures indexes can be cleanly removed
+
+**Test Coverage**:
+- ✅ audit_logs: Organization-scoped lookups with DESC/ASC ordering
+- ✅ webhook_subscribers: Active org subscribers sorted by created_at
+- ✅ vaults: Org-scoped vault listing with cursor pagination
+- ✅ notifications: User-scoped notification listing
+- ✅ Rollback: All four indexes can be cleanly removed and restored
+
+### Migration Details
+
+**File**: `db/migrations/20260727123000_add_org_scoped_list_indexes.cjs`
+
+The migration:
+1. Uses `CREATE INDEX IF NOT EXISTS` for idempotency
+2. Creates composite indexes matching actual query patterns
+3. Includes DESC ordering where queries use DESC sorting
+4. Handles NULL values (organization_id may be NULL for system actions)
+5. Provides complete `down()` function for rollback
+
+### Performance Impact
+
+#### Expected Improvements:
+
+1. **Vaults List Endpoint**:
+   - Before: Single column index `organization_id` only, requires sort on 2 columns
+   - After: Composite index `(organization_id, deleted_at, created_at DESC, id DESC)` covers WHERE, ORDER BY, and LIMIT
+
+2. **Audit Logs**:
+   - Before: Index on `(organization_id, created_at DESC)` only, missing id for tie-breaking
+   - After: Composite index `(organization_id, created_at, id)` covers all ASC/DESC patterns
+
+3. **Webhook Subscribers**:
+   - Before: No composite index for active org subscribers
+   - After: Index `(organization_id, active, created_at)` covers base filter and sort
+
+#### Query Plan Verification:
+
+Run the regression test:
+```bash
+npm test -- src/tests/performance/orgListPlans.perf.test.ts
+```
+
+Check index usage manually:
+```sql
+-- For vaults
+EXPLAIN (ANALYZE, BUFFERS) 
+SELECT * FROM vaults 
+WHERE organization_id = 'org-uuid' 
+  AND deleted_at IS NULL
+ORDER BY created_at DESC, id DESC 
+LIMIT 20;
+
+-- Look for: Index Scan using idx_vaults_org_deleted_created_id_desc
+-- Not: Seq Scan on vaults
+```
+
+### Monitoring Recommendations
+
+1. **Query Performance**: Monitor `pg_stat_user_indexes` for index usage
+2. **Scan Types**: Alert on sequential scans on large tables
+3. **Index Size**: Track growth of composite indexes
+4. **Query Latency**: Compare before/after response times for org-scoped lists
+
+### Future Considerations
+
+1. **Transactions Table**: If org-scoping is added, create `(organization_id, created_at DESC, id DESC)` index
+2. **Partial Indexes**: Consider `WHERE deleted_at IS NULL` for vaults if deletion rate is low
+3. **Index-only Scans**: Ensure SELECT clauses are covered by indexes where possible
+4. **Regular Audits**: Schedule quarterly index audits for new endpoints
+
+### Rollback Safety
+
+The migration is fully reversible:
+- `down()` function removes all four indexes
+- Uses `DROP INDEX IF EXISTS` for safety
+- No data loss (indexes only)
+
+### Test Data Requirements
+
+The EXPLAIN test requires:
+- **Large enough dataset**: 6,000+ rows to make index scans cheaper than seq scans
+- **Skewed distribution**: 1:50 ratio to simulate realistic org/user distributions
+- **Realistic timestamps**: Spread created_at values to simulate real data
+- **Cleanup**: All test data removed after tests complete
+
+This audit ensures that as the system grows, org-scoped list endpoints will maintain predictable performance without degrading to sequential scans.

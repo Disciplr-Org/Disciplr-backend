@@ -38,6 +38,14 @@ function buildQuery(table: string) {
     return null
   }
   q.insert = (data: any) => {
+    const dup = store.find(r =>
+      r.milestone_id === data.milestone_id && r.verifier_user_id === data.verifier_user_id
+    )
+    if (dup) {
+      const err: any = new Error('duplicate key value violates unique constraint "idx_milestone_approvals_unique"')
+      err.code = '23505'
+      throw err
+    }
     const row = { ...makeRow(data.milestone_id, data.verifier_user_id, data.approval_status), ...data }
     store.push(row)
     q._inserted = [row]
@@ -167,10 +175,12 @@ describe('Veto math — getMilestoneApprovalProgress(id, M, N)', () => {
     expect(p.isComplete).toBe(false)
   })
 
-  it('threshold > pool: maxPossible=N < M → vetoed even with no votes', async () => {
-    // M=4, N=3: approved=0, remaining=3, maxPossible=3 < 4
-    const p = await getMilestoneApprovalProgress(mid, 4, 3)
-    expect(p.isRejected).toBe(true)
+  it('threshold > pool: M > N is a rejected quorum configuration', async () => {
+    // M=4, N=3 can never be satisfied, so the invariant guard rejects it
+    // instead of reporting a permanently-vetoed milestone.
+    await expect(getMilestoneApprovalProgress(mid, 4, 3)).rejects.toThrow(
+      /totalVerifiers.*approvalThreshold/i,
+    )
   })
 
   it('late vote after veto: progress still shows vetoed', async () => {
@@ -302,5 +312,118 @@ describe('Duplicate vote prevention', () => {
     await vote(mid, 'v1', 'rejected')
     await vote(mid, 'v2', 'rejected')
     await expect(vote(mid, 'v1', 'approved')).rejects.toThrow(DuplicateVerifierVoteError)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Hostile-input boundary — recordMilestoneApproval
+// ---------------------------------------------------------------------------
+describe('recordMilestoneApproval — hostile-input boundary', () => {
+  beforeEach(reset)
+
+  it('rejects empty milestoneId', async () => {
+    await expect(
+      recordMilestoneApproval('', 'v1', 'approved'),
+    ).rejects.toThrow(/milestoneId must be a non-empty string/)
+  })
+
+  it('rejects whitespace-only milestoneId', async () => {
+    await expect(
+      recordMilestoneApproval('   ', 'v1', 'approved'),
+    ).rejects.toThrow(/milestoneId must be a non-empty string/)
+  })
+
+  it('rejects non-string milestoneId (number)', async () => {
+    await expect(
+      recordMilestoneApproval(123 as any, 'v1', 'approved'),
+    ).rejects.toThrow(/milestoneId must be a non-empty string/)
+  })
+
+  it('rejects empty verifierUserId', async () => {
+    await expect(
+      recordMilestoneApproval('ms-1', '', 'approved'),
+    ).rejects.toThrow(/verifierUserId must be a non-empty string/)
+  })
+
+  it('rejects whitespace-only verifierUserId', async () => {
+    await expect(
+      recordMilestoneApproval('ms-1', '   ', 'approved'),
+    ).rejects.toThrow(/verifierUserId must be a non-empty string/)
+  })
+
+  it('rejects non-string verifierUserId (null)', async () => {
+    await expect(
+      recordMilestoneApproval('ms-1', null as any, 'approved'),
+    ).rejects.toThrow(/verifierUserId must be a non-empty string/)
+  })
+
+  it('rejects invalid approvalStatus "pending"', async () => {
+    await expect(
+      recordMilestoneApproval('ms-1', 'v1', 'pending' as any),
+    ).rejects.toThrow(/approvalStatus must be "approved" or "rejected"/)
+  })
+
+  it('rejects invalid approvalStatus string', async () => {
+    await expect(
+      recordMilestoneApproval('ms-1', 'v1', 'maybe' as any),
+    ).rejects.toThrow(/approvalStatus must be "approved" or "rejected"/)
+  })
+
+  it('rejects undefined approvalStatus', async () => {
+    await expect(
+      recordMilestoneApproval('ms-1', 'v1', undefined as any),
+    ).rejects.toThrow(/approvalStatus must be "approved" or "rejected"/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Hostile-input boundary — getMilestoneApprovalProgress
+//
+// Malformed quorum input is rejected by the invariant guard (see
+// src/tests/verifiers.service.quorum.test.ts, #1529) instead of being silently
+// clamped, so callers can never persist a milestone whose threshold or pool
+// never matched what was requested.
+// ---------------------------------------------------------------------------
+describe('getMilestoneApprovalProgress — hostile-input boundary', () => {
+  const mid = 'boundary-ms'
+  beforeEach(reset)
+
+  it('rejects a zero threshold', async () => {
+    await vote(mid, 'v1', 'approved')
+    await expect(getMilestoneApprovalProgress(mid, 0)).rejects.toThrow(
+      /approvalThreshold.*positive integer/i,
+    )
+  })
+
+  it('rejects a negative threshold', async () => {
+    await vote(mid, 'v1', 'approved')
+    await expect(getMilestoneApprovalProgress(mid, -5)).rejects.toThrow(
+      /approvalThreshold.*positive integer/i,
+    )
+  })
+
+  it('rejects a non-numeric / non-integer threshold', async () => {
+    await vote(mid, 'v1', 'approved')
+    await expect(getMilestoneApprovalProgress(mid, NaN as any)).rejects.toThrow(
+      /approvalThreshold.*positive integer/i,
+    )
+    await expect(getMilestoneApprovalProgress(mid, 1.5 as any)).rejects.toThrow(
+      /approvalThreshold.*positive integer/i,
+    )
+  })
+
+  it('rejects a negative totalVerifiers', async () => {
+    await vote(mid, 'v1', 'approved')
+    await vote(mid, 'v2', 'rejected')
+    await expect(getMilestoneApprovalProgress(mid, 2, -3 as any)).rejects.toThrow(
+      /totalVerifiers.*positive integer/i,
+    )
+  })
+
+  it('rejects a zero totalVerifiers', async () => {
+    await vote(mid, 'v1', 'approved')
+    await expect(getMilestoneApprovalProgress(mid, 2, 0)).rejects.toThrow(
+      /totalVerifiers.*positive integer/i,
+    )
   })
 })

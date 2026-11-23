@@ -1,3 +1,4 @@
+import { Horizon } from '@stellar/stellar-sdk'
 import { Knex } from 'knex'
 import { EventProcessor } from './eventProcessor.js'
 import { parseHorizonEvent, HorizonEvent } from './eventParser.js'
@@ -34,8 +35,15 @@ export class HorizonListener {
   private reconnectAttempts: number = 0
   private currentBackoffMs: number = 1000
 
-  // Stellar SDK Server instance (initialised when SDK is available)
-  private server: unknown = null
+  // Close function returned by Horizon SSE stream; null when not streaming.
+  private streamClose: (() => void) | null = null
+
+  // Resolves when the active stream should be torn down (shutdown or reconnect).
+  private streamDone: (() => void) | null = null
+
+  // Resolves when stop() is called so backoff sleeps can be interrupted.
+  private shutdownResolve: (() => void) | null = null
+  private shutdownPromise: Promise<void> = Promise.resolve()
 
   constructor(
     config: HorizonListenerConfig,
@@ -85,6 +93,11 @@ export class HorizonListener {
     console.log('Stopping Horizon listener...')
     this.shutdownRequested = true
 
+    if (this.shutdownResolve) {
+      this.shutdownResolve()
+      this.shutdownResolve = null
+    }
+
     const shutdownStart = Date.now()
     while (this.inFlightEvents > 0) {
       const elapsed = Date.now() - shutdownStart
@@ -98,9 +111,14 @@ export class HorizonListener {
       await sleep(100)
     }
 
-    if (this.server) {
-      // TODO: close Stellar SDK connection when SDK is available
-      this.server = null
+    if (this.streamClose) {
+      this.streamClose()
+      this.streamClose = null
+    }
+
+    if (this.streamDone) {
+      this.streamDone()
+      this.streamDone = null
     }
 
     this.running = false
@@ -189,40 +207,85 @@ export class HorizonListener {
   // ── Private: streaming ───────────────────────────────────────────────────────
 
   private async startEventStream(startLedger: number): Promise<void> {
+    let cursor = startLedger
+
+    this.shutdownPromise = new Promise<void>((resolve) => {
+      this.shutdownResolve = resolve
+    })
+
     while (this.running && !this.shutdownRequested) {
       try {
-        // TODO: initialise Stellar SDK Server when available.
-        // Example:
-        //   import { Server } from '@stellar/stellar-sdk/horizon'
-        //   this.server = new Server(this.config.horizonUrl)
-        //   const stream = this.server.events()
-        //     .cursor(startLedger.toString())
-        //     .stream({
-        //       onmessage: (event) => this.handleEvent(event),
-        //       onerror:   (error)  => this.handleStreamError(error),
-        //     })
+        const server = new Horizon.Server(this.config.horizonUrl)
 
         console.log(
           JSON.stringify({
             level: 'info',
-            event: 'horizon.stream_placeholder',
+            event: 'horizon.stream_connected',
             service: 'disciplr-backend',
             horizonUrl: this.config.horizonUrl,
             contracts: this.config.contractAddresses,
-            startLedger,
+            cursor,
             timestamp: new Date().toISOString(),
           }),
         )
 
-        this.reconnectAttempts = 0
-        this.currentBackoffMs = 1000
+        // Create a promise that resolves when the stream ends or shutdown is requested.
+        await new Promise<void>((resolve) => {
+          this.streamDone = resolve
 
-        // Placeholder: exit the loop after one iteration.
-        // In production the SDK stream callback drives execution.
-        await sleep(1000)
-        break
+          const closeStream = (server as any).events()
+            .cursor(cursor.toString())
+            .stream({
+              onmessage: (event: HorizonEvent) => {
+                // Advance cursor so a reconnect resumes after this event.
+                if (typeof event.ledger === 'number') {
+                  cursor = event.ledger
+                }
+                void this.handleEvent(event)
+              },
+              onerror: (error: Error) => {
+                this.handleStreamError(error)
+                // Tear down this stream connection so the reconnect loop fires.
+                resolve()
+              },
+            }) as () => void
+
+          this.streamClose = () => {
+            closeStream()
+            resolve()
+          }
+        })
+
+        // Reset backoff on a clean connection.
+        if (!this.shutdownRequested) {
+          this.reconnectAttempts = 0
+          this.currentBackoffMs = 1000
+        }
+
+        this.streamClose = null
+        this.streamDone = null
+
+        if (this.shutdownRequested) break
+
+        console.log(
+          JSON.stringify({
+            level: 'info',
+            event: 'horizon.stream_disconnected',
+            service: 'disciplr-backend',
+            horizonUrl: this.config.horizonUrl,
+            cursor,
+            timestamp: new Date().toISOString(),
+          }),
+        )
+
+        // Reconnect immediately after a non-error disconnect.
+        cursor = await this.loadEffectiveStartLedger()
       } catch (error) {
+        this.streamClose = null
+        this.streamDone = null
         await this.handleConnectionError(error as Error)
+        // Reload cursor from checkpoint before retrying.
+        cursor = await this.loadEffectiveStartLedger()
       }
     }
   }
@@ -314,7 +377,8 @@ export class HorizonListener {
       )
     }
 
-    await sleep(this.currentBackoffMs)
+    // Race the backoff sleep against the shutdown signal so stop() wakes us.
+    await Promise.race([sleep(this.currentBackoffMs), this.shutdownPromise])
     this.currentBackoffMs = Math.min(this.currentBackoffMs * 2, 60_000)
   }
 

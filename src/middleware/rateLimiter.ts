@@ -1,13 +1,16 @@
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
+import rateLimit, { ipKeyGenerator, type RateLimitInfo } from 'express-rate-limit'
 import type { Request, Response, NextFunction } from 'express'
 import { redactApiKeyForLogs } from '../services/apiKeys.js'
 import { getEnv } from '../config/index.js'
+import { Redis } from 'ioredis'
+import { RedisStore } from './rateLimitStore.js'
 
 export interface RateLimitConfig {
   windowMs: number
   max: number
   message?: string
-  standardHeaders?: boolean
+  prefix?: string
+  standardHeaders?: boolean | 'draft-6' | 'draft-7'
   legacyHeaders?: boolean
   skipSuccessfulRequests?: boolean
   keyGenerator?: (req: Request) => string
@@ -30,16 +33,61 @@ const logRateLimitBreached = (req: Request): void => {
 const normalizeIp = (req: Request): string =>
   ipKeyGenerator(req.ip ?? req.socket.remoteAddress ?? 'unknown')
 
+let sharedRedisClient: Redis | undefined
+
+const getRedisClient = (): Redis | undefined => {
+  if (sharedRedisClient !== undefined) return sharedRedisClient
+
+  try {
+    const env = getEnv()
+    const redisUrl = env.REDIS_URL
+    if (redisUrl) {
+      sharedRedisClient = new Redis(redisUrl, {
+        maxRetriesPerRequest: 1,
+        enableOfflineQueue: false,
+      })
+      return sharedRedisClient
+    }
+  } catch {
+    const redisUrl = process.env.REDIS_URL
+    if (redisUrl) {
+      sharedRedisClient = new Redis(redisUrl, {
+        maxRetriesPerRequest: 1,
+        enableOfflineQueue: false,
+      })
+      return sharedRedisClient
+    }
+  }
+  return undefined
+}
+
 const createRateLimiter = (config: Partial<RateLimitConfig> = {}) => {
   const windowMs = config.windowMs ?? 15 * 60 * 1000
   const max = config.max ?? 100
+  const prefix = config.prefix ?? 'default:'
+  const redisClient = getRedisClient()
 
   return rateLimit({
     windowMs,
     max,
-    standardHeaders: config.standardHeaders ?? true,
+    store: redisClient ? new RedisStore(redisClient, `rl:${prefix}`) : undefined,
+    standardHeaders: config.standardHeaders ?? 'draft-7',
     legacyHeaders: config.legacyHeaders ?? false,
     skipSuccessfulRequests: config.skipSuccessfulRequests ?? false,
+    handler: (req, res, _next, options) => {
+      logRateLimitBreached(req)
+      const resetTime = (req as Request & { rateLimit?: RateLimitInfo }).rateLimit?.resetTime
+      if (resetTime) {
+        const resetMs = resetTime.getTime() - Date.now()
+        const retryAfterSeconds = Math.max(0, Math.ceil(resetMs / 1000))
+        res.setHeader('Retry-After', retryAfterSeconds.toString())
+      }
+      if (config.handler) {
+        config.handler(req, res)
+      } else {
+        res.status(options.statusCode).send(config.message ?? options.message)
+      }
+    },
     keyGenerator: config.keyGenerator ?? ((req) => {
       const apiKey = req.headers['x-api-key'] as string | undefined
       const orgId = (req as any).orgId
@@ -55,43 +103,94 @@ export const defaultRateLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 100,
   message: 'Rate limit exceeded. Please try again later.',
+  prefix: 'default:',
 })
 
 export const authRateLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 20,
   message: 'Too many authentication attempts. Please try again later.',
+  prefix: 'auth:',
 })
 
 export const healthRateLimiter = createRateLimiter({
   windowMs: 60 * 1000,
   max: 30,
   message: 'Health check rate limit exceeded.',
+  prefix: 'health:',
 })
 
 export const vaultsRateLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 50,
   message: 'Too many vault requests. Please try again later.',
+  prefix: 'vaults:',
 })
 
 export const strictRateLimiter = createRateLimiter({
   windowMs: 60 * 60 * 1000,
   max: 10,
   message: 'Rate limit exceeded. This endpoint has strict rate limits.',
+  prefix: 'strict:',
 })
 
 export const metricsRateLimiter = createRateLimiter({
   windowMs: 60 * 1000,
   max: 20,
   message: 'Metrics endpoint rate limit exceeded. Please try again later.',
+  prefix: 'metrics:',
 })
 
 export const apiKeyRateLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 20,
   message: 'Too many API key management requests. Please try again later.',
+  prefix: 'apikey:',
 })
+
+/**
+ * Per-account login rate limiter (keyed by normalised email).
+ * Throttles login attempts to a specific account regardless of originating IP.
+ * Helps prevent distributed credential stuffing attacks against a single account.
+ */
+export const createAccountLoginLimiter = () => {
+  const redisClient = getRedisClient()
+  const LOGIN_WINDOW_MS = 15 * 60 * 1000 // 15 minutes
+  const LOGIN_MAX = 5 // Max attempts per account per window
+
+  return rateLimit({
+    windowMs: LOGIN_WINDOW_MS,
+    max: LOGIN_MAX,
+    store: redisClient ? new RedisStore(redisClient, 'rl:login-account:') : undefined,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    skipSuccessfulRequests: true, // Only failed login attempts count
+    handler: (req, res, _next, options) => {
+      logRateLimitBreached(req)
+      const resetTime = (req as Request & { rateLimit?: RateLimitInfo }).rateLimit?.resetTime
+      if (resetTime) {
+        const resetMs = resetTime.getTime() - Date.now()
+        const retryAfterSeconds = Math.max(0, Math.ceil(resetMs / 1000))
+        res.setHeader('Retry-After', retryAfterSeconds.toString())
+      }
+      res.status(429).json({
+        error: 'Too many login attempts for this account. Please try again later.',
+        retryAfter: resetTime ? Math.ceil((resetTime.getTime() - Date.now()) / 1000) : undefined,
+      })
+    },
+    keyGenerator: (req) => {
+      // Normalise email: trim and lower-case to prevent bypass via casing
+      const email = req.body?.email
+      if (typeof email === 'string') {
+        return `account:${email.trim().toLowerCase()}`
+      }
+      // Fallback: if no email, use IP so the limiter still functions
+      return `account-unknown:${normalizeIp(req)}`
+    },
+  })
+}
+
+export const accountLoginLimiter = createAccountLoginLimiter()
 
 let orgRead: any
 export const orgReadRateLimiter = (req: Request, res: Response, next: NextFunction) => {
@@ -110,6 +209,7 @@ export const orgReadRateLimiter = (req: Request, res: Response, next: NextFuncti
       windowMs,
       max,
       message: 'Organization read rate limit exceeded.',
+      prefix: 'orgRead:',
     })
   }
   return orgRead(req, res, next)
@@ -132,6 +232,7 @@ export const orgWriteRateLimiter = (req: Request, res: Response, next: NextFunct
       windowMs,
       max,
       message: 'Organization write rate limit exceeded.',
+      prefix: 'orgWrite:',
     })
   }
   return orgWrite(req, res, next)
@@ -154,9 +255,18 @@ export const orgAnalyticsRateLimiter = (req: Request, res: Response, next: NextF
       windowMs,
       max,
       message: 'Organization analytics rate limit exceeded.',
+      prefix: 'orgAnalytics:',
     })
   }
   return orgAnalytics(req, res, next)
+}
+
+// Ensure the Redis client can be properly closed
+export const closeRateLimiterStore = async () => {
+  if (sharedRedisClient) {
+    await sharedRedisClient.quit()
+    sharedRedisClient = undefined
+  }
 }
 
 export { createRateLimiter }

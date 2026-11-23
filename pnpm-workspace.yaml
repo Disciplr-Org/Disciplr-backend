@@ -1,0 +1,7 @@
+allowBuilds:
+  '@prisma/client': false
+  '@prisma/engines': false
+  argon2: false
+  better-sqlite3: false
+  esbuild: false
+  prisma: false

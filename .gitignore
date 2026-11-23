@@ -9,3 +9,7 @@ dist
 
 /src/generated/prisma
 coverage/
+.opencode
+.vercel
+.env*
+data/*.db*

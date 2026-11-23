@@ -5,6 +5,9 @@
 exports.up = async function (knex) {
   // Create feature_flags table for org-aware feature gating
   await knex.schema.createTable('feature_flags', (table) => {
+    // Surrogate PK — org_id is nullable so it cannot participate in a PRIMARY KEY.
+    table.increments('id').primary()
+
     // Feature flag name (e.g., 'ENTERPRISE_ANALYTICS', 'MULTI_VERIFIER_ENABLED')
     table.string('name', 128).notNullable()
 
@@ -18,9 +21,9 @@ exports.up = async function (knex) {
     // When the flag was last updated
     table.timestamp('updated_at', { useTz: true }).notNullable().defaultTo(knex.fn.now())
 
-    // Composite primary key: (name, org_id) ensures one entry per flag per org
-    // null org_id is treated as default/global setting
-    table.primary(['name', 'org_id'])
+    // Unique constraint: one entry per flag per org
+    // PostgreSQL treats NULLs as distinct in UNIQUE, so global flags (org_id = NULL) work correctly.
+    table.unique(['name', 'org_id'])
 
     // Index on org_id for efficient lookups when fetching all flags for an org
     table.index(['org_id'])

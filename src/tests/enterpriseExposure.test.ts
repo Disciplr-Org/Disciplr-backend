@@ -1,22 +1,34 @@
 import { toPublicVault, toPublicMilestone } from '../utils/mappers.js';
 import { maskPii } from '../utils/privacy.js';
 import { Milestone } from '../types/horizonSync.js';
-import { Vault, VaultStatus } from '../types/vault.js';
+import { VaultStatus } from '../types/vault.js';
+
+/**
+ * Shape of a vault row as returned by Knex from the `vaults` table.
+ * Matches the VaultDbRow interface in mappers.ts.
+ */
+interface VaultDbRow {
+  id: string;
+  creator: string;
+  amount: string;
+  status: VaultStatus;
+  created_at: Date;
+  end_date: Date;
+  success_destination: string;
+  failure_destination: string;
+  organization_id?: string;
+}
 
 describe('Enterprise API Exposure Audit', () => {
-  const mockInternalVault: Vault = {
+  const mockInternalVault: VaultDbRow = {
     id: 'vault_123',
-    contract_id: 'C123',
-    creator_address: 'GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ',
+    creator: 'GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ',
     amount: '1000.0000000',
-    deadline: new Date('2024-12-31T23:59:59Z'),
-    milestone_hash: 'hash',
-    verifier_address: 'GVERIFIER',
+    end_date: new Date('2024-12-31T23:59:59Z'),
     success_destination: 'GBBM6BKZPEHWYO3E3YKREDPQXMS4VK35YLNU7NFBRI26RAN7GI5POFBB',
     failure_destination: 'GDTNXRLOJD2YEBPKK7KCMR7J33AAG5VZXHAJTHIG736D6LVEFLLLKPDL',
     status: VaultStatus.ACTIVE,
     created_at: new Date('2024-01-01T00:00:00Z'),
-    updated_at: new Date()
   };
 
   test('toPublicVault should omit internal fields', () => {
@@ -24,13 +36,13 @@ describe('Enterprise API Exposure Audit', () => {
 
     // Verify expected fields are present
     expect(result.id).toBe(mockInternalVault.id);
-    expect(result.creator).toBe(mockInternalVault.creator_address);
+    expect(result.creator).toBe(mockInternalVault.creator);
     expect(result.amount).toBe(mockInternalVault.amount);
 
     // Verify internal fields are strictly omitted
     expect(result).not.toHaveProperty('created_at');
-    expect(result).not.toHaveProperty('updated_at');
-    
+    expect(result).not.toHaveProperty('end_date');
+
     // Verify date format conversion
     expect(typeof result.startTimestamp).toBe('string');
     expect(result.endTimestamp).toBe('2024-12-31T23:59:59.000Z');

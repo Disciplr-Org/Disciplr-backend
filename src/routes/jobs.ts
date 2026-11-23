@@ -1,11 +1,14 @@
 import { Router, type RequestHandler } from 'express'
-import { z } from 'zod'
 import { UserRole } from '../types/user.js'
 import type { BackgroundJobSystem } from '../jobs/system.js'
 import {
   type EnqueueOptions,
   type JobPayloadByType,
   type JobType,
+  JOB_TYPES,
+  isJobType,
+  isPayloadForJobType,
+  isRecord,
 } from '../jobs/types.js'
 import { parseEnqueueOptions } from '../jobs/enqueueOptions.js'
 import { authenticate, authorize } from '../middleware/auth.js'
@@ -19,24 +22,27 @@ import { enqueueJobSchema } from '../lib/validation.js'
 const jobsJson = requireJson({ maxBytes: JOBS_JSON_MAX_BYTES })
 
 // Helpers
+const parseOptionalPositiveInt = (value: unknown): number | undefined => {
+  if (value === undefined) {
+    return undefined
+  }
+  if (typeof value !== 'string' || value.trim() === '') {
+    return NaN
+  }
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    return NaN
+  }
+  return parsed
+}
+
 const enqueueTypedJob = (
   jobSystem: BackgroundJobSystem,
   type: JobType,
   payload: JobPayloadByType[JobType],
   options: EnqueueOptions,
 ) => {
-  switch (type) {
-    case 'notification.send':
-      return jobSystem.enqueue(type, payload, options)
-    case 'deadline.check':
-      return jobSystem.enqueue(type, payload, options)
-    case 'oracle.call':
-      return jobSystem.enqueue(type, payload, options)
-    case 'analytics.recompute':
-      return jobSystem.enqueue(type, payload, options)
-    default:
-      throw new Error('Unsupported job type')
-  }
+  return jobSystem.enqueue(type as any, payload as any, options)
 }
 
 // Router factory
@@ -51,12 +57,52 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
 
   // All jobs endpoints require an authenticated admin
   jobsRouter.use(authenticate)
-   
+
+  // NOTE (#1548): every jobs endpoint — including dead-letter inspection and
+  // replay (`GET/POST /deadletters/...`) — is gated behind this admin check, so
+  // operator replay is an authorized, boundary-enforced action. This guard
+  // already exists in main; no functional change is required here.
   jobsRouter.use(authorize([UserRole.ADMIN]))
 
   // GET /metrics — internal queue metrics (admin only)
   jobsRouter.get('/metrics', (_req, res) => {
     res.json(jobSystem.getMetrics())
+  })
+
+  // GET /depth — queue depth report grouped by job type and state (admin only)
+  jobsRouter.get('/depth', (req, res) => {
+    const staleLeaseMs = parseOptionalPositiveInt(req.query.staleLeaseMs)
+    if (Number.isNaN(staleLeaseMs)) {
+      res.status(400).json({ error: 'staleLeaseMs must be a positive integer' })
+      return
+    }
+
+    res.json(jobSystem.getQueueDepthReport(staleLeaseMs))
+  })
+
+  // POST /sweep — reclaim jobs whose lease exceeded the stale threshold (admin only)
+  jobsRouter.post('/sweep', (req, res) => {
+    const staleLeaseMs = parseOptionalPositiveInt(req.query.staleLeaseMs)
+    if (Number.isNaN(staleLeaseMs)) {
+      res.status(400).json({ error: 'staleLeaseMs must be a positive integer' })
+      return
+    }
+
+    const result = jobSystem.sweepStaleLeases(staleLeaseMs)
+
+    createAuditLog({
+      actor_user_id: req.user!.userId,
+      action: 'job.sweep',
+      target_type: 'job_queue',
+      target_id: 'sweep',
+      metadata: {
+        staleLeaseMs: result.staleLeaseMs,
+        reclaimedCount: result.reclaimed.length,
+        deadLetteredCount: result.deadLettered.length,
+      },
+    })
+
+    res.status(200).json(result)
   })
 
   // GET /deadletters — inspect failed jobs that exhausted retries
@@ -161,7 +207,7 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
         if (!isJobType(type)) {
           res.status(400).json({
             error:
-              'Invalid or missing job type. Supported types: notification.send, deadline.check, oracle.call, analytics.recompute',
+              `Invalid or missing job type. Supported types: ${JOB_TYPES.join(', ')}`,
           })
           return
         }
@@ -181,6 +227,32 @@ export const createJobsRouter = (jobSystem: BackgroundJobSystem, options: JobsRo
           })
           return
         }
+
+        try {
+          const queuedJob = enqueueTypedJob(jobSystem, type, payload, options)
+          
+          createAuditLog({
+            actor_user_id: req.user!.userId,
+            action: 'job.enqueue',
+            target_type: 'job',
+            target_id: queuedJob.id,
+            metadata: {
+              jobType: type,
+              runAt: queuedJob.runAt,
+              maxAttempts: queuedJob.maxAttempts,
+              delayMs: options.delayMs ?? 0,
+            },
+          })
+
+          res.status(202).json({
+            queued: true,
+            job: queuedJob,
+          })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed to enqueue job'
+          res.status(500).json({ error: message })
+        }
+        return
       }
 
       res.status(400).json({

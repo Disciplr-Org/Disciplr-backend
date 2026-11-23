@@ -1,0 +1,10 @@
+src
+tests
+docs
+contracts
+prisma
+db
+data
+*.md
+!README.md
+node_modules

@@ -9,6 +9,13 @@ const ISO8601_WITH_TZ =
 
 const TZ_DESIGNATOR = /(Z|[+-]\d{2}:\d{2})$/
 
+export class InvalidTimestampError extends Error {
+  constructor(value: unknown) {
+    super(`Invalid UTC timestamp: ${String(value)}`)
+    this.name = 'InvalidTimestampError'
+  }
+}
+
 /**
  * Returns true if the string ends with a timezone designator (Z or +/-HH:MM).
  */
@@ -27,7 +34,7 @@ export function isValidISO8601(value: unknown): value is string {
   const match = ISO8601_WITH_TZ.exec(value)
   if (!match) return false
 
-  const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr] = match
+  const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr, , offset] = match
   const year = Number(yearStr)
   const month = Number(monthStr)
   const day = Number(dayStr)
@@ -35,14 +42,24 @@ export function isValidISO8601(value: unknown): value is string {
   const minute = Number(minuteStr)
   const second = Number(secondStr)
 
-  if (month < 1 || month > 12) return false
+  if (year < 0 || year > 9999 || month < 1 || month > 12) return false
   if (hour > 23 || minute > 59 || second > 59) return false
 
+  if (offset !== 'Z') {
+    const offsetHours = Number(offset.slice(1, 3))
+    const offsetMinutes = Number(offset.slice(4, 6))
+    if (offsetHours > 23 || offsetMinutes > 59) return false
+  }
+
   // Validate day range for the given month/year
-  const maxDay = new Date(year, month, 0).getDate()
+  const calendarProbe = new Date(Date.UTC(year, month, 1))
+  if (year >= 0 && year <= 99) calendarProbe.setUTCFullYear(year)
+  calendarProbe.setUTCDate(0)
+  const maxDay = calendarProbe.getUTCDate()
   if (day < 1 || day > maxDay) return false
 
-  return true
+  const date = new Date(value)
+  return !Number.isNaN(date.getTime())
 }
 
 /**
@@ -71,6 +88,33 @@ export function parseAndNormalizeToUTC(value: string): string {
 }
 
 /**
+ * Converts an accepted ISO timestamp or valid Date into the canonical API
+ * representation. Strings without an explicit offset are rejected instead of
+ * being interpreted using the host process timezone.
+ */
+export function normalizeTimestamp(value: unknown): string {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) throw new InvalidTimestampError(value)
+    return value.toISOString()
+  }
+  if (typeof value !== 'string') throw new InvalidTimestampError(value)
+  try {
+    return parseAndNormalizeToUTC(value)
+  } catch {
+    throw new InvalidTimestampError(value)
+  }
+}
+
+/**
+ * Returns a Date for comparison after enforcing the same UTC contract used by
+ * request validation and persistence mapping.
+ */
+export function toUTCDate(value: string | Date): Date {
+  const normalized = normalizeTimestamp(value)
+  return new Date(normalized)
+}
+
+/**
  * Returns the current time as an ISO 8601 UTC string (ending in Z).
  * Centralizes timestamp generation so every module uses a consistent source.
  */
@@ -83,7 +127,7 @@ export function utcNow(): string {
  * Useful for aggregating daily/weekly/monthly analytics.
  */
 export function utcStartOfDay(value: string | Date = new Date()): string {
-  const date = typeof value === 'string' ? new Date(value) : value
+  const date = toUTCDate(value)
   return new Date(Date.UTC(
     date.getUTCFullYear(),
     date.getUTCMonth(),
@@ -96,7 +140,7 @@ export function utcStartOfDay(value: string | Date = new Date()): string {
  * Returns the end of value's UTC day (23:59:59.999Z).
  */
 export function utcEndOfDay(value: string | Date = new Date()): string {
-  const date = typeof value === 'string' ? new Date(value) : value
+  const date = toUTCDate(value)
   return new Date(Date.UTC(
     date.getUTCFullYear(),
     date.getUTCMonth(),
@@ -127,10 +171,7 @@ const styleMap: Record<string, { dateStyle: Intl.DateTimeFormatOptions['dateStyl
  * @param options.style    - 'short' | 'medium' | 'long' (default: 'medium')
  */
 export function formatTimestamp(iso: string, options?: FormatTimestampOptions): string {
-  const date = new Date(iso)
-  if (isNaN(date.getTime())) {
-    throw new Error(`Invalid timestamp for formatting: ${iso}`)
-  }
+  const date = toUTCDate(iso)
 
   const locale = options?.locale ?? 'en-US'
   const timeZone = options?.timeZone ?? 'UTC'

@@ -21,6 +21,13 @@ The `accountability_vault` contract surfaces a series of numerical error codes w
 | **15** | `CONFLICT` | 409 | **NothingToWithdraw**: There are no staked funds to refund. |
 | **16** | `VALIDATION_ERROR` | 400 | **AmountMismatch**: Milestone amounts do not sum to the total stake. |
 
+Every mapped contract error also includes `retryable: false`. This is explicit
+client guidance: contract validation, authorization, and state errors do not
+become valid by replaying the same transaction. A contract-shaped error code
+that is not yet cataloged returns `CONTRACT_ERROR_UNKNOWN` (HTTP 502), the
+generic message `Contract operation failed`, its numeric code in `details`, and
+`retryable: false`. The raw RPC message is never returned to clients.
+
 ## Client Integration
 When a transaction fails via the Soroban RPC due to a contract error, the `buildVaultCreationPayload` helper traps the error and returns it embedded in the response payload instead of throwing an HTTP 500 error. The client receives it within the `submission` object in the API response:
 

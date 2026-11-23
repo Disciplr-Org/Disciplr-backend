@@ -14,6 +14,7 @@ import {
   discardDlqEntry,
   clearDlq,
   resetDlq,
+  type DlqEntry,
 } from '../services/exportQueue.js'
 import { resetS3ClientFactory, setS3ClientFactory } from '../services/exportS3.js'
 import { maskPii } from '../utils/privacy.js'
@@ -100,15 +101,15 @@ describe('Export dead-letter queue', () => {
     jest.restoreAllMocks()
     resetS3ClientFactory()
     await resetExportJobs()
-    resetDlq()
+    await resetDlq()
   })
 
   describe('entry creation', () => {
     it('moves permanently failed export jobs to the DLQ', async () => {
       const jobId = await createFailedJob('permanent S3 failure')
 
-      expect(getDlqDepth()).toBe(1)
-      const entry = getDlqEntry(jobId)
+      expect(await getDlqDepth()).toBe(1)
+      const entry = await getDlqEntry(jobId)
       expect(entry).toBeDefined()
       expect(entry!.jobId).toBe(jobId)
       expect(entry!.jobType).toBe('vaults:json')
@@ -121,13 +122,13 @@ describe('Export dead-letter queue', () => {
     it('does not create DLQ entry for retryable failures', async () => {
       const jobId = await createFailedJob('transient S3 failure', { maxAttempts: 3 })
 
-      expect(getDlqDepth()).toBe(0)
+      expect(await getDlqDepth()).toBe(0)
     })
 
     it('populates failureReason based on error context', async () => {
       const jobId = await createFailedJob('S3 upload failed')
 
-      const entry = getDlqEntry(jobId)
+      const entry = await getDlqEntry(jobId)
       expect(entry).toBeDefined()
       expect(['serialization_error', 'data_fetch_error', 'unknown_error']).toContain(entry!.failureReason)
     })
@@ -144,7 +145,7 @@ describe('Export dead-letter queue', () => {
 
       const jobId = await createFailedJob(failureMessage)
 
-      const entry = getDlqEntry(jobId)
+      const entry = await getDlqEntry(jobId)
       expect(entry).toBeDefined()
 
       const entryJson = JSON.stringify(entry)
@@ -163,10 +164,10 @@ describe('Export dead-letter queue', () => {
       const id2 = await createFailedJob('failure 2')
       const id3 = await createFailedJob('failure 3')
 
-      expect(getDlqDepth()).toBe(2)
-      expect(getDlqEntry(id1)).toBeUndefined()
-      expect(getDlqEntry(id2)).toBeDefined()
-      expect(getDlqEntry(id3)).toBeDefined()
+      expect(await getDlqDepth()).toBe(2)
+      expect(await getDlqEntry(id1)).toBeUndefined()
+      expect(await getDlqEntry(id2)).toBeDefined()
+      expect(await getDlqEntry(id3)).toBeDefined()
     })
   })
 
@@ -175,25 +176,25 @@ describe('Export dead-letter queue', () => {
       const id1 = await createFailedJob('failure A')
       const id2 = await createFailedJob('failure B')
 
-      const entries = getDlqEntries()
+      const entries = await getDlqEntries()
       expect(entries).toHaveLength(2)
       expect(entries[0].jobId).toBe(id2)
       expect(entries[1].jobId).toBe(id1)
 
-      entries.pop()
-      expect(getDlqDepth()).toBe(2)
+      ;(entries as DlqEntry[]).pop()
+      expect(await getDlqDepth()).toBe(2)
     })
 
     it('getDlqEntry returns undefined for unknown jobId', async () => {
-      expect(getDlqEntry('nonexistent-job')).toBeUndefined()
+      expect(await getDlqEntry('nonexistent-job')).toBeUndefined()
     })
 
     it('getDlqDepth returns current count', async () => {
-      expect(getDlqDepth()).toBe(0)
+      expect(await getDlqDepth()).toBe(0)
       await createFailedJob('failure X')
-      expect(getDlqDepth()).toBe(1)
+      expect(await getDlqDepth()).toBe(1)
       await createFailedJob('failure Y')
-      expect(getDlqDepth()).toBe(2)
+      expect(await getDlqDepth()).toBe(2)
     })
   })
 
@@ -201,11 +202,11 @@ describe('Export dead-letter queue', () => {
     it('requeueDlqEntry resets job to pending and removes from DLQ', async () => {
       const jobId = await createFailedJob('requeue test failure')
 
-      expect(getDlqDepth()).toBe(1)
+      expect(await getDlqDepth()).toBe(1)
 
       const result = await requeueDlqEntry(jobId)
       expect(result).toBe(true)
-      expect(getDlqEntry(jobId)).toBeUndefined()
+      expect(await getDlqEntry(jobId)).toBeUndefined()
 
       const job = await getJob(jobId)
       expect(job).toBeDefined()
@@ -222,16 +223,16 @@ describe('Export dead-letter queue', () => {
     it('discardDlqEntry removes entry from DLQ', async () => {
       const jobId = await createFailedJob('discard test failure')
 
-      expect(getDlqDepth()).toBe(1)
+      expect(await getDlqDepth()).toBe(1)
 
-      const result = discardDlqEntry(jobId)
+      const result = await discardDlqEntry(jobId)
       expect(result).toBe(true)
-      expect(getDlqEntry(jobId)).toBeUndefined()
-      expect(getDlqDepth()).toBe(0)
+      expect(await getDlqEntry(jobId)).toBeUndefined()
+      expect(await getDlqDepth()).toBe(0)
     })
 
     it('discardDlqEntry returns false for unknown jobId', async () => {
-      const result = discardDlqEntry('nonexistent-job')
+      const result = await discardDlqEntry('nonexistent-job')
       expect(result).toBe(false)
     })
 
@@ -240,15 +241,15 @@ describe('Export dead-letter queue', () => {
       await createFailedJob('clear test B')
       await createFailedJob('clear test C')
 
-      expect(getDlqDepth()).toBe(3)
+      expect(await getDlqDepth()).toBe(3)
 
-      const count = clearDlq()
+      const count = await clearDlq()
       expect(count).toBe(3)
-      expect(getDlqDepth()).toBe(0)
+      expect(await getDlqDepth()).toBe(0)
     })
 
     it('clearDlq on empty DLQ returns 0', async () => {
-      const count = clearDlq()
+      const count = await clearDlq()
       expect(count).toBe(0)
     })
   })
@@ -284,14 +285,14 @@ describe('Export dead-letter queue', () => {
       const jobIdB = (await getDlqEntries())[0].jobId
       hook.mockClear()
 
-      discardDlqEntry(jobIdB)
+      await discardDlqEntry(jobIdB)
       expect(hook).toHaveBeenCalledTimes(1)
       expect(hook.mock.calls[0][0].event).toBe('entry_discarded')
 
       await createFailedJob('event test C')
       hook.mockClear()
 
-      clearDlq()
+      await clearDlq()
       expect(hook).toHaveBeenCalledTimes(1)
       expect(hook.mock.calls[0][0].event).toBe('dlq_cleared')
     })
@@ -303,19 +304,19 @@ describe('Export dead-letter queue', () => {
 
       const jobId = await createFailedJob('hook error test')
 
-      const entry = getDlqEntry(jobId)
+      const entry = await getDlqEntry(jobId)
       expect(entry).toBeDefined()
       expect(hook).toHaveBeenCalled()
       expect(warnSpy).toHaveBeenCalled()
     })
 
     it('operates normally when no MetricsHook is configured', async () => {
-      resetDlq()
+      await resetDlq()
 
       const jobId = await createFailedJob('no hook test')
 
-      expect(getDlqDepth()).toBe(1)
-      expect(getDlqEntry(jobId)).toBeDefined()
+      expect(await getDlqDepth()).toBe(1)
+      expect(await getDlqEntry(jobId)).toBeDefined()
     })
   })
 })

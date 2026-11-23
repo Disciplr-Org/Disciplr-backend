@@ -6,6 +6,12 @@ import type {
   PersistedMilestone,
   PersistedVault,
 } from "../types/vaults.js";
+import { VaultStatus } from "../types/vault.js";
+import { UserRole } from "../types/user.js";
+import { canReadVault, type VaultActor } from "./vaultAccess.js";
+import { getOrSet, getOrLoad, invalidate, invalidatePrefix } from "../lib/cache.js";
+import { encodeCursor, decodeCursor } from "../utils/pagination.js";
+import { normalizeTimestamp, toUTCDate } from "../utils/timestamps.js";
 
 type UpdateableVaultField =
   | "amount"
@@ -61,33 +67,37 @@ const logVersionConflict = (id: string, revision: string, context: string) => {
   });
 };
 
-const memoryVaults: PersistedVault[] = [];
+let memoryVaults: PersistedVault[] = [];
 const memoryVaultRevisions = new Map<string, number>();
 
 const mapVaultRow = (row: {
   id: string;
   amount: string;
-  start_date: string;
-  end_date: string;
+  start_date: string | Date;
+  end_date: string | Date;
   verifier: string;
   success_destination: string;
   failure_destination: string;
   creator: string | null;
   status: PersistedVault["status"];
-  created_at: string;
+  created_at: string | Date;
   late_check_in_window_secs?: number | null;
+  organization_id?: string | null;
+  deleted_at?: string | Date | null;
 }): Omit<PersistedVault, "milestones"> => ({
   id: row.id,
   amount: row.amount,
-  startDate: row.start_date,
-  endDate: row.end_date,
+  startDate: normalizeTimestamp(row.start_date),
+  endDate: normalizeTimestamp(row.end_date),
   verifier: row.verifier,
   successDestination: row.success_destination,
   failureDestination: row.failure_destination,
   creator: row.creator,
   status: row.status,
-  createdAt: row.created_at,
+  createdAt: normalizeTimestamp(row.created_at),
   lateCheckInWindowSecs: row.late_check_in_window_secs ?? 0,
+  orgId: row.organization_id ?? undefined,
+  deletedAt: row.deleted_at ? normalizeTimestamp(row.deleted_at) : null,
 });
 
 export const createVaultWithMilestones = async (
@@ -106,7 +116,7 @@ export const createVaultWithMilestones = async (
       vaultId,
       title: milestone.title,
       description: milestone.description?.trim() || null,
-      dueDate: milestone.dueDate,
+      dueDate: normalizeTimestamp(milestone.dueDate),
       amount: milestone.amount,
       sortOrder: index,
       verifierUserId: input.verifier, // Assign the vault's verifier to each milestone
@@ -114,7 +124,15 @@ export const createVaultWithMilestones = async (
     }),
   );
 
+  const orgId = input.orgId;
+
   if (!client) {
+    if (process.env.NODE_ENV !== "development") {
+      console.warn(
+        "CRITICAL WARNING: Postgres client is unavailable. Falling back to in-memory vault store. Data will NOT be persisted across restarts! This is unexpected outside of development."
+      );
+    }
+
     const vault: PersistedVault = {
       id: vaultId,
       amount: input.amount,
@@ -124,13 +142,22 @@ export const createVaultWithMilestones = async (
       successDestination: input.destinations.success,
       failureDestination: input.destinations.failure,
       creator: input.creator ?? null,
-      status: "draft",
+      status: VaultStatus.DRAFT,
       createdAt: now,
       milestones,
       lateCheckInWindowSecs: input.lateCheckInWindowSecs ?? 0,
+      orgId,
     };
     memoryVaults.push(vault);
     memoryVaultRevisions.set(vault.id, 0);
+
+    // Evict/Invalidate caches on successful write
+    if (orgId) {
+      await invalidatePrefix('vaults:', orgId);
+      await invalidatePrefix('analytics:', orgId);
+    }
+    await invalidate('analytics:overall');
+
     return { vault, clientUsed: null };
   }
 
@@ -151,11 +178,12 @@ export const createVaultWithMilestones = async (
       status: PersistedVault["status"];
       created_at: string;
       late_check_in_window_secs: number | null;
+      organization_id: string | null;
     }>(
       `INSERT INTO vaults
-        (id, amount, start_date, end_date, verifier, success_destination, failure_destination, creator, status, late_check_in_window_secs)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft', $9)
-        RETURNING id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at, late_check_in_window_secs`,
+        (id, amount, start_date, end_date, verifier, success_destination, failure_destination, creator, status, late_check_in_window_secs, organization_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft', $9, $10)
+        RETURNING id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at, late_check_in_window_secs, organization_id`,
       [
         vaultId,
         input.amount,
@@ -166,6 +194,7 @@ export const createVaultWithMilestones = async (
         input.destinations.failure,
         input.creator ?? null,
         input.lateCheckInWindowSecs ?? 0,
+        orgId ?? null,
       ],
     );
 
@@ -196,6 +225,14 @@ export const createVaultWithMilestones = async (
       await client.query("COMMIT");
     }
 
+    // Evict/Invalidate caches on successful write
+    const finalOrgId = vault.orgId;
+    if (finalOrgId) {
+      await invalidatePrefix('vaults:', finalOrgId);
+      await invalidatePrefix('analytics:', finalOrgId);
+    }
+    await invalidate('analytics:overall');
+
     return { vault, clientUsed: client };
   } catch (error) {
     if (!customClient) {
@@ -209,13 +246,76 @@ export const createVaultWithMilestones = async (
   }
 };
 
-export const listVaults = async (): Promise<PersistedVault[]> => {
+export interface ListVaultsOptions {
+  actor?: VaultActor | null;
+  all?: boolean;
+}
+
+export const listVaults = async (options?: ListVaultsOptions): Promise<PersistedVault[]> => {
   const pool = getPgPool();
+  const actor = options?.actor;
+  const isAdmin =
+    actor?.role === UserRole.ADMIN ||
+    actor?.role === "ADMIN" ||
+    actor?.role?.toUpperCase() === "ADMIN";
+  const canSeeAll = isAdmin && Boolean(options?.all);
+
   if (!pool) {
-    return memoryVaults.map((vault) => ({
+    let vaults = memoryVaults;
+    if (actor) {
+      if (canSeeAll) {
+        vaults = memoryVaults;
+      } else {
+        vaults = memoryVaults.filter((vault) => canReadVault(actor, vault));
+      }
+    }
+    return vaults.map((vault) => ({
       ...vault,
       milestones: vault.milestones.map((milestone) => ({ ...milestone })),
     }));
+  }
+
+  let whereClause = "";
+  const params: any[] = [];
+
+  if (actor && !canSeeAll) {
+    const actorIds = [actor.userId, actor.walletAddress].filter(Boolean) as string[];
+    if (actorIds.length === 0 && !actor.orgId) {
+      return [];
+    }
+
+    const conditions: string[] = [];
+    if (actorIds.length > 0) {
+      params.push(actorIds);
+      const actorParamIdx = params.length;
+      conditions.push(`(
+        creator = ANY($${actorParamIdx})
+        OR verifier = ANY($${actorParamIdx})
+        OR EXISTS (
+          SELECT 1 FROM milestones m
+          WHERE m.vault_id = vaults.id
+            AND (
+              m.verifier_user_id = ANY($${actorParamIdx})
+              OR EXISTS (
+                SELECT 1 FROM milestone_approvals ma
+                WHERE ma.milestone_id = m.id
+                  AND ma.verifier_user_id = ANY($${actorParamIdx})
+              )
+            )
+        )
+      )`);
+    }
+
+    if (actor.orgId) {
+      params.push(actor.orgId);
+      const orgParamIdx = params.length;
+      conditions.push(`organization_id = $${orgParamIdx}`);
+    }
+
+    whereClause = `WHERE (${conditions.join(" OR ")})`;
+    if (!isAdmin) {
+      whereClause += ` AND deleted_at IS NULL`;
+    }
   }
 
   const vaultRows = await pool.query<{
@@ -230,10 +330,18 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
     status: PersistedVault["status"];
     created_at: string;
     late_check_in_window_secs: number | null;
+    organization_id: string | null;
+    deleted_at: string | null;
   }>(
-    "SELECT id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at, late_check_in_window_secs FROM vaults ORDER BY created_at DESC",
+    `SELECT id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at, late_check_in_window_secs, organization_id, deleted_at FROM vaults ${whereClause ? `${whereClause} ` : ""}ORDER BY created_at DESC`,
+    params,
   );
 
+  if (vaultRows.rows.length === 0) {
+    return [];
+  }
+
+  const vaultIds = vaultRows.rows.map((row) => row.id);
   const milestoneRows = await pool.query<{
     id: string;
     vault_id: string;
@@ -241,9 +349,12 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
     description: string | null;
     due_date: string;
     amount: string;
-    sort_order: number;    verifier_user_id: string | null;    created_at: string;
+    sort_order: number;
+    verifier_user_id: string | null;
+    created_at: string;
   }>(
-    "SELECT id, vault_id, title, description, due_date, amount::text, sort_order, verifier_user_id, created_at FROM milestones ORDER BY sort_order ASC",
+    "SELECT id, vault_id, title, description, due_date, amount::text, sort_order, verifier_user_id, created_at FROM milestones WHERE vault_id = ANY($1) ORDER BY sort_order ASC",
+    [vaultIds],
   );
 
   const milestonesByVault = new Map<string, PersistedMilestone[]>();
@@ -253,11 +364,11 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
       vaultId: milestone.vault_id,
       title: milestone.title,
       description: milestone.description,
-      dueDate: milestone.due_date,
+      dueDate: normalizeTimestamp(milestone.due_date),
       amount: milestone.amount,
       sortOrder: milestone.sort_order,
       verifierUserId: milestone.verifier_user_id,
-      createdAt: milestone.created_at,
+      createdAt: normalizeTimestamp(milestone.created_at),
     };
 
     const existing = milestonesByVault.get(milestone.vault_id);
@@ -268,7 +379,78 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
     }
   }
 
-  const rows: Array<{
+  return vaultRows.rows.map((row) => ({
+    ...mapVaultRow(row),
+    milestones: milestonesByVault.get(row.id) ?? [],
+  }));
+};
+
+export interface VaultPage {
+  vaults: PersistedVault[];
+  /** Opaque cursor to pass as `cursor` on the next call to get the next page. */
+  nextCursor: string | null;
+  hasNextPage: boolean;
+}
+
+/**
+ * Fetches a page of vaults scoped to a single org.
+ *
+ * Uses keyset (cursor) pagination on (created_at DESC, id DESC) so it is
+ * O(log n) on the index regardless of total vault count.
+ *
+ * @param orgId   - The organisation whose vaults to return.
+ * @param limit   - Maximum number of vaults per page (default 20, max 100).
+ * @param cursor  - Opaque cursor returned by the previous page; omit for the first page.
+ */
+export const listVaultsByOrg = async (
+  orgId: string,
+  limit = 20,
+  cursor?: string,
+): Promise<VaultPage> => {
+  const safeLimit = Math.min(Math.max(1, limit), 100);
+
+  const pool = getPgPool();
+  if (!pool) {
+    // In-memory fallback: filter, sort, then page.
+    const orgVaults = memoryVaults
+      .filter((v) => v.orgId === orgId)
+      .sort((a, b) => {
+        const timeDiff =
+          toUTCDate(b.createdAt).getTime() - toUTCDate(a.createdAt).getTime();
+        if (timeDiff !== 0) return timeDiff;
+        return b.id < a.id ? -1 : b.id > a.id ? 1 : 0;
+      });
+
+    let startIdx = 0;
+    if (cursor) {
+      const { timestamp, id } = decodeCursor(cursor);
+      startIdx = orgVaults.findIndex(
+        (v) =>
+          toUTCDate(v.createdAt).getTime() < timestamp.getTime() ||
+          (toUTCDate(v.createdAt).getTime() === timestamp.getTime() &&
+            v.id < id),
+      );
+      if (startIdx === -1) startIdx = orgVaults.length;
+    }
+
+    const page = orgVaults.slice(startIdx, startIdx + safeLimit + 1);
+    const hasNextPage = page.length > safeLimit;
+    const items = page.slice(0, safeLimit).map((v) => ({
+      ...v,
+      milestones: v.milestones.map((m) => ({ ...m })),
+    }));
+
+    const last = items[items.length - 1];
+    const nextCursor =
+      hasNextPage && last
+        ? encodeCursor(toUTCDate(last.createdAt), last.id)
+        : null;
+
+    return { vaults: items, nextCursor, hasNextPage };
+  }
+
+  // Keyset pagination: fetch one extra row to detect hasNextPage.
+  let vaultRows: {
     id: string;
     amount: string;
     start_date: string;
@@ -280,12 +462,97 @@ export const listVaults = async (): Promise<PersistedVault[]> => {
     status: PersistedVault["status"];
     created_at: string;
     late_check_in_window_secs: number | null;
-  }> = vaultRows.rows;
+    organization_id: string | null;
+  }[];
 
-  return rows.map((row) => ({
+  if (cursor) {
+    const { timestamp, id } = decodeCursor(cursor);
+    const result = await pool.query<typeof vaultRows[number]>(
+      `SELECT id, amount::text, start_date, end_date, verifier, success_destination,
+              failure_destination, creator, status, created_at,
+              late_check_in_window_secs, organization_id
+       FROM   vaults
+       WHERE  organization_id = $1
+         AND  (created_at, id) < ($2, $3)
+       ORDER  BY created_at DESC, id DESC
+       LIMIT  $4`,
+      [orgId, timestamp.toISOString(), id, safeLimit + 1],
+    );
+    vaultRows = result.rows;
+  } else {
+    const result = await pool.query<typeof vaultRows[number]>(
+      `SELECT id, amount::text, start_date, end_date, verifier, success_destination,
+              failure_destination, creator, status, created_at,
+              late_check_in_window_secs, organization_id
+       FROM   vaults
+       WHERE  organization_id = $1
+       ORDER  BY created_at DESC, id DESC
+       LIMIT  $2`,
+      [orgId, safeLimit + 1],
+    );
+    vaultRows = result.rows;
+  }
+
+  const hasNextPage = vaultRows.length > safeLimit;
+  const pageRows = vaultRows.slice(0, safeLimit);
+
+  // Fetch milestones only for the vaults on this page.
+  const vaultIds = pageRows.map((r) => r.id);
+  const milestonesByVault = new Map<string, PersistedMilestone[]>();
+
+  if (vaultIds.length > 0) {
+    const milestoneResult = await pool.query<{
+      id: string;
+      vault_id: string;
+      title: string;
+      description: string | null;
+      due_date: string;
+      amount: string;
+      sort_order: number;
+      verifier_user_id: string | null;
+      created_at: string;
+    }>(
+      `SELECT id, vault_id, title, description, due_date, amount::text,
+              sort_order, verifier_user_id, created_at
+       FROM   milestones
+       WHERE  vault_id = ANY($1)
+       ORDER  BY sort_order ASC`,
+      [vaultIds],
+    );
+
+    for (const m of milestoneResult.rows) {
+      const mapped: PersistedMilestone = {
+        id: m.id,
+        vaultId: m.vault_id,
+        title: m.title,
+        description: m.description,
+        dueDate: normalizeTimestamp(m.due_date),
+        amount: m.amount,
+        sortOrder: m.sort_order,
+        verifierUserId: m.verifier_user_id,
+        createdAt: normalizeTimestamp(m.created_at),
+      };
+      const existing = milestonesByVault.get(m.vault_id);
+      if (existing) {
+        existing.push(mapped);
+      } else {
+        milestonesByVault.set(m.vault_id, [mapped]);
+      }
+    }
+  }
+
+  const vaults: PersistedVault[] = pageRows.map((row) => ({
     ...mapVaultRow(row),
     milestones: milestonesByVault.get(row.id) ?? [],
   }));
+
+  const last = vaults[vaults.length - 1];
+  const nextCursor =
+    hasNextPage && last
+      ? encodeCursor(toUTCDate(last.createdAt), last.id)
+      : null;
+
+  return { vaults, nextCursor, hasNextPage };
 };
 
 export const updateVaultById = async (
@@ -340,6 +607,17 @@ export const updateVaultById = async (
 
     memoryVaults[vaultIndex] = updatedVault;
     memoryVaultRevisions.set(id, Number(currentRevision) + 1);
+
+    // Evict/Invalidate cache
+    const orgId = updatedVault.orgId;
+    await invalidate(`vault:${id}`, orgId);
+    await invalidate(`vault:${id}:org`);
+    if (orgId) {
+      await invalidatePrefix('vaults:', orgId);
+      await invalidatePrefix('analytics:', orgId);
+    }
+    await invalidate('analytics:overall');
+
     return updatedVault;
   }
 
@@ -349,7 +627,7 @@ export const updateVaultById = async (
     UPDATE vaults
     SET ${setParts.join(", ")}
     WHERE id = $1 AND xmin::text = $2
-    RETURNING id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at, late_check_in_window_secs
+    RETURNING id, amount::text, start_date, end_date, verifier, success_destination, failure_destination, creator, status, created_at, late_check_in_window_secs, organization_id
   `;
   const result = await executor.query(query, [id, revision, ...values]);
 
@@ -379,30 +657,72 @@ export const updateVaultById = async (
       vaultId: milestone.vault_id,
       title: milestone.title,
       description: milestone.description,
-      dueDate: milestone.due_date,
+      dueDate: normalizeTimestamp(milestone.due_date),
       amount: milestone.amount,
       sortOrder: milestone.sort_order,
       verifierUserId: milestone.verifier_user_id,
-      createdAt: milestone.created_at,
+      createdAt: normalizeTimestamp(milestone.created_at),
     }),
   );
 
-  return {
+  const updatedVault = {
     ...mapVaultRow(result.rows[0]),
     milestones,
   };
+
+  // Evict/Invalidate cache
+  const orgId = updatedVault.orgId;
+  await invalidate(`vault:${id}`, orgId);
+  await invalidate(`vault:${id}:org`);
+  if (orgId) {
+    await invalidatePrefix('vaults:', orgId);
+    await invalidatePrefix('analytics:', orgId);
+  }
+  await invalidate('analytics:overall');
+
+  return updatedVault;
 };
 
 export const getVaultById = async (
   id: string,
 ): Promise<PersistedVault | null> => {
-  const allVaults = await listVaults();
-  return allVaults.find((vault) => vault.id === id) ?? null;
+  // 1. Try to get orgId from cache mapping `vault:${id}:org`
+  const orgId = await getOrLoad<string | null>(`vault:${id}:org`, 300, async () => {
+    const allVaults = await listVaults();
+    const vault = allVaults.find((v) => v.id === id) ?? null;
+    return vault ? (vault.orgId || null) : null;
+  });
+
+  if (orgId) {
+    return getOrLoad<PersistedVault | null>(`vault:${id}`, 300, async () => {
+      const allVaults = await listVaults();
+      return allVaults.find((v) => v.id === id) ?? null;
+    }, orgId);
+  } else {
+    return getOrLoad<PersistedVault | null>(`vault:${id}`, 300, async () => {
+      const allVaults = await listVaults();
+      return allVaults.find((v) => v.id === id) ?? null;
+    });
+  }
 };
 
 export const resetVaultStore = (): void => {
   memoryVaults.length = 0;
   memoryVaultRevisions.clear();
+};
+
+/**
+ * Sets the in-memory vault array for test purposes.
+ * This allows tests to seed vault data without requiring a database.
+ * @param newVaults - Array of vault objects to use for testing
+ */
+export const setTestVaults = (newVaults: PersistedVault[]): void => {
+  memoryVaults.length = 0;
+  memoryVaults.push(...newVaults);
+  // Reset revisions for all test vaults
+  newVaults.forEach(vault => {
+    memoryVaultRevisions.set(vault.id, 0);
+  });
 };
 
 export const getVaultRevisionById = async (
@@ -464,17 +784,27 @@ export const cancelVaultById = async (
     if (idx === -1) return { error: "not_found" };
     const vault = memoryVaults[idx];
 
-    if (vault.status === "cancelled") {
-      return { error: "already_cancelled", currentStatus: "cancelled" };
+    if (vault.status === VaultStatus.CANCELLED) {
+      return { error: "already_cancelled", currentStatus: VaultStatus.CANCELLED };
     }
-    if (vault.status !== "draft" && vault.status !== "active") {
+    if (vault.status !== VaultStatus.DRAFT && vault.status !== VaultStatus.ACTIVE) {
       return { error: "not_cancellable", currentStatus: vault.status };
     }
 
     const previousStatus = vault.status;
-    vault.status = "cancelled";
+    vault.status = VaultStatus.CANCELLED;
     const currentRevision = memoryVaultRevisions.get(id) ?? 0;
     memoryVaultRevisions.set(id, currentRevision + 1);
+
+    const orgId = vault.orgId;
+    await invalidate(`vault:${id}`, orgId);
+    await invalidate(`vault:${id}:org`);
+    if (orgId) {
+      await invalidatePrefix('vaults:', orgId);
+      await invalidatePrefix('analytics:', orgId);
+    }
+    await invalidate('analytics:overall');
+
     return { vault, previousStatus };
   }
 
@@ -508,6 +838,17 @@ export const cancelVaultById = async (
     await client.query("COMMIT");
 
     const vault = await getVaultById(id);
+    if (vault) {
+      const orgId = vault.orgId;
+      await invalidate(`vault:${id}`, orgId);
+      await invalidate(`vault:${id}:org`);
+      if (orgId) {
+        await invalidatePrefix('vaults:', orgId);
+        await invalidatePrefix('analytics:', orgId);
+      }
+      await invalidate('analytics:overall');
+    }
+
     return { vault: vault!, previousStatus: vaultStatus };
   } catch (error) {
     await client.query("ROLLBACK");

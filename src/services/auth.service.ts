@@ -1,16 +1,83 @@
+import { getEnv } from '../config/env.js'
 import { getPrisma } from '../lib/prismaScope.js'
 import { hashPassword, comparePassword, generateAccessToken, generateRefreshToken, verifyRefreshToken, hashToken } from '../lib/auth-utils.js'
+import { createAuditLog } from '../lib/audit-logs.js'
 import { RegisterInput, LoginInput } from '../lib/validation.js'
 import { UserRole } from '../types/user.js'
 import { randomUUID } from 'node:crypto'
+import { AppError } from '../middleware/errorHandler.js'
 import { recordSession, revokeAllUserSessions } from './session.js'
 import { getStepUpStore } from './stepUpStore.js'
 
 const STEP_UP_TTL_SECONDS = 5 * 60
 
 export class AuthService {
+    private static async emitSecurityAudit(action: string, targetType: string, targetId: string, metadata: Record<string, unknown>, actorUserId = 'system') {
+        try {
+            await createAuditLog({
+                actor_user_id: actorUserId,
+                action,
+                target_type: targetType,
+                target_id: targetId,
+                metadata,
+            })
+        } catch {
+            // Security audit failures should never block the authentication flow.
+        }
+    }
+
+    private static async ensurePasswordIsAllowed(password: string, context: { userId?: string; email?: string }) {
+        if (!isBreachedPasswordCheckEnabled()) {
+            return
+        }
+
+        const normalizedPassword = password.trim().toLowerCase()
+        if (!normalizedPassword) {
+            return
+        }
+
+        const breachedPasswords = getBreachedPasswordSet()
+        if (!breachedPasswords.has(normalizedPassword)) {
+            return
+        }
+
+        const actorUserId = context.userId ?? 'system'
+        const targetId = context.userId ?? context.email ?? 'unknown'
+        await this.emitSecurityAudit('auth.password_rejected', 'user', targetId, {
+            reason: 'breached_password',
+            email: context.email,
+        }, actorUserId)
+
+        throw new Error('Password rejected')
+    }
+
+    private static async revokeRefreshTokenFamily(userId: string, token: string, familyId?: string | null, tx?: any) {
+        const tokenHash = hashToken(token)
+        const client = tx ?? getPrisma()
+        const now = new Date()
+
+        if (familyId) {
+            await client.refreshToken.updateMany({
+                where: { familyId, revokedAt: null },
+                data: { revokedAt: now },
+            })
+        } else {
+            await client.refreshToken.updateMany({
+                where: { token: tokenHash, revokedAt: null },
+                data: { revokedAt: now },
+            })
+        }
+
+        await this.emitSecurityAudit('auth.refresh_token_reuse_detected', 'refresh_token', userId, {
+            reason: 'refresh_token_reuse',
+            tokenFingerprint: tokenHash.slice(0, 12),
+            ...(familyId ? { familyId } : {}),
+        }, userId)
+    }
+
     static async register(input: RegisterInput) {
         try {
+            await this.ensurePasswordIsAllowed(input.password, { email: input.email })
             const hashedPassword = await hashPassword(input.password)
             const user = await getPrisma().user.create({
                 data: {
@@ -29,27 +96,70 @@ export class AuthService {
         }
     }
 
+    static async changePassword(userId: string, newPassword: string) {
+        const prisma = getPrisma()
+        const user = await prisma.user.findUnique({ where: { id: userId } })
+        if (!user) {
+            throw new Error('User not found')
+        }
+
+        await this.ensurePasswordIsAllowed(newPassword, { userId, email: user.email })
+        const hashedPassword = await hashPassword(newPassword)
+        const updatedUser = await prisma.user.update({
+            where: { id: userId },
+            data: { passwordHash: hashedPassword },
+        })
+
+        return { id: updatedUser.id, email: updatedUser.email, role: updatedUser.role }
+    }
+
     static async login(input: LoginInput) {
         const prisma = getPrisma()
         const user = await prisma.user.findUnique({ where: { email: input.email } })
+        
+        // Timing equalisation: run bcrypt even if user not found, using a dummy hash.
+        // This prevents timing attacks that reveal whether an email exists in the system.
+        const hashToCheck = user?.passwordHash ?? DUMMY_PASSWORD_HASH
+        const isValid = await comparePassword(input.password, hashToCheck)
+        
         if (!user) {
+            // Audit the failed login attempt
+            await this.emitSecurityAudit('auth.login_failed', 'user', input.email, {
+                reason: 'user_not_found',
+                email: input.email,
+            })
             throw new Error('Invalid credentials')
         }
 
-        const isValid = await comparePassword(input.password, user.passwordHash)
+        // Soft-deleted or non-active accounts are never allowed to authenticate,
+        // regardless of password correctness — fail closed.
+        const isActive = typeof user.status !== 'string' || user.status === 'ACTIVE'
+        if (user.deletedAt || !isActive) {
+            await this.emitSecurityAudit('auth.login_failed', 'user', user.id, {
+                reason: 'account_inactive',
+                email: input.email,
+            }, user.id)
+            throw new Error('Invalid credentials')
+        }
+
         if (!isValid) {
+            await this.emitSecurityAudit('auth.login_failed', 'user', user.id, {
+                reason: 'wrong_password',
+                email: input.email,
+            }, user.id)
             throw new Error('Invalid credentials')
         }
 
         const jti = randomUUID()
         const sessionId = randomUUID()
         const lastLoginAt = new Date()
-        const accessToken = generateAccessToken({ userId: user.id, role: user.role, jti })
-        const refreshTokenValue = generateRefreshToken({ userId: user.id })
+        const env = getEnv()
+        const accessToken = generateAccessToken({ userId: user.id, role: user.role, jti }, env)
+        const refreshTokenValue = generateRefreshToken({ userId: user.id }, env)
         const accessExpiresAt = new Date(Date.now() + 15 * 60 * 1000) // 15 minutes
         const tokenHash = hashToken(refreshTokenValue)
 
-        const loggedInUser = await prisma.$transaction(async (tx) => {
+        const loggedInUser = await prisma.$transaction(async (tx: any) => {
             const updatedUser = await tx.user.update({
                 where: { id: user.id },
                 data: { lastLoginAt },
@@ -60,16 +170,23 @@ export class AuthService {
                 VALUES (${sessionId}, ${user.id}, ${jti}, ${accessExpiresAt})
             `
 
+            const familyId = randomUUID()
             await tx.refreshToken.create({
                 data: {
                     token: tokenHash,
                     userId: user.id,
+                    familyId,
                     expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
                 },
             })
 
             return updatedUser
         })
+
+        // Audit successful login
+        await this.emitSecurityAudit('auth.login_success', 'user', user.id, {
+            email: input.email,
+        }, user.id)
 
         return {
             user: { id: loggedInUser.id, email: loggedInUser.email, role: loggedInUser.role },
@@ -79,59 +196,125 @@ export class AuthService {
     }
 
     static async refresh(token: string) {
+        let payload: any
         try {
-            const payload = verifyRefreshToken(token)
+            payload = verifyRefreshToken(token, getEnv())
+        } catch {
+            throw new AppError(401, 'UNAUTHORIZED' as any, 'Invalid refresh token')
+        }
 
-            // Look up by hash — we never store the raw token
-            const tokenHash = hashToken(token)
-            const storedToken = await getPrisma().refreshToken.findUnique({
-                where: { token: tokenHash },
-                include: { user: true },
+        const tokenHash = hashToken(token)
+        const prisma = getPrisma()
+
+        try {
+            return await prisma.$transaction(async (tx: any) => {
+                const now = new Date()
+
+                // Atomic compare-and-set: revoke the token only if it is currently valid and unrevoked
+                const updateResult = await tx.refreshToken.updateMany({
+                    where: {
+                        token: tokenHash,
+                        revokedAt: null,
+                        expiresAt: { gt: now },
+                    },
+                    data: {
+                        revokedAt: now,
+                    },
+                })
+
+                if (updateResult.count === 0) {
+                    // Lost race, already used, or expired.
+                    const existingToken = await prisma.refreshToken.findUnique({
+                        where: { token: tokenHash },
+                        include: { user: true },
+                    })
+
+                    if (existingToken) {
+                        // Lost race, reuse, or expired: revoke this family plus emit security audit
+                        await this.revokeRefreshTokenFamily(
+                            existingToken.userId,
+                            token,
+                            existingToken.familyId,
+                        )
+                    }
+
+                    throw new AppError(401, 'UNAUTHORIZED' as any, 'Invalid refresh token')
+                }
+
+                // CAS succeeded! Fetch the rotated token details
+                const storedToken = await tx.refreshToken.findUnique({
+                    where: { token: tokenHash },
+                    include: { user: true },
+                })
+
+                if (!storedToken || !storedToken.user) {
+                    throw new AppError(401, 'UNAUTHORIZED' as any, 'Invalid refresh token')
+                }
+
+                const familyId = storedToken.familyId ?? randomUUID()
+                const jti = randomUUID()
+                const env = getEnv()
+                const newAccessToken = generateAccessToken(
+                    { userId: storedToken.user.id, role: storedToken.user.role, jti },
+                    env,
+                )
+                const newRefreshTokenValue = generateRefreshToken({ userId: storedToken.user.id, jti: randomUUID() }, env)
+                const newTokenHash = hashToken(newRefreshTokenValue)
+
+                // 1. Record session for new access token
+                const accessExpiresAt = new Date(Date.now() + 15 * 60 * 1000)
+                await recordSession(storedToken.user.id, jti, accessExpiresAt)
+
+                // 2. Create the successor refresh token in the same family
+                const newToken = await tx.refreshToken.create({
+                    data: {
+                        token: newTokenHash,
+                        userId: storedToken.user.id,
+                        familyId,
+                        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+                    },
+                })
+
+                // 3. Link rotated token to successor via replacedById
+                await tx.refreshToken.update({
+                    where: { id: storedToken.id },
+                    data: { replacedById: newToken.id },
+                })
+
+                return {
+                    accessToken: newAccessToken,
+                    refreshToken: newRefreshTokenValue,
+                }
             })
-
-            if (!storedToken || storedToken.revokedAt || storedToken.expiresAt < new Date()) {
-                throw new Error('Invalid or expired refresh token')
-            }
-
-            // Revoke old token BEFORE issuing new ones (no dual-valid window)
-            await getPrisma().refreshToken.update({
-                where: { id: storedToken.id },
-                data: { revokedAt: new Date() },
-            })
-
-            const jti = randomUUID()
-            const newAccessToken = generateAccessToken({ userId: storedToken.user.id, role: storedToken.user.role, jti })
-            const newRefreshTokenValue = generateRefreshToken({ userId: storedToken.user.id })
-
-            // 1. Record new session for access token
-            const accessExpiresAt = new Date(Date.now() + 15 * 60 * 1000)
-            await recordSession(storedToken.user.id, jti, accessExpiresAt)
-
-            // 2. Store hashed new refresh token
-            const newTokenHash = hashToken(newRefreshTokenValue)
-            await getPrisma().refreshToken.create({
-                data: {
-                    token: newTokenHash,
-                    userId: storedToken.user.id,
-                    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-                },
-            })
-
-            return {
-                accessToken: newAccessToken,
-                refreshToken: newRefreshTokenValue,
-            }
         } catch (error) {
-            throw new Error('Invalid refresh token')
+            if (error instanceof AppError) {
+                throw error
+            }
+            // Infrastructure or database failure rethrown as 503 Service Unavailable
+            throw new AppError(503, 'INTERNAL_ERROR' as any, 'Database operation failed')
         }
     }
 
     static async logout(token: string) {
         const tokenHash = hashToken(token)
-        await getPrisma().refreshToken.updateMany({
+        const prisma = getPrisma()
+        const existingToken = await prisma.refreshToken.findUnique({
             where: { token: tokenHash },
-            data: { revokedAt: new Date() },
         })
+
+        const now = new Date()
+        if (existingToken?.familyId) {
+            // Revoke the token's whole family
+            await prisma.refreshToken.updateMany({
+                where: { familyId: existingToken.familyId, revokedAt: null },
+                data: { revokedAt: now },
+            })
+        } else {
+            await prisma.refreshToken.updateMany({
+                where: { token: tokenHash, revokedAt: null },
+                data: { revokedAt: now },
+            })
+        }
     }
 
     /**
@@ -149,7 +332,7 @@ export class AuthService {
         await revokeAllUserSessions(userId)
     }
 
-    static async issueStepUpChallenge(userId: string) {
+    static async issueStepUpChallenge(userId: string, action?: string) {
         const nonce = randomUUID()
         const expiresAt = new Date(Date.now() + STEP_UP_TTL_SECONDS * 1000)
         await getStepUpStore().issue(nonce, userId, expiresAt)
@@ -174,16 +357,42 @@ export class AuthService {
     }
 
     static async registerWebAuthnCredential(userId: string, credentialId: string, publicKey: string) {
-        await getPrisma().$executeRaw`
-            INSERT INTO "webauthn_credentials" ("user_id", "credential_id", "public_key")
-            VALUES (${userId}, ${credentialId}, ${publicKey})
-            ON CONFLICT ("credential_id") DO UPDATE SET
-                "public_key" = EXCLUDED."public_key",
-                "updated_at" = CURRENT_TIMESTAMP,
-                "last_used_at" = CURRENT_TIMESTAMP
+        // The unique credential_id index is the synchronization point. An
+        // existence check followed by INSERT races under concurrent requests.
+        const inserted = await getPrisma().$executeRaw`
+            INSERT INTO "webauthn_credentials" ("user_id", "credential_id", "public_key", "counter")
+            VALUES (${userId}, ${credentialId}, ${publicKey}, 0)
+            ON CONFLICT ("credential_id") DO NOTHING
         `
+
+        if (inserted === 0) throw new Error('Credential already registered')
 
         return { userId, credentialId, publicKey }
     }
-}
 
+    static async verifyWebAuthnAssertion(credentialId: string, newCounter: number) {
+        const rows = await getPrisma().$queryRaw<{ counter: number }[]>`
+            SELECT "counter" FROM "webauthn_credentials"
+            WHERE "credential_id" = ${credentialId}
+            LIMIT 1
+        `
+
+        if (rows.length === 0) {
+            throw new Error('Credential not found')
+        }
+
+        const storedCounter = rows[0].counter
+
+        if (newCounter <= storedCounter) {
+            throw new Error('Counter regression detected: possible cloned authenticator')
+        }
+
+        await getPrisma().$executeRaw`
+            UPDATE "webauthn_credentials"
+            SET "counter" = ${newCounter}, "last_used_at" = CURRENT_TIMESTAMP
+            WHERE "credential_id" = ${credentialId}
+        `
+
+        return { credentialId, counter: newCounter }
+    }
+}

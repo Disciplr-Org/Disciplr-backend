@@ -208,6 +208,20 @@ export function __resetSecurityMonitorForTests(): void {
   processedEvents = 0
 }
 
+// ─── Vault drift anomaly logging ───────────────────────────────────────────
+
+type VaultDriftEventType =
+  | 'vault_missing_onchain'
+  | 'vault_state_drift'
+  | 'vault_reconciliation_error'
+
+export function logVaultDriftAnomaly(
+  event: VaultDriftEventType,
+  data: Record<string, unknown>,
+): void {
+  logSecurityEvent(`vault.${event}`, '', null, data)
+}
+
 function getIpState(ip: string, now: number): IpState {
   const existing = ipStates.get(ip)
   if (existing) {
@@ -355,17 +369,9 @@ function maybeCleanupIdleIpStates(now: number): void {
 }
 
 function getClientIp(req: Request): string {
-  const forwardedFor = req.headers['x-forwarded-for']
-
-  if (typeof forwardedFor === 'string' && forwardedFor.length > 0) {
-    return forwardedFor.split(',')[0].trim()
-  }
-
-  if (Array.isArray(forwardedFor) && forwardedFor.length > 0) {
-    return forwardedFor[0].split(',')[0].trim()
-  }
-
-  return req.socket.remoteAddress ?? 'unknown'
+  // Rely on Express's trust proxy configuration instead of directly reading
+  // x-forwarded-for to prevent spoofing by direct clients.
+  return req.ip ?? 'unknown'
 }
 
 function isFailedLoginAttempt(path: string, status: number): boolean {
@@ -421,6 +427,25 @@ export function emitTestSuspiciousEvent(ip: string, category: AbuseCategory, ext
   }
 
   logSecurityEvent('security.suspicious_pattern', ip, category, extra)
+}
+
+/**
+ * Test helper: classify a batch of signals for taxonomy testing.
+ * Returns the detected category and severity based on signal patterns.
+ */
+export function abuseMonitor(signals: Array<{ type: string; url?: string; successful?: boolean }>): { category: string; severity: string } {
+  const loginFailures = signals.filter(s => s.type === 'login-attempt' && s.successful === false).length
+  const pageViews = signals.filter(s => s.type === 'page-view').length
+
+  if (loginFailures >= 3) {
+    return { category: 'credential-stuffing', severity: 'high' }
+  }
+
+  if (pageViews >= 3) {
+    return { category: 'scraping', severity: 'medium' }
+  }
+
+  return { category: 'unknown', severity: 'low' }
 }
 
 function readPositiveIntEnv(name: string, fallback: number): number {

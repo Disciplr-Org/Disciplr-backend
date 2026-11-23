@@ -1,7 +1,6 @@
 import { NotificationProvider } from './provider.js'
 import { EmailNotificationProvider } from './email.provider.js'
 import { ConsoleNotificationProvider } from './console.provider.js'
-import { getEnv } from '../../config/index.js'
 
 export class NotificationService {
   constructor(
@@ -11,8 +10,8 @@ export class NotificationService {
     this.assertProviderExists(defaultProviderName)
   }
 
-  static getProvider(name?: string): NotificationProvider {
-    const providerName = name || getEnv().NOTIFICATION_PROVIDER || 'console'
+  getProvider(name?: string): NotificationProvider {
+    const providerName = name || this.defaultProviderName
     const provider = this.providers[providerName]
 
     if (!provider) {
@@ -31,7 +30,14 @@ export class NotificationService {
     body: string,
     providerName?: string,
   ): Promise<void> {
-    const provider = this.getProvider(providerName)
+    const resolvedName = providerName ?? this.defaultProviderName
+    const provider = this.providers[resolvedName]
+    if (!provider) {
+      const availableProviders = Object.keys(this.providers).sort().join(', ')
+      throw new Error(
+        `Unknown notification provider "${resolvedName}". Available providers: ${availableProviders}`,
+      )
+    }
     await provider.send(recipient, subject, body)
   }
 

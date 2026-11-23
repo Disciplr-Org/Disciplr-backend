@@ -12,7 +12,7 @@ const mockKnexIndexChain: any = {
   first: jest.fn(),
   then: jest.fn((resolve: any) => resolve([])),
 }
-const mockKnexIndex = jest.fn(() => mockKnexIndexChain)
+const mockKnexIndex = jest.fn(() => mockKnexIndexChain) as any
 
 const mockKnexKnexChain: any = {
   where: jest.fn().mockReturnThis(),
@@ -24,7 +24,7 @@ const mockKnexKnexChain: any = {
   first: jest.fn(),
   then: jest.fn((resolve: any) => resolve([])),
 }
-const mockKnexKnex = jest.fn(() => mockKnexKnexChain)
+const mockKnexKnex = jest.fn(() => mockKnexKnexChain) as any
 
 jest.unstable_mockModule('../db/index.js', () => ({
   default: mockKnexIndex,

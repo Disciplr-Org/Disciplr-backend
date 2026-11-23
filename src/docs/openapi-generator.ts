@@ -5,7 +5,12 @@ import {
 } from '@asteasolutions/zod-to-openapi'
 import { z } from 'zod'
 import { registerSchema, loginSchema } from '../lib/validation.js'
-import { UserRole } from '../types/user.js'
+import { ApiScope } from '../types/auth.js'
+import {
+  apiKeyIdParamSchema,
+  createApiKeySchema,
+  oauthTokenRequestSchema,
+} from '../lib/apiCredentialSchemas.js'
 
 extendZodWithOpenApi(z)
 
@@ -44,7 +49,7 @@ registry.registerComponent('securitySchemes', 'bearerAuth', {
 })
 
 // --- Shared Schemas ---
-const PaginationCursor = registry.registerComponent('schemas', 'PaginationCursor', z.object({
+export const PaginationCursor = registry.register('PaginationCursor', z.object({
   limit: z.number(),
   cursor: z.string().optional(),
   next_cursor: z.string().optional(),
@@ -52,7 +57,7 @@ const PaginationCursor = registry.registerComponent('schemas', 'PaginationCursor
   count: z.number(),
 }))
 
-const ErrorEnvelope = registry.registerComponent('schemas', 'ErrorEnvelope', z.object({
+const ErrorEnvelope = registry.register('ErrorEnvelope', z.object({
   error: z.object({
     code: z.string().openapi({ example: 'VALIDATION_ERROR' }),
     message: z.string().openapi({ example: 'Invalid request parameters' }),
@@ -105,6 +110,7 @@ registry.registerPath({
             status: z.string().openapi({ example: 'ok' }),
             timestamp: z.string().datetime(),
             uptime: z.number(),
+            service: z.string(),
             jobs: z.any(),
           }),
         },
@@ -165,8 +171,15 @@ registry.registerPath({
   security: [{ bearerAuth: [] }],
   responses: {
     200: {
-      description: 'List of vaults',
-      content: { 'application/json': { schema: z.array(VaultSchema) } },
+      description: 'Paginated list of vaults',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.array(VaultSchema),
+            pagination: z.any(),
+          }),
+        },
+      },
     },
   },
 })
@@ -608,12 +621,14 @@ registry.registerPath({
       schema: { type: 'string' },
     },
   ],
-  requestBody: {
-    content: {
-      'application/json': {
-        schema: z.object({
-          role: z.enum(['USER', 'VERIFIER', 'ADMIN']),
-        }),
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({
+            role: z.enum(['USER', 'VERIFIER', 'ADMIN']),
+          }),
+        },
       },
     },
   },
@@ -639,12 +654,14 @@ registry.registerPath({
       schema: { type: 'string' },
     },
   ],
-  requestBody: {
-    content: {
-      'application/json': {
-        schema: z.object({
-          status: z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED']),
-        }),
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({
+            status: z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED']),
+          }),
+        },
       },
     },
   },
@@ -789,23 +806,25 @@ registry.registerPath({
       schema: { type: 'string' },
     },
   ],
-  requestBody: {
-    content: {
-      'application/json': {
-        schema: z.object({
-          reasonCode: z.enum([
-            'USER_REQUEST',
-            'FRAUD_DETECTED',
-            'SYSTEM_ERROR',
-            'POLICY_VIOLATION',
-            'EMERGENCY_ADMIN_ACTION',
-            'COMPLIANCE_REQUIREMENT',
-            'TESTING_CLEANUP',
-          ]),
-          reason: z.string().optional(),
-          idempotencyKey: z.string().optional(),
-          details: z.string().optional(),
-        }),
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({
+            reasonCode: z.enum([
+              'USER_REQUEST',
+              'FRAUD_DETECTED',
+              'SYSTEM_ERROR',
+              'POLICY_VIOLATION',
+              'EMERGENCY_ADMIN_ACTION',
+              'COMPLIANCE_REQUIREMENT',
+              'TESTING_CLEANUP',
+            ]),
+            reason: z.string().optional(),
+            idempotencyKey: z.string().optional(),
+            details: z.string().optional(),
+          }),
+        },
       },
     },
   },
@@ -817,11 +836,456 @@ registry.registerPath({
   },
 })
 
+// ==================== ADMIN VERIFIERS ROUTES ====================
+
+const verifierStatusSchema = z
+  .enum(['pending', 'approved', 'suspended', 'deactivated'])
+  .openapi({
+    description:
+      'Verifier lifecycle status. Allowed transitions: pending→approved|deactivated, ' +
+      'approved→suspended|deactivated, suspended→approved|deactivated, deactivated→pending|approved.',
+    example: 'approved',
+  })
+
+const VerifierProfileSchema = registry.register(
+  'VerifierProfile',
+  z.object({
+    userId: z.string().openapi({
+      description: 'Stellar public key that identifies the verifier',
+      example: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+    }),
+    displayName: z.string().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+    status: verifierStatusSchema,
+    createdAt: z.string().datetime(),
+    approvedAt: z.string().datetime().nullable().optional(),
+    suspendedAt: z.string().datetime().nullable().optional(),
+    deactivatedAt: z.string().datetime().nullable().optional(),
+  })
+)
+
+const VerifierStatsSchema = registry.register(
+  'VerifierStats',
+  z.object({
+    totalVerifications: z.number().int().openapi({ example: 12 }),
+    approvals: z.number().int().openapi({ example: 9 }),
+    rejections: z.number().int().openapi({ example: 3 }),
+    disputes: z.number().int().openapi({ example: 1 }),
+    approvalRatio: z.number().openapi({ example: 0.75 }),
+    rejectionRatio: z.number().openapi({ example: 0.25 }),
+    disputeRate: z.number().openapi({ example: 0.0833 }),
+  })
+)
+
+const VerifierWithStatsSchema = registry.register(
+  'VerifierWithStats',
+  z.object({
+    profile: VerifierProfileSchema,
+    stats: VerifierStatsSchema,
+  })
+)
+
+const VerifierPaginationSchema = registry.register(
+  'VerifierPagination',
+  z.object({
+    limit: z.number().int().openapi({ description: 'Page size in effect (max 200)', example: 50 }),
+    offset: z.number().int().openapi({ description: 'Zero-based offset of the first item', example: 0 }),
+    count: z.number().int().openapi({ description: 'Number of items in this page', example: 2 }),
+    hasMore: z.boolean().openapi({ description: 'Whether another page is likely available', example: false }),
+  })
+)
+
+const VerifierListResponseSchema = registry.register(
+  'VerifierListResponse',
+  z.object({
+    verifiers: z.array(VerifierWithStatsSchema),
+    pagination: VerifierPaginationSchema,
+  })
+)
+
+const VerifierCreateResponseSchema = registry.register(
+  'VerifierCreateResponse',
+  z.object({
+    profile: VerifierProfileSchema,
+    stats: VerifierStatsSchema,
+    auditLogId: z.string().optional().openapi({ description: 'Audit log entry id when one was written' }),
+  })
+)
+
+const VerifierMutationResponseSchema = registry.register(
+  'VerifierMutationResponse',
+  z.object({
+    profile: VerifierProfileSchema,
+    stats: VerifierStatsSchema,
+    auditLogId: z.string().nullable().openapi({
+      description: 'Audit log entry id, or null when the request was a no-op',
+    }),
+    changedFields: z.array(z.string()).openapi({
+      description: 'Profile fields changed by this request',
+      example: ['status'],
+    }),
+  })
+)
+
+const CreateVerifierRequestSchema = registry.register(
+  'CreateVerifierRequest',
+  z.object({
+    userId: z.string().min(1).openapi({
+      description: 'Stellar public key of the verifier to create',
+      example: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+    }),
+    displayName: z.string().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+    status: verifierStatusSchema.optional(),
+    reason: z.string().optional().openapi({ description: 'Reason recorded on the audit log entry' }),
+  })
+)
+
+const UpdateVerifierRequestSchema = registry.register(
+  'UpdateVerifierRequest',
+  z.object({
+    displayName: z.string().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+    status: verifierStatusSchema.optional(),
+    reason: z.string().optional().openapi({ description: 'Reason recorded on the audit log entry' }),
+  })
+)
+
+const VerifierReasonRequestSchema = registry.register(
+  'VerifierReasonRequest',
+  z.object({
+    reason: z.string().optional().openapi({ description: 'Reason recorded on the audit log entry' }),
+  })
+)
+
+const VerifierErrorResponseSchema = registry.register(
+  'VerifierErrorResponse',
+  z.object({
+    error: z.string().openapi({ example: 'verifier not found' }),
+  })
+)
+
+// Route handlers respond with `{ error: string }`; errors handed to the global
+// error handler (e.g. AppError.validation for an invalid Stellar key) use the
+// shared ErrorEnvelope instead, so both shapes are documented for those codes.
+const VerifierOrEnvelopeErrorSchema = z.union([
+  ErrorEnvelope,
+  VerifierErrorResponseSchema,
+])
+
+const verifierUserIdParameter = {
+  name: 'userId',
+  in: 'path' as const,
+  required: true,
+  schema: { type: 'string' as const },
+  description: 'Verifier identifier (Stellar public key)',
+}
+
+const verifierSecurity = [{ bearerAuth: [] }]
+
+const verifierErrorResponse = (
+  description: string,
+  schema: z.ZodTypeAny = VerifierErrorResponseSchema,
+) => ({
+  description,
+  content: { 'application/json': { schema } },
+})
+
+const requestIdHeader = {
+  'X-Request-Id': {
+    description: 'Request correlation id; echoes the inbound x-request-id header when supplied',
+    schema: { type: 'string' as const },
+  },
+}
+
+// GET /api/admin/verifiers
+registry.registerPath({
+  method: 'get',
+  path: '/api/admin/verifiers',
+  operationId: 'adminListVerifiers',
+  summary: 'List verifier profiles with aggregate stats',
+  description:
+    'Returns verifier profiles ordered by the underlying table order. `limit` is ' +
+    'clamped to 200 and defaults to 50; invalid values fall back to the defaults.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [
+    { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 } },
+    { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } },
+  ],
+  responses: {
+    200: {
+      description: 'Paginated verifier profiles with aggregate verification stats',
+      content: { 'application/json': { schema: VerifierListResponseSchema } },
+    },
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    500: verifierErrorResponse('Unexpected server error', VerifierOrEnvelopeErrorSchema),
+  },
+})
+
+// GET /api/admin/verifiers/:userId
+registry.registerPath({
+  method: 'get',
+  path: '/api/admin/verifiers/{userId}',
+  operationId: 'adminGetVerifier',
+  summary: 'Get a verifier profile and its stats',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  responses: {
+    200: {
+      description: 'Verifier profile and aggregate stats',
+      content: { 'application/json': { schema: VerifierWithStatsSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    500: verifierErrorResponse('Unexpected server error', VerifierOrEnvelopeErrorSchema),
+  },
+})
+
+// POST /api/admin/verifiers
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers',
+  operationId: 'adminCreateVerifier',
+  summary: 'Create a verifier profile',
+  description:
+    '`userId` must be a valid Stellar public key. When `status` is omitted the ' +
+    'profile is created as `pending`. A unique-constraint violation returns 409.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  request: {
+    body: { content: { 'application/json': { schema: CreateVerifierRequestSchema } } },
+  },
+  responses: {
+    201: {
+      description: 'Verifier profile created',
+      content: { 'application/json': { schema: VerifierCreateResponseSchema } },
+    },
+    400: verifierErrorResponse(
+      'Missing userId, invalid Stellar public key, non-string displayName, non-object metadata or invalid status',
+      VerifierOrEnvelopeErrorSchema,
+    ),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    409: verifierErrorResponse('Verifier already exists'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// PATCH /api/admin/verifiers/:userId
+registry.registerPath({
+  method: 'patch',
+  path: '/api/admin/verifiers/{userId}',
+  operationId: 'adminUpdateVerifier',
+  summary: 'Update a verifier profile',
+  description:
+    'Only the provided fields are updated. `displayName` and `metadata` accept ' +
+    '`null` to clear them. Status changes follow the verifier transition matrix; ' +
+    'an illegal transition returns 409.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: UpdateVerifierRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Updated verifier profile',
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Non-string displayName, non-object metadata or invalid status'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// DELETE /api/admin/verifiers/:userId
+registry.registerPath({
+  method: 'delete',
+  path: '/api/admin/verifiers/{userId}',
+  operationId: 'adminDeleteVerifier',
+  summary: 'Delete a verifier profile',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: {
+      required: false,
+      content: { 'application/json': { schema: VerifierReasonRequestSchema } },
+    },
+  },
+  responses: {
+    204: { description: 'Verifier profile deleted; no content returned' },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/approve
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/approve',
+  operationId: 'adminApproveVerifier',
+  summary: 'Approve a verifier',
+  description:
+    'Creates the verifier profile as `approved` when it does not exist yet, ' +
+    'otherwise transitions the existing profile. A second in-flight transition ' +
+    'for the same verifier returns 429.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier approved',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    429: verifierErrorResponse('A concurrent transition for this verifier is already in progress'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/suspend
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/suspend',
+  operationId: 'adminSuspendVerifier',
+  summary: 'Suspend a verifier',
+  description:
+    'Creates the verifier profile as `suspended` when it does not exist yet, ' +
+    'otherwise transitions the existing profile. A second in-flight transition ' +
+    'for the same verifier returns 429.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier suspended',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    429: verifierErrorResponse('A concurrent transition for this verifier is already in progress'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/reinstate
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/reinstate',
+  operationId: 'adminReinstateVerifier',
+  summary: 'Reinstate a suspended or deactivated verifier',
+  description:
+    'Restores a previously approved verifier to `approved`, otherwise to ' +
+    '`pending`. Reinstating an already active (`approved`/`pending`) verifier ' +
+    'is a no-op returning an empty `changedFields` and a `null` `auditLogId`.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier reinstated (or already active)',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/deactivate
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/deactivate',
+  operationId: 'adminDeactivateVerifier',
+  summary: 'Deactivate a verifier',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier deactivated',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
+// POST /api/admin/verifiers/:userId/reactivate
+registry.registerPath({
+  method: 'post',
+  path: '/api/admin/verifiers/{userId}/reactivate',
+  operationId: 'adminReactivateVerifier',
+  summary: 'Reactivate a deactivated verifier',
+  description: 'Transitions a deactivated verifier back to `pending`, pending re-approval.',
+  tags: ['Admin Verifiers'],
+  security: verifierSecurity,
+  parameters: [verifierUserIdParameter],
+  request: {
+    body: { content: { 'application/json': { schema: VerifierReasonRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Verifier reactivated as pending',
+      headers: requestIdHeader,
+      content: { 'application/json': { schema: VerifierMutationResponseSchema } },
+    },
+    400: verifierErrorResponse('Invalid userId (empty or longer than 128 characters)'),
+    401: verifierErrorResponse('Missing or invalid bearer token'),
+    403: verifierErrorResponse('Admin role required'),
+    404: verifierErrorResponse('Verifier not found'),
+    409: verifierErrorResponse('Invalid verifier status transition'),
+    500: verifierErrorResponse('Unexpected server error'),
+  },
+})
+
 // ==================== EXPORT ROUTES ====================
 
-const ExportRequestRef = registry.register('ExportRequest', ExportRequestSchema)
-const ExportJobResponseRef = registry.register('ExportJobResponse', ExportJobResponseSchema)
-const ExportJobStatusRef = registry.register('ExportJobStatus', ExportJobStatusSchema)
+export const ExportRequestRef = registry.register('ExportRequest', ExportRequestSchema)
+export const ExportJobResponseRef = registry.register('ExportJobResponse', ExportJobResponseSchema)
+export const ExportJobStatusRef = registry.register('ExportJobStatus', ExportJobStatusSchema)
 
 // POST /api/exports/me
 registry.registerPath({
@@ -941,6 +1405,786 @@ registry.registerPath({
 })
 
 
+// ==================== ORG VAULTS & SAVED SEARCHES ====================
+// Routes from src/routes/orgVaults.ts, mounted at /api/organizations.
+
+const PagePagination = registry.register(
+  'PagePagination',
+  z.object({
+    page: z.number().int().openapi({ example: 1 }),
+    pageSize: z.number().int().openapi({ example: 20 }),
+    total: z.number().int().openapi({ example: 42 }),
+    totalPages: z.number().int().openapi({ example: 3 }),
+    hasNext: z.boolean(),
+    hasPrev: z.boolean(),
+  }),
+)
+
+const OrgErrorResponse = z.object({
+  error: z.string().openapi({ example: 'Internal server error' }),
+})
+
+const ORG_ID_PARAM = {
+  name: 'orgId',
+  in: 'path' as const,
+  required: true,
+  schema: { type: 'string' as const, example: 'org_123' },
+}
+
+const SEARCH_ID_PARAM = {
+  name: 'searchId',
+  in: 'path' as const,
+  required: true,
+  schema: { type: 'string' as const },
+}
+
+const PAGE_PARAM = {
+  name: 'page',
+  in: 'query' as const,
+  schema: { type: 'integer' as const, minimum: 1, default: 1 },
+}
+
+const PAGE_SIZE_PARAM = {
+  name: 'pageSize',
+  in: 'query' as const,
+  schema: { type: 'integer' as const, minimum: 1, maximum: 100, default: 20 },
+}
+
+const CURSOR_LIMIT_PARAM = {
+  name: 'limit',
+  in: 'query' as const,
+  schema: { type: 'integer' as const, minimum: 1, maximum: 100, default: 20 },
+}
+
+const OrgVaultStatus = z.enum([
+  'draft',
+  'active',
+  'completed',
+  'failed',
+  'cancelled',
+])
+
+const OrgVaultSchema = registry.register(
+  'OrgVault',
+  z.object({
+    id: z.string(),
+    creator: z.string(),
+    verifier: z.string(),
+    amount: z.string().openapi({ example: '100.0000000' }),
+    status: OrgVaultStatus,
+    orgId: z.string(),
+    startTimestamp: z.string().datetime(),
+    endTimestamp: z.string().datetime(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  }),
+)
+
+const SavedSearchQueryDefinitionSchema = registry.register(
+  'SavedSearchQueryDefinition',
+  z.object({
+    q: z.string().max(200).optional().openapi({ description: 'Free-text search term (sanitized)' }),
+    status: OrgVaultStatus.optional(),
+    verifier: z.string().max(256).optional(),
+    amount_min: z.string().regex(/^\d+(\.\d+)?$/).optional().openapi({ description: 'Inclusive lower amount bound' }),
+    amount_max: z.string().regex(/^\d+(\.\d+)?$/).optional().openapi({ description: 'Inclusive upper amount bound' }),
+    date_from: z.string().optional().openapi({ description: 'ISO 8601 date or timestamp (inclusive lower created_at bound)' }),
+    date_to: z.string().optional().openapi({ description: 'ISO 8601 date or timestamp (inclusive upper created_at bound)' }),
+    sort_by: z.enum(['created_at', 'amount', 'end_date', 'status']).optional(),
+    sort_order: z.enum(['asc', 'desc']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+)
+
+const OrgVaultSearchSchema = registry.register(
+  'OrgVaultSearch',
+  z.object({
+    id: z.string(),
+    org_id: z.string(),
+    name: z.string().openapi({ example: 'High-value active vaults' }),
+    query_definition: SavedSearchQueryDefinitionSchema,
+    alerts_enabled: z.boolean(),
+    alert_recipient: z.string().nullable(),
+    alert_frequency_ms: z.number().int().openapi({ example: 3_600_000 }),
+    last_evaluated_at: z.string().datetime().nullable(),
+    last_result_hash: z.string().nullable(),
+    created_by: z.string(),
+    created_at: z.string().datetime(),
+    updated_at: z.string().datetime(),
+  }),
+)
+
+const OrgVaultSearchResultSchema = registry.register(
+  'OrgVaultSearchResult',
+  z.object({
+    id: z.string(),
+    creator: z.string(),
+    verifier: z.string(),
+    amount: z.string(),
+    status: OrgVaultStatus,
+    organization_id: z.string(),
+    start_date: z.string().datetime(),
+    end_date: z.string().datetime(),
+    created_at: z.string().datetime(),
+    updated_at: z.string().datetime(),
+  }),
+)
+
+// GET /api/organizations/:orgId/vaults
+registry.registerPath({
+  method: 'get',
+  path: '/api/organizations/{orgId}/vaults',
+  summary: 'List vaults belonging to an organization',
+  description:
+    'Offset-paginated listing of the org\'s non-deleted vaults, with optional status/creator filters and sorting.',
+  tags: ['Org Vaults'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    PAGE_PARAM,
+    PAGE_SIZE_PARAM,
+    {
+      name: 'sortBy',
+      in: 'query',
+      schema: { type: 'string', enum: ['createdAt', 'amount', 'endTimestamp', 'status'] },
+    },
+    { name: 'sortOrder', in: 'query', schema: { type: 'string', enum: ['asc', 'desc'] } },
+    { name: 'status', in: 'query', schema: { type: 'string', enum: ['draft', 'active', 'completed', 'failed', 'cancelled'] } },
+    { name: 'creator', in: 'query', schema: { type: 'string' } },
+  ],
+  responses: {
+    200: {
+      description: 'Paginated org vaults',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.array(OrgVaultSchema),
+            pagination: PagePagination,
+          }),
+        },
+      },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Caller is not a member of the organization', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// POST /api/organizations/:orgId/vault-searches
+registry.registerPath({
+  method: 'post',
+  path: '/api/organizations/{orgId}/vault-searches',
+  summary: 'Create a saved vault search',
+  description:
+    'Creates a saved search for the org. Requires owner/admin. Each org may keep at most 20 saved searches; when alerts are enabled the recipient is required and the frequency must be at least one hour.',
+  tags: ['Org Vaults'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+  ],
+  request: {
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({
+            name: z.string().min(1).max(255),
+            query_definition: SavedSearchQueryDefinitionSchema,
+            alerts_enabled: z.boolean().optional().default(false),
+            alert_recipient: z.string().optional().openapi({ description: 'Required when alerts_enabled is true' }),
+            alert_frequency_ms: z
+              .number()
+              .int()
+              .min(3_600_000)
+              .optional()
+              .openapi({ description: 'Minimum 3600000 (1 hour)', example: 3_600_000 }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: 'Saved search created',
+      content: {
+        'application/json': {
+          schema: z.object({ search: OrgVaultSearchSchema }),
+        },
+      },
+    },
+    400: { description: 'Invalid name, query_definition or alert settings', content: { 'application/json': { schema: OrgErrorResponse } } },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    422: { description: 'Org has reached the saved-search limit (20)', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/organizations/:orgId/vault-searches
+registry.registerPath({
+  method: 'get',
+  path: '/api/organizations/{orgId}/vault-searches',
+  summary: 'List saved vault searches',
+  tags: ['Org Vaults'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Saved searches, newest first',
+      content: {
+        'application/json': {
+          schema: z.object({ searches: z.array(OrgVaultSearchSchema) }),
+        },
+      },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Caller is not a member of the organization', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/organizations/:orgId/vault-searches/:searchId
+registry.registerPath({
+  method: 'get',
+  path: '/api/organizations/{orgId}/vault-searches/{searchId}',
+  summary: 'Get a saved vault search',
+  tags: ['Org Vaults'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    SEARCH_ID_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Saved search',
+      content: {
+        'application/json': {
+          schema: z.object({ search: OrgVaultSearchSchema }),
+        },
+      },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Caller is not a member of the organization', content: { 'application/json': { schema: OrgErrorResponse } } },
+    404: { description: 'Saved search not found', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// DELETE /api/organizations/:orgId/vault-searches/:searchId
+registry.registerPath({
+  method: 'delete',
+  path: '/api/organizations/{orgId}/vault-searches/{searchId}',
+  summary: 'Delete a saved vault search',
+  tags: ['Org Vaults'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    SEARCH_ID_PARAM,
+  ],
+  responses: {
+    204: { description: 'Saved search deleted' },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    404: { description: 'Saved search not found', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/organizations/:orgId/vaults/search
+registry.registerPath({
+  method: 'get',
+  path: '/api/organizations/{orgId}/vaults/search',
+  summary: 'Search an organization\'s vaults',
+  description:
+    'Full-text search (tsvector with an ILIKE fallback) plus structured filters, cursor-paginated on (created_at DESC, id DESC).',
+  tags: ['Org Vaults'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    { name: 'q', in: 'query', schema: { type: 'string', maxLength: 200, description: 'Sanitized free-text term' } },
+    { name: 'status', in: 'query', schema: { type: 'string', enum: ['draft', 'active', 'completed', 'failed', 'cancelled'] } },
+    { name: 'verifier', in: 'query', schema: { type: 'string' } },
+    { name: 'amount_min', in: 'query', schema: { type: 'string' } },
+    { name: 'amount_max', in: 'query', schema: { type: 'string' } },
+    { name: 'date_from', in: 'query', schema: { type: 'string', description: 'ISO 8601 lower bound on created_at' } },
+    { name: 'date_to', in: 'query', schema: { type: 'string', description: 'ISO 8601 upper bound on created_at' } },
+    { name: 'cursor', in: 'query', schema: { type: 'string', description: 'Opaque cursor from a previous page' } },
+    CURSOR_LIMIT_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Matching vaults',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.array(OrgVaultSearchResultSchema),
+            pagination: PaginationCursor,
+          }),
+        },
+      },
+    },
+    400: { description: 'Invalid cursor', content: { 'application/json': { schema: OrgErrorResponse } } },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Caller is not a member of the organization', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Internal server error', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// ==================== ORG ANALYTICS ====================
+// Routes from src/routes/orgAnalytics.ts, mounted at /api/orgs
+// (and at the /api/organizations alias).
+
+const OrgAnalyticsSchema = registry.register(
+  'OrgAnalytics',
+  z.object({
+    orgId: z.string(),
+    analytics: z.object({
+      totalCapital: z.string().openapi({ example: '4200.0000000' }),
+      successRate: z.number().openapi({ description: 'completed / (completed + failed)', example: 0.75 }),
+      activeVaults: z.number().int(),
+      completedVaults: z.number().int(),
+      failedVaults: z.number().int(),
+    }),
+    teamPerformance: z.array(
+      z.object({
+        creator: z.string(),
+        vaultCount: z.number().int(),
+        totalAmount: z.string(),
+        successRate: z.number(),
+      }),
+    ),
+    generatedAt: z.string().datetime(),
+  }),
+)
+
+const OrgRiskAnalyticsSchema = registry.register(
+  'OrgRiskAnalytics',
+  z.object({
+    orgId: z.string(),
+    generatedAt: z.string().datetime(),
+    range: z.object({
+      startDate: z.string().datetime(),
+      endDate: z.string().datetime(),
+    }),
+    analytics: z.object({
+      totalVaults: z.number().int(),
+      activeVaults: z.number().int(),
+      resolvedVaults: z.number().int(),
+      slashedVaults: z.number().int(),
+      slashRate: z.number(),
+      capitalAtRisk: z.string(),
+    }),
+  }),
+)
+
+const CohortRetentionSchema = registry.register(
+  'CohortRetention',
+  z.object({
+    cohorts: z.array(
+      z.object({
+        cohort_period: z.string().openapi({ example: '2026-01' }),
+        cohort_size: z.number().int(),
+        retained_count: z.number().int(),
+        retention_rate: z.number().openapi({ description: 'Fraction in [0, 1]' }),
+      }),
+    ),
+    range: z.number().int().nullable(),
+    generatedAt: z.string().datetime(),
+  }),
+)
+
+const TeamRollupEntrySchema = z.object({
+  teamId: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  vaultCount: z.number().int(),
+  totalCapital: z.string(),
+  activeVaults: z.number().int(),
+  completedVaults: z.number().int(),
+  failedVaults: z.number().int(),
+  milestoneCount: z.number().int(),
+  milestonesCompleted: z.number().int(),
+  slashRate: z.number(),
+})
+
+const TeamRollupSchema = registry.register(
+  'TeamRollup',
+  z.object({
+    orgId: z.string(),
+    teams: z.array(TeamRollupEntrySchema),
+    orgTotals: TeamRollupEntrySchema.omit({ teamId: true, name: true, slug: true }).extend({
+      teamCount: z.number().int(),
+    }),
+    generatedAt: z.string().datetime(),
+  }),
+)
+
+const AnalyticsReportSchema = registry.register(
+  'OrgAnalyticsReport',
+  z.object({
+    id: z.string(),
+    orgId: z.string(),
+    snapshotAt: z.string().datetime(),
+    createdAt: z.string().datetime(),
+    sizeBytes: z.number().int(),
+    downloadUrl: z.string().nullable().openapi({ description: 'Signed S3 URL or local download path' }),
+  }),
+)
+
+// GET /api/orgs/:orgId/analytics/risk
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/analytics/risk',
+  summary: 'Get org risk analytics',
+  description: 'Slash rate, capital at risk and vault counts, optionally scoped to a date window.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    { name: 'startDate', in: 'query', schema: { type: 'string', description: 'ISO 8601 window start' } },
+    { name: 'endDate', in: 'query', schema: { type: 'string', description: 'ISO 8601 window end' } },
+  ],
+  responses: {
+    200: {
+      description: 'Risk analytics',
+      content: { 'application/json': { schema: OrgRiskAnalyticsSchema } },
+    },
+    400: { description: 'Invalid date range', content: { 'application/json': { schema: OrgErrorResponse } } },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/orgs/:orgId/analytics
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/analytics',
+  summary: 'Get org vault analytics',
+  description: 'Totals, success rate and a per-creator team-performance breakdown, aggregated from Postgres.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Org analytics',
+      content: { 'application/json': { schema: OrgAnalyticsSchema } },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Failed to generate org analytics', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/orgs/:orgId/cohort-retention
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/cohort-retention',
+  summary: 'Get cohort retention',
+  description:
+    'Retention cohorts read from the vault_cohort_retention materialized view. Note: the view is global, not scoped to the org.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    { name: 'range', in: 'query', schema: { type: 'integer', minimum: 1, description: 'Number of most-recent cohorts to return' } },
+  ],
+  responses: {
+    200: {
+      description: 'Cohort retention data',
+      content: {
+        'application/json': {
+          schema: z.object({
+            success: z.boolean(),
+            orgId: z.string(),
+            data: CohortRetentionSchema,
+          }),
+        },
+      },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/orgs/:orgId/teams/rollup
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/teams/rollup',
+  summary: 'Get org team rollup',
+  description: 'Per-team vault, capital and milestone totals plus org-wide totals.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Team rollup',
+      content: { 'application/json': { schema: TeamRollupSchema } },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    500: { description: 'Failed to generate team rollup', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// GET /api/orgs/:orgId/analytics/reports
+registry.registerPath({
+  method: 'get',
+  path: '/api/orgs/{orgId}/analytics/reports',
+  summary: 'List org analytics reports',
+  description: 'Point-in-time analytics reports, newest first, with a signed download URL when available.',
+  tags: ['Org Analytics'],
+  security: [{ bearerAuth: [] }],
+  parameters: [
+    ORG_ID_PARAM,
+    PAGE_PARAM,
+    PAGE_SIZE_PARAM,
+  ],
+  responses: {
+    200: {
+      description: 'Paginated analytics reports',
+      content: {
+        'application/json': {
+          schema: z.object({
+            data: z.array(AnalyticsReportSchema),
+            pagination: PagePagination,
+          }),
+        },
+      },
+    },
+    401: { description: 'Authentication required', content: { 'application/json': { schema: OrgErrorResponse } } },
+    403: { description: 'Owner or admin role required', content: { 'application/json': { schema: OrgErrorResponse } } },
+  },
+})
+
+// API key management and OAuth token exchange.
+const apiKeyMetadata = registry.register('ApiKeyMetadata', z.object({
+  id: z.string().uuid(),
+  userId: z.string().nullable(),
+  orgId: z.string().uuid().nullable(),
+  label: z.string(),
+  scopes: z.array(z.nativeEnum(ApiScope)),
+  createdAt: z.string().datetime(),
+  revokedAt: z.string().datetime().nullable(),
+  lastUsedAt: z.string().datetime().nullable().optional(),
+  requestCount: z.number().int().optional(),
+  lastIp: z.string().nullable().optional(),
+}))
+
+const apiKeySecretResponse = z.object({
+  apiKey: z.string().openapi({ description: 'Secret returned only on creation or rotation.' }),
+  apiKeyMeta: apiKeyMetadata,
+})
+
+const stringError = z.object({ error: z.string() })
+const validationError = z.object({
+  error: z.object({
+    code: z.literal('VALIDATION_ERROR'),
+    message: z.string(),
+    fields: z.array(z.object({ path: z.string(), message: z.string(), code: z.string() })),
+  }),
+})
+const stepUpError = z.object({
+  error: z.string(),
+  challenge: z.string(),
+  stepUpRequired: z.literal(true),
+})
+const oauthError = z.object({ error: z.string(), error_description: z.string() })
+const jsonResponse = (description: string, schema: z.ZodType) => ({
+  description,
+  content: { 'application/json': { schema } },
+})
+const unauthorized = jsonResponse('Missing, invalid, or expired bearer token', stringError)
+const invalidRequest = jsonResponse('Request validation failed', validationError)
+const keyNotFound = jsonResponse('API key not found', stringError)
+const payloadTooLarge = jsonResponse('Payload exceeds the applicable size limit', ErrorEnvelope)
+const unsupportedMediaType = jsonResponse('Request body must use UTF-8 JSON', ErrorEnvelope)
+const rateLimited = {
+  description: 'Request rate limit exceeded',
+  content: {
+    'text/html': { schema: z.string() },
+    'application/json': { schema: stringError },
+  },
+}
+const unexpectedError = jsonResponse('Unexpected server error', ErrorEnvelope)
+
+const apiKeyOperations = {
+  tags: ['API Keys'],
+  security: [{ bearerAuth: [] }],
+  servers: [{ url: '/' }],
+}
+
+function registerApiKeyPath(operation: Parameters<typeof registry.registerPath>[0] & { operationId: string }) {
+  registry.registerPath({ ...operation, operationId: `${operation.operationId}Legacy`, deprecated: true })
+  registry.registerPath({ ...operation, path: operation.path.replace('/api/', '/api/v1/') })
+}
+
+registerApiKeyPath({
+  ...apiKeyOperations,
+  method: 'get',
+  path: '/api/api-keys',
+  operationId: 'listApiKeys',
+  summary: 'List the authenticated user’s API keys',
+  request: {
+    query: z.object({
+      limit: z.number().int().min(1).max(100).default(50).openapi({
+        description: 'Page size. Supplied values are parsed and clamped to 1–100.',
+      }),
+      offset: z.number().int().min(0).default(0).openapi({
+        description: 'Zero-based offset. Negative values are clamped to zero.',
+      }),
+    }),
+  },
+  responses: {
+    200: jsonResponse('Page of API key metadata using offset pagination', z.object({
+      apiKeys: z.array(apiKeyMetadata),
+      pagination: z.object({
+        limit: z.number().int(),
+        offset: z.number().int(),
+        total: z.number().int(),
+      }),
+    })),
+    401: unauthorized,
+    429: jsonResponse('Request rate limit exceeded', stringError),
+  },
+})
+
+registerApiKeyPath({
+  ...apiKeyOperations,
+  method: 'post',
+  path: '/api/api-keys',
+  operationId: 'createApiKey',
+  summary: 'Create an API key',
+  request: {
+    body: {
+      required: true,
+      content: {
+        'application/json': {
+          schema: createApiKeySchema.extend({
+            scopes: createApiKeySchema.shape.scopes.meta({ uniqueItems: true }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    201: jsonResponse('API key created', apiKeySecretResponse),
+    400: invalidRequest,
+    401: unauthorized,
+    403: jsonResponse('Caller is not a member of the requested organization', ErrorEnvelope),
+    404: jsonResponse('Organization not found', ErrorEnvelope),
+    413: payloadTooLarge,
+    415: unsupportedMediaType,
+    429: rateLimited,
+    500: unexpectedError,
+  },
+})
+
+registerApiKeyPath({
+  ...apiKeyOperations,
+  method: 'post',
+  path: '/api/api-keys/{id}/rotate',
+  operationId: 'rotateApiKey',
+  summary: 'Rotate an API key',
+  request: { params: apiKeyIdParamSchema },
+  responses: {
+    200: jsonResponse('API key rotated', apiKeySecretResponse),
+    400: invalidRequest,
+    401: unauthorized,
+    404: keyNotFound,
+    413: payloadTooLarge,
+    415: unsupportedMediaType,
+    429: rateLimited,
+  },
+})
+
+registerApiKeyPath({
+  ...apiKeyOperations,
+  method: 'post',
+  path: '/api/api-keys/{id}/revoke',
+  operationId: 'revokeApiKey',
+  summary: 'Revoke an API key',
+  description: 'Requires a valid step-up session. Supply it in the header or JSON body.',
+  request: {
+    params: apiKeyIdParamSchema,
+    headers: z.object({ 'X-Step-Up-Session-Id': z.string().optional() }),
+    body: {
+      content: {
+        'application/json': { schema: z.object({ stepUpSessionId: z.string().optional() }) },
+      },
+    },
+  },
+  responses: {
+    200: jsonResponse('API key revoked', z.object({ apiKeyMeta: apiKeyMetadata })),
+    400: invalidRequest,
+    401: jsonResponse('Bearer authentication or step-up verification failed', z.union([stepUpError, stringError])),
+    404: keyNotFound,
+    413: payloadTooLarge,
+    429: rateLimited,
+  },
+})
+
+const oauthNoCacheHeaders = {
+  'Cache-Control': { schema: { type: 'string' as const, enum: ['no-store'] } },
+  Pragma: { schema: { type: 'string' as const, enum: ['no-cache'] } },
+}
+
+registry.registerPath({
+  method: 'post',
+  path: '/api/oauth/token',
+  operationId: 'exchangeApiKeyForOAuthToken',
+  summary: 'Exchange API key credentials for an OAuth access token',
+  description: 'Describes the OAuth router contract. Availability depends on the deployment mounting the router at this path.',
+  tags: ['API Keys'],
+  security: [],
+  servers: [{ url: '/' }],
+  request: {
+    body: {
+      required: true,
+      content: {
+        'application/json': {
+          schema: oauthTokenRequestSchema.extend({
+            client_secret: oauthTokenRequestSchema.shape.client_secret.meta({ writeOnly: true }),
+            scope: oauthTokenRequestSchema.shape.scope.meta({
+              description: 'Space-separated scopes. Omitted or blank uses all client grants. Up to 20 distinct scopes, each at most 64 characters.',
+            }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      ...jsonResponse('Access token issued', z.object({
+        access_token: z.string(),
+        token_type: z.literal('Bearer'),
+        expires_in: z.number().int().min(60).max(43200),
+        scope: z.string(),
+      })),
+      headers: oauthNoCacheHeaders,
+    },
+    400: {
+      ...jsonResponse('Unsupported grant, malformed request, or invalid scope', oauthError),
+      headers: oauthNoCacheHeaders,
+    },
+    401: {
+      ...jsonResponse('Invalid client credentials', oauthError),
+      headers: oauthNoCacheHeaders,
+    },
+    413: payloadTooLarge,
+    415: unsupportedMediaType,
+    429: rateLimited,
+    500: {
+      ...jsonResponse('OAuth token service is unavailable', oauthError),
+      headers: oauthNoCacheHeaders,
+    },
+  },
+})
+
 export function generateOpenApiSpec() {
   const generator = new OpenApiGeneratorV31(registry.definitions)
 
@@ -952,5 +2196,6 @@ export function generateOpenApiSpec() {
       description: 'API documentation for Disciplr backend',
     },
     servers: [{ url: '/api' }],
+    security: [],
   })
 }

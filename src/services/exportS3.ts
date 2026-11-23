@@ -11,6 +11,82 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { Readable } from 'node:stream'
 
+/**
+ * Content types permitted for evidence and export uploads.
+ * Executables, HTML (XSS vector when served directly), and other active content
+ * are excluded. Extend this list only after a security review.
+ */
+export const ALLOWED_CONTENT_TYPES = new Set([
+  'text/csv',
+  'text/csv; charset=utf-8',
+  'application/json',
+  'application/json; charset=utf-8',
+  'application/x-ndjson',
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+])
+
+export class S3KeyTraversalError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'S3KeyTraversalError'
+  }
+}
+
+export class S3ContentTypeError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'S3ContentTypeError'
+  }
+}
+
+/**
+ * Sanitise a single user-supplied S3 key segment.
+ *
+ * Rules:
+ * - Rejects null bytes (path confusion in some storage layers)
+ * - Rejects segments that are or resolve to ".." (directory traversal)
+ * - Strips leading slashes so the tenant prefix always dominates
+ * - Collapses any embedded slash sequences to a single dash so the segment
+ *   stays within its single path component
+ *
+ * @throws {S3KeyTraversalError} if the segment contains a traversal attempt.
+ */
+export function sanitizeS3KeySegment(segment: string): string {
+  if (segment.includes('\0')) {
+    throw new S3KeyTraversalError('S3 key segment contains a null byte')
+  }
+
+  // Strip leading slashes
+  const stripped = segment.replace(/^\/+/, '')
+
+  // Reject ".." traversal in any slash-delimited component
+  const parts = stripped.split('/')
+  for (const part of parts) {
+    if (part === '..' || part === '.') {
+      throw new S3KeyTraversalError(`S3 key segment contains a traversal component: "${part}"`)
+    }
+  }
+
+  // Collapse embedded slashes to a dash to keep it a single segment
+  return stripped.replace(/\/+/g, '-')
+}
+
+/**
+ * Assert that `contentType` is in the allowlist.
+ *
+ * @throws {S3ContentTypeError} if the content type is not permitted.
+ */
+export function assertAllowedContentType(contentType: string): void {
+  // Normalise: lowercase and trim
+  const normalised = contentType.toLowerCase().trim()
+  if (!ALLOWED_CONTENT_TYPES.has(normalised)) {
+    throw new S3ContentTypeError(`Content type not allowed: "${contentType}"`)
+  }
+}
+
 export interface S3Config {
   bucket: string
   region: string
@@ -53,8 +129,11 @@ export function resetPresigner(): void {
 /**
  * Stream-upload `buffer` to S3 under `key`.
  * Uses @aws-sdk/lib-storage for multipart-safe, streaming uploads.
+ *
+ * @throws {S3ContentTypeError} if `contentType` is not in ALLOWED_CONTENT_TYPES.
  */
 export async function uploadToS3(config: S3Config, key: string, data: Buffer | Readable, contentType: string): Promise<void> {
+  assertAllowedContentType(contentType)
   const client = _clientFactory(config.region)
   const upload = new Upload({
     client,
@@ -72,9 +151,10 @@ export async function uploadToS3(config: S3Config, key: string, data: Buffer | R
 /**
  * Return a pre-signed GET URL valid for `ttlSeconds`.
  */
-export async function getExportSignedUrl(config: S3Config, key: string): Promise<string> {
+export async function getExportSignedUrl(config: S3Config, key: string, overrideTtlSeconds?: number): Promise<string> {
   const client = _clientFactory(config.region)
   return _presigner(client, new GetObjectCommand({ Bucket: config.bucket, Key: key }), {
-    expiresIn: config.signedUrlTtlSeconds,
+    expiresIn: overrideTtlSeconds ?? config.signedUrlTtlSeconds,
   })
 }
+

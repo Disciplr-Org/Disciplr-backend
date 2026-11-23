@@ -14,6 +14,13 @@ This document describes the calculations and assumptions used by the analytics e
   - Query: userId (required), windowDays=30, baseScorePerSuccess=5, penaltyPerFailure=2, streakBonusPerDay=1
   - Response: per-user metrics and a behaviorScore
 
+- GET /api/orgs/:orgId/analytics/risk
+  - Query: startDate, endDate (ISO 8601, inclusive, UTC)
+  - Response: slash-rate and capital-at-risk for the requested org and window
+    - slashRate: resolved vaults that ended in slash_on_miss divided by all resolved vaults in the range
+    - capitalAtRisk: sum of the net-staked amount for active vaults in the range
+    - resolvedVaults, slashedVaults, activeVaults, totalVaults: supporting counts
+
 ## Data Model
 
 In-memory milestone events:
@@ -50,6 +57,69 @@ Steps:
 2. successes = count where status = success; failures = count where status = failed.
 3. streakDays = number of consecutive UTC days ending today where user has ≥1 success.
 4. behaviorScore = successes * baseScorePerSuccess − failures * penaltyPerFailure + streakDays * streakBonusPerDay.
+
+## Batch Loader
+
+### Problem: N+1 per-vault reads
+
+When analytics are computed for an org with N vaults, a naïve implementation
+issues one query per vault to fetch its status, capital, and milestone counts.
+For large orgs this dominates latency (O(N) round-trips).
+
+### Solution: `AnalyticsBatchLoader`
+
+`src/services/analyticsBatchLoader.ts` provides a **request-scoped** batch
+loader that coalesces all per-vault and per-milestone reads into at most **one
+query per entity type** using SQL `IN (…)` clauses.
+
+```
+N vaults  →  1 vault query  +  1 milestone query  (constant, not O(N))
+```
+
+Key properties:
+
+- **Deduplication** – repeated keys in a single `loadVaults` / `loadMilestones`
+  call are deduplicated before the query is issued.
+- **Intra-request caching** – keys already fetched within the same loader
+  instance are served from an in-memory Map; no extra DB round-trip.
+- **No cross-request leakage** – create a new `AnalyticsBatchLoader` (or use
+  `createAnalyticsBatchLoader()`) for every request or background job.  Never
+  share a loader instance across requests.
+- **Tenant isolation** – callers must only pass vault IDs that belong to the
+  requesting org.  The loader applies no tenant filter of its own; isolation is
+  enforced by the caller.
+
+### Usage
+
+```ts
+import { getOrgAnalyticsBatched } from './services/analytics.service.js'
+
+// vaultIds must all belong to the same org/tenant
+const analytics = getOrgAnalyticsBatched(vaultIds)
+```
+
+Or use the loader directly for custom aggregation:
+
+```ts
+import { createAnalyticsBatchLoader } from './services/analyticsBatchLoader.js'
+
+const loader = createAnalyticsBatchLoader()            // one per request
+const vaultMap    = loader.loadVaults(vaultIds)        // 1 query
+const milestoneMap = loader.loadMilestones(vaultIds)   // 1 query
+// loader.queries === 2
+```
+
+### Query-count guarantee (verified in tests)
+
+| Before (N+1)        | After (batched)         |
+|---------------------|-------------------------|
+| N vault queries     | 1 vault query           |
+| N milestone queries | 1 milestone query       |
+
+See `src/tests/performance/analyticsBatch.perf.test.ts` for coverage of dedup,
+query-count reduction, result parity, and tenant isolation.
+
+---
 
 ## Assumptions
 

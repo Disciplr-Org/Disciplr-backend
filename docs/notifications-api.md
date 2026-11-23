@@ -18,12 +18,14 @@ Returns the authenticated user's inbox.
 
 Query parameters:
 
-- `page`: page number, default `1`
-- `pageSize`: page size, default `20`, max `100`
-- `sortBy`: one of `created_at`, `read_at`, `title`, `type`
-- `sortOrder`: `asc` or `desc`, default `desc`
+- `limit`: page size, default `20`, max `100`
+- `cursor`: opaque cursor from the previous page's `pagination.next_cursor`
 - `status`: `all`, `read`, or `unread`, default `all`
 - `includeArchived`: `true` to include archived notifications, default `false`
+
+Notifications are returned newest first using a stable `(created_at DESC, id DESC)` keyset.
+Clients must treat cursors as opaque and only pass back `next_cursor` values returned by this endpoint.
+Rows inserted after page 1 do not cause skips or duplicates while scrolling older pages.
 
 Example response:
 
@@ -46,19 +48,16 @@ Example response:
     }
   ],
   "pagination": {
-    "page": 1,
-    "pageSize": 20,
-    "total": 1,
-    "totalPages": 1,
-    "hasNext": false,
-    "hasPrev": false
-  },
-  "sort": {
-    "sortBy": "created_at",
-    "sortOrder": "desc"
+    "limit": 20,
+    "cursor": null,
+    "next_cursor": "MjAyNi0wNC0yNFQxMDowMDowMC4wMDBafG5vdGlmXzEyMw",
+    "has_more": true,
+    "count": 1
   }
 }
 ```
+
+When `has_more` is `false`, `next_cursor` is omitted. An invalid `cursor` returns `400`.
 
 ### `PATCH /api/notifications/:id/read`
 

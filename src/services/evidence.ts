@@ -1,9 +1,19 @@
+import { isIP } from 'node:net'
 import { prisma } from '../lib/prisma.js'
+import { isPublicAddress } from '../security/egressGuard.js'
+import type { Knex } from 'knex'
 
 export class EvidenceReferenceValidationError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'EvidenceReferenceValidationError'
+  }
+}
+
+export class EvidenceSsrfBlockedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'EvidenceSsrfBlockedError'
   }
 }
 
@@ -17,6 +27,85 @@ export interface EvidenceReference {
 }
 
 const EVIDENCE_HASH_PATTERN = /^[A-Za-z0-9_-]{32,128}$/
+
+/**
+ * Validates that an evidence URL is safe to fetch from.
+ *
+ * @security SSRF protected — blocks RFC1918 (10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12),
+ * loopback (127.0.0.1, ::1), link-local (169.254.0.0/16), and localtest.me domains.
+ * If EVIDENCE_ALLOWLIST is configured, only allowlisted hosts are permitted.
+ * Falls back to WEBHOOK_ALLOWED_HOSTS if EVIDENCE_ALLOWLIST is not set.
+ *
+ * @param url - The evidence URL to validate
+ * @param allowedHosts - Optional list of permitted hostnames (comma-separated via env var)
+ * @throws {EvidenceSsrfBlockedError} if the URL resolves to a blocked IP or non-allowlisted host
+ *
+ * @internal Used before fetching evidence content from object-storage URLs.
+ */
+function validateEvidenceUrlSafety(
+  url: string,
+  allowedHosts?: string[],
+): void {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    // Do not log the URL to avoid leaking internal topology
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  // Never forward embedded credentials to an evidence host.
+  if (parsed.username !== '' || parsed.password !== '') {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  const hostname = parsed.hostname
+  if (hostname === '') {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  const lower = hostname.toLowerCase().replace(/\.$/, '')
+
+  // Block loopback/localtest.me by name (these never resolve to a public egress target).
+  if (
+    lower === 'localhost' ||
+    lower.endsWith('.localhost') ||
+    /(?:^|\.)localtest\.me$/.test(lower)
+  ) {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  // If the host is a literal IP, classify it with the shared guard. DNS
+  // hostnames are not resolved here (this validator is synchronous); they are
+  // resolved and pinned at fetch time by fetchEvidenceContent.
+  const unbracketedHostname = hostname.replace(/^\[|\]$/g, '')
+  if (isIP(unbracketedHostname) !== 0 && !isPublicAddress(unbracketedHostname)) {
+    console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+    throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+  }
+
+  // Use EVIDENCE_ALLOWLIST if configured, else fall back to WEBHOOK_ALLOWED_HOSTS
+  const hosts = allowedHosts ?? (process.env.EVIDENCE_ALLOWLIST ?? '')
+    .split(',')
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean)
+
+  if (hosts.length > 0) {
+    if (!hosts.some((h) => lower === h || lower.endsWith(`.${h}`))) {
+      console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
+      throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
+    }
+  }
+}
 
 function normalizeEvidenceHash(input: unknown): string {
   if (typeof input !== 'string') {
@@ -106,10 +195,13 @@ function getSignedUrlExpiry(referenceUrl: string): Date {
 }
 
 export function validateSignedObjectStorageUrl(referenceUrl: string): Date {
+  validateEvidenceUrlSafety(referenceUrl)
+
   const expiry = getSignedUrlExpiry(referenceUrl)
   if (expiry.getTime() <= Date.now()) {
     throw new EvidenceReferenceValidationError('Signed object-storage URL has already expired')
   }
+
   return expiry
 }
 
@@ -117,10 +209,36 @@ export async function createEvidenceReference(
   verificationId: string,
   evidenceHash: string,
   evidenceReferenceUrl: string,
+  trx?: Knex.Transaction,
 ): Promise<EvidenceReference> {
   const normalizedHash = normalizeEvidenceHash(evidenceHash)
-  const expiresAt = validateSignedObjectStorageUrl(evidenceReferenceUrl.trim())
+  const cleanReferenceUrl = evidenceReferenceUrl.trim()
+  const expiresAt = validateSignedObjectStorageUrl(cleanReferenceUrl)
   const now = new Date()
+
+  if (trx) {
+    const [row] = await trx('evidence_references')
+      .insert({
+        verification_id: verificationId,
+        evidence_hash: normalizedHash,
+        reference_url: cleanReferenceUrl,
+        expires_at: expiresAt,
+        created_at: now,
+      })
+      .onConflict('verification_id')
+      .merge({
+        evidence_hash: normalizedHash,
+        reference_url: cleanReferenceUrl,
+        expires_at: expiresAt,
+      })
+      .returning(['id', 'verification_id', 'evidence_hash', 'reference_url', 'expires_at', 'created_at'])
+
+    if (!row) {
+      throw new Error('Failed to persist evidence reference')
+    }
+
+    return mapEvidenceReferenceRow(row)
+  }
 
   const rows = await prisma.$queryRaw<
     Array<{
@@ -141,7 +259,7 @@ export async function createEvidenceReference(
     ) VALUES (
       ${verificationId},
       ${normalizedHash},
-      ${evidenceReferenceUrl.trim()},
+      ${cleanReferenceUrl},
       ${expiresAt},
       ${now}
     )
@@ -158,12 +276,172 @@ export async function createEvidenceReference(
     throw new Error('Failed to persist evidence reference')
   }
 
+  return mapEvidenceReferenceRow(row)
+}
+
+function mapEvidenceReferenceRow(row: {
+  id: string
+  verification_id: string
+  evidence_hash: string
+  reference_url: string
+  expires_at: Date | string
+  created_at: Date | string
+}): EvidenceReference {
   return {
     id: row.id,
     verificationId: row.verification_id,
     evidenceHash: row.evidence_hash,
     referenceUrl: row.reference_url,
-    expiresAt: row.expires_at.toISOString(),
-    createdAt: row.created_at.toISOString(),
+    expiresAt: row.expires_at instanceof Date ? row.expires_at.toISOString() : new Date(row.expires_at).toISOString(),
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : new Date(row.created_at).toISOString(),
   }
+}
+
+/**
+ * Fetches evidence content from a stored evidence reference URL.
+ *
+ * @security SSRF protected — the URL is validated by the shared egress guard
+ * (resolve-validate-pin) before fetching. DNS is resolved once, every returned
+ * address is classified as public, and the socket is pinned to the validated
+ * IP so DNS rebinding cannot redirect the connection to an internal address.
+ *
+ * Redirects are not followed: any 3xx response is refused.
+ *
+ * @param referenceUrl - The evidence URL to fetch from (assumed to be pre-validated)
+ * @param timeoutMs - Optional timeout in milliseconds (default: 10000)
+ * @returns The response body as text
+ * @throws {Error} if the fetch fails, is blocked, or times out
+ */
+export async function fetchEvidenceContent(
+  referenceUrl: string,
+  timeoutMs: number = 10_000,
+): Promise<string> {
+  // Validate URL safety again as a precaution (defense in depth)
+  validateEvidenceUrlSafety(referenceUrl)
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const abortPromise = new Promise<never>((_resolve, reject) => {
+    controller.signal.addEventListener(
+      'abort',
+      () => reject(new Error(`Evidence fetch timed out after ${timeoutMs}ms`)),
+      { once: true },
+    )
+  })
+
+  try {
+    const response = await Promise.race([
+      fetch(referenceUrl, {
+        method: 'GET',
+        redirect: 'manual',
+        signal: controller.signal,
+      }),
+      abortPromise,
+    ])
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location')
+      throw new Error(`Evidence fetch redirect refused${location ? ` (target: ${location})` : ''}`)
+    }
+
+    if (response.status >= 400) {
+      throw new Error(`Evidence fetch failed with HTTP ${response.status}`)
+    }
+
+    return await response.text()
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+export interface SimilarEvidenceResult {
+  milestoneId: string
+  evidenceHash: string
+  referenceUrl: string
+  vectorDistance: number
+  keywordDistance: number
+  fusedScore: number
+}
+
+export interface FindSimilarOptions {
+  limit?: number
+  vectorWeight?: number
+  keywordWeight?: number
+}
+
+export async function findSimilar(
+  milestoneId: string,
+  options: FindSimilarOptions = {},
+): Promise<SimilarEvidenceResult[]> {
+  const limit = options.limit ?? 5
+  const vectorWeight = options.vectorWeight ?? 0.5
+  const keywordWeight = options.keywordWeight ?? 0.5
+
+  // Fetch the query milestone's embedding and evidence text
+  const queryRows = await prisma.$queryRaw<
+    Array<{
+      embedding: string
+      reference_url: string
+      evidence_hash: string
+    }>
+  >`
+    SELECT
+      me.embedding::text AS embedding,
+      er.reference_url,
+      er.evidence_hash
+    FROM milestone_embeddings me
+    JOIN verifications v ON v.target_id = me.milestone_id
+    JOIN evidence_references er ON er.verification_id = v.id
+    WHERE me.milestone_id = ${milestoneId}
+    LIMIT 1
+  `
+
+  const queryRow = queryRows[0]
+  if (!queryRow) {
+    return []
+  }
+
+  // We cast to vector explicitly here and calculate distances.
+  const results = await prisma.$queryRaw<
+    Array<{
+      milestone_id: string
+      evidence_hash: string
+      reference_url: string
+      vector_distance: number
+      keyword_distance: number
+      fused_score: number
+    }>
+  >`
+    SELECT
+      me.milestone_id,
+      er.evidence_hash,
+      er.reference_url,
+      (me.embedding <=> ${queryRow.embedding}::vector) AS vector_distance,
+      LEAST(
+        (er.reference_url <-> ${queryRow.reference_url}),
+        (er.evidence_hash <-> ${queryRow.evidence_hash})
+      ) AS keyword_distance,
+      (
+        ((me.embedding <=> ${queryRow.embedding}::vector) * ${vectorWeight}) +
+        (LEAST(
+          (er.reference_url <-> ${queryRow.reference_url}),
+          (er.evidence_hash <-> ${queryRow.evidence_hash})
+        ) * ${keywordWeight})
+      ) AS fused_score
+    FROM milestone_embeddings me
+    JOIN verifications v ON v.target_id = me.milestone_id
+    JOIN evidence_references er ON er.verification_id = v.id
+    WHERE me.milestone_id != ${milestoneId}
+    ORDER BY fused_score ASC
+    LIMIT ${limit}
+  `
+
+  return results.map((r: any) => ({
+    milestoneId: r.milestone_id,
+    evidenceHash: r.evidence_hash,
+    referenceUrl: r.reference_url,
+    vectorDistance: Number(r.vector_distance),
+    keywordDistance: Number(r.keyword_distance),
+    fusedScore: Number(r.fused_score),
+  }))
 }

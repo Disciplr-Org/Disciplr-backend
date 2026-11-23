@@ -1,7 +1,7 @@
 import { describe, it, expect } from '@jest/globals'
 import request from 'supertest'
 import express, { type Request, type Response, type NextFunction } from 'express'
-import { AppError, ErrorCode, errorHandler } from '../middleware/errorHandler.js'
+import { AppError, ErrorCode, SorobanErrorCatalog, SorobanTimeoutError, errorHandler } from '../middleware/errorHandler.js'
 import { notFound } from '../middleware/notFound.js'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -115,6 +115,41 @@ describe('AppError factories', () => {
 // ─── errorHandler middleware ──────────────────────────────────────────────────
 
 describe('errorHandler middleware', () => {
+  it('maps every catalog entry to a stable, non-retryable API error', () => {
+    for (const [contractCode, mapping] of Object.entries(SorobanErrorCatalog)) {
+      const error = AppError.fromContractError(new Error(`simulation failed: Error(Contract, ${contractCode})`))
+      expect(error).not.toBeNull()
+      expect(error).toMatchObject({
+        code: mapping.code,
+        status: mapping.status,
+        message: mapping.message,
+        retryable: false,
+        details: { contractErrorCode: Number(contractCode) },
+      })
+    }
+  })
+
+  it('fails closed for an unknown contract code without exposing RPC text', () => {
+    const error = AppError.fromContractError(new Error('Host rejected call: Error(Contract, 99): secret state'))
+    expect(error).toMatchObject({
+      code: ErrorCode.CONTRACT_ERROR_UNKNOWN,
+      status: 502,
+      message: 'Contract operation failed',
+      retryable: false,
+      details: { contractErrorCode: 99 },
+    })
+    expect(error?.message).not.toContain('secret state')
+  })
+
+  it('does not treat an unrelated RPC error code as a contract rejection', () => {
+    expect(AppError.fromContractError({ code: -32000, message: 'upstream unavailable' })).toBeNull()
+  })
+
+  it('accepts nested Soroban error messages', () => {
+    const error = AppError.fromContractError({ result: { error: 'ContractError(4)' } })
+    expect(error).toMatchObject({ code: ErrorCode.VALIDATION_ERROR, details: { contractErrorCode: 4 } })
+  })
+
   it('returns uniform JSON for AppError', async () => {
     const app = buildApp((_req, _res, next) => {
       next(AppError.badRequest('missing field'))
@@ -271,6 +306,22 @@ describe('errorHandler middleware', () => {
     expect(res.status).toBe(429)
     expect(res.body.error.code).toBe('RATE_LIMITED')
     expect(res.body.error.message).toBe('slow down')
+  })
+
+  it('returns 504 for SorobanTimeoutError', async () => {
+    const app = buildApp((_req, _res, next) => {
+      next(new SorobanTimeoutError('tx-hash-123', 45000))
+    })
+
+    const res = await request(app).get('/test')
+    expect(res.status).toBe(504)
+    expect(res.body).toEqual({
+      error: {
+        code: 'SOROBAN_TIMEOUT',
+        message: 'Soroban transaction tx-hash-123 did not finalise within 45000ms',
+        details: { txHash: 'tx-hash-123', elapsedMs: 45000 },
+      },
+    })
   })
 
   it('returns 413 for AppError.payloadTooLarge', async () => {
