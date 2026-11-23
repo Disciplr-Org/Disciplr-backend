@@ -38,6 +38,21 @@ test('Vault expiry suite', async (t) => {
       .get('/api/cron/expire-vaults')
       .set('Authorization', 'Bearer wrong-secret-value')
     assert.equal(resWrongAuth.status, 401)
+
+    const resInvalidLimit = await request(app).get('/api/cron/expire-vaults?limit=invalid')
+    assert.equal(resInvalidLimit.status, 401)
+  })
+
+  await t.test('Rejects invalid and out-of-range batch limits', async () => {
+    process.env.CRON_SECRET = 'correct-secret-value-1234'
+
+    for (const limit of ['abc', '1abc', '1.5', '0', '-5', '501', '999999999999999999999999999999999999']) {
+      const res = await request(app)
+        .get(`/api/cron/expire-vaults?limit=${limit}`)
+        .set('Authorization', 'Bearer correct-secret-value-1234')
+      assert.equal(res.status, 400, `limit=${limit}`)
+      assert.deepEqual(res.body, { error: 'limit must be an integer between 1 and 500' })
+    }
   })
 
   // 2. Overdue vault expiry lifecycle
@@ -148,6 +163,52 @@ test('Vault expiry suite', async (t) => {
       remaining = resNext.body.remaining
     }
     assert.equal(remaining, 0)
+  })
+
+  await t.test('Defaults the cron batch size to 100', async () => {
+    process.env.CRON_SECRET = 'correct-secret-value-1234'
+    const nowIso = new Date().toISOString()
+    const pastEnd = new Date(Date.now() - 10000).toISOString()
+
+    for (let i = 0; i < 101; i++) {
+      const id = `default-batch-vault-${Date.now()}-${i}`
+      await store.createVault({
+        id,
+        name: `Default Batch Vault ${i}`,
+        creator,
+        verifier,
+        amount: '500',
+        status: 'active',
+        startDate: new Date(Date.now() - 30000).toISOString(),
+        endDate: pastEnd,
+        successDestination: creator,
+        failureDestination: verifier,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        milestones: [{
+          id: `${id}-m1`,
+          title: 'M1',
+          amount: '500',
+          dueDate: pastEnd,
+          status: 'pending',
+        }],
+      })
+    }
+
+    const res = await request(app)
+      .get('/api/cron/expire-vaults')
+      .set('Authorization', 'Bearer correct-secret-value-1234')
+
+    assert.equal(res.status, 200)
+    assert.equal(res.body.processed, 100)
+    assert.ok(res.body.remaining >= 1)
+
+    const resAtMax = await request(app)
+      .get('/api/cron/expire-vaults?limit=500')
+      .set('Authorization', 'Bearer correct-secret-value-1234')
+    assert.equal(resAtMax.status, 200)
+    assert.ok(resAtMax.body.processed >= 1)
+    assert.equal(resAtMax.body.remaining, 0)
   })
 
   // 5. Overlapping concurrent calls test
