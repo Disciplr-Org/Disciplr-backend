@@ -167,6 +167,12 @@ export function isExemptRoute(path) {
   )
 }
 
+function parseEnvInt(val, fallback) {
+  if (val === undefined || val === null || val === '') return fallback
+  const n = parseInt(String(val), 10)
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
 /**
  * Express middleware factory for serverless rate limiting.
  */
@@ -179,12 +185,12 @@ export function createRateLimiter({ getStore = defaultGetStore } = {}) {
     const clientIp = getClientIp(req)
     const isWrite = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)
 
-    const writeIpMax = parseInt(process.env.RATE_LIMIT_WRITE_IP_MAX || '20', 10)
-    const writeIpWindow = parseInt(process.env.RATE_LIMIT_WRITE_IP_WINDOW_SECS || '60', 10)
-    const writeAddrMax = parseInt(process.env.RATE_LIMIT_WRITE_ADDR_MAX || '60', 10)
-    const writeAddrWindow = parseInt(process.env.RATE_LIMIT_WRITE_ADDR_WINDOW_SECS || '3600', 10)
-    const readIpMax = parseInt(process.env.RATE_LIMIT_READ_IP_MAX || '300', 10)
-    const readIpWindow = parseInt(process.env.RATE_LIMIT_READ_IP_WINDOW_SECS || '60', 10)
+    const writeIpMax = parseEnvInt(process.env.RATE_LIMIT_WRITE_IP_MAX, 20)
+    const writeIpWindow = parseEnvInt(process.env.RATE_LIMIT_WRITE_IP_WINDOW_SECS, 60)
+    const writeAddrMax = parseEnvInt(process.env.RATE_LIMIT_WRITE_ADDR_MAX, 60)
+    const writeAddrWindow = parseEnvInt(process.env.RATE_LIMIT_WRITE_ADDR_WINDOW_SECS, 3600)
+    const readIpMax = parseEnvInt(process.env.RATE_LIMIT_READ_IP_MAX, 300)
+    const readIpWindow = parseEnvInt(process.env.RATE_LIMIT_READ_IP_WINDOW_SECS, 60)
 
     try {
       let store

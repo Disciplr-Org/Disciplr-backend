@@ -148,7 +148,7 @@ including `startTime`, `endTime`, `count`, `successCount`, and `failureCount`.
 
 ---
 
-When a delivery permanently fails (exhausts retries) or is short-circuited by an open breaker, the failed delivery is persisted to the `webhook_dead_letters` table for later inspection and replay.
+When a delivery permanently fails (exhausts retries) or is short-circuited by an open breaker, the failed delivery is persisted to the `webhook_dead_letters` table for later inspection and replay. For operational remediation, triage, and replay runbooks, refer to [Runbook: Replaying Webhook Dead Letters](runbooks/webhook-dead-letters.md).
 
 ### Schema
 
