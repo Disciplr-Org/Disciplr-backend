@@ -1,23 +1,21 @@
-import { test, expect, describe, beforeEach, afterEach, mock } from "bun:test";
-import { randomUUID } from "node:crypto";
+// Jest ESM: the pool is mocked with unstable_mockModule, so vaultStore must be
+// imported dynamically afterwards (a static import would be hoisted above the mock).
+import { jest, test, expect, describe, beforeEach, afterEach } from "@jest/globals";
 import type { CreateVaultInput, PersistedVault } from "../types/vaults.js";
 
 // Mock the pool module before importing vaultStore to intercept database connections
-let activePool: any = null;
+let activePool: unknown = null;
 
-mock.module("../db/pool.js", () => {
-  return {
-    getPgPool: () => activePool,
-  };
-});
+jest.unstable_mockModule("../db/pool.js", () => ({
+  getPgPool: () => activePool,
+}));
 
-// Import vaultStore functions after mocking the pool module
-import {
+const {
   createVaultWithMilestones,
   getVaultRevisionById,
   resetVaultStore,
   updateVaultById,
-} from "../services/vaultStore.js";
+} = await import("../services/vaultStore.js");
 
 // Types matching the database structure for our PG simulator
 interface FakeVaultRow {
@@ -51,6 +49,8 @@ const fakeDbVaults = new Map<string, FakeVaultRow>();
 const fakeDbMilestones = new Map<string, FakeMilestoneRow[]>();
 
 // A faked PG client/pool that perfectly mimics PostgreSQL's optimistic locking with xmin
+// The simulator stands in for the untyped `pg` driver, hence the loose parameter/row types.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fakeClientQuery = async (sql: string, params: any[] = []): Promise<{ rows: any[] }> => {
   const sqlTrimmed = sql.trim().replace(/\s+/g, " ");
 
@@ -256,9 +256,15 @@ const buildTestVaultInput = (): CreateVaultInput => ({
 
 describe("Vault Concurrency & Optimistic Concurrency Tests", () => {
   beforeEach(() => {
+    // vaultStore logs each optimistic-lock conflict and the in-memory fallback; keep CI output readable.
+    jest.spyOn(console, "warn").mockImplementation(() => {});
     resetVaultStore();
     fakeDbVaults.clear();
     fakeDbMilestones.clear();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   describe("Database Path - Concurrency & Optimistic Lock", () => {
@@ -330,8 +336,8 @@ describe("Vault Concurrency & Optimistic Concurrency Tests", () => {
           }
           try {
             return await updateVaultById(id, revision, payload);
-          } catch (err: any) {
-            if (err.status === 409) {
+          } catch (err) {
+            if ((err as { status?: number }).status === 409) {
               attempt++;
               continue;
             }
