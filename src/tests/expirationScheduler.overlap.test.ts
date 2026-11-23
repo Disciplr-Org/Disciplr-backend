@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals'
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -15,7 +15,7 @@ const mockKnexTrxChain: any = {
   rollback: jest.fn().mockResolvedValue(true),
 }
 
-const mockKnexTrx = jest.fn(() => mockKnexTrxChain)
+const mockKnexTrx = jest.fn(() => mockKnexTrxChain) as any
 
 const mockDbTransaction = jest.fn(async () => {
   return mockKnexTrx
@@ -37,10 +37,10 @@ const mockKnexIndexChain: any = {
   then: jest.fn((resolve: any) => resolve([])),
   update: jest.fn().mockResolvedValue(1),
 }
-const mockKnexIndex = jest.fn(() => mockKnexIndexChain)
+const mockKnexIndex = jest.fn(() => mockKnexIndexChain) as any
 mockKnexIndex.transaction = mockDbTransaction
 
-mock.module('../db/index.js', () => ({
+jest.unstable_mockModule('../db/index.js', () => ({
   default: mockKnexIndex,
 }))
 
@@ -56,7 +56,7 @@ const mockJobSystem = {
 }
 
 // Mock idempotency
-mock.module('../services/idempotency.js', () => ({
+jest.unstable_mockModule('../services/idempotency.js', () => ({
   getIdempotentResponse: jest.fn().mockResolvedValue(null),
   saveIdempotentResponse: jest.fn().mockResolvedValue(undefined),
 }))

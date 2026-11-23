@@ -40,8 +40,6 @@ module.exports = {
     "<rootDir>/api/__tests__/pagination.test.mjs",
     "<rootDir>/src/repositories/etlBatchRepository.test.ts",
     "<rootDir>/src/tests/email.injection.test.ts",
-    "<rootDir>/src/tests/expirationScheduler.heartbeat.test.ts",
-    "<rootDir>/src/tests/expirationScheduler.overlap.test.ts",
     "<rootDir>/src/tests/privacy-logger.allowlist.test.ts",
     "<rootDir>/tests/multiVerifier.test.ts",
     "<rootDir>/src/routes/auth.users.test.ts",
