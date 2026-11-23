@@ -21,7 +21,7 @@ module.exports = {
   },
   setupFiles: ["<rootDir>/jest.setup.cjs"],
   testMatch: ["**/tests/**/*.test.ts", "**/src/**/*.test.ts", "**/{apilib,api,db}/__tests__/*.test.mjs"],
-  // These suites are written against a different test runner than the one
+  // Some suites are written against a different test runner than the one
   // `npm test` uses (Jest): most target Bun's test runner (they import
   // 'bun:test' and/or call the ambient `mock.module()` API that Bun injects
   // globally), a few target Node's built-in `node:test` runner (they import
@@ -31,9 +31,8 @@ module.exports = {
   // ("Cannot find module 'bun:test'", "mock is not defined", "must contain
   // at least one test") when Jest's testMatch (above) picks them up anyway,
   // since the pattern matches on filename only. Excluding them keeps
-  // `npm test` green without deleting the test source; porting them to
-  // Jest's APIs (or wiring up dedicated bun/node:test scripts) is tracked
-  // separately.
+  // `npm test` green without deleting the test source; the prismaScope suites
+  // below have been ported to Jest and are intentionally not excluded.
   testPathIgnorePatterns: [
     "/node_modules/",
     // bun:test / mock.module()
@@ -48,8 +47,6 @@ module.exports = {
     "<rootDir>/src/tests/expirationScheduler.overlap.test.ts",
     "<rootDir>/src/tests/exports.quota.concurrency.test.ts",
     "<rootDir>/src/tests/membership.roleTransition.test.ts",
-    "<rootDir>/src/tests/prismaScope.concurrency.test.ts",
-    "<rootDir>/src/tests/prismaScope.test.ts",
     "<rootDir>/src/tests/privacy-logger.allowlist.test.ts",
     "<rootDir>/src/tests/vaultStore.concurrency.test.ts",
     "<rootDir>/tests/multiVerifier.test.ts",
