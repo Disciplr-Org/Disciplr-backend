@@ -18,22 +18,47 @@ services:
       timeout: 5s
       retries: 5
 
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    command: ["npx", "knex", "migrate:latest", "--knexfile", "knexfile.cjs"]
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/disciplr
+      NODE_ENV: development
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
   backend:
     build:
       context: .
       dockerfile: Dockerfile
+      target: builder
     image: disciplr-backend:local
+    command: ["/bin/sh", "-c", "npx prisma generate && node dist/index.js"]
     restart: on-failure
     ports:
       - "3000:3000"
     environment:
-      - PORT=3000
-      - NODE_ENV=development
+      PORT: 3000
+      NODE_ENV: development
+      DATABASE_URL: postgres://postgres:postgres@db:5432/disciplr
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-long-secret}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-fallback-access-secret}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-fallback-refresh-secret}
+      DOWNLOAD_SECRET: ${DOWNLOAD_SECRET:-change-me-in-production-long-secret}
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://localhost:3000/api/health').then(response => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
       interval: 10s
       timeout: 5s
       retries: 5
