@@ -25,6 +25,7 @@ import { getVaultById } from '../services/vaultStore.js'
 import { requireVaultReadAccess } from '../services/vaultAccess.js'
 import { AppError } from '../middleware/errorHandler.js'
 import db from '../db/index.js'
+import { getPgPool } from '../db/pool.js'
 import { MilestoneRepositoryEnhanced } from '../repositories/milestoneRepositoryEnhanced.js'
 import {
   recordMilestoneApproval,
@@ -255,11 +256,8 @@ milestonesRouter.get('/', authenticate, requireUser, requireValidVaultId, requir
   const limit = Math.min(Math.max(typeof limitRaw === 'string' ? parseInt(limitRaw, 10) || defaultLimit : defaultLimit, 1), maxLimit)
   const offset = Math.max(typeof offsetRaw === 'string' ? parseInt(offsetRaw, 10) || 0 : 0, 0)
 
-  let milestones: any[] = []
-  try {
-    milestones = await milestoneRepo.listByVault(vaultId)
-  } catch {
-    // In-memory fallback
+  let milestones: any[]
+  if (!getPgPool()) {
     milestones = (vault.milestones ?? []).map((m: any) => ({
       id: m.id,
       vault_id: m.vaultId ?? vaultId,
@@ -269,6 +267,16 @@ milestonesRouter.get('/', authenticate, requireUser, requireValidVaultId, requir
       created_at: m.createdAt,
       updated_at: m.updatedAt ?? m.createdAt,
     }))
+  } else {
+    try {
+      milestones = await milestoneRepo.listByVault(vaultId)
+    } catch (error) {
+      console.error('Failed to fetch milestones for vault from PostgreSQL', {
+        vaultId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return next(error)
+    }
   }
   const totalCount = milestones.length
 

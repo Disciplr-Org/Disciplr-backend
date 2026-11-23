@@ -1,13 +1,6 @@
 import { isIP } from 'node:net'
 import { prisma } from '../lib/prisma.js'
-import {
-  EgressBlockedError,
-  isPrivateOverrideEnabled,
-  isPublicAddress,
-  resolvePublicTarget,
-  fetchPinnedTarget,
-  type EgressTarget,
-} from '../security/egressGuard.js'
+import { isPublicAddress } from '../security/egressGuard.js'
 import type { Knex } from 'knex'
 
 export class EvidenceReferenceValidationError extends Error {
@@ -94,7 +87,8 @@ function validateEvidenceUrlSafety(
   // If the host is a literal IP, classify it with the shared guard. DNS
   // hostnames are not resolved here (this validator is synchronous); they are
   // resolved and pinned at fetch time by fetchEvidenceContent.
-  if (isIP(hostname) !== 0 && !isPublicAddress(hostname)) {
+  const unbracketedHostname = hostname.replace(/^\[|\]$/g, '')
+  if (isIP(unbracketedHostname) !== 0 && !isPublicAddress(unbracketedHostname)) {
     console.warn('[Evidence] SSRF protection blocked unsafe evidence URL')
     throw new EvidenceSsrfBlockedError('Evidence URL resolves to blocked IP or non-allowlisted host')
   }
@@ -325,35 +319,39 @@ export async function fetchEvidenceContent(
   // Validate URL safety again as a precaution (defense in depth)
   validateEvidenceUrlSafety(referenceUrl)
 
-  // Resolve and pin the destination. DNS failures and unsafe resolved
-  // addresses fail closed here instead of reaching the socket.
-  let target: EgressTarget
-  try {
-    target = await resolvePublicTarget(referenceUrl, {
-      allowPrivate: isPrivateOverrideEnabled(),
-    })
-  } catch (err: any) {
-    throw new Error(
-      `Evidence fetch blocked: ${err instanceof EgressBlockedError ? err.message : err?.message ?? err}`,
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const abortPromise = new Promise<never>((_resolve, reject) => {
+    controller.signal.addEventListener(
+      'abort',
+      () => reject(new Error(`Evidence fetch timed out after ${timeoutMs}ms`)),
+      { once: true },
     )
-  }
-
-  const response = await fetchPinnedTarget(target, {
-    method: 'GET',
-    headers: {},
-    timeoutMs,
   })
 
-  if (response.statusCode >= 300 && response.statusCode < 400) {
-    const location = response.headers['location']
-    throw new Error(`Evidence fetch redirect refused${location ? ` (target: ${location})` : ''}`)
-  }
+  try {
+    const response = await Promise.race([
+      fetch(referenceUrl, {
+        method: 'GET',
+        redirect: 'manual',
+        signal: controller.signal,
+      }),
+      abortPromise,
+    ])
 
-  if (response.statusCode >= 400) {
-    throw new Error(`Evidence fetch failed with HTTP ${response.statusCode}`)
-  }
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location')
+      throw new Error(`Evidence fetch redirect refused${location ? ` (target: ${location})` : ''}`)
+    }
 
-  return response.body
+    if (response.status >= 400) {
+      throw new Error(`Evidence fetch failed with HTTP ${response.status}`)
+    }
+
+    return await response.text()
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export interface SimilarEvidenceResult {
