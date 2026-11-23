@@ -40,7 +40,6 @@ module.exports = {
     "<rootDir>/api/__tests__/pagination.test.mjs",
     "<rootDir>/src/repositories/etlBatchRepository.test.ts",
     "<rootDir>/src/tests/email.injection.test.ts",
-    "<rootDir>/src/tests/evidence.service.test.ts",
     "<rootDir>/src/tests/privacy-logger.allowlist.test.ts",
     "<rootDir>/tests/multiVerifier.test.ts",
     "<rootDir>/src/routes/auth.users.test.ts",
@@ -87,11 +86,10 @@ module.exports = {
     // They fail before a single assertion executes, so they are excluded rather
     // than rewritten against the real modules; porting them is tracked
     // separately, like the other suites above.
-    // Legacy suites currently target removed routes, old response contracts,
+    // Remaining legacy suites currently target removed routes, old response contracts,
     // or Vitest-only mocks. Keep the blocking Jest run focused on the suites
     // that match the shipped application contract.
     "<rootDir>/src/tests/admin.dualControl.test.ts",
-    "<rootDir>/src/tests/vaultTransitions.test.ts",
     "<rootDir>/src/tests/csrf.protection.test.ts",
     "<rootDir>/src/tests/auth.rateLimiter.test.ts",
   ],
