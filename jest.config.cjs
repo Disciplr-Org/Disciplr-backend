@@ -91,7 +91,6 @@ module.exports = {
     // They fail before a single assertion executes, so they are excluded rather
     // than rewritten against the real modules; porting them is tracked
     // separately, like the other suites above.
-    "<rootDir>/src/jobs/handlers.test.ts",
     "<rootDir>/src/jobs/system.test.ts",
     // Legacy suites currently target removed routes, old response contracts,
     // or Vitest-only mocks. Keep the blocking Jest run focused on the suites
