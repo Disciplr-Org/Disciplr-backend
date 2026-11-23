@@ -82,15 +82,13 @@ module.exports = {
     "<rootDir>/src/tests/webhookVerify.test.ts",
     "<rootDir>/src/routes/apiKeys.test.ts",
     // Remaining job suites written against an API this codebase does not expose: they
-    // import `Queue`/`SchedulerRegistry`/`createJobsRouter` and a `../audit`
-    // module that do not exist here, and rely on custom matchers
-    // (`rejectsToThrow()`, `just.useFakeTimes()`, `jest.advanceTimesByTimeAsync()`)
-    // that no runner provides. `handlers.test.ts` is not even syntactically
+    // import `Queue`/`createJobsRouter` and a `../audit` module that do not
+    // exist here, and rely on a custom matcher (`rejectsToThrow()`) that no
+    // runner provides. `handlers.test.ts` is not even syntactically
     // valid TypeScript (`jest.mockd`, `queue.enqueue.mockRejectedObject(assign(...)`).
     // They fail before a single assertion executes, so they are excluded rather
     // than rewritten against the real modules; porting them is tracked
     // separately, like the other suites above.
-    "<rootDir>/src/jobs/system.test.ts",
     // Legacy suites currently target removed routes, old response contracts,
     // or Vitest-only mocks. Keep the blocking Jest run focused on the suites
     // that match the shipped application contract.
