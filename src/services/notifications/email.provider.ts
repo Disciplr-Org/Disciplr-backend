@@ -5,6 +5,22 @@ import { recordBounce, hasBounced } from './bounceStore.js'
 import { getEnv } from '../../config/index.js'
 
 type TransporterType = { sendMail: (opts: any) => Promise<any> }
+type TransportOptions = {
+  host: string
+  port: number
+  secure: boolean
+  auth: {
+    user: string
+    pass: string
+  }
+}
+
+export type EmailTransportFactory = (options: TransportOptions) => Promise<TransporterType>
+
+const defaultTransportFactory: EmailTransportFactory = async (options) => {
+  const nodemailer = await import('nodemailer')
+  return nodemailer.createTransport(options) as TransporterType
+}
 
 /**
  * EmailNotificationProvider implements the NotificationProvider interface.
@@ -27,10 +43,14 @@ export class EmailNotificationProvider implements NotificationProvider {
   private transporter: TransporterType | null = null
   private initialized: boolean = false
 
+  constructor(
+    private readonly transportFactory: EmailTransportFactory = defaultTransportFactory,
+  ) {}
+
   /**
    * Lazy-initialize the SMTP transporter on first send.
    */
-  private ensureTransporter(): void {
+  private async ensureTransporter(): Promise<void> {
     if (this.initialized) {
       return
     }
@@ -41,21 +61,15 @@ export class EmailNotificationProvider implements NotificationProvider {
     const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE } = env
 
     if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
-      // Dynamic import for nodemailer - install with: npm install nodemailer
-      try {
-        const nodemailerMod = require('nodemailer') as any
-        this.transporter = nodemailerMod.createTransport({
-          host: SMTP_HOST,
-          port: SMTP_PORT,
-          secure: SMTP_SECURE === 'true',
-          auth: {
-            user: SMTP_USER,
-            pass: SMTP_PASS,
-          },
-        }) as TransporterType
-      } catch {
-        console.warn('[EmailProvider] nodemailer not installed, falling back to console logging.')
-      }
+      this.transporter = await this.transportFactory({
+        host: SMTP_HOST,
+        port: SMTP_PORT,
+        secure: SMTP_SECURE === 'true',
+        auth: {
+          user: SMTP_USER,
+          pass: SMTP_PASS,
+        },
+      })
     } else {
       console.warn(
         '[EmailProvider] SMTP not configured (missing SMTP_HOST, SMTP_USER, or SMTP_PASS). ' +
@@ -97,12 +111,21 @@ export class EmailNotificationProvider implements NotificationProvider {
   }
 
   private async performSend(recipient: string, subject: string, body: string, htmlBody?: string): Promise<void> {
-    // In a real implementation, call the SMTP / provider SDK here.
-    // Simulate network latency for the stubbed provider.
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
+    await this.ensureTransporter()
 
-    // For now, we log the send; the real provider should replace this.
-    console.log(`[EmailProvider] Sent to ${recipient}: ${subject} (body: ${body.length} chars, htmlBody: ${htmlBody?.length ?? 0} chars)`);
+    if (this.transporter) {
+      const { SMTP_FROM } = getEnv()
+      await this.transporter.sendMail({
+        from: SMTP_FROM,
+        to: recipient,
+        subject,
+        text: body,
+        html: htmlBody,
+      })
+      return
+    }
+
+    console.log(`[EmailProvider] Sent to ${recipient}: ${subject} (body: ${body.length} chars, htmlBody: ${htmlBody?.length ?? 0} chars)`)
   }
 
   async send(recipient: string, subject: string, body: string): Promise<void> {
