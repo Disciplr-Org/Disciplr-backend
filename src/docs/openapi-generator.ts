@@ -43,7 +43,7 @@ registry.registerComponent('securitySchemes', 'bearerAuth', {
 })
 
 // --- Shared Schemas ---
-const PaginationCursor = registry.register('PaginationCursor', z.object({
+export const PaginationCursor = registry.register('PaginationCursor', z.object({
   limit: z.number(),
   cursor: z.string().optional(),
   next_cursor: z.string().optional(),
