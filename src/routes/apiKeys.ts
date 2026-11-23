@@ -15,7 +15,7 @@ import {
 } from '../services/apiKeys.js'
 import { formatValidationError } from '../lib/validation.js'
 import { createAuditLog } from '../lib/audit-logs.js'
-import { ApiScope } from '../types/auth.js'
+import { apiKeyIdParamSchema, createApiKeySchema } from '../lib/apiCredentialSchemas.js'
 import { getOrganizationById } from '../services/organization.js'
 import { getOrgMembership } from '../services/membership.js'
 import db from '../db/index.js'
@@ -28,28 +28,8 @@ apiKeysRouter.use(express.json({ limit: 16384 }))
 
 const DEFAULT_LIST_LIMIT = 50
 const MAX_LIST_LIMIT = 100
-const MAX_LABEL_LENGTH = 100
-const MAX_SCOPES_COUNT = 20
 
 const apiKeysJson = requireJson({ maxBytes: 16 * 1024 })
-
-const createApiKeySchema = z.object({
-  label: z
-    .string()
-    .trim()
-    .min(1, 'label is required.')
-    .max(MAX_LABEL_LENGTH, `label must be at most ${MAX_LABEL_LENGTH} characters.`),
-  scopes: z
-    .array(z.nativeEnum(ApiScope))
-    .min(1, 'At least one scope is required.')
-    .max(MAX_SCOPES_COUNT, `scopes must have at most ${MAX_SCOPES_COUNT} items.`)
-    .refine((scopes) => new Set(scopes).size === scopes.length, 'scopes must not contain duplicates.'),
-  orgId: z.string().trim().uuid('orgId must be a UUID.').optional(),
-})
-
-const apiKeyIdParamSchema = z.object({
-  id: z.string().trim().uuid('id must be a UUID.'),
-})
 
 const orgIdParamSchema = z.object({
   orgId: z.string().trim().uuid('orgId must be a UUID.'),
