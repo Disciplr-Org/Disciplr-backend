@@ -71,9 +71,7 @@ jobs:
         run: npx knex migrate:latest --knexfile knexfile.cjs
         env:
           DATABASE_URL: postgres://postgres:password@localhost:5432/disciplr_test
-      # TODO(drips-wave): re-enable — 9 failing tests in api/__tests__ (concurrency scenarios A-C + rollback, contract POST /vaults + validate + fail, lifecycle.snapshot, rateLimit memory-mode, errors creator query, expiry, vaults.amounts)
       - name: Run integration tests against Postgres
-        if: false
         run: npm run test:api
         env:
           DATABASE_URL: postgres://postgres:password@localhost:5432/disciplr_test
