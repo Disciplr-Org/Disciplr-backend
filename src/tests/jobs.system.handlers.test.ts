@@ -1,110 +1,118 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { BackgroundJobSystem } from '../jobs/system.js'
-import { JOB_TYPES } from '../jobs/types.js'
+import { jest, describe, it, expect, beforeEach } from '@jest/globals'
+import type { JobPayloadByType, JobType } from '../jobs/types.js'
 
-// Mock all external dependencies
-vi.mock('../../src/services/exportQueue.js', () => ({
-  recoverPendingExportJobs: vi.fn(),
+// Mock all external dependencies. Mock modules must be registered with
+// jest.unstable_mockModule before the modules under test are imported, so
+// BackgroundJobSystem and JOB_TYPES are loaded via dynamic import below.
+jest.unstable_mockModule('../../src/services/exportQueue.js', () => ({
+  recoverPendingExportJobs: jest.fn().mockResolvedValue(undefined),
+  processJob: jest.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('../../src/services/organization.js', () => ({
-  listOrganizations: vi.fn().mockResolvedValue([]),
+jest.unstable_mockModule('../../src/services/organization.js', () => ({
+  listOrganizations: jest.fn().mockResolvedValue([]),
 }))
 
-vi.mock('../../src/services/notifications/factory.js', () => ({
-  createNotificationService: vi.fn().mockReturnValue({
-    send: vi.fn().mockResolvedValue(undefined),
+jest.unstable_mockModule('../../src/services/notifications/factory.js', () => ({
+  createNotificationService: jest.fn().mockReturnValue({
+    send: jest.fn().mockResolvedValue(undefined),
   }),
 }))
 
-vi.mock('../../src/services/abuse-monitor.js', () => ({
-  AbuseMonitor: vi.fn(),
+jest.unstable_mockModule('../../src/services/abuse-monitor.js', () => ({
+  AbuseMonitor: jest.fn(),
 }))
 
-vi.mock('../../src/db/index.js', () => ({
-  default: vi.fn(),
+jest.unstable_mockModule('../../src/db/index.js', () => ({
+  default: jest.fn(),
 }))
 
-vi.mock('../../src/db/pool.js', () => ({
-  getPgPool: vi.fn().mockReturnValue(null),
+jest.unstable_mockModule('../../src/db/pool.js', () => ({
+  getPgPool: jest.fn().mockReturnValue(null),
 }))
 
-vi.mock('../../src/repositories/milestoneRepository.js', () => ({
-  MilestoneRepository: vi.fn().mockImplementation(() => ({
-    findMany: vi.fn(),
+jest.unstable_mockModule('../../src/repositories/milestoneRepository.js', () => ({
+  MilestoneRepository: jest.fn().mockImplementation(() => ({
+    findMany: jest.fn(),
   })),
 }))
 
-vi.mock('../../src/services/backfillCursorStore.js', () => ({
-  BackfillCursorStore: vi.fn().mockImplementation(() => ({
-    getCursor: vi.fn(),
-    setCursor: vi.fn(),
+jest.unstable_mockModule('../../src/services/backfillCursorStore.js', () => ({
+  BackfillCursorStore: jest.fn().mockImplementation(() => ({
+    getCursor: jest.fn(),
+    setCursor: jest.fn(),
   })),
 }))
 
-vi.mock('../../src/services/embeddingProvider.js', () => ({
-  createEmbeddingProvider: vi.fn().mockReturnValue({
-    embed: vi.fn().mockResolvedValue([]),
+jest.unstable_mockModule('../../src/services/embeddingProvider.js', () => ({
+  createEmbeddingProvider: jest.fn().mockReturnValue({
+    embed: jest.fn().mockResolvedValue([]),
   }),
 }))
 
-vi.mock('../../src/services/vaultExpiry.service.js', () => ({
-  markVaultExpiries: vi.fn().mockResolvedValue(0),
-  sendMilestoneReminders: vi.fn().mockResolvedValue(0),
-  sendMilestoneDigestReminders: vi.fn().mockResolvedValue({ digestsSent: 0, digestsDeferred: 0, totalMilestones: 0 }),
-  processDeferredReminders: vi.fn().mockResolvedValue(0),
+jest.unstable_mockModule('../../src/services/vaultExpiry.service.js', () => ({
+  markVaultExpiries: jest.fn().mockResolvedValue(0),
+  sendMilestoneReminders: jest.fn().mockResolvedValue(0),
+  sendMilestoneDigestReminders: jest.fn().mockResolvedValue({ digestsSent: 0, digestsDeferred: 0, totalMilestones: 0 }),
+  processDeferredReminders: jest.fn().mockResolvedValue(0),
 }))
 
-vi.mock('../../src/services/session.js', () => ({
-  cleanupExpiredSessions: vi.fn().mockResolvedValue(0),
+jest.unstable_mockModule('../../src/services/session.js', () => ({
+  cleanupExpiredSessions: jest.fn().mockResolvedValue(0),
 }))
 
-vi.mock('../../src/services/retention.js', () => ({
-  purgeSoftDeletedVaults: vi.fn().mockResolvedValue({ deletedVaults: 0, deletedMilestones: 0 }),
+jest.unstable_mockModule('../../src/services/retention.js', () => ({
+  purgeSoftDeletedVaults: jest.fn().mockResolvedValue({ deletedVaults: 0, deletedMilestones: 0 }),
 }))
 
-vi.mock('../../src/services/outboxRelay.js', () => ({
-  relayOutboxBatch: vi.fn().mockResolvedValue(0),
+jest.unstable_mockModule('../../src/services/outboxRelay.js', () => ({
+  relayOutboxBatch: jest.fn().mockResolvedValue(0),
 }))
 
-vi.mock('../../src/services/evidenceReindex.js', () => ({
-  runReindexBatches: vi.fn().mockResolvedValue({ batches: 0, processed: 0, reindexed: 0, skippedUpToDate: 0, done: true }),
-  MilestoneEmbeddingSource: vi.fn(),
-  ReindexCursorStore: vi.fn(),
+jest.unstable_mockModule('../../src/services/evidenceReindex.js', () => ({
+  runReindexBatches: jest.fn().mockResolvedValue({ batches: 0, processed: 0, reindexed: 0, skippedUpToDate: 0, done: true }),
+  MilestoneEmbeddingSource: jest.fn(),
+  ReindexCursorStore: jest.fn(),
 }))
 
-vi.mock('../../src/services/analytics.service.js', () => ({
-  renderOrgAnalyticsSnapshot: vi.fn().mockResolvedValue({ snapshotAt: new Date().toISOString() }),
+jest.unstable_mockModule('../../src/services/analytics.service.js', () => ({
+  renderOrgAnalyticsSnapshot: jest.fn().mockResolvedValue({ snapshotAt: new Date().toISOString() }),
 }))
 
-vi.mock('../../src/services/analyticsReports.js', () => ({
-  saveOrgReport: vi.fn().mockResolvedValue(undefined),
-  getAllOrgIds: vi.fn().mockResolvedValue([]),
-  checkAndIncrementReportQuota: vi.fn().mockResolvedValue(true),
+jest.unstable_mockModule('../../src/services/analyticsReports.js', () => ({
+  saveOrgReport: jest.fn().mockResolvedValue(undefined),
+  getAllOrgIds: jest.fn().mockResolvedValue([]),
+  checkAndIncrementReportQuota: jest.fn().mockResolvedValue(true),
 }))
 
-vi.mock('../../src/services/exportS3.js', () => ({
-  resolveS3Config: vi.fn().mockReturnValue(null),
-  uploadToS3: vi.fn().mockResolvedValue(undefined),
+jest.unstable_mockModule('../../src/services/exportS3.js', () => ({
+  resolveS3Config: jest.fn().mockReturnValue(null),
+  uploadToS3: jest.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('../../src/services/soroban.js', () => ({
-  buildSlashOnMissPayload: vi.fn().mockReturnValue({ submission: { status: 'mocked' } }),
+jest.unstable_mockModule('../../src/services/soroban.js', () => ({
+  buildSlashOnMissPayload: jest.fn().mockReturnValue({ submission: { status: 'mocked' } }),
+  submitSlash: jest.fn().mockResolvedValue(undefined),
+  getSorobanConfig: jest.fn().mockReturnValue(null),
+  getSorobanClient: jest.fn().mockReturnValue(null),
 }))
 
-vi.mock('../../src/lib/audit-logs.js', () => ({
-  createAuditLog: vi.fn().mockResolvedValue(undefined),
+jest.unstable_mockModule('../../src/lib/audit-logs.js', () => ({
+  createAuditLog: jest.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('../../src/observability/tracing.js', () => ({
-  getTracer: vi.fn().mockReturnValue({
-    withSpan: vi.fn().mockImplementation((_name, fn) => fn({ setAttribute: vi.fn() })),
+jest.unstable_mockModule('../../src/observability/tracing.js', () => ({
+  getTracer: jest.fn().mockReturnValue({
+    withSpan: jest.fn().mockImplementation((_name, fn) => fn({ setAttribute: jest.fn() })),
   }),
 }))
+
+const { BackgroundJobSystem } = await import('../jobs/system.js')
+const { JOB_TYPES } = await import('../jobs/types.js')
 
 describe('BackgroundJobSystem', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    jest.clearAllMocks()
   })
 
   describe('constructor handler registration', () => {
@@ -115,7 +123,7 @@ describe('BackgroundJobSystem', () => {
       // Every job type should be enqueuable without "No handler registered" error
       for (const jobType of JOB_TYPES) {
         expect(() => {
-          system.enqueue(jobType as any, {} as any)
+          system.enqueue(jobType, {} as JobPayloadByType[JobType])
         }).not.toThrow('No job handler registered')
       }
 
@@ -136,20 +144,24 @@ describe('BackgroundJobSystem', () => {
 
       for (const jobType of previouslyMissingTypes) {
         expect(() => {
-          system.enqueue(jobType, {} as any)
+          system.enqueue(jobType, {} as JobPayloadByType[JobType])
         }).not.toThrow('No job handler registered')
       }
 
       system.stop()
     })
 
-    it('fails with "No handler registered" for unknown job types', () => {
+    // The guard lives in BackgroundJobSystem.enqueue now: it rejects unknown
+    // types with "Cannot enqueue unregistered job type" before the queue is
+    // reached, so the queue's "No job handler registered" error no longer
+    // surfaces for this case.
+    it('fails with "Cannot enqueue unregistered job type" for unknown job types', () => {
       const system = new BackgroundJobSystem()
       system.start()
 
       expect(() => {
-        system.enqueue('unknown.job.type' as any, {} as any)
-      }).toThrow('No job handler registered')
+        system.enqueue('unknown.job.type' as unknown as JobType, {} as JobPayloadByType[JobType])
+      }).toThrow('Cannot enqueue unregistered job type')
 
       system.stop()
     })
