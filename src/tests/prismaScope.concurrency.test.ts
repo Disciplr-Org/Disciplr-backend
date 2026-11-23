@@ -1,23 +1,23 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { mock, describe, it, expect } from "bun:test";
+import { jest, describe, it, expect } from '@jest/globals'
 
 // 1. Mock the global prisma singleton before importing prismaScope
 const mockSingleton = { tag: "global-singleton-prisma-client" } as any;
-mock.module("../lib/prisma.js", () => {
+jest.unstable_mockModule('../lib/prisma.js', () => {
   return {
     prisma: mockSingleton,
-  };
+  }
 });
 
 // 2. Now import the prismaScope module
-import { prismaStorage, getPrisma } from "../lib/prismaScope.js";
+const { prismaStorage, getPrisma } = await import('../lib/prismaScope.js')
 
-describe("PrismaScope Concurrency Stress Test", () => {
-  it("should return the global singleton when no scope is active", () => {
+describe('PrismaScope Concurrency Stress Test', () => {
+  it('should return the global singleton when no scope is active', () => {
     expect(getPrisma()).toBe(mockSingleton);
   });
 
-  it("should isolate scopes perfectly across 1000 concurrent requests with deep nesting, timer hops, and error paths", async () => {
+  it('should isolate scopes perfectly across 1000 concurrent requests with deep nesting, timer hops, and error paths', async () => {
     const totalRequests = 1000;
     const tasks: Promise<void>[] = [];
 
@@ -77,7 +77,7 @@ describe("PrismaScope Concurrency Stress Test", () => {
             // 3. Test error path scope isolation
             try {
               await asyncErrorThrower(client, tenantId);
-              reject(new Error("Should have thrown an error"));
+              reject(new Error('Should have thrown an error'));
             } catch (err: any) {
               // Ensure we caught the right error
               expect(err.message).toBe(`Error from ${tenantId}`);

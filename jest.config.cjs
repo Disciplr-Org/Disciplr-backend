@@ -21,7 +21,7 @@ module.exports = {
   },
   setupFiles: ["<rootDir>/jest.setup.cjs"],
   testMatch: ["**/tests/**/*.test.ts", "**/src/**/*.test.ts", "**/{apilib,api,db}/__tests__/*.test.mjs"],
-  // These suites are written against a different test runner than the one
+  // Some suites are written against a different test runner than the one
   // `npm test` uses (Jest): most target Bun's test runner (they import
   // 'bun:test' and/or call the ambient `mock.module()` API that Bun injects
   // globally), a few target Node's built-in `node:test` runner (they import
@@ -31,29 +31,19 @@ module.exports = {
   // ("Cannot find module 'bun:test'", "mock is not defined", "must contain
   // at least one test") when Jest's testMatch (above) picks them up anyway,
   // since the pattern matches on filename only. Excluding them keeps
-  // `npm test` green without deleting the test source; porting them to
-  // Jest's APIs (or wiring up dedicated bun/node:test scripts) is tracked
-  // separately.
+  // `npm test` green without deleting the test source; the prismaScope suites
+  // below have been ported to Jest and are intentionally not excluded.
   testPathIgnorePatterns: [
     "/node_modules/",
     // bun:test / mock.module()
     "<rootDir>/api/__tests__/evidence.test.mjs",
     "<rootDir>/api/__tests__/pagination.test.mjs",
     "<rootDir>/src/repositories/etlBatchRepository.test.ts",
-    "<rootDir>/src/tests/cache.test.ts",
     "<rootDir>/src/tests/email.injection.test.ts",
-    "<rootDir>/src/tests/etag.test.ts",
     "<rootDir>/src/tests/evidence.service.test.ts",
-    "<rootDir>/src/tests/evidence.ssrf.test.ts",
     "<rootDir>/src/tests/expirationScheduler.heartbeat.test.ts",
     "<rootDir>/src/tests/expirationScheduler.overlap.test.ts",
-    "<rootDir>/src/tests/exports.quota.concurrency.test.ts",
-    "<rootDir>/src/tests/membership.roleTransition.test.ts",
-    "<rootDir>/src/tests/prismaScope.concurrency.test.ts",
-    "<rootDir>/src/tests/prismaScope.test.ts",
     "<rootDir>/src/tests/privacy-logger.allowlist.test.ts",
-    "<rootDir>/src/tests/transactionETL.driftReport.test.ts",
-    "<rootDir>/src/tests/vaultStore.concurrency.test.ts",
     "<rootDir>/tests/multiVerifier.test.ts",
     "<rootDir>/src/routes/auth.users.test.ts",
     "<rootDir>/src/routes/vaults.timeline.test.ts",
@@ -89,12 +79,9 @@ module.exports = {
     // vitest (imports describe/it/expect/vi from 'vitest', which collides
     // with Jest's own globals/expect instance when loaded in the same
     // worker — "Cannot redefine property: Symbol($$jest-matchers-object)")
-    "<rootDir>/src/tests/sorobanEnv.test.ts",
-    "<rootDir>/src/tests/vaultExpiry.digest.test.ts",
     "<rootDir>/src/tests/webhookVerify.test.ts",
     "<rootDir>/src/routes/apiKeys.test.ts",
-    "<rootDir>/src/routes/oauth.test.ts",
-    // Job suites written against an API this codebase does not expose: they
+    // Remaining job suites written against an API this codebase does not expose: they
     // import `Queue`/`createJobsRouter` and a `../audit` module that do not
     // exist here, and rely on a custom matcher (`rejectsToThrow()`) that no
     // runner provides. `handlers.test.ts` is not even syntactically
@@ -102,15 +89,11 @@ module.exports = {
     // They fail before a single assertion executes, so they are excluded rather
     // than rewritten against the real modules; porting them is tracked
     // separately, like the other suites above.
-    "<rootDir>/src/jobs/handlers.test.ts",
-    "<rootDir>/src/jobs/queue.test.ts",
     // Legacy suites currently target removed routes, old response contracts,
     // or Vitest-only mocks. Keep the blocking Jest run focused on the suites
     // that match the shipped application contract.
     "<rootDir>/src/tests/admin.dualControl.test.ts",
-    "<rootDir>/src/tests/orgVaultIsolation.test.ts",
     "<rootDir>/src/tests/vaultTransitions.test.ts",
-    "<rootDir>/src/tests/jobs.system.handlers.test.ts",
     "<rootDir>/src/tests/csrf.protection.test.ts",
     "<rootDir>/src/tests/auth.rateLimiter.test.ts",
   ],

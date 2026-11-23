@@ -115,6 +115,10 @@ export const sessionsCleanupPayloadSchema = z.object({
   batchSize: z.number().int().min(1).optional(),
 })
 
+export const apiKeysCleanupPayloadSchema = z.object({
+  batchSize: z.number().int().min(1).optional(),
+})
+
 export const retentionPurgePayloadSchema = z.object({
   organizationId: nonEmptyString,
   batchSize: z.number().int().min(1).optional(),
@@ -198,6 +202,12 @@ export const enqueueJobSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('sessions.cleanup'),
     payload: sessionsCleanupPayloadSchema,
+    maxAttempts: z.number().int().min(1).max(10).optional(),
+    delayMs: z.number().int().min(0).max(60000).optional(),
+  }),
+  z.object({
+    type: z.literal('apiKeys.cleanup'),
+    payload: apiKeysCleanupPayloadSchema,
     maxAttempts: z.number().int().min(1).max(10).optional(),
     delayMs: z.number().int().min(0).max(60000).optional(),
   }),
