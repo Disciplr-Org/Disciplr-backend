@@ -26,6 +26,11 @@ The `/reinstate` endpoint detects the verifier's prior active state:
 
 Invalid transitions return `409 Conflict`. No-op updates do not create audit log entries.
 
+## Remaining Lifecycle Gaps
+
+- Reinstating a suspended verifier without a prior approval timestamp targets `pending`, but the transition service does not allow `suspended` → `pending`; the lifecycle route test mocks the transition service and does not catch this failure.
+- The milestone approval route rejects verifiers whose database profile is not `approved`, but it does not write an audit log for blocked attempts. The lifecycle tests do not cover blocked approvals or preservation of historical approval rows.
+
 ## Admin Endpoints
 
 All endpoints require an admin token.
