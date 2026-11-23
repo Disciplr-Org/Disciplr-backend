@@ -47,6 +47,23 @@ The repository also contains the larger TypeScript service under `src/` (auth, o
 
 ## Setup
 
+### Run the full backend with Docker Compose
+
+```bash
+docker compose up --build
+curl http://localhost:3000/api/health
+```
+
+Compose starts Postgres, applies Knex migrations, then starts the backend.
+It uses local-only development credentials by default; no `.env` file is
+required. To override the JWT and download secrets, copy `.env.example` to
+`.env` and set `JWT_SECRET`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, and
+`DOWNLOAD_SECRET` to development values. Compose connects to Postgres using
+`db` as the hostname; the `localhost` URL in `.env.example` is for commands
+run directly on your host.
+
+### Run the API directly
+
 ```bash
 npm install
 cp .env.example .env            # if present; set DATABASE_URL=postgres://...
