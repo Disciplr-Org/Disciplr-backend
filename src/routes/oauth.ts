@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import jwt from 'jsonwebtoken'
 import { randomUUID } from 'node:crypto'
-import { z } from 'zod'
+import { oauthTokenRequestSchema } from '../lib/apiCredentialSchemas.js'
 import { validateApiKey } from '../services/apiKeys.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { requireJson } from '../middleware/requireJson.js'
@@ -11,6 +11,8 @@ import type { ApiScope } from '../types/auth.js'
 import { requestTelemetry } from '../middleware/telemetry.js'
 import { getNetworkId } from '../middleware/oauthBearer.js'
 
+export { oauthTokenRequestSchema }
+
 export const oauthRouter = Router()
 oauthRouter.use(requestTelemetry)
 
@@ -19,8 +21,6 @@ const MIN_TOKEN_TTL_SECONDS = 60
 const MAX_TOKEN_TTL_SECONDS = 12 * 60 * 60
 const MAX_SCOPES_PER_REQUEST = 20
 const MAX_SCOPE_LENGTH = 64
-/** Upper bound for the raw `scope` string, rejected as a malformed request. */
-const MAX_REQUESTED_SCOPE_CHARS = 256
 
 /**
  * Resolve how long an issued access token lives, in seconds.
@@ -46,18 +46,6 @@ export const resolveTokenTtlSeconds = (): number => {
 
   return parsed
 }
-
-/**
- * RFC 6749 §4.4 client_credentials token request.
- * `client_id` is the UUID of the API key bound to the presented secret, so a
- * non-UUID value can be rejected as `invalid_request` before any lookup.
- */
-export const oauthTokenRequestSchema = z.object({
-  grant_type: z.literal('client_credentials'),
-  client_id: z.string().trim().uuid('client_id must be a UUID.'),
-  client_secret: z.string().min(1, 'client_secret is required.').max(512),
-  scope: z.string().max(MAX_REQUESTED_SCOPE_CHARS).optional(),
-})
 
 const oauthJson = requireJson({ maxBytes: 16384 })
 

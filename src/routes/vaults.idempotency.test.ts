@@ -24,6 +24,7 @@ const mockBuildVaultCreationPayload = jest.fn<any>()
 const mockCreateAuditLog = jest.fn<any>()
 const mockUpdateAnalyticsSummary = jest.fn<any>()
 const mockGetVaultById = jest.fn<any>()
+const mockGetVaultsByUser = jest.fn<(...args: unknown[]) => Promise<unknown>>()
 const mockValidateIdempotencyKey = jest.fn<any>()
 const mockScopeIdempotencyKey = jest.fn<any>()
 const mockHashRequestPayload = jest.fn<any>()
@@ -90,7 +91,7 @@ jest.unstable_mockModule('../services/soroban.js', () => ({
 
 jest.unstable_mockModule('../services/vault.service.js', () => ({
   VaultService: {
-    getVaultsByUser: jest.fn<any>().mockResolvedValue([]),
+    getVaultsByUser: mockGetVaultsByUser,
     getVaultById: jest.fn<any>(),
     updateVaultStatus: jest.fn<any>(),
     getVaultTimeline: jest.fn<any>(),
@@ -175,6 +176,7 @@ function setupHappyPath() {
   )
   mockScopeIdempotencyKey.mockImplementation((userId: string, key: string) => `${userId}:${key}`)
   mockHashRequestPayload.mockReturnValue('hash-1')
+  mockGetVaultsByUser.mockResolvedValue([])
   mockCreateVaultIdempotently.mockImplementation(async (_options: unknown, actions: any) => {
     const vault = await actions.createVault(null)
     const response = await actions.buildResponse(vault)
@@ -186,6 +188,16 @@ beforeEach(() => {
   jest.clearAllMocks()
   authenticatedUser = { userId: 'user-1', role: 'USER' }
   setupHappyPath()
+})
+
+it('returns a server error when fetching a user vaults fails', async () => {
+  authenticatedUser = { userId: G, role: 'USER' }
+  mockGetVaultsByUser.mockRejectedValue(new Error('database unavailable'))
+
+  const res = await request(app).get(`/api/vaults/user/${G}`)
+
+  expect(res.status).toBe(500)
+  expect(res.body).toEqual({ error: 'Failed to fetch user vaults' })
 })
 
 beforeAll(() => {

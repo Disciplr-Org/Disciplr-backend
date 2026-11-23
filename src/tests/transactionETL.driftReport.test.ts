@@ -1,4 +1,11 @@
-import { jest, describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
+/**
+ * Ported from bun:test to Jest (issue #1793).
+ * bun:test imports and ambient mock.module() replaced with
+ * @jest/globals and jest.unstable_mockModule() (ESM mode via
+ * --experimental-vm-modules).  All original assertions are preserved.
+ */
+
+import { jest, describe, it, expect, beforeEach } from '@jest/globals'
 
 const mockUpdate = jest.fn().mockResolvedValue(true)
 const mockFirst = jest.fn()
@@ -16,7 +23,7 @@ const mockKnexChain: any = {
 
 const mockDb = jest.fn(() => mockKnexChain)
 
-mock.module('../db/index.js', () => ({
+await jest.unstable_mockModule('../db/index.js', () => ({
   default: mockDb,
 }))
 
@@ -24,18 +31,18 @@ const mockSorobanClient = {
   getVault: jest.fn(),
 }
 
-mock.module('../services/soroban.js', () => ({
+await jest.unstable_mockModule('../services/soroban.js', () => ({
   getSorobanConfig: jest.fn().mockReturnValue({ contractId: 'test-contract' }),
   getSorobanClient: jest.fn().mockReturnValue(mockSorobanClient),
 }))
 
 const mockAuditLog = jest.fn().mockResolvedValue({ id: 'audit-log-1', created_at: new Date().toISOString() })
-mock.module('../lib/audit-logs.js', () => ({
+await jest.unstable_mockModule('../lib/audit-logs.js', () => ({
   createAuditLog: mockAuditLog,
 }))
 
 const mockLogVaultDriftAnomaly = jest.fn()
-mock.module('../security/abuse-monitor.js', () => ({
+await jest.unstable_mockModule('../security/abuse-monitor.js', () => ({
   logVaultDriftAnomaly: mockLogVaultDriftAnomaly,
 }))
 
@@ -78,7 +85,7 @@ describe('TransactionETLService Drift Report & Auto-Repair', () => {
       mockFirst.mockResolvedValueOnce({ id: 'v2', status: 'disputed' })
 
       const result = await etl.autoRepairVault('v2', 'admin-1')
-      
+
       expect(result.success).toBe(false)
       expect(result.message).toMatch(/dispute/i)
       expect(mockUpdate).not.toHaveBeenCalled()
@@ -99,7 +106,7 @@ describe('TransactionETLService Drift Report & Auto-Repair', () => {
 
       expect(result.success).toBe(true)
       expect(result.repairedFields).toContain('status')
-      
+
       expect(mockUpdate).toHaveBeenCalledWith({ status: 'completed' })
       expect(mockAuditLog).toHaveBeenCalledWith(expect.objectContaining({
         action: 'admin.vault.auto_repair',
