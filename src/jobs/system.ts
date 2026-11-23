@@ -41,6 +41,7 @@ const REGISTERED_JOB_TYPES: readonly JobType[] = [
   'analytics.report.generate',
   'export.generate',
   'sessions.cleanup',
+  'apiKeys.cleanup',
   'vault.reconcile',
   'outbox.relay',
   'embeddings.reindex',
@@ -406,6 +407,20 @@ export class BackgroundJobSystem {
       initialDelayMs: 10_000,
       execute: () => {
         this.enqueue('sessions.cleanup', {})
+      },
+    })
+
+    const apiKeysCleanupIntervalMs = parsePositiveInteger(
+      process.env.API_KEYS_CLEANUP_INTERVAL_MS,
+      86_400_000, // 24 hours
+    )
+    this.schedulerRegistry.registerJob({
+      name: 'apiKeys.cleanup',
+      intervalMs: apiKeysCleanupIntervalMs,
+      immediate: true,
+      initialDelayMs: 12_000,
+      execute: () => {
+        this.enqueue('apiKeys.cleanup', {})
       },
     })
 

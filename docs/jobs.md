@@ -13,6 +13,7 @@
 - `analytics.recompute`
 - `export.generate`
 - `sessions.cleanup`
+- `apiKeys.cleanup` — nulls `previous_key_hash`/`previous_valid_until` on rows whose rotation grace window has expired; batched (default 1 000), interval configurable via `API_KEYS_CLEANUP_INTERVAL_MS` (default 24 h)
 
 ## Enqueue options
 

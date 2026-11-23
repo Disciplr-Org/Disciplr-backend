@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest'
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { jest, describe, it, expect, beforeEach, beforeAll } from '@jest/globals'
 import type { MilestoneReminderItem } from '../types/notification.js'
 
 // Mock data
@@ -9,29 +10,29 @@ let mockUserPreferences: Map<string, any> = new Map()
 
 // Mock database chain
 const mockDbChain = {
-  join: vi.fn(() => mockDbChain),
-  where: vi.fn(() => mockDbChain),
-  andWhere: vi.fn(() => mockDbChain),
-  whereIn: vi.fn(() => mockDbChain),
-  whereNotNull: vi.fn(() => mockDbChain),
-  select: vi.fn(() => Promise.resolve(mockVaultMilestones)),
-  first: vi.fn(() => Promise.resolve(null)),
-  insert: vi.fn(() => ({
-    onConflict: vi.fn(() => ({
-      merge: vi.fn(() => ({
-        returning: vi.fn(() => Promise.resolve([{ id: 'deferred-1' }])),
+  join: jest.fn(() => mockDbChain),
+  where: jest.fn(() => mockDbChain),
+  andWhere: jest.fn(() => mockDbChain),
+  whereIn: jest.fn(() => mockDbChain),
+  whereNotNull: jest.fn(() => mockDbChain),
+  select: jest.fn(() => Promise.resolve(mockVaultMilestones)),
+  first: jest.fn(() => Promise.resolve(null)),
+  insert: jest.fn(() => ({
+    onConflict: jest.fn(() => ({
+      merge: jest.fn(() => ({
+        returning: jest.fn(() => Promise.resolve([{ id: 'deferred-1' }])),
       })),
     })),
-    returning: vi.fn(() => Promise.resolve([{ id: 'notification-1' }])),
+    returning: jest.fn(() => Promise.resolve([{ id: 'notification-1' }])),
   })),
 }
 
-vi.mock('../db/index.js', () => ({
-  default: vi.fn((table: string) => {
+jest.unstable_mockModule('../db/index.js', () => ({
+  default: jest.fn((table: string) => {
     if (table === 'notifications') {
       return {
         ...mockDbChain,
-        first: vi.fn(() => {
+        first: jest.fn(() => {
           const key = mockDbChain.where.mock.calls?.[0]?.[1]
           return Promise.resolve(mockNotifications.find(n => n.idempotency_key === key) || null)
         }),
@@ -42,15 +43,15 @@ vi.mock('../db/index.js', () => ({
 }))
 
 // Mock notification service
-const mockCreateNotification = vi.fn().mockResolvedValue({ id: 'notification-1' })
+const mockCreateNotification = jest.fn().mockResolvedValue({ id: 'notification-1' })
 
-vi.mock('../services/notification.js', () => ({
+jest.unstable_mockModule('../services/notification.js', () => ({
   createNotification: (...args: any[]) => mockCreateNotification(...args),
 }))
 
 // Mock user preferences service
-vi.mock('../services/userNotificationPreferences.service.js', () => ({
-  getUserPreferencesBatch: vi.fn((userIds: string[]) => {
+jest.unstable_mockModule('../services/userNotificationPreferences.service.js', () => ({
+  getUserPreferencesBatch: jest.fn((userIds: string[]) => {
     const result = new Map()
     for (const userId of userIds) {
       result.set(userId, mockUserPreferences.get(userId) || {
@@ -69,11 +70,11 @@ vi.mock('../services/userNotificationPreferences.service.js', () => ({
 }))
 
 // Mock deferred reminders service
-const mockStoreDeferredReminder = vi.fn().mockResolvedValue({ id: 'deferred-1' })
+const mockStoreDeferredReminder = jest.fn().mockResolvedValue({ id: 'deferred-1' })
 
-vi.mock('../services/deferredReminders.service.js', () => ({
+jest.unstable_mockModule('../services/deferredReminders.service.js', () => ({
   storeDeferredReminder: (...args: any[]) => mockStoreDeferredReminder(...args),
-  claimDueReminders: vi.fn(() => Promise.resolve(mockDeferredReminders)),
+  claimDueReminders: jest.fn(() => Promise.resolve(mockDeferredReminders)),
 }))
 
 // Import after mocks
@@ -81,7 +82,7 @@ const { sendMilestoneDigestReminders, processDeferredReminders } = await import(
 
 describe('sendMilestoneDigestReminders', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    jest.clearAllMocks()
     mockVaultMilestones = []
     mockNotifications = []
     mockDeferredReminders = []
@@ -381,7 +382,7 @@ describe('sendMilestoneDigestReminders', () => {
 
 describe('processDeferredReminders', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    jest.clearAllMocks()
     mockDeferredReminders = []
   })
 
@@ -428,13 +429,11 @@ describe('processDeferredReminders', () => {
 describe('digestRenderer', () => {
   // Import synchronously since we're not mocking digestRenderer
   let renderDigestTitle: (items: MilestoneReminderItem[]) => string
-  let renderDigestMessage: (options: { items: MilestoneReminderItem[]; locale?: string; timezone?: string }) => string
   let formatLeadTime: (leadTimeMs: number) => string
 
   beforeAll(async () => {
     const module = await import('../services/digestRenderer.js')
     renderDigestTitle = module.renderDigestTitle
-    renderDigestMessage = module.renderDigestMessage
     formatLeadTime = module.formatLeadTime
   })
 
