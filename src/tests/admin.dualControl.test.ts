@@ -365,7 +365,7 @@ describe('confirmationToken: approveConfirmationToken', () => {
     await validateConfirmationToken(entry.tokenId, 'admin-1', 'user.hard_delete')
     const result = await approveConfirmationToken(entry.tokenId, 'admin-3')
     expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.reason).toBe('token_not_found')
+    if (!result.ok) expect(result.reason).toBe('token_already_used')
   })
 })
 
