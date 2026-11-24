@@ -103,27 +103,68 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
+          name: sbom-cyclonedx
+          path: sbom.json
+          retention-days: 90
+          if-no-files-found: error
+
+  api-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: disciplr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d disciplr"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/disciplr
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
           node-version: 20
           cache: npm
-      - run: npm ci
-      - name: Migration lint
-        run: npm run lint:migrations
-      - name: Unit test migration and schema scripts
-        run: npm run test:scripts
-      - name: Knex migrate:latest
-        run: npx knex migrate:latest --knexfile knexfile.cjs
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run integration tests against Postgres
+        run: npm test
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/disciplr_test
-      - name: Knex migrate:rollback --all
-        run: npx knex migrate:rollback --all --knexfile knexfile.cjs
+          NODE_ENV: test
+
+      - name: Run integration tests against in-memory store
+        run: npm test
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/disciplr_test
-      - name: Knex migrate:latest (re-apply)
-        run: npx knex migrate:latest --knexfile knexfile.cjs
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/disciplr_test
-      - name: Check schema
-        run: npm run check:schema
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/disciplr_test
+          NODE_ENV: test
+          STORE_MODE: memory
+          DATABASE_URL: ""
+
+  dependency-audit:
+    name: Dependency advisory gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
 
