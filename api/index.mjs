@@ -14,6 +14,7 @@ import { encodeCursor, decodeCursor, parseLimit } from '../apilib/pagination.mjs
 import { failVault, validateMilestone } from '../shared/vaultMachine.mjs'
 import { buildCorsOptions, parseAllowedOrigins, isOriginAllowed, helmetOptions } from '../apilib/cors.mjs'
 import { createRateLimiter } from '../apilib/rateLimit.mjs'
+import { withIdempotency } from '../apilib/idempotency.mjs'
 
 // Milestone rows whose status the shared machine changed, in the shape store.transition() applies.
 const changedMilestones = (before, after) => after.milestones
@@ -107,7 +108,7 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
     res.json({ data: { ...v, activity: activityResult.items || activityResult } })
   }))
 
-  router.post('/vaults', wrap(async (req, res) => {
+  router.post('/vaults', wrap(withIdempotency('vault.create', async (req, res) => {
     const testNow = req._now || req.query.now || req.headers['x-test-now']
     const nowForValidation = testNow ? new Date(testNow) : new Date()
     const validation = validateCreateVault(req.body, { now: nowForValidation })
@@ -148,7 +149,7 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
     await s.createVault(vault)
     await s.addActivity({ id: crypto.randomUUID(), type: 'create', vaultId: id, amount: vault.amount, status: 'simulated', hash: hex(32), memo: 'Vault created', createdAt: now })
     res.status(201).json({ data: vault })
-  }))
+  }, { getStore })))
 
   // Helper to resolve milestone index from { milestoneId } or { index }
   const resolveMilestoneIndex = (vault, body = {}) => {
@@ -357,7 +358,7 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
   }))
 
   // Verifier validates a milestone. When every milestone is validated the vault completes and funds release.
-  router.post('/vaults/:id/milestones/:mid/validate', wrap(async (req, res) => {
+  router.post('/vaults/:id/milestones/:mid/validate', wrap(withIdempotency('milestone.validate', async (req, res) => {
     const s = await getStore()
     const v = await s.getVault(req.params.id)
     if (!v) return bad(res, 'Vault not found', 404)
@@ -390,10 +391,10 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
     })
     if (!result) return bad(res, 'Vault not found', 404)
     res.json({ data: result.vault })
-  }))
+  }, { getStore })))
 
   // Verifier (or creator) declares failure: funds redirect to the failure destination.
-  router.post('/vaults/:id/fail', wrap(async (req, res) => {
+  router.post('/vaults/:id/fail', wrap(withIdempotency('vault.fail', async (req, res) => {
     const s = await getStore()
     const v = await s.getVault(req.params.id)
     if (!v) return bad(res, 'Vault not found', 404)
@@ -411,7 +412,7 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
     })
     if (!result) return bad(res, 'Vault not found', 404)
     res.json({ data: result.vault })
-  }))
+  }, { getStore })))
 
   router.get('/transactions', wrap(async (req, res) => {
     const limitParam = req.query.limit
@@ -493,8 +494,14 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
       batchSize = parsedLimit
     }
 
-    const result = await expireOverdueVaults({ now, batchSize, store: await getStore() })
-    res.json({ processed: result.processed, remaining: result.remaining })
+    const store = await getStore()
+    const result = await expireOverdueVaults({ now, batchSize, store })
+    // Purge expired idempotency reservations on the cron tick; reserveIdempotency
+    // also cleans up opportunistically on insert.
+    const idempotencyPurged = typeof store.cleanupIdempotency === 'function'
+      ? await store.cleanupIdempotency({ now })
+      : 0
+    res.json({ processed: result.processed, remaining: result.remaining, idempotencyPurged })
   }))
 
   app.use(['/api/v1', '/api'], (req, res, next) => {

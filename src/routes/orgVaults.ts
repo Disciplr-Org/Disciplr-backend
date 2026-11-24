@@ -183,6 +183,7 @@ export interface OrgVaultSearch {
   alert_frequency_ms: number;
   last_evaluated_at: string | null;
   last_result_hash: string | null;
+  last_matching_ids: string[] | null;
   created_by: string;
   created_at: string;
   updated_at: string;
