@@ -41,7 +41,7 @@ jest.unstable_mockModule('../middleware/stepUp.js', () => ({
 }))
 
 const { apiKeysRouter, getApiKeyUsageHandler } = await import('../routes/apiKeys.js')
-const { createApiKey, resetApiKeysTable } = await import('../services/apiKeys.js')
+const { createApiKey, resetApiKeysTable, rotateApiKey, validateApiKey, revokeApiKey } = await import('../services/apiKeys.js')
 const { errorHandler } = await import('../middleware/errorHandler.js')
 
 const USER_ID = 'c0a6e0e8-4f5e-4a9c-9f4e-111111111111'
@@ -211,6 +211,139 @@ describe('POST /api/keys/:id/rotate', () => {
       .set('x-test-user-id', USER_ID)
       .send({})
     expect(res.status).toBe(400)
+  })
+
+  it('accepts graceSeconds and includes it in audit log and response', async () => {
+    const { record } = await createViaService()
+    const app = buildApp()
+    const res = await request(app)
+      .post(`/api/keys/${record.id}/rotate`)
+      .set('x-test-user-id', USER_ID)
+      .send({ graceSeconds: 600 })
+    expect(res.status).toBe(200)
+    expect(res.body.apiKeyMeta.previousValidUntil).toBeTruthy()
+    expect(res.body.apiKeyMeta.previousKeyHash).toBeUndefined()
+    expect(mockCreateAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'api_key.rotated',
+        metadata: expect.objectContaining({
+          graceSeconds: 600,
+          previousValidUntil: expect.any(String),
+        }),
+      }),
+    )
+  })
+
+  it('rejects invalid graceSeconds', async () => {
+    const { record } = await createViaService()
+    const app = buildApp()
+    const res = await request(app)
+      .post(`/api/keys/${record.id}/rotate`)
+      .set('x-test-user-id', USER_ID)
+      .send({ graceSeconds: -10 })
+    expect(res.status).toBe(400)
+  })
+})
+
+describe('API key rotation grace window (lifecycle & validation)', () => {
+  it('allows both old and new keys to validate inside the grace window', async () => {
+    const { apiKey: oldKey, record } = await createViaService()
+    const rotated = await rotateApiKey({
+      apiKeyId: record.id,
+      userId: USER_ID,
+      graceSeconds: 300,
+    })
+    expect(rotated).not.toBeNull()
+
+    // New key is valid and not using previous secret
+    const newRes = await validateApiKey(rotated!.apiKey, [ApiScope.ReadVaults])
+    expect(newRes.valid).toBe(true)
+    if (newRes.valid) {
+      expect(newRes.usingPreviousSecret).toBeFalsy()
+      expect(newRes.context.apiKeyId).toBe(record.id)
+    }
+
+    // Old key is valid inside grace window and flags usingPreviousSecret
+    const oldRes = await validateApiKey(oldKey, [ApiScope.ReadVaults])
+    expect(oldRes.valid).toBe(true)
+    if (oldRes.valid) {
+      expect(oldRes.usingPreviousSecret).toBe(true)
+      expect(oldRes.context.apiKeyId).toBe(record.id)
+    }
+  })
+
+  it('immediately invalidates old key when graceSeconds is 0', async () => {
+    const { apiKey: oldKey, record } = await createViaService()
+    const rotated = await rotateApiKey({
+      apiKeyId: record.id,
+      userId: USER_ID,
+      graceSeconds: 0,
+    })
+    expect(rotated).not.toBeNull()
+
+    // New key is valid
+    const newRes = await validateApiKey(rotated!.apiKey, [ApiScope.ReadVaults])
+    expect(newRes.valid).toBe(true)
+
+    // Old key is immediately rejected
+    const oldRes = await validateApiKey(oldKey, [ApiScope.ReadVaults])
+    expect(oldRes.valid).toBe(false)
+    if (!oldRes.valid) {
+      expect(oldRes.reason).toBe('invalid')
+    }
+  })
+
+  it('rejects old key after grace window expires', async () => {
+    const { apiKey: oldKey, record } = await createViaService()
+    const rotated = await rotateApiKey({
+      apiKeyId: record.id,
+      userId: USER_ID,
+      graceSeconds: 300,
+    })
+    expect(rotated).not.toBeNull()
+
+    const realDate = globalThis.Date
+    const mockDate = class extends realDate {
+      constructor(...args: unknown[]) {
+        if (args.length === 0) {
+          super(realDate.now() + 400_000)
+        } else {
+          super(...(args as [string | number | Date]))
+        }
+      }
+      static override now() {
+        return realDate.now() + 400_000
+      }
+    } as unknown as typeof Date
+    globalThis.Date = mockDate
+
+    try {
+      const oldRes = await validateApiKey(oldKey, [ApiScope.ReadVaults])
+      expect(oldRes.valid).toBe(false)
+      if (!oldRes.valid) {
+        expect(oldRes.reason).toBe('invalid')
+      }
+    } finally {
+      globalThis.Date = realDate
+    }
+  })
+
+  it('rejects revoked key even if within grace window', async () => {
+    const { apiKey: oldKey, record } = await createViaService()
+    await rotateApiKey({
+      apiKeyId: record.id,
+      userId: USER_ID,
+      graceSeconds: 300,
+    })
+
+    // Revoke the key
+    await revokeApiKey(record.id, USER_ID)
+
+    const oldRes = await validateApiKey(oldKey, [ApiScope.ReadVaults])
+    expect(oldRes.valid).toBe(false)
+    if (!oldRes.valid) {
+      expect(oldRes.reason).toBe('revoked')
+    }
   })
 })
 

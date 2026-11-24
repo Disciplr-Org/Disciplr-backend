@@ -16,19 +16,7 @@ import {
   processDeferredReminders,
 } from '../services/vaultExpiry.service.js'
 import { cleanupExpiredSessions } from '../services/session.js'
-import { cleanupExpiredRotationGrace } from '../services/apiKeys.js'
-import { purgeSoftDeletedVaults } from '../services/retention.js'
-import { createAuditLog } from '../lib/audit-logs.js'
-import { relayOutboxBatch } from '../services/outboxRelay.js'
-import { runReindexBatches } from '../services/evidenceReindex.js'
-import { renderOrgAnalyticsSnapshot } from '../services/analytics.service.js'
-import {
-  saveOrgReport,
-  getAllOrgIds,
-  checkAndIncrementReportQuota,
-} from '../services/analyticsReports.js'
-import { resolveS3Config, uploadToS3 } from '../services/exportS3.js'
-import db from '../db/index.js'
+import { cleanupExpiredStepUpNonces } from '../services/stepUpStore.js'
 import { runSavedSearch, hashResultSet } from '../routes/orgVaults.js'
 import { isNotificationEnabled } from '../models/notificationPreferences.js'
 
@@ -217,9 +205,10 @@ export const createDefaultJobHandlers = (
   jobHandlers['sessions.cleanup'] = async (payload, context) => {
     const batchSize = payload.batchSize ?? 1000
     const deleted = await cleanupExpiredSessions(batchSize)
+    const deletedStepUpNonces = await cleanupExpiredStepUpNonces(batchSize)
     logJob(
       'sessions.cleanup',
-      `deleted=${deleted} batchSize=${batchSize} attempt=${context.attempt}`,
+      `deleted=${deleted} deletedStepUpNonces=${deletedStepUpNonces} batchSize=${batchSize} attempt=${context.attempt}`,
     )
   }
 

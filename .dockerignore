@@ -1,0 +1,25 @@
+# Keep the build context and image layers small.
+# Dependencies are installed inside the image from package-lock.json, and the
+# build produces dist/ itself, so none of the following belong in the context.
+node_modules
+dist
+coverage
+.git
+.gitignore
+.github
+.vscode
+.idea
+.kiro
+.claude
+.agents
+.freebuff
+*.log
+.env
+.env.*
+!.env.example
+Dockerfile
+.dockerignore
+docker-compose.yml
+data
+tmp
+contracts
