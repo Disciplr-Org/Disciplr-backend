@@ -1,7 +1,6 @@
 # API Versioning Strategy
 
 ## Overview
-
 The Disciplr API uses **URL-based versioning** with a backward-compatible legacy
 alias mechanism. This guarantees that existing integrations never break
 abruptly while giving consumers a clear, time-bound migration path.
@@ -10,6 +9,45 @@ abruptly while giving consumers a clear, time-bound migration path.
 |---|---|---|
 | Current | `/api/v1/...` | **Supported** — no deprecation headers |
 | Legacy | `/api/...` | **Deprecated** — sunset scheduled |
+
+## Mounted Router Index
+
+The table below is the authoritative index of calls to
+`mountVersionedRoute` in `src/app-bootstrap.ts`. Each row represents one
+mount call, in registration order. The legacy and versioned prefixes expose
+the same router; the legacy prefix additionally receives deprecation headers.
+Some prefixes appear more than once because separate routers are mounted at
+the same base path.
+
+| Legacy prefix | Versioned prefix | Router file | Authentication / authorization |
+|---|---|---|---|
+| `/api/health` | `/api/v1/health` | `src/routes/health.ts` | Public health and deep-health endpoints; `/security` requires JWT authentication and ADMIN role |
+| `/api/jobs` | `/api/v1/jobs` | `src/routes/jobs.ts` | JWT authentication and ADMIN role for every endpoint |
+| `/api/vaults` | `/api/v1/vaults` | `src/routes/vaults.ts` | Authenticated user or scoped API key, with endpoint-level scope and vault-access checks |
+| `/api/vaults/:vaultId/milestones` | `/api/v1/vaults/:vaultId/milestones` | `src/routes/milestones.ts` | JWT authentication plus endpoint-specific user, verifier, wallet-identity, and vault-access checks |
+| `/api/auth` | `/api/v1/auth` | `src/routes/auth.ts` | Mixed: register, login, and refresh are public; session, WebAuthn, and role-management operations require authentication (and step-up where applicable) |
+| `/api/exports` | `/api/v1/exports` | `src/routes/exports.ts` | JWT authentication for user/admin export and status routes; admin export additionally requires ADMIN; download-token route is token-authorized |
+| `/api/transactions` | `/api/v1/transactions` | `src/routes/transactions.ts` | JWT authentication |
+| `/api/analytics` | `/api/v1/analytics` | `src/routes/analytics.ts` | Mixed: endpoints require JWT authentication or a scoped API key, depending on the operation |
+| `/api/privacy` | `/api/v1/privacy` | `src/routes/privacy.ts` | JWT authentication for privacy export and account-deletion operations |
+| `/api/organizations` | `/api/v1/organizations` | `src/routes/orgVaults.ts` | JWT authentication and organization membership/role authorization |
+| `/api/organizations` | `/api/v1/organizations` | `src/routes/orgAnalytics.ts` | JWT authentication and organization owner/admin authorization |
+| `/api/orgs` | `/api/v1/orgs` | `src/routes/orgAnalytics.ts` | JWT authentication and organization owner/admin authorization |
+| `/api/organizations` | `/api/v1/organizations` | `src/routes/orgMembers.ts` | JWT authentication and organization membership/role authorization |
+| `/api/orgs` | `/api/v1/orgs` | `src/routes/orgMembers.ts` | JWT authentication and organization membership/role authorization |
+| `/api/organizations/:orgId/graphql` | `/api/v1/organizations/:orgId/graphql` | `src/routes/graphql.ts` | JWT authentication and organization membership (admin, member, or viewer) |
+| `/api/admin` | `/api/v1/admin` | `src/routes/admin.ts` | JWT authentication and ADMIN role for every endpoint; sensitive operations may also require step-up or confirmation |
+| `/api/admin/verifiers` | `/api/v1/admin/verifiers` | `src/routes/adminVerifiers.ts` | JWT authentication and ADMIN role for every endpoint |
+| `/api/admin/webhooks` | `/api/v1/admin/webhooks` | `src/routes/adminWebhooks.ts` | JWT authentication and ADMIN role for every endpoint |
+| `/api/verifications` | `/api/v1/verifications` | `src/routes/verifications.ts` | JWT authentication; write/bulk operations require VERIFIER and listing requires ADMIN |
+| `/api/api-keys` | `/api/v1/api-keys` | `src/routes/apiKeys.ts` | JWT authentication for every endpoint |
+| `/api/notifications` | `/api/v1/notifications` | `src/routes/notifications.ts` | JWT authentication for every endpoint |
+| `/api/users/me/notification-preferences` | `/api/v1/users/me/notification-preferences` | `src/routes/notificationPreferences.ts` | JWT authentication for every endpoint |
+| `/api/webhooks` | `/api/v1/webhooks` | `src/routes/webhooks.ts` | JWT authentication and organization membership/role authorization |
+
+When adding or changing a versioned router, update this index in the same
+change. The documentation test compares the prefix pairs and their order with
+the `mountVersionedRoute` calls in `src/app-bootstrap.ts`.
 
 ---
 
@@ -124,6 +162,13 @@ Run the versioning tests:
 npm test -- src/tests/apiVersioning.test.ts
 ```
 
+The router-index regression test also verifies that every documented prefix
+pair appears in `src/app-bootstrap.ts` and remains in mount order:
+
+```bash
+npm test -- src/tests/docs.apiVersioning.test.ts
+```
+
 ---
 
 ## FAQ
@@ -148,6 +193,5 @@ always its URL.
 
 ### Can I opt out of deprecation headers?
 
-Yes — simply call the versioned path (`/api/v1/...`). No headers related to
+Yes — simply call the versioned path (`/api/v1/health`). No headers related to
 deprecation are sent on versioned routes.
-

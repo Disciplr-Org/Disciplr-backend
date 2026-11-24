@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals'
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -12,7 +12,7 @@ const mockKnexIndexChain: any = {
   first: jest.fn(),
   then: jest.fn((resolve: any) => resolve([])),
 }
-const mockKnexIndex = jest.fn(() => mockKnexIndexChain)
+const mockKnexIndex = jest.fn(() => mockKnexIndexChain) as any
 
 const mockKnexKnexChain: any = {
   where: jest.fn().mockReturnThis(),
@@ -24,18 +24,18 @@ const mockKnexKnexChain: any = {
   first: jest.fn(),
   then: jest.fn((resolve: any) => resolve([])),
 }
-const mockKnexKnex = jest.fn(() => mockKnexKnexChain)
+const mockKnexKnex = jest.fn(() => mockKnexKnexChain) as any
 
-mock.module('../db/index.js', () => ({
+jest.unstable_mockModule('../db/index.js', () => ({
   default: mockKnexIndex,
   db: mockKnexIndex,
 }))
 
-mock.module('../db/knex.js', () => ({
+jest.unstable_mockModule('../db/knex.js', () => ({
   db: mockKnexKnex,
 }))
 
-mock.module('../lib/prisma.js', () => ({
+jest.unstable_mockModule('../lib/prisma.js', () => ({
   prisma: { $queryRaw: jest.fn<any>().mockResolvedValue([{ '?column?': 1 }]) },
 }))
 

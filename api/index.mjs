@@ -479,7 +479,19 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
     }
 
     const now = req._now || req.query.now
-    const batchSize = req.query.limit ? parseInt(req.query.limit, 10) : 100
+    const limitParam = req.query.limit
+    let batchSize = 100
+    if (limitParam !== undefined) {
+      if (typeof limitParam !== 'string' || !/^\d+$/.test(limitParam)) {
+        return res.status(400).json({ error: 'limit must be an integer between 1 and 500' })
+      }
+
+      const parsedLimit = Number(limitParam)
+      if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 500) {
+        return res.status(400).json({ error: 'limit must be an integer between 1 and 500' })
+      }
+      batchSize = parsedLimit
+    }
 
     const result = await expireOverdueVaults({ now, batchSize, store: await getStore() })
     res.json({ processed: result.processed, remaining: result.remaining })

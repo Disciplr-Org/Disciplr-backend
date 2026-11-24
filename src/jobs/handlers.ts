@@ -17,6 +17,7 @@ import {
   processDeferredReminders,
 } from '../services/vaultExpiry.service.js'
 import { cleanupExpiredSessions } from '../services/session.js'
+import { cleanupExpiredRotationGrace } from '../services/apiKeys.js'
 import { purgeSoftDeletedVaults } from '../services/retention.js'
 import { createAuditLog } from '../lib/audit-logs.js'
 import { relayOutboxBatch } from '../services/outboxRelay.js'
@@ -221,7 +222,14 @@ export const createDefaultJobHandlers = (
     )
   }
 
-  // TODO(drips-wave): re-enable apiKeys.cleanup — cleanupExpiredRotationGrace() and the 'apiKeys.cleanup' job type are missing from the merged API-key rotation work (#1743)
+  jobHandlers['apiKeys.cleanup'] = async (payload, context) => {
+    const batchSize = payload.batchSize ?? 1000
+    const cleared = await cleanupExpiredRotationGrace(batchSize)
+    logJob(
+      'apiKeys.cleanup',
+      `cleared=${cleared} batchSize=${batchSize} attempt=${context.attempt}`,
+    )
+  }
 
   jobHandlers['vault.reconcile'] = async (payload, context) => {
     const etlConfig = {

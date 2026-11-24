@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { setTimeout } from 'node:timers/promises';
 import { getOrSet, invalidate, invalidatePrefix, getCacheStats, closeCache } from '../lib/cache.js';
 
 describe('Cache-aside Library (Memory Fallback)', () => {
@@ -44,7 +45,7 @@ describe('Cache-aside Library (Memory Fallback)', () => {
     expect(callCount).toBe(1);
 
     // Wait 1.1s
-    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await setTimeout(1100);
 
     // Should miss and call loader again
     await getOrSet('test:ttl', 1, loader);

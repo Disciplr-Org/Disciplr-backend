@@ -1,8 +1,8 @@
-import { jest, mock } from 'bun:test'
+import { jest, describe, beforeEach, test, expect } from '@jest/globals'
 
 const mockQueryRaw = jest.fn()
 
-mock.module('../lib/prisma.js', () => ({
+jest.unstable_mockModule('../lib/prisma.js', () => ({
   prisma: {
     $queryRaw: mockQueryRaw,
   },

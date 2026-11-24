@@ -1,167 +1,201 @@
-import { Queue } from './queue';
+import { afterEach, describe, expect, it, jest } from '@jest/globals'
+import { InMemoryJobQueue } from './queue.js'
 
-describe('Queue', () => {
-  let queue: Queue;
-  let mockDb: any;
+const pause = (ms: number) => new Promise((resolve) => globalThis.setTimeout(resolve, ms))
 
-  beforeEach(() => {
-    mockDb = {
-      insert: jest.fn(),
-      update: jest.fn(),
-      find: jest.fn(),
-      groupBy: jest.fn(),
-    };
-    queue = new Queue(mockDb);
-  });
+describe('InMemoryJobQueue', () => {
+  afterEach(() => {
+    jest.useRealTimers()
+  })
 
   describe('enqueue', () => {
-    it('floors delayMs and inserts as queued', async () => {
-      const job = { id: 'job_1', type: 'oracle.call', payload: { scope: 'all' }, state: 'queued', delayMs: 10, maxAttempts: 3, attempts: 0 };
-      mockDb.insert.mockResolvedValue(job);
+    it('returns a receipt with normalized delay and attempt values', () => {
+      jest.useFakeTimers()
+      jest.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+      const queue = new InMemoryJobQueue()
+      queue.registerHandler('oracle.call', async () => {})
 
-      const result = await queue.enqueue('oracle.call', { scope: 'all' }, { delayMs: 10.9, maxAttempts: 3 });
+      const receipt = queue.enqueue(
+        'oracle.call',
+        { oracle: 'test', symbol: 'XLM' },
+        { delayMs: 10.9, maxAttempts: 3 },
+      )
 
-      expect(mockDb.insert).toHaveBeenCalledWith(expect.objectContaining({
+      expect(receipt).toEqual({
+        id: expect.any(String),
         type: 'oracle.call',
-        payload: { scope: 'all' },
-        state: 'queued',
-        delayMs: 10,
+        runAt: '2026-01-01T00:00:00.010Z',
         maxAttempts: 3,
-        attempts: 0,
-      }));
-      expect(result).toEqual(job);
-    });
+      })
+    })
 
-    it('defaults maxAttempts to 3 and delayMs to 0', async () => {
-      mockDb.insert.mockResolvedValue({ id: 'job_2', type: 'notification.send', payload: {} });
+    it('uses safe defaults for invalid numeric options', () => {
+      jest.useFakeTimers()
+      jest.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+      const queue = new InMemoryJobQueue()
+      queue.registerHandler('notification.send', async () => {})
 
-      await queue.enqueue('notification.send', {});
+      const receipt = queue.enqueue(
+        'notification.send',
+        { recipient: 'user@example.com', subject: 'Hello', body: 'Body' },
+        { delayMs: -1, maxAttempts: Number.NaN },
+      )
 
-      expect(mockDb.insert).toHaveBeenCalledWith(expect.objectContaining({
-        delayMs: 0,
-        maxAttempts: 3,
-      }));
-    });
+      expect(receipt.maxAttempts).toBe(3)
+      expect(receipt.runAt).toBe('2026-01-01T00:00:00.000Z')
+    })
 
-    it('rejects invalid delayMs values', async () => {
-      await expect(queue.enqueue('sessions.cleanup', {}, { delayMs: -1 })).rejectsToThrow('delayMs must be >= 0');
-    });
+    it('returns the existing receipt for a duplicate idempotency key', () => {
+      const queue = new InMemoryJobQueue()
+      queue.registerHandler('sessions.cleanup', async () => {})
 
-    it('rejects maxAttempts outside 1..10', async () => {
-      await expect(queue.enqueue('analytics.recompute', {}, { maxAttempts: 11 })).rejectsToThrow('maxAttempts must be between 1 and 10');
-    });
-  });
+      const first = queue.enqueue('sessions.cleanup', {}, { idempotencyKey: 'cleanup-1' })
+      const duplicate = queue.enqueue('sessions.cleanup', {}, { idempotencyKey: 'cleanup-1' })
 
-  describe('retry', () => {
-    it('resets attempts and re-queues when job has not exhausted maxAttempts', async () => {
-      mockDb.find.mockResolvedValue({ id: 'job_3', type: 'deadline.check', state: 'failed', attempts: 1, maxAttempts: 3 });
+      expect(duplicate).toEqual(first)
+      expect(queue.getMetrics().totals.enqueued).toBe(1)
+    })
+  })
 
-      await queue.retry('job_3', false);
+  describe('execution and retry behavior', () => {
+    it('runs a registered handler and records completion', async () => {
+      const queue = new InMemoryJobQueue({ pollIntervalMs: 5 })
+      const handler = jest.fn(async () => {})
+      queue.registerHandler('oracle.call', handler)
 
-      expect(mockDb.update).toHaveBeenCalledWith('job_3', expect.objectContaining({
-        state: 'queued',
-        attempts: 0,
-      }));
-    });
+      queue.enqueue('oracle.call', { oracle: 'test', symbol: 'XLM' }, { maxAttempts: 1 })
+      queue.start()
+      await pause(30)
+      await queue.stop()
 
-    it('throws if job is dead-lettered without force', async () => {
-      mockDb.find.mockResolvedValue({ id: 'job_4', type: 'export.generate', state: 'dead_letter', attempts: 3, maxAttempts: 3 });
+      expect(handler).toHaveBeenCalledTimes(1)
+      expect(queue.getMetrics().totals).toMatchObject({
+        enqueued: 1,
+        executions: 1,
+        completed: 1,
+        failed: 0,
+      })
+      expect(queue.getDeadLetters()).toHaveLength(0)
+    })
 
-      await expect(queue.retry('job_4', false)).rejectsToThrow('Job is dead-lettered; use force=true to retry');
-    });
+    it('retries a transient failure after the supported backoff', async () => {
+      jest.useFakeTimers()
+      const queue = new InMemoryJobQueue({ pollIntervalMs: 10 })
+      let attempts = 0
+      queue.registerHandler('oracle.call', async () => {
+        attempts += 1
+        if (attempts === 1) throw new Error('transient failure')
+      })
 
-    it('allows retry with force even if dead-lettered', async () => {
-      mockDb.find.mockResolvedValue({ id: 'jcb_5', type: 'sessions.cleanup', state: 'dead_letter', attempts: 3, maxAttempts: 3 });
+      queue.enqueue('oracle.call', { oracle: 'test', symbol: 'RETRY' }, { maxAttempts: 2 })
+      queue.start()
+      await jest.advanceTimersByTimeAsync(10)
+      expect(attempts).toBe(1)
 
-      await queue.retry('jbo_5', true);
+      await jest.advanceTimersByTimeAsync(1_000)
+      await jest.advanceTimersByTimeAsync(10)
+      expect(attempts).toBe(2)
+      expect(queue.getMetrics().totals).toMatchObject({ completed: 1, retried: 1 })
+      await queue.stop()
+    })
 
-      expect(mockDb.update).toHaveBeenCalledWith('jbo_5', expect.objectContaining({
-        state: 'queued',
-        attempts: 0,
-      }));
-    });
+    it('moves an exhausted failure to the dead-letter queue', async () => {
+      const queue = new InMemoryJobQueue({ pollIntervalMs: 5 })
+      queue.registerHandler('oracle.call', async () => {
+        throw new Error('permanent failure')
+      })
 
-    it('throws if job is not found', async () => {
-      mockDb.find.mockResolvedValue(undefined);
+      queue.enqueue('oracle.call', { oracle: 'test', symbol: 'FAIL' }, { maxAttempts: 1 })
+      queue.start()
+      await pause(30)
+      await queue.stop()
 
-      await expect(queue.retry('missing', false)).rejectsToThrow('Job not found');
-    });
-  });
+      const [deadLetter] = queue.getDeadLetters()
+      expect(deadLetter).toMatchObject({
+        type: 'oracle.call',
+        attempts: 1,
+        error: 'permanent failure',
+        state: 'dead-lettered',
+      })
+      expect(queue.getMetrics().byType['oracle.call'].deadLetter).toBe(1)
+    })
+  })
 
-  describe('depth', () => {
-    it('aggregates counts by type and state, excluding dead-letter from totalDepth', async () => {
-      const rows = [
-        { type: 'notification.send', state: 'queued', count: 1 },
-        { type: 'notification.send', state: 'active', count: 1 },
-        { type: 'notification.send', state: 'dead_letter', count: 2 },
-        { type: 'oracle.call', state: 'delayed', count: 2 },
-      ];
-      mockDb.groupBy.mockResolvedValue(rows);
+  describe('dead-letter and stale-lease operations', () => {
+    it('requires force to retry a dead-lettered job and preserves its payload', async () => {
+      const queue = new InMemoryJobQueue({ pollIntervalMs: 5 })
+      queue.registerHandler('oracle.call', async () => {
+        throw new Error('failure')
+      })
 
-      const result = await queue.depth(300000);
+      queue.enqueue('oracle.call', { oracle: 'test', symbol: 'DLQ' }, { maxAttempts: 1 })
+      queue.start()
+      await pause(30)
+      await queue.stop()
 
-      expect(result).toEqual({
-        generatedAt: expect.any(String),
-        staleLeaseMs: 300000,
-        totalDepth: 4, // 1 queued + 1 active + 2 delayed
-        byType: {
-          'notification.send': { queued: 1, delayed: 0, active: 1, stuckActive: 0, deadLetter: 2 },
-          'oracle.call': { queued: 0, delayed: 2, active: 0, stuckActive: 0, deadLetter: 0 },
-        },
-      });
-    });
+      const [deadLetter] = queue.getDeadLetters()
+      expect(() => queue.retryJob(deadLetter.jobId)).toThrow(
+        'max_attempts is exhausted. Use ?force=true to retry anyway.',
+      )
 
-    it('returns zeroed counts for empty queue', async () => {
-      mockDb.groupBy.mockResolvedValue([]);
+      const receipt = queue.retryJob(deadLetter.jobId, true)
+      expect(receipt).toMatchObject({ id: deadLetter.jobId, type: 'oracle.call', maxAttempts: 1 })
+      expect(queue.getDeadLetters()).toHaveLength(0)
+      expect(queue.getMetrics().totals.retried).toBe(1)
+    })
 
-      const result = await queue.depth(300000);
+    it('reclaims an expired active lease for another attempt', async () => {
+      jest.useFakeTimers()
+      jest.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+      const queue = new InMemoryJobQueue({ pollIntervalMs: 10, staleLeaseMs: 300 })
+      const releases: Array<() => void> = []
+      queue.registerHandler(
+        'oracle.call',
+        async () => new Promise<void>((resolve) => { releases.push(resolve) }),
+      )
 
-      expect(result.byType).toEqual({});
-      expect(result.totalDepth).toBe(0);
-    });
+      queue.enqueue('oracle.call', { oracle: 'test', symbol: 'LEASE' }, { maxAttempts: 2 })
+      queue.start()
+      await jest.advanceTimersByTimeAsync(10)
+      expect(queue.getMetrics().activeJobs).toBe(1)
 
-    it('flags stuck active jobs based on stale lease', async () => {
-      const now = Date.now();
-      const rows = [
-        { type: 'oracle.call', state: 'active', count: 1 },
-      ];
-      const activeDetails = [
-        { id: 'a1', type: 'oracle.call', state: 'active', leaseExpiresAt: new Date(now - 400000).toISOString() },
-      ];
-      mockDb.groupBy.mockResolvedValue(rows);
-      mockDb.find.mockResolvedValue(activeDetails);
+      jest.setSystemTime(new Date('2026-01-01T00:00:00.301Z'))
+      const result = queue.sweepStaleLeases(300)
+      expect(result.reclaimed).toHaveLength(1)
+      expect(result.reclaimed[0]).toMatchObject({ type: 'oracle.call', attempt: 1, maxAttempts: 2 })
 
-      const result = await queue.depth(300000);
+      const releaseAll = () => {
+        while (releases.length > 0) releases.shift()!()
+      }
+      releaseAll()
+      await jest.advanceTimersByTimeAsync(0)
+      releaseAll()
+      await queue.stop()
+    })
+  })
 
-      expect(result.byType['oracle.call']).toMatchObject({ active: 1, stuckActive: 1 });
-    });
-  });
+  describe('queue depth reporting', () => {
+    it('reports queued and delayed jobs by type without dead letters in depth', () => {
+      jest.useFakeTimers()
+      jest.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+      const queue = new InMemoryJobQueue()
+      queue.registerHandler('notification.send', async () => {})
+      queue.registerHandler('oracle.call', async () => {})
 
-  describe('sweep', () => {
-    it('reclaims jobs with remaining attempts and dead-letters exhausted ones', async () => {
-      const stuckJobs = [
-        { id: 's1', type: 'oracle.call', state: 'active', attempts: 1, maxAttempts: 3, leaseExpiresAt: new Date(Date.now() - 400000).toISOString() },
-        { id: 's2', type: 'export.generate', state: 'active', attempts: 3, maxAttempts: 3, leaseExpiresAt: new Date(Date.now() - 400000).toISOString() },
-      ];
-      mockDb.find.mockResolvedValue(stuckJobs);
+      queue.enqueue('notification.send', { recipient: 'a', subject: 's', body: 'b' })
+      queue.enqueue('oracle.call', { oracle: 'test', symbol: 'XLM' }, { delayMs: 500 })
 
-      const result = await queue.sweep(300000);
+      const report = queue.getQueueDepthReport(300)
+      expect(report).toMatchObject({ staleLeaseMs: 300, totalDepth: 2 })
+      expect(report.byType['notification.send']).toMatchObject({ queued: 1, delayed: 0 })
+      expect(report.byType['oracle.call']).toMatchObject({ queued: 0, delayed: 1 })
+    })
 
-      expect(mockDb.update).toHaveBeenCalledTimes(2);
-      expect(mockDb.update).toHaveBeenCalledWith('s1', expect.objectContaining({ state: 'queued', attempts: 1, leaseExpiresAt: null }));
-      expect(mockDb.update).toHaveBeenCalledWith('s2', expect.objectContaining({ state: 'dead_letter' }));
-      expect(result).toMatchObject({
-        reclaimed: [{ jobId: 's1', type: 'oracle.call', attempt: 1, maxAttempts: 3, leaseAgeMs: expect.any(Number) }],
-        deadLettered: [{ jobId: 's2', type: 'export.generate', attempt: 3, maxAttempts: 3, leaseAgeMs: expect.any(Number) }],
-      });
-    });
+    it('returns an empty report for a new queue', () => {
+      const report = new InMemoryJobQueue().getQueueDepthReport()
 
-    it('returns empty arrays when no stuck jobs exist', async () => {
-      mockDb.find.mockResolvedValue([]);
-
-      const result = await queue.sweep(300000);
-
-      expect(result).toMatchObject({ reclaimed: [], deadLettered: [] });
-    });
-  });
-});
+      expect(report.totalDepth).toBe(0)
+      expect(Object.values(report.byType).every((state) => state.queued === 0 && state.delayed === 0)).toBe(true)
+    })
+  })
+})

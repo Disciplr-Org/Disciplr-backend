@@ -5,6 +5,7 @@ info:
   description: API documentation for Disciplr backend
 servers:
   - url: /api
+security: []
 components:
   securitySchemes:
     bearerAuth:
@@ -893,6 +894,59 @@ components:
         - createdAt
         - sizeBytes
         - downloadUrl
+    ApiKeyMetadata:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type:
+            - string
+            - "null"
+        orgId:
+          type:
+            - string
+            - "null"
+          format: uuid
+        label:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+            enum:
+              - read:analytics
+              - read:vaults
+              - write:analytics
+              - write:vaults
+        createdAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        lastUsedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        requestCount:
+          type: integer
+        lastIp:
+          type:
+            - string
+            - "null"
+      required:
+        - id
+        - userId
+        - orgId
+        - label
+        - scopes
+        - createdAt
+        - revokedAt
   parameters: {}
 paths:
   /api/health:
@@ -3553,4 +3607,1146 @@ paths:
                     example: Internal server error
                 required:
                   - error
+  /api/api-keys:
+    get:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: listApiKeysLegacy
+      summary: List the authenticated user’s API keys
+      deprecated: true
+      parameters:
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+            description: Page size. Supplied values are parsed and clamped to 1–100.
+          required: false
+          description: Page size. Supplied values are parsed and clamped to 1–100.
+          name: limit
+          in: query
+        - schema:
+            type: integer
+            minimum: 0
+            default: 0
+            description: Zero-based offset. Negative values are clamped to zero.
+          required: false
+          description: Zero-based offset. Negative values are clamped to zero.
+          name: offset
+          in: query
+      responses:
+        "200":
+          description: Page of API key metadata using offset pagination
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKeys:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ApiKeyMetadata"
+                  pagination:
+                    type: object
+                    properties:
+                      limit:
+                        type: integer
+                      offset:
+                        type: integer
+                      total:
+                        type: integer
+                    required:
+                      - limit
+                      - offset
+                      - total
+                required:
+                  - apiKeys
+                  - pagination
+        "401":
+          description: Missing, invalid, or expired bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "429":
+          description: Request rate limit exceeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    post:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: createApiKeyLegacy
+      summary: Create an API key
+      deprecated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                      - read:analytics
+                      - read:vaults
+                      - write:analytics
+                      - write:vaults
+                  minItems: 1
+                  maxItems: 20
+                  uniqueItems: true
+                orgId:
+                  type: string
+                  format: uuid
+              required:
+                - label
+                - scopes
+      responses:
+        "201":
+          description: API key created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey:
+                    type: string
+                    description: Secret returned only on creation or rotation.
+                  apiKeyMeta:
+                    $ref: "#/components/schemas/ApiKeyMetadata"
+                required:
+                  - apiKey
+                  - apiKeyMeta
+        "400":
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - VALIDATION_ERROR
+                      message:
+                        type: string
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            path:
+                              type: string
+                            message:
+                              type: string
+                            code:
+                              type: string
+                          required:
+                            - path
+                            - message
+                            - code
+                    required:
+                      - code
+                      - message
+                      - fields
+                required:
+                  - error
+        "401":
+          description: Missing, invalid, or expired bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Caller is not a member of the requested organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Organization not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "413":
+          description: Payload exceeds the applicable size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "415":
+          description: Request body must use UTF-8 JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Request rate limit exceeded
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/v1/api-keys:
+    get:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: listApiKeys
+      summary: List the authenticated user’s API keys
+      parameters:
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+            description: Page size. Supplied values are parsed and clamped to 1–100.
+          required: false
+          description: Page size. Supplied values are parsed and clamped to 1–100.
+          name: limit
+          in: query
+        - schema:
+            type: integer
+            minimum: 0
+            default: 0
+            description: Zero-based offset. Negative values are clamped to zero.
+          required: false
+          description: Zero-based offset. Negative values are clamped to zero.
+          name: offset
+          in: query
+      responses:
+        "200":
+          description: Page of API key metadata using offset pagination
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKeys:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ApiKeyMetadata"
+                  pagination:
+                    type: object
+                    properties:
+                      limit:
+                        type: integer
+                      offset:
+                        type: integer
+                      total:
+                        type: integer
+                    required:
+                      - limit
+                      - offset
+                      - total
+                required:
+                  - apiKeys
+                  - pagination
+        "401":
+          description: Missing, invalid, or expired bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "429":
+          description: Request rate limit exceeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+    post:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: createApiKey
+      summary: Create an API key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                      - read:analytics
+                      - read:vaults
+                      - write:analytics
+                      - write:vaults
+                  minItems: 1
+                  maxItems: 20
+                  uniqueItems: true
+                orgId:
+                  type: string
+                  format: uuid
+              required:
+                - label
+                - scopes
+      responses:
+        "201":
+          description: API key created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey:
+                    type: string
+                    description: Secret returned only on creation or rotation.
+                  apiKeyMeta:
+                    $ref: "#/components/schemas/ApiKeyMetadata"
+                required:
+                  - apiKey
+                  - apiKeyMeta
+        "400":
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - VALIDATION_ERROR
+                      message:
+                        type: string
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            path:
+                              type: string
+                            message:
+                              type: string
+                            code:
+                              type: string
+                          required:
+                            - path
+                            - message
+                            - code
+                    required:
+                      - code
+                      - message
+                      - fields
+                required:
+                  - error
+        "401":
+          description: Missing, invalid, or expired bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Caller is not a member of the requested organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Organization not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "413":
+          description: Payload exceeds the applicable size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "415":
+          description: Request body must use UTF-8 JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Request rate limit exceeded
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/api-keys/{id}/rotate:
+    post:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: rotateApiKeyLegacy
+      summary: Rotate an API key
+      deprecated: true
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: API key rotated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey:
+                    type: string
+                    description: Secret returned only on creation or rotation.
+                  apiKeyMeta:
+                    $ref: "#/components/schemas/ApiKeyMetadata"
+                required:
+                  - apiKey
+                  - apiKeyMeta
+        "400":
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - VALIDATION_ERROR
+                      message:
+                        type: string
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            path:
+                              type: string
+                            message:
+                              type: string
+                            code:
+                              type: string
+                          required:
+                            - path
+                            - message
+                            - code
+                    required:
+                      - code
+                      - message
+                      - fields
+                required:
+                  - error
+        "401":
+          description: Missing, invalid, or expired bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "413":
+          description: Payload exceeds the applicable size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "415":
+          description: Request body must use UTF-8 JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Request rate limit exceeded
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/v1/api-keys/{id}/rotate:
+    post:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: rotateApiKey
+      summary: Rotate an API key
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: API key rotated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKey:
+                    type: string
+                    description: Secret returned only on creation or rotation.
+                  apiKeyMeta:
+                    $ref: "#/components/schemas/ApiKeyMetadata"
+                required:
+                  - apiKey
+                  - apiKeyMeta
+        "400":
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - VALIDATION_ERROR
+                      message:
+                        type: string
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            path:
+                              type: string
+                            message:
+                              type: string
+                            code:
+                              type: string
+                          required:
+                            - path
+                            - message
+                            - code
+                    required:
+                      - code
+                      - message
+                      - fields
+                required:
+                  - error
+        "401":
+          description: Missing, invalid, or expired bearer token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "413":
+          description: Payload exceeds the applicable size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "415":
+          description: Request body must use UTF-8 JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Request rate limit exceeded
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/api-keys/{id}/revoke:
+    post:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: revokeApiKeyLegacy
+      summary: Revoke an API key
+      description: Requires a valid step-up session. Supply it in the header or JSON body.
+      deprecated: true
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+        - schema:
+            type: string
+          required: false
+          name: X-Step-Up-Session-Id
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                stepUpSessionId:
+                  type: string
+      responses:
+        "200":
+          description: API key revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKeyMeta:
+                    $ref: "#/components/schemas/ApiKeyMetadata"
+                required:
+                  - apiKeyMeta
+        "400":
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - VALIDATION_ERROR
+                      message:
+                        type: string
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            path:
+                              type: string
+                            message:
+                              type: string
+                            code:
+                              type: string
+                          required:
+                            - path
+                            - message
+                            - code
+                    required:
+                      - code
+                      - message
+                      - fields
+                required:
+                  - error
+        "401":
+          description: Bearer authentication or step-up verification failed
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - type: object
+                    properties:
+                      error:
+                        type: string
+                      challenge:
+                        type: string
+                      stepUpRequired:
+                        type: boolean
+                        enum:
+                          - true
+                    required:
+                      - error
+                      - challenge
+                      - stepUpRequired
+                  - type: object
+                    properties:
+                      error:
+                        type: string
+                    required:
+                      - error
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "413":
+          description: Payload exceeds the applicable size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Request rate limit exceeded
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/v1/api-keys/{id}/revoke:
+    post:
+      tags:
+        - API Keys
+      security:
+        - bearerAuth: []
+      servers:
+        - url: /
+      operationId: revokeApiKey
+      summary: Revoke an API key
+      description: Requires a valid step-up session. Supply it in the header or JSON body.
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+          required: true
+          name: id
+          in: path
+        - schema:
+            type: string
+          required: false
+          name: X-Step-Up-Session-Id
+          in: header
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                stepUpSessionId:
+                  type: string
+      responses:
+        "200":
+          description: API key revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKeyMeta:
+                    $ref: "#/components/schemas/ApiKeyMetadata"
+                required:
+                  - apiKeyMeta
+        "400":
+          description: Request validation failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        enum:
+                          - VALIDATION_ERROR
+                      message:
+                        type: string
+                      fields:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            path:
+                              type: string
+                            message:
+                              type: string
+                            code:
+                              type: string
+                          required:
+                            - path
+                            - message
+                            - code
+                    required:
+                      - code
+                      - message
+                      - fields
+                required:
+                  - error
+        "401":
+          description: Bearer authentication or step-up verification failed
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - type: object
+                    properties:
+                      error:
+                        type: string
+                      challenge:
+                        type: string
+                      stepUpRequired:
+                        type: boolean
+                        enum:
+                          - true
+                    required:
+                      - error
+                      - challenge
+                      - stepUpRequired
+                  - type: object
+                    properties:
+                      error:
+                        type: string
+                    required:
+                      - error
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "413":
+          description: Payload exceeds the applicable size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Request rate limit exceeded
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/oauth/token:
+    post:
+      operationId: exchangeApiKeyForOAuthToken
+      summary: Exchange API key credentials for an OAuth access token
+      description: Describes the OAuth router contract. Availability depends on the
+        deployment mounting the router at this path.
+      tags:
+        - API Keys
+      security: []
+      servers:
+        - url: /
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                grant_type:
+                  type: string
+                  enum:
+                    - client_credentials
+                client_id:
+                  type: string
+                  format: uuid
+                client_secret:
+                  type: string
+                  minLength: 1
+                  maxLength: 512
+                  writeOnly: true
+                scope:
+                  type: string
+                  maxLength: 256
+                  description: Space-separated scopes. Omitted or blank uses all client grants. Up
+                    to 20 distinct scopes, each at most 64 characters.
+              required:
+                - grant_type
+                - client_id
+                - client_secret
+      responses:
+        "200":
+          description: Access token issued
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                  - no-store
+            Pragma:
+              schema:
+                type: string
+                enum:
+                  - no-cache
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  token_type:
+                    type: string
+                    enum:
+                      - Bearer
+                  expires_in:
+                    type: integer
+                    minimum: 60
+                    maximum: 43200
+                  scope:
+                    type: string
+                required:
+                  - access_token
+                  - token_type
+                  - expires_in
+                  - scope
+        "400":
+          description: Unsupported grant, malformed request, or invalid scope
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                  - no-store
+            Pragma:
+              schema:
+                type: string
+                enum:
+                  - no-cache
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  error_description:
+                    type: string
+                required:
+                  - error
+                  - error_description
+        "401":
+          description: Invalid client credentials
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                  - no-store
+            Pragma:
+              schema:
+                type: string
+                enum:
+                  - no-cache
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  error_description:
+                    type: string
+                required:
+                  - error
+                  - error_description
+        "413":
+          description: Payload exceeds the applicable size limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "415":
+          description: Request body must use UTF-8 JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          description: Request rate limit exceeded
+          content:
+            text/html:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: OAuth token service is unavailable
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum:
+                  - no-store
+            Pragma:
+              schema:
+                type: string
+                enum:
+                  - no-cache
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  error_description:
+                    type: string
+                required:
+                  - error
+                  - error_description
 webhooks: {}
