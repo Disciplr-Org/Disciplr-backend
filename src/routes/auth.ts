@@ -59,16 +59,16 @@ const webauthnAssertSchema = z.object({
  * will fail startup if both NODE_ENV=production and ENABLE_MOCK_LOGIN=true).
  */
 const isMockLoginAllowed = (): boolean => {
+  if (process.env.NODE_ENV === 'production') return false
+  const raw = process.env.ENABLE_MOCK_LOGIN
+  if (raw !== undefined) {
+    return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase())
+  }
   try {
     const env = getEnv()
     return env.ENABLE_MOCK_LOGIN === true
   } catch {
-    // If env not initialised, fall back to checking the raw env var (tests).
-    // Production is always refused, even when env validation failed.
-    if (process.env.NODE_ENV === 'production') return false
-    const raw = process.env.ENABLE_MOCK_LOGIN
-    if (!raw) return false
-    return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase())
+    return false
   }
 }
 

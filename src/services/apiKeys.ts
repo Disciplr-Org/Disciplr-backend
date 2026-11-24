@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import argon2 from 'argon2'
 import type { Pool } from 'pg'
@@ -16,6 +17,7 @@ interface CreateApiKeyInput {
 interface RotateApiKeyInput {
   apiKeyId: string
   userId: string
+  graceSeconds?: number
 }
 
 type ApiKeyValidationResult =
@@ -35,6 +37,8 @@ interface ApiKeyRow {
   last_used_at?: string | Date | null
   request_count?: number | null
   last_ip?: string | null
+  previous_key_hash?: string | null
+  previous_valid_until?: string | Date | null
 }
 
 interface ApiKeyRepository {
@@ -138,6 +142,8 @@ const toRecord = (row: ApiKeyRow): ApiKeyRecord => ({
   lastUsedAt: asIsoString(row.last_used_at),
   requestCount: row.request_count ?? 0,
   lastIp: row.last_ip ?? null,
+  previousKeyHash: row.previous_key_hash ?? null,
+  previousValidUntil: asIsoString(row.previous_valid_until),
 })
 
 const cloneRecord = (record: ApiKeyRecord): ApiKeyRecord => ({
@@ -147,6 +153,8 @@ const cloneRecord = (record: ApiKeyRecord): ApiKeyRecord => ({
   lastUsedAt: record.lastUsedAt,
   requestCount: record.requestCount,
   lastIp: record.lastIp,
+  previousKeyHash: record.previousKeyHash ?? null,
+  previousValidUntil: record.previousValidUntil ?? null,
 })
 
 const createMemoryRepository = (): ApiKeyRepository => ({
@@ -182,7 +190,11 @@ const createMemoryRepository = (): ApiKeyRepository => ({
   },
   async findByHashPrefix(prefix) {
     return Array.from(memoryApiKeys.values())
-      .filter((record) => getHashPrefix(record.keyHash) === prefix)
+      .filter(
+        (record) =>
+          getHashPrefix(record.keyHash) === prefix ||
+          (record.previousKeyHash && getHashPrefix(record.previousKeyHash) === prefix),
+      )
       .map(cloneRecord)
   },
   async clearExpiredPrevious(now, limit) {
@@ -205,8 +217,8 @@ const createMemoryRepository = (): ApiKeyRepository => ({
 const createPgRepository = (pool: Pool): ApiKeyRepository => ({
   async create(record) {
     await pool.query(
-      `INSERT INTO api_keys (id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, expires_at, last_used_at, request_count, last_ip)
-       VALUES ($1, $2, $3, $4, $5, $6::text[], $7::timestamptz, $8::timestamptz, $9::timestamptz, $10::timestamptz, $11, $12)`,
+      `INSERT INTO api_keys (id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip, previous_key_hash, previous_valid_until)
+       VALUES ($1, $2, $3, $4, $5, $6::text[], $7::timestamptz, $8::timestamptz, $9::timestamptz, $10, $11, $12, $13::timestamptz)`,
       [
         record.id,
         record.userId,
@@ -220,12 +232,14 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
         record.lastUsedAt ?? null,
         record.requestCount ?? 0,
         record.lastIp ?? null,
+        record.previousKeyHash ?? null,
+        record.previousValidUntil ?? null,
       ],
     )
   },
   async listForUser(userId) {
     const result = await pool.query<ApiKeyRow>(
-      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, expires_at, last_used_at, request_count, last_ip
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip, previous_key_hash, previous_valid_until
        FROM api_keys
        WHERE user_id = $1
        ORDER BY created_at DESC`,
@@ -236,7 +250,7 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
   },
   async listForOrg(orgId) {
     const result = await pool.query<ApiKeyRow>(
-      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, expires_at, last_used_at, request_count, last_ip
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip, previous_key_hash, previous_valid_until
        FROM api_keys
        WHERE org_id = $1
        ORDER BY created_at DESC`,
@@ -247,7 +261,7 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
   },
   async getById(id) {
     const result = await pool.query<ApiKeyRow>(
-      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, expires_at, last_used_at, request_count, last_ip
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip, previous_key_hash, previous_valid_until
        FROM api_keys
        WHERE id = $1
        LIMIT 1`,
@@ -270,8 +284,11 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
            last_used_at = $10::timestamptz,
            request_count = $11,
            last_ip = $12
+           last_ip = $11,
+           previous_key_hash = $12,
+           previous_valid_until = $13::timestamptz
        WHERE id = $1
-       RETURNING id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, expires_at, last_used_at, request_count, last_ip`,
+       RETURNING id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip, previous_key_hash, previous_valid_until`,
       [
         record.id,
         record.userId,
@@ -285,6 +302,8 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
         record.lastUsedAt ?? null,
         record.requestCount ?? 0,
         record.lastIp ?? null,
+        record.previousKeyHash ?? null,
+        record.previousValidUntil ?? null,
       ],
     )
 
@@ -292,7 +311,7 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
   },
   async findByIdForUser(id, userId) {
     const result = await pool.query<ApiKeyRow>(
-      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, expires_at, last_used_at, request_count, last_ip
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip, previous_key_hash, previous_valid_until
        FROM api_keys
        WHERE id = $1 AND user_id = $2
        LIMIT 1`,
@@ -303,9 +322,9 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
   },
   async findByHashPrefix(prefix) {
     const result = await pool.query<ApiKeyRow>(
-      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, expires_at, last_used_at, request_count, last_ip
+      `SELECT id, user_id, org_id, key_hash, label, scopes, created_at, revoked_at, last_used_at, request_count, last_ip, previous_key_hash, previous_valid_until
        FROM api_keys
-       WHERE left(key_hash, $1) = $2`,
+       WHERE left(key_hash, $1) = $2 OR left(previous_key_hash, $1) = $2`,
       [HASH_PREFIX_LENGTH, prefix],
     )
 
@@ -364,7 +383,36 @@ const createApiKeyRecord = async (input: CreateApiKeyInput, secret: string): Pro
   }
 }
 
-const findMatchingRecord = async (apiKey: string): Promise<{ record: ApiKeyRecord; secret: string } | null> => {
+const verifyStoredHash = async (stored: string, secret: string, secretHash: string): Promise<boolean> => {
+  if (stored.includes('$argon2id$')) {
+    const parts = stored.split('$argon2id$')
+    const fingerprintPart = parts[0]
+    const argonPart = parts.slice(1).join('$argon2id$')
+
+    const fpA = Buffer.from(fingerprintPart, 'hex')
+    const fpB = Buffer.from(secretHash, 'hex')
+    const fingerprintMatches = fpA.length === fpB.length && timingSafeEqual(fpA, fpB)
+
+    if (fingerprintMatches) {
+      try {
+        const ok = await argon2.verify(argonPart, secret)
+        if (ok) return true
+      } catch {
+        // verify failure
+      }
+    }
+    return false
+  }
+
+  // Legacy store: plain sha256 fingerprint
+  const legacyA = Buffer.from(stored, 'hex')
+  const legacyB = Buffer.from(secretHash, 'hex')
+  return legacyA.length === legacyB.length && timingSafeEqual(legacyA, legacyB)
+}
+
+const findMatchingRecord = async (
+  apiKey: string,
+): Promise<{ record: ApiKeyRecord; secret: string; usingPreviousSecret?: boolean } | null> => {
   const parsed = parseApiKey(apiKey)
   if (!parsed) {
     return null
@@ -372,51 +420,41 @@ const findMatchingRecord = async (apiKey: string): Promise<{ record: ApiKeyRecor
 
   const secretHash = hashSecret(parsed.secret)
   const hashPrefix = getHashPrefix(secretHash)
-  const candidates = await getRepository().findByHashPrefix(hashPrefix)
+  let candidates = await getRepository().findByHashPrefix(hashPrefix)
+
+  if (candidates.length === 0 && getRepository().getById) {
+    const byId = await getRepository().getById(parsed.apiKeyId)
+    if (byId) {
+      candidates = [byId]
+    }
+  }
 
   for (const candidate of candidates) {
     if (candidate.id !== parsed.apiKeyId) continue
 
-    const stored = candidate.keyHash
-
-    // New format: <fingerprint>$argon2id$<argonHash>
-    if (stored.includes('$argon2id$')) {
-      const parts = stored.split('$argon2id$')
-      const fingerprintPart = parts[0]
-      const argonPart = parts.slice(1).join('$argon2id$')
-
-      const fpA = Buffer.from(fingerprintPart, 'hex')
-      const fpB = Buffer.from(secretHash, 'hex')
-      const fingerprintMatches =
-        fpA.length === fpB.length && timingSafeEqual(fpA, fpB)
-
-      if (fingerprintMatches) {
+    // 1. Primary current secret match
+    if (await verifyStoredHash(candidate.keyHash, parsed.secret, secretHash)) {
+      if (!candidate.keyHash.includes('$argon2id$')) {
+        const argonHash = await argon2.hash(parsed.secret, ARGON2_OPTIONS)
+        candidate.keyHash = `${secretHash}$argon2id$${argonHash}`
         try {
-          const ok = await argon2.verify(argonPart, parsed.secret)
-          if (ok) return { record: candidate, secret: parsed.secret }
-        } catch (_e) {
-          // verify failure -> continue
+          await getRepository().update(candidate)
+        } catch (_err) {
+          // ignore
         }
       }
-      continue
+      return { record: candidate, secret: parsed.secret, usingPreviousSecret: false }
     }
 
-    // Legacy store: plain sha256 fingerprint
-    const legacyA = Buffer.from(stored, 'hex')
-    const legacyB = Buffer.from(secretHash, 'hex')
-    const legacyMatch = legacyA.length === legacyB.length && timingSafeEqual(legacyA, legacyB)
-    if (legacyMatch) {
-      // Rolling re-hash: create argon2 and persist combined format
-      const argonHash = await argon2.hash(parsed.secret, ARGON2_OPTIONS)
-      candidate.keyHash = `${secretHash}$argon2id$${argonHash}`
-      // best-effort update; do not fail validation if update fails
-      try {
-        await getRepository().update(candidate)
-      } catch (_err) {
-        // ignore
+    // 2. Previous secret match within grace window
+    if (
+      candidate.previousKeyHash &&
+      candidate.previousValidUntil &&
+      candidate.previousValidUntil > utcNow()
+    ) {
+      if (await verifyStoredHash(candidate.previousKeyHash, parsed.secret, secretHash)) {
+        return { record: candidate, secret: parsed.secret, usingPreviousSecret: true }
       }
-
-      return { record: candidate, secret: parsed.secret }
     }
   }
 
@@ -464,6 +502,17 @@ export const rotateApiKey = async (
   const record = await getRepository().findByIdForUser(input.apiKeyId, input.userId)
   if (!record || record.revokedAt) {
     return null
+  }
+
+  const graceSeconds =
+    input.graceSeconds !== undefined ? Math.max(0, Math.min(3600, input.graceSeconds)) : 300
+
+  if (graceSeconds > 0) {
+    record.previousKeyHash = record.keyHash
+    record.previousValidUntil = new Date(Date.now() + graceSeconds * 1000).toISOString()
+  } else {
+    record.previousKeyHash = null
+    record.previousValidUntil = null
   }
 
   const nextSecret = randomBytes(32).toString('hex')
@@ -613,6 +662,7 @@ export const validateApiKey = async (
       scopes: [...record.scopes],
       label: record.label,
     },
+    ...(match.usingPreviousSecret ? { usingPreviousSecret: true } : {}),
   }
 }
 

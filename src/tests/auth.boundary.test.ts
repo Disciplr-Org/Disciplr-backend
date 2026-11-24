@@ -1,4 +1,4 @@
-import { jest, describe, it, expect, beforeEach } from '@jest/globals'
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals'
 import express from 'express'
 import request from 'supertest'
 import { UserRole } from '../types/user.js'
@@ -39,7 +39,11 @@ const mockPrisma = {
     }),
     update: jest.fn(async ({ where, data, select }: { where: { id: string }; data: Partial<PersistedUser>; select?: Record<string, boolean> }) => {
       const existing = mockUsers.get(where.id)
-      if (!existing) throw new Error('User not found')
+      if (!existing) {
+        const error = new Error('User not found')
+        ;(error as any).code = 'P2025'
+        throw error
+      }
       const updated: PersistedUser = { ...existing, ...data }
       mockUsers.set(where.id, updated)
       return cloneSelectedUser(updated, select)
@@ -110,6 +114,8 @@ const buildApp = () => {
 const ADMIN_ID = '99999999-9999-4999-9999-999999999999'
 const TARGET_ID = '22222222-2222-4222-8222-222222222222'
 
+const originalMockLoginEnv = process.env.ENABLE_MOCK_LOGIN
+
 beforeEach(() => {
   mockUsers.clear()
   mockUsers.set(ADMIN_ID, {
@@ -129,9 +135,18 @@ beforeEach(() => {
   process.env.NODE_ENV = 'test'
 })
 
+afterEach(() => {
+  if (originalMockLoginEnv !== undefined) {
+    process.env.ENABLE_MOCK_LOGIN = originalMockLoginEnv
+  } else {
+    delete process.env.ENABLE_MOCK_LOGIN
+  }
+})
+
 describe('mock userId-only login boundary', () => {
   it('is disabled in production', async () => {
     process.env.NODE_ENV = 'production'
+    process.env.ENABLE_MOCK_LOGIN = 'true'
     const app = buildApp()
     const res = await request(app)
       .post('/api/auth/login')
@@ -140,8 +155,8 @@ describe('mock userId-only login boundary', () => {
     expect(res.body.error.code).toBe('FORBIDDEN')
   })
 
-  // TODO(drips-wave): re-enable — expects 400 but route now returns 403 (mock login boundary changed)
-  it.skip('is rejected for malformed userId in non-production', async () => {
+  it('is rejected for malformed userId in non-production', async () => {
+    process.env.ENABLE_MOCK_LOGIN = 'true'
     const app = buildApp()
     const res = await request(app)
       .post('/api/auth/login')
@@ -150,8 +165,8 @@ describe('mock userId-only login boundary', () => {
     expect(res.body.error.code).toBe('VALIDATION_ERROR')
   })
 
-  // TODO(drips-wave): re-enable — expects 400 but route now returns 403 (mock login boundary changed)
-  it.skip('is allowed for a valid userId outside production', async () => {
+  it('is allowed for a valid userId outside production', async () => {
+    process.env.ENABLE_MOCK_LOGIN = 'true'
     const app = buildApp()
     const res = await request(app)
       .post('/api/auth/login')
@@ -164,6 +179,16 @@ describe('mock userId-only login boundary', () => {
     // A real signed JWT, not the old opaque `mock-token-<id>` string.
     expect(res.body.token).not.toMatch(/^mock-token-/)
     expect(res.body.token.split('.')).toHaveLength(3)
+  })
+
+  it('is disabled when ENABLE_MOCK_LOGIN is unset in non-production', async () => {
+    delete process.env.ENABLE_MOCK_LOGIN
+    const app = buildApp()
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({ userId: TARGET_ID })
+    expect(res.status).toBe(403)
+    expect(res.body.error.code).toBe('FORBIDDEN')
   })
 })
 

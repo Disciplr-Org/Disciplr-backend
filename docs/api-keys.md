@@ -77,17 +77,27 @@ curl "http://localhost:3000/api/api-keys" \
 
 `POST /api/api-keys/:id/rotate`
 
-Replaces the key secret while keeping the same key id and metadata.
+Replaces the key secret while keeping the same key id and metadata. Supports an optional grace window for zero-downtime secret rollover.
 
 ```bash
 curl -X POST "http://localhost:3000/api/api-keys/<api-key-id>/rotate" \
-  -H "x-user-id: user-123"
+  -H "Content-Type: application/json" \
+  -H "x-user-id: user-123" \
+  -d '{
+    "graceSeconds": 300
+  }'
 ```
+
+Request options:
+
+- `graceSeconds` (optional, integer 0–3600, default: 300): Duration in seconds during which the previous key remains valid. Set to `0` to invalidate the old key immediately.
 
 After rotation:
 
-- the old key stops working immediately
-- the new plaintext value is returned once
+- the new plaintext value is returned once in `apiKey`
+- during the grace window, both the new key and the previous key are accepted; requests authenticated via the previous key include `usingPreviousSecret: true` in validation
+- once the grace window expires (or if the key is revoked), the previous key secret is rejected
+- background jobs periodically purge expired previous secrets
 - scopes and ownership stay the same
 
 ### Revoke
