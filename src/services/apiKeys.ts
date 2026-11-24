@@ -45,6 +45,12 @@ interface ApiKeyRepository {
   update(record: ApiKeyRecord): Promise<ApiKeyRecord>
   findByIdForUser(id: string, userId: string): Promise<ApiKeyRecord | null>
   findByHashPrefix(prefix: string): Promise<ApiKeyRecord[]>
+  /**
+   * Null out previous_key_hash and previous_valid_until for all rows whose
+   * previous_valid_until is non-null and before `now`, up to `limit` rows.
+   * Returns the count of rows updated.
+   */
+  clearExpiredPrevious(now: string, limit: number): Promise<number>
   reset(): Promise<void>
 }
 
@@ -179,6 +185,18 @@ const createMemoryRepository = (): ApiKeyRepository => ({
       .filter((record) => getHashPrefix(record.keyHash) === prefix)
       .map(cloneRecord)
   },
+  async clearExpiredPrevious(now, limit) {
+    let count = 0
+    for (const record of memoryApiKeys.values()) {
+      if (count >= limit) break
+      if (record.previousValidUntil && record.previousValidUntil < now) {
+        record.previousKeyHash = null
+        record.previousValidUntil = null
+        count++
+      }
+    }
+    return count
+  },
   async reset() {
     memoryApiKeys.clear()
   },
@@ -292,6 +310,25 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
     )
 
     return result.rows.map(toRecord)
+  },
+  async clearExpiredPrevious(now, limit) {
+    const result = await pool.query<{ count: string }>(
+      `WITH batch AS (
+         SELECT id FROM api_keys
+         WHERE previous_valid_until IS NOT NULL
+           AND previous_valid_until < $1::timestamptz
+         LIMIT $2
+         FOR UPDATE SKIP LOCKED
+       )
+       UPDATE api_keys
+       SET previous_key_hash = NULL,
+           previous_valid_until = NULL
+       FROM batch
+       WHERE api_keys.id = batch.id
+       RETURNING api_keys.id`,
+      [now, limit],
+    )
+    return result.rowCount ?? 0
   },
   async reset() {
     await pool.query('DELETE FROM api_keys')
@@ -581,6 +618,15 @@ export const validateApiKey = async (
 
 export const resetApiKeysTable = async (): Promise<void> => {
   await getRepository().reset()
+}
+
+/**
+ * Null out previous_key_hash and previous_valid_until for rows whose grace
+ * window has expired. This is idempotent: calling it multiple times with the
+ * same `now` value produces the same result. Returns the number of rows cleared.
+ */
+export const cleanupExpiredRotationGrace = async (batchSize = 1000): Promise<number> => {
+  return getRepository().clearExpiredPrevious(utcNow(), batchSize)
 }
 
 export const setApiKeyRepositoryForTests = (repository: ApiKeyRepository | null): void => {

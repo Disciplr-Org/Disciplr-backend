@@ -6,6 +6,14 @@ import { resetMemoryBuckets, normalizeIp, getClientIp } from '../../apilib/rateL
 import { MemoryStore, PgStore } from '../../apilib/store.mjs'
 import { buildVaultPayload, getTestPool, randomStellarAddress } from './helpers/db.mjs'
 
+function restoreEnv(key, val) {
+  if (val === undefined) {
+    delete process.env[key]
+  } else {
+    process.env[key] = val
+  }
+}
+
 beforeEach(async () => {
   resetMemoryBuckets()
   const pool = getTestPool()
@@ -19,6 +27,7 @@ beforeEach(async () => {
 // ── In-Memory Mode Tests ──────────────────────────────────────────────────
 
 test('Memory mode: enforces per-IP write limit and sets RateLimit headers', async () => {
+  resetMemoryBuckets()
   const origMax = process.env.RATE_LIMIT_WRITE_IP_MAX
   const origTrust = process.env.TRUST_PROXY
   process.env.RATE_LIMIT_WRITE_IP_MAX = '3'
@@ -62,12 +71,13 @@ test('Memory mode: enforces per-IP write limit and sets RateLimit headers', asyn
       .send(buildVaultPayload({ name: 'Vault from other IP' }))
     assert.equal(resOther.status, 201)
   } finally {
-    process.env.RATE_LIMIT_WRITE_IP_MAX = origMax
-    process.env.TRUST_PROXY = origTrust
+    restoreEnv('RATE_LIMIT_WRITE_IP_MAX', origMax)
+    restoreEnv('TRUST_PROXY', origTrust)
   }
 })
 
 test('Memory mode: enforces per-address write limit across multiple IPs', async () => {
+  resetMemoryBuckets()
   const origIpMax = process.env.RATE_LIMIT_WRITE_IP_MAX
   const origAddrMax = process.env.RATE_LIMIT_WRITE_ADDR_MAX
   const origTrust = process.env.TRUST_PROXY
@@ -110,13 +120,14 @@ test('Memory mode: enforces per-address write limit across multiple IPs', async 
       .send(buildVaultPayload({ creator: randomStellarAddress(), name: 'Vault New Creator' }))
     assert.equal(resOtherCreator.status, 201)
   } finally {
-    process.env.RATE_LIMIT_WRITE_IP_MAX = origIpMax
-    process.env.RATE_LIMIT_WRITE_ADDR_MAX = origAddrMax
-    process.env.TRUST_PROXY = origTrust
+    restoreEnv('RATE_LIMIT_WRITE_IP_MAX', origIpMax)
+    restoreEnv('RATE_LIMIT_WRITE_ADDR_MAX', origAddrMax)
+    restoreEnv('TRUST_PROXY', origTrust)
   }
 })
 
 test('Memory mode: enforces per-address write limit on verifier address', async () => {
+  resetMemoryBuckets()
   const origIpMax = process.env.RATE_LIMIT_WRITE_IP_MAX
   const origAddrMax = process.env.RATE_LIMIT_WRITE_ADDR_MAX
   const origTrust = process.env.TRUST_PROXY
@@ -146,13 +157,14 @@ test('Memory mode: enforces per-address write limit on verifier address', async 
     assert.equal(resBlocked.headers['ratelimit-limit'], '2')
     assert.equal(resBlocked.headers['ratelimit-remaining'], '0')
   } finally {
-    process.env.RATE_LIMIT_WRITE_IP_MAX = origIpMax
-    process.env.RATE_LIMIT_WRITE_ADDR_MAX = origAddrMax
-    process.env.TRUST_PROXY = origTrust
+    restoreEnv('RATE_LIMIT_WRITE_IP_MAX', origIpMax)
+    restoreEnv('RATE_LIMIT_WRITE_ADDR_MAX', origAddrMax)
+    restoreEnv('TRUST_PROXY', origTrust)
   }
 })
 
 test('Memory mode: enforces read rate limit on GET routes', async () => {
+  resetMemoryBuckets()
   const origReadMax = process.env.RATE_LIMIT_READ_IP_MAX
   const origTrust = process.env.TRUST_PROXY
   process.env.RATE_LIMIT_READ_IP_MAX = '3'
@@ -176,12 +188,13 @@ test('Memory mode: enforces read rate limit on GET routes', async () => {
     assert.equal(resBlocked.headers['ratelimit-remaining'], '0')
     assert.ok(Number(resBlocked.headers['retry-after']) > 0)
   } finally {
-    process.env.RATE_LIMIT_READ_IP_MAX = origReadMax
-    process.env.TRUST_PROXY = origTrust
+    restoreEnv('RATE_LIMIT_READ_IP_MAX', origReadMax)
+    restoreEnv('TRUST_PROXY', origTrust)
   }
 })
 
 test('Exempt routes: /health and /openapi.json are not rate limited and have no RateLimit headers', async () => {
+  resetMemoryBuckets()
   const origReadMax = process.env.RATE_LIMIT_READ_IP_MAX
   const origTrust = process.env.TRUST_PROXY
   process.env.RATE_LIMIT_READ_IP_MAX = '1'
@@ -206,8 +219,8 @@ test('Exempt routes: /health and /openapi.json are not rate limited and have no 
       assert.equal(res.headers['ratelimit-limit'], undefined)
     }
   } finally {
-    process.env.RATE_LIMIT_READ_IP_MAX = origReadMax
-    process.env.TRUST_PROXY = origTrust
+    restoreEnv('RATE_LIMIT_READ_IP_MAX', origReadMax)
+    restoreEnv('TRUST_PROXY', origTrust)
   }
 })
 
@@ -240,7 +253,7 @@ test('Proxy trust matrix: TRUST_PROXY=1 uses right-most hop; TRUST_PROXY=0 ignor
     }
     assert.equal(getClientIp(req3), '10.0.0.99')
   } finally {
-    process.env.TRUST_PROXY = origTrust
+    restoreEnv('TRUST_PROXY', origTrust)
   }
 })
 
@@ -362,8 +375,8 @@ postgresIntegration('Postgres mode: limits are shared across two separate app in
     assert.equal(rows.length, 1)
     assert.equal(Number(rows[0].count), 4)
   } finally {
-    process.env.RATE_LIMIT_WRITE_IP_MAX = origWriteMax
-    process.env.TRUST_PROXY = origTrust
+    restoreEnv('RATE_LIMIT_WRITE_IP_MAX', origWriteMax)
+    restoreEnv('TRUST_PROXY', origTrust)
   }
 })
 
@@ -398,8 +411,8 @@ postgresIntegration('Postgres mode: enforces per-address limit across different 
     assert.equal(resBlocked.headers['ratelimit-limit'], '3')
     assert.equal(resBlocked.headers['ratelimit-remaining'], '0')
   } finally {
-    process.env.RATE_LIMIT_WRITE_IP_MAX = origIpMax
-    process.env.RATE_LIMIT_WRITE_ADDR_MAX = origAddrMax
-    process.env.TRUST_PROXY = origTrust
+    restoreEnv('RATE_LIMIT_WRITE_IP_MAX', origIpMax)
+    restoreEnv('RATE_LIMIT_WRITE_ADDR_MAX', origAddrMax)
+    restoreEnv('TRUST_PROXY', origTrust)
   }
 })

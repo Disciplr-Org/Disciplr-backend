@@ -1,14 +1,14 @@
-import { jest, describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals'
 
-const mockQueryRaw = jest.fn()
+const mockQueryRaw = jest.fn<(...args: any[]) => Promise<any>>()
 
-mock.module('../lib/prisma.js', () => ({
+jest.unstable_mockModule('../lib/prisma.js', () => ({
   prisma: {
     $queryRaw: mockQueryRaw,
   },
 }))
 
-mock.module('../db/index.js', () => ({
+jest.unstable_mockModule('../db/index.js', () => ({
   db: {},
 }))
 
@@ -20,6 +20,8 @@ const {
   EvidenceReferenceValidationError,
 } = await import('../services/evidence.js')
 
+const originalFetch = global.fetch
+
 describe('evidence SSRF guard', () => {
   beforeEach(() => {
     mockQueryRaw.mockReset()
@@ -29,6 +31,8 @@ describe('evidence SSRF guard', () => {
   })
 
   afterEach(() => {
+    jest.useRealTimers()
+    global.fetch = originalFetch
     delete process.env.EVIDENCE_ALLOWLIST
     delete process.env.WEBHOOK_ALLOWED_HOSTS
     jest.restoreAllMocks()
@@ -224,9 +228,9 @@ describe('evidence SSRF guard', () => {
   describe('createEvidenceReference — integrates SSRF validation', () => {
     it('rejects evidence reference with private IP URL', async () => {
       const url = 'http://10.0.0.1/evidence.pdf?Expires=32503680000&signature=abc'
-      expect(() =>
+      await expect(
         createEvidenceReference('verification-1', 'hash-0123456789abcdef0123456789abcdef', url),
-      ).toThrow(EvidenceSsrfBlockedError)
+      ).rejects.toThrow(EvidenceSsrfBlockedError)
     })
 
     it('accepts and persists evidence reference with allowed public URL', async () => {
@@ -260,7 +264,7 @@ describe('evidence SSRF guard', () => {
     it('re-validates URL safety before fetching', async () => {
       const fetchMock = jest.fn<typeof fetch>().mockResolvedValue({
         status: 200,
-        text: jest.fn().mockResolvedValue('evidence content'),
+        text: jest.fn<() => Promise<string>>().mockResolvedValue('evidence content'),
         headers: new Headers(),
       } as unknown as Response)
       global.fetch = fetchMock as any
@@ -279,8 +283,15 @@ describe('evidence SSRF guard', () => {
     })
 
     it('blocks private IP in fetchEvidenceContent even if passed directly', async () => {
-      const url = 'http://10.0.0.1/evidence.pdf'
-      expect(() => fetchEvidenceContent(url)).toThrow(EvidenceSsrfBlockedError)
+      const url = 'http://10.0.0.1/evidence.pdf?X-Amz-Signature=super-secret-sig'
+      let thrown: unknown
+      try {
+        await fetchEvidenceContent(url)
+      } catch (err) {
+        thrown = err
+      }
+      expect(thrown).toBeInstanceOf(EvidenceSsrfBlockedError)
+      expect((thrown as Error).message).not.toContain('super-secret-sig')
     })
 
     it('refuses redirects to prevent redirect-based SSRF', async () => {
@@ -290,8 +301,16 @@ describe('evidence SSRF guard', () => {
       } as Response)
       global.fetch = fetchMock as any
 
-      const url = 'https://cdn.example.com/evidence.pdf'
-      await expect(fetchEvidenceContent(url)).rejects.toThrow('redirect refused')
+      const url = 'https://cdn.example.com/evidence.pdf?X-Amz-Signature=super-secret-sig'
+      let thrown: unknown
+      try {
+        await fetchEvidenceContent(url)
+      } catch (err) {
+        thrown = err
+      }
+      expect(thrown).toBeInstanceOf(Error)
+      expect((thrown as Error).message).toContain('redirect refused')
+      expect((thrown as Error).message).not.toContain('super-secret-sig')
 
       // Verify redirect: 'manual' prevents following redirects
       expect(fetchMock).toHaveBeenCalledWith(
@@ -302,24 +321,52 @@ describe('evidence SSRF guard', () => {
       )
     })
 
-    it.skip('times out after configurable timeout', async () => {
+    it('times out after configurable timeout', async () => {
+      jest.useFakeTimers()
+
+      let capturedSignal: AbortSignal | undefined
       const fetchMock = jest.fn<typeof fetch>().mockImplementation(
-        () =>
+        (_input, init) =>
           new Promise(() => {
-            // Never resolve
+            // Never resolve; abort is driven by the AbortSignal passed to fetch
+            capturedSignal = init?.signal ?? undefined
           }),
       )
       global.fetch = fetchMock as any
 
-      const url = 'https://cdn.example.com/evidence.pdf'
-      await expect(fetchEvidenceContent(url, 100)).rejects.toThrow()
+      const url = 'https://cdn.example.com/evidence.pdf?X-Amz-Signature=super-secret-sig&token=secret123'
+      const fetchPromise = fetchEvidenceContent(url, 100)
+      const rejectionAssertion = fetchPromise.then(
+        () => {
+          throw new Error('Expected fetchEvidenceContent to reject on timeout')
+        },
+        (err: unknown) => err,
+      )
+
+      await jest.advanceTimersByTimeAsync(100)
+
+      const thrown = await rejectionAssertion
+      expect(fetchMock).toHaveBeenCalledWith(
+        url,
+        expect.objectContaining({
+          method: 'GET',
+          redirect: 'manual',
+          signal: expect.any(AbortSignal),
+        }),
+      )
+      expect(capturedSignal).toBeDefined()
+      expect(capturedSignal?.aborted).toBe(true)
+      expect(thrown).toBeInstanceOf(Error)
+      expect((thrown as Error).message).toContain('timed out')
+      expect((thrown as Error).message).not.toContain('super-secret-sig')
+      expect((thrown as Error).message).not.toContain('secret123')
     })
 
     it('returns response text on success', async () => {
       const content = 'evidence content here'
       const fetchMock = jest.fn<typeof fetch>().mockResolvedValue({
         status: 200,
-        text: jest.fn().mockResolvedValue(content),
+        text: jest.fn<() => Promise<string>>().mockResolvedValue(content),
         headers: new Headers(),
       } as unknown as Response)
       global.fetch = fetchMock as any
@@ -337,8 +384,16 @@ describe('evidence SSRF guard', () => {
       } as Response)
       global.fetch = fetchMock as any
 
-      const url = 'https://cdn.example.com/evidence.pdf'
-      await expect(fetchEvidenceContent(url)).rejects.toThrow('HTTP 404')
+      const url = 'https://cdn.example.com/evidence.pdf?X-Amz-Signature=super-secret-sig'
+      let thrown: unknown
+      try {
+        await fetchEvidenceContent(url)
+      } catch (err) {
+        thrown = err
+      }
+      expect(thrown).toBeInstanceOf(Error)
+      expect((thrown as Error).message).toContain('HTTP 404')
+      expect((thrown as Error).message).not.toContain('super-secret-sig')
     })
 
     it('throws on 5xx response', async () => {
@@ -348,8 +403,16 @@ describe('evidence SSRF guard', () => {
       } as Response)
       global.fetch = fetchMock as any
 
-      const url = 'https://cdn.example.com/evidence.pdf'
-      await expect(fetchEvidenceContent(url)).rejects.toThrow('HTTP 500')
+      const url = 'https://cdn.example.com/evidence.pdf?X-Amz-Signature=super-secret-sig'
+      let thrown: unknown
+      try {
+        await fetchEvidenceContent(url)
+      } catch (err) {
+        thrown = err
+      }
+      expect(thrown).toBeInstanceOf(Error)
+      expect((thrown as Error).message).toContain('HTTP 500')
+      expect((thrown as Error).message).not.toContain('super-secret-sig')
     })
   })
 
@@ -377,15 +440,15 @@ describe('evidence SSRF guard', () => {
       )
     })
 
-    it('distinguishes SSRF errors from validation errors', () => {
+    it('distinguishes SSRF errors from validation errors', async () => {
       // SSRF error
       const ssrfUrl = 'http://10.0.0.1/evidence.pdf?Expires=32503680000'
       expect(() => validateSignedObjectStorageUrl(ssrfUrl)).toThrow(EvidenceSsrfBlockedError)
 
       // Validation error (bad hash format)
-      expect(() => createEvidenceReference('v1', 'invalid-hash', 'https://example.com')).toThrow(
-        EvidenceReferenceValidationError,
-      )
+      await expect(
+        createEvidenceReference('v1', 'invalid-hash', 'https://example.com'),
+      ).rejects.toThrow(EvidenceReferenceValidationError)
     })
   })
 

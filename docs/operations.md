@@ -6,6 +6,59 @@ This document describes how to manage the Disciplr-backend service in production
 
 The disaster-recovery runbook lives in [runbooks/disaster-recovery.md](runbooks/disaster-recovery.md) and covers backup cadence, restore steps, Horizon replay guidance, secret/key recovery, and the quarterly restore-drill checklist.
 
+## Container image
+
+The production image is built from the two-stage [Dockerfile](../Dockerfile). The
+runner stage contains the compiled `dist/` output plus the files needed to run
+migrations and the app itself:
+
+- `knexfile.cjs` and `db/migrations/` — so `npm run migrate:*` works inside the
+  container (`knex` is a production dependency for this reason).
+- `shared/vaultMachine.mjs` — imported at runtime by `dist/services/vaultTransitions.js`.
+- `prisma/schema.prisma` and the generated Prisma client.
+
+The container still runs as the unprivileged `node` user, and defines a
+`HEALTHCHECK` against `http://localhost:${PORT}/api/health` (the compose file
+defines its own equivalent probe).
+
+### Running migrations from the image
+
+Run migrations as a one-off container before rolling out a new image, using the
+same `DATABASE_URL` the app will use:
+
+```bash
+docker build -t disciplr-backend .
+docker run --rm \
+  -e DATABASE_URL="postgres://user:pass@host:5432/disciplr" \
+  disciplr-backend npm run migrate:latest
+```
+
+Check what is applied at any time with:
+
+```bash
+# Inside the built image
+docker run --rm \
+  -e DATABASE_URL="postgres://user:pass@host:5432/disciplr" \
+  disciplr-backend npm run migrate:status
+
+# Directly from a container that is already running
+docker exec -e DATABASE_URL="postgres://user:pass@host:5432/disciplr" \
+  <container> npm run migrate:status
+```
+
+### Health status
+
+The image-level probe calls `GET /api/health` every 30s (5s timeout, 3 retries,
+15s start period). Inspect it with:
+
+```bash
+docker inspect --format '{{.State.Health.Status}}' <container>
+```
+
+`healthy` means the API answered the health endpoint; `unhealthy` usually means
+the process exited during startup (check `docker logs`, most often a missing
+required environment variable).
+
 ## Graceful Shutdown
 
 Disciplr-backend implements a graceful shutdown procedure to ensure that no data is lost and all resources are cleaned up correctly.
@@ -382,3 +435,4 @@ curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
 |---|---|
 | Horizon listener stalls; slash backlog builds | [horizon-stall.md](runbooks/horizon-stall.md) |
 | Background jobs dead-letter or the queue backs up | [jobs-dead-letters.md](runbooks/jobs-dead-letters.md) |
+| Webhook deliveries dead-letter or circuit breaker trips | [webhook-dead-letters.md](runbooks/webhook-dead-letters.md) |
