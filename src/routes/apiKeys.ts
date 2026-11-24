@@ -35,6 +35,10 @@ const orgIdParamSchema = z.object({
   orgId: z.string().trim().uuid('orgId must be a UUID.'),
 })
 
+const rotateApiKeyBodySchema = z.object({
+  graceSeconds: z.number().int().min(0).max(3600).optional(),
+})
+
 
 const parsePagination = (query: Record<string, unknown>): { limit: number; offset: number } => {
   const rawLimit = typeof query.limit === 'string' ? query.limit : undefined
@@ -49,7 +53,7 @@ apiKeysRouter.get('/', async (req, res) => {
   const { limit, offset } = parsePagination(req.query)
   // NOTE: The service currently returns all keys. We bound the response size here.
   const allKeys = await listApiKeysForUser(userId)
-  const page = allKeys.slice(offset, offset + limit).map(({ keyHash: _keyHash, ...publicRecord }) => publicRecord)
+  const page = allKeys.slice(offset, offset + limit).map(({ keyHash: _keyHash, previousKeyHash: _prevHash, ...publicRecord }) => publicRecord)
   res.json({
     apiKeys: page,
     pagination: { limit, offset, total: allKeys.length },
@@ -95,7 +99,7 @@ apiKeysRouter.post('/', apiKeysJson, apiKeyRateLimiter, async (req, res, next) =
     scopes,
   })
 
-  const { keyHash: _keyHash, ...publicRecord } = record
+  const { keyHash: _keyHash, previousKeyHash: _prevHash, ...publicRecord } = record
   res.status(201).json({
     apiKey,
     apiKeyMeta: publicRecord,
@@ -110,9 +114,18 @@ apiKeysRouter.post('/:id/rotate', apiKeysJson, apiKeyRateLimiter, async (req, re
     return
   }
 
+  const bodyResult = rotateApiKeyBodySchema.safeParse(req.body ?? {})
+  if (!bodyResult.success) {
+    res.status(400).json(formatValidationError(bodyResult.error))
+    return
+  }
+
+  const { graceSeconds } = bodyResult.data
+
   const rotated = await rotateApiKey({
     apiKeyId: paramsResult.data.id,
     userId,
+    graceSeconds,
   })
 
   if (!rotated) {
@@ -125,10 +138,15 @@ apiKeysRouter.post('/:id/rotate', apiKeysJson, apiKeyRateLimiter, async (req, re
     action: 'api_key.rotated',
     target_type: 'api_key',
     target_id: rotated.record.id,
-    metadata: { label: rotated.record.label, scopes: rotated.record.scopes },
+    metadata: {
+      label: rotated.record.label,
+      scopes: rotated.record.scopes,
+      graceSeconds: graceSeconds ?? 300,
+      previousValidUntil: rotated.record.previousValidUntil,
+    },
   }).catch((err) => console.error('Failed to write audit log:', err))
 
-  const { keyHash: _keyHash, ...publicRecord } = rotated.record
+  const { keyHash: _keyHash, previousKeyHash: _prevHash, ...publicRecord } = rotated.record
   res.status(200).json({
     apiKey: rotated.apiKey,
     apiKeyMeta: publicRecord,
@@ -158,7 +176,7 @@ apiKeysRouter.post('/:id/revoke', apiKeyRateLimiter, requireStepUp(), async (req
     metadata: { label: record.label, scopes: record.scopes },
   }).catch((err) => console.error('Failed to write audit log:', err))
 
-  const { keyHash: _keyHash, ...publicRecord } = record
+  const { keyHash: _keyHash, previousKeyHash: _prevHash, ...publicRecord } = record
   res.json({ apiKeyMeta: publicRecord })
 })
 
