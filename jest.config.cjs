@@ -89,7 +89,6 @@ module.exports = {
     // Remaining legacy suites currently target removed routes, old response contracts,
     // or Vitest-only mocks. Keep the blocking Jest run focused on the suites
     // that match the shipped application contract.
-    "<rootDir>/src/tests/admin.dualControl.test.ts",
     "<rootDir>/src/tests/csrf.protection.test.ts",
     "<rootDir>/src/tests/auth.rateLimiter.test.ts",
   ],
