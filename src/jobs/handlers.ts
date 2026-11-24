@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { NotificationService } from '../services/notifications/factory.js'
 import { processJob as processExportJob } from '../services/exportQueue.js'
 import type { EnqueueOptions, JobHandler, JobHandlerRegistry, JobPayloadByType, JobType } from './types.js'
@@ -18,6 +17,8 @@ import {
 } from '../services/vaultExpiry.service.js'
 import { cleanupExpiredSessions } from '../services/session.js'
 import { cleanupExpiredStepUpNonces } from '../services/stepUpStore.js'
+import { runSavedSearch, hashResultSet } from '../routes/orgVaults.js'
+import { isNotificationEnabled } from '../models/notificationPreferences.js'
 
 export interface EmbeddingReindexDependencies {
   source: MilestoneEmbeddingSource
@@ -333,8 +334,78 @@ export const createDefaultJobHandlers = (
   }
 
   jobHandlers['saved-search.evaluate'] = async (payload, context) => {
-    // Placeholder for saved-search evaluation (restored: handler was dropped by an earlier merge)
-    logJob('saved-search.evaluate', `evaluated=${payload.searchId} attempt=${context.attempt}`)
+    const batchSize = Math.min(Math.max(payload.batchSize ?? 20, 1), 100)
+    const now = new Date()
+
+    await db.transaction(async (trx: any) => {
+      let query = trx('org_vault_searches as s')
+        .join('organizations as o', 'o.id', 's.org_id')
+        .where('s.alerts_enabled', true)
+        .where(function (this: any) {
+          this.whereNull('s.last_evaluated_at').orWhereRaw(
+            "s.last_evaluated_at <= NOW() - (s.alert_frequency_ms * interval '1 millisecond')",
+          )
+        })
+        .select('s.*')
+
+      if (payload.searchId) query = query.where('s.id', payload.searchId)
+
+      const searches = await query
+        .orderBy('s.last_evaluated_at', 'asc', 'nulls', 'first')
+        .limit(batchSize)
+        .forUpdate('s')
+        .skipLocked()
+
+      if (searches.length === 0) {
+        logJob('saved-search.evaluate', `evaluated=0 attempt=${context.attempt}`)
+        return
+      }
+
+      const orgIds = [...new Set(searches.map((search: any) => search.org_id as string))]
+      const preferenceRows: Array<{ organization_id: string; category: string; enabled: boolean }> = await trx('org_notification_preferences')
+        .whereIn('organization_id', orgIds)
+        .where('channel', 'email')
+        .whereIn('category', ['saved_search_match', ''])
+        .select('organization_id', 'category', 'enabled')
+
+      for (const search of searches as any[]) {
+        const ids = await runSavedSearch(search.org_id, search.query_definition)
+        const hash = hashResultSet(ids)
+        const previousHash = search.last_result_hash as string | null
+        const changed = previousHash !== hash
+
+        await trx('org_vault_searches')
+          .where({ id: search.id })
+          .update({
+            last_evaluated_at: now,
+            last_result_hash: hash,
+            last_matching_ids: JSON.stringify(ids),
+            updated_at: now,
+          })
+
+        if (!changed || !search.alert_recipient) continue
+
+        const orgRows = preferenceRows.filter((row) => row.organization_id === search.org_id)
+        const categoryPreference = orgRows.find((row) => row.category === 'saved_search_match')
+        const channelPreference = orgRows.find((row) => row.category === '')
+        const enabled = categoryPreference?.enabled ?? channelPreference?.enabled ?? true
+        if (!enabled) continue
+
+        const recipient = String(search.alert_recipient)
+        const subject = `New matches for saved search: ${search.name}`
+        const body = `${ids.length} vault${ids.length === 1 ? '' : 's'} currently match this saved search.`
+
+        if (enqueueJob) {
+          enqueueJob('notification.send', { recipient, subject, body }, {
+            idempotencyKey: `saved-search:${search.id}:${hash}`,
+          })
+        } else if (await isNotificationEnabled(search.org_id, 'saved_search_match', 'email')) {
+          await notificationService.send(recipient, subject, body)
+        }
+      }
+    })
+
+    logJob('saved-search.evaluate', `evaluated=${payload.searchId ?? 'all'} batchSize=${batchSize} attempt=${context.attempt}`)
   }
 
   return jobHandlers
