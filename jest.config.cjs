@@ -73,23 +73,6 @@ module.exports = {
     "<rootDir>/apilib/__tests__/log.test.mjs",
     "<rootDir>/api/__tests__/vaults.create.test.mjs",
     "<rootDir>/apilib/__tests__/validation.test.mjs",
-    // vitest (imports describe/it/expect/vi from 'vitest', which collides
-    // with Jest's own globals/expect instance when loaded in the same
-    // worker — "Cannot redefine property: Symbol($$jest-matchers-object)")
-    "<rootDir>/src/tests/webhookVerify.test.ts",
-    // Remaining job suites written against an API this codebase does not expose: they
-    // import `Queue`/`createJobsRouter` and a `../audit` module that do not
-    // exist here, and rely on a custom matcher (`rejectsToThrow()`) that no
-    // runner provides. `handlers.test.ts` is not even syntactically
-    // valid TypeScript (`jest.mockd`, `queue.enqueue.mockRejectedObject(assign(...)`).
-    // They fail before a single assertion executes, so they are excluded rather
-    // than rewritten against the real modules; porting them is tracked
-    // separately, like the other suites above.
-    // Remaining legacy suites currently target removed routes, old response contracts,
-    // or Vitest-only mocks. Keep the blocking Jest run focused on the suites
-    // that match the shipped application contract.
-    "<rootDir>/src/tests/csrf.protection.test.ts",
-    "<rootDir>/src/tests/auth.rateLimiter.test.ts",
   ],
   moduleDirectories: ["node_modules", "<rootDir>/node_modules"],
   clearMocks: true,
