@@ -1,37 +1,26 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { webhookVerify } from '../middleware/webhookVerify.js'
-import express, { Request, Response, NextFunction } from 'express'
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals'
+import { webhookVerify, confirmedNonces, pendingNonces } from '../middleware/webhookVerify.js'
+import express, { type Request, type Response } from 'express'
 import request from 'supertest'
-import crypto from 'crypto'
-import { _resetEnvForTesting, getEnv } from '../config/env.js'
+import * as crypto from 'crypto'
+import { _resetEnvForTesting, initEnv } from '../config/env.js'
 
 describe('webhookVerify', () => {
   let app: express.Application
-  let testEnv: Record<string, string>
 
   beforeEach(() => {
-    testEnv = {
-      ...process.env,
+    _resetEnvForTesting()
+    initEnv({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/postgres',
+      DOWNLOAD_SECRET: 'test-download-secret-at-least-16-chars',
       WEBHOOK_INBOUND_SECRET: 'test-secret',
-      WEBHOOK_INBOUND_SKEW_MS: '300000', // 5 minutes
-    }
-    
-    vi.stubEnv('WEBHOOK_INBOUND_SECRET', 'test-secret')
-    vi.stubEnv('WEBHOOK_INBOUND_SKEW_MS', '300000')
-
-    // Since getEnv relies on initEnv, we'll mock getEnv for this test file
-    vi.mock('../config/index.js', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('../config/index.js')>()
-      return {
-        ...actual,
-        getEnv: () => ({
-          ...actual.getEnv(),
-          WEBHOOK_INBOUND_SECRET: 'test-secret',
-          WEBHOOK_INBOUND_SKEW_MS: 300000,
-          MAX_JSON_BODY_SIZE: '500kb',
-        }),
-      }
+      WEBHOOK_INBOUND_SKEW_MS: '300000',
+      WEBHOOK_INBOUND_MAX_BODY_BYTES: '500000',
+      WEBHOOK_REPLAY_CACHE_SIZE: '10000',
     })
+    confirmedNonces.clear()
+    pendingNonces.clear()
 
     app = express()
     app.post('/webhook', webhookVerify, (req: Request, res: Response) => {
@@ -40,8 +29,7 @@ describe('webhookVerify', () => {
   })
 
   afterEach(() => {
-    vi.restoreAllMocks()
-    vi.unstubAllEnvs()
+    jest.restoreAllMocks()
   })
 
   const generateSignature = (secret: string, timestamp: number, nonce: string, body: string) => {
@@ -221,10 +209,8 @@ describe('webhookVerify', () => {
   })
 
   it('does not consume the nonce when JSON parsing fails', async () => {
-    // After a 400 on bad JSON the same nonce must not be "used up" –
-    // a follow-up request with a valid JSON body and the same nonce should
-    // still be rejected as a replay (because the nonce+timestamp combo is
-    // reserved/confirmed), but a request with a *different* nonce works fine.
+    // Invalid JSON releases the nonce reservation. A corrected retry with the
+    // same nonce is permitted by the current implementation.
     const timestamp = Date.now()
     const nonce = 'nonce-badjson-reuse-130'
     const badBody = 'not json at all'
@@ -240,16 +226,14 @@ describe('webhookVerify', () => {
 
     expect(badResponse.status).toBe(400)
 
-    // A fresh request with a different nonce and valid JSON must go through
-    const freshNonce = 'nonce-badjson-fresh-131'
     const goodBody = JSON.stringify({ test: 'fresh' })
-    const goodSig = generateSignature('test-secret', timestamp, freshNonce, goodBody)
+    const goodSig = generateSignature('test-secret', timestamp, nonce, goodBody)
 
     const goodResponse = await request(app)
       .post('/webhook')
       .set('x-webhook-signature', goodSig)
       .set('x-webhook-timestamp', timestamp.toString())
-      .set('x-webhook-nonce', freshNonce)
+      .set('x-webhook-nonce', nonce)
       .set('Content-Type', 'application/json')
       .send(goodBody)
 
