@@ -8,6 +8,7 @@ import { createStoreProvider } from './store-bootstrap.mjs'
 import { seed } from './demo-data.mjs'
 import { wrapPoolForTiming } from './log.mjs'
 import { parseAmount, formatAmount } from './amount.mjs'
+import { idempotencyTtlMs } from './idempotency.mjs'
 const iso = (d) => new Date(d).toISOString()
 const hex = (n) => randomBytes(n).toString('hex')
 
@@ -40,7 +41,7 @@ function applyTransition(current, result) {
 
 export class MemoryStore {
   kind = 'memory'
-  constructor() { const s = seed(); this.vaults = s.vaults; this.activity = s.activity; this.transitionLocks = new Map(); this.evidence = [] }
+  constructor() { const s = seed(); this.vaults = s.vaults; this.activity = s.activity; this.transitionLocks = new Map(); this.evidence = []; this.idempotency = new Map() }
   async init() {}
   async listVaults({ creator, status, limit, cursor } = {}) {
     let filtered = this.vaults.filter((v) => (!creator || v.creator === creator) && (!status || v.status === status))
@@ -171,6 +172,63 @@ export class MemoryStore {
   }
   async getActivityByHash(hash) { return this.activity.find((a) => a.hash === hash) || null }
   async saveActivity(a) { return a }
+
+  // Idempotency-Key reservations. Rows are keyed by scope + key so the same
+  // client key can be used independently on each route. The reserve critical
+  // section is synchronous (no awaits), so concurrent callers in this process
+  // cannot both claim one reservation.
+  _idempotencyMapKey(scope, key) { return `${scope}::${key}` }
+  async reserveIdempotency({ scope, key, requestHash, now = new Date(), ttlMs = idempotencyTtlMs() }) {
+    const nowMs = new Date(now).getTime()
+    const mapKey = this._idempotencyMapKey(scope, key)
+    const existing = this.idempotency.get(mapKey)
+    if (existing && existing.expiresAt > nowMs) {
+      if (existing.requestHash !== requestHash) return { outcome: 'conflict' }
+      if (existing.state === 'completed') return { outcome: 'replayed', status: existing.status, body: existing.body }
+      return { outcome: 'in_progress' }
+    }
+    this.idempotency.set(mapKey, {
+      scope,
+      key,
+      requestHash,
+      state: 'pending',
+      status: null,
+      body: null,
+      createdAt: nowMs,
+      updatedAt: nowMs,
+      expiresAt: nowMs + ttlMs,
+    })
+    // Opportunistic cleanup of expired reservations (see cleanupIdempotency).
+    if (Math.random() < 0.05) this.cleanupIdempotency({ now }).catch(() => {})
+    return { outcome: 'claimed' }
+  }
+  async completeIdempotency({ scope, key, status, body, now = new Date() }) {
+    const entry = this.idempotency.get(this._idempotencyMapKey(scope, key))
+    if (!entry || entry.state !== 'pending') return false
+    entry.state = 'completed'
+    entry.status = status
+    entry.body = body
+    entry.updatedAt = new Date(now).getTime()
+    return true
+  }
+  async releaseIdempotency({ scope, key }) {
+    const mapKey = this._idempotencyMapKey(scope, key)
+    const entry = this.idempotency.get(mapKey)
+    if (!entry || entry.state !== 'pending') return false
+    this.idempotency.delete(mapKey)
+    return true
+  }
+  async cleanupIdempotency({ now = new Date() } = {}) {
+    const nowMs = new Date(now).getTime()
+    let removed = 0
+    for (const [mapKey, entry] of this.idempotency) {
+      if (entry.expiresAt <= nowMs) {
+        this.idempotency.delete(mapKey)
+        removed++
+      }
+    }
+    return removed
+  }
   async expireOverdueVaults({ now = new Date(), batchSize = 100 } = {}) {
     const nowDate = new Date(now)
     const overdue = this.vaults
@@ -401,6 +459,84 @@ export class PgStore {
   async saveActivity(a) {
     await this.pool.query('UPDATE activity_log SET status=$2, memo=$3, ledger=$4 WHERE id=$1', [a.id, a.status, a.memo, a.ledger ?? null])
     return a
+  }
+
+  // Idempotency-Key reservations (table idempotency_reservations, primary key
+  // (scope, idempotency_key)). The insert-or-read dance below is atomic per
+  // statement: only one concurrent request can win the INSERT, and everyone
+  // else observes either the pending row (409) or the stored response (replay).
+  async reserveIdempotency({ scope, key, requestHash, now = new Date(), ttlMs = idempotencyTtlMs() }) {
+    const nowDate = new Date(now)
+    const nowIso = iso(nowDate)
+    const expiresAt = iso(new Date(nowDate.getTime() + ttlMs))
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { rowCount } = await this.pool.query(
+        `INSERT INTO idempotency_reservations
+           (scope, idempotency_key, request_hash, state, expires_at, created_at, updated_at)
+         VALUES ($1, $2, $3, 'pending', $4, $5, $5)
+         ON CONFLICT (scope, idempotency_key) DO NOTHING`,
+        [scope, key, requestHash, expiresAt, nowIso],
+      )
+      if (rowCount === 1) {
+        // Opportunistic cleanup of expired reservations (see cleanupIdempotency).
+        if (Math.random() < 0.05) {
+          this.pool.query('DELETE FROM idempotency_reservations WHERE expires_at <= $1', [nowIso]).catch(() => {})
+        }
+        return { outcome: 'claimed' }
+      }
+      const { rows } = await this.pool.query(
+        `SELECT state, request_hash, response_status, response_body, expires_at
+           FROM idempotency_reservations
+          WHERE scope = $1 AND idempotency_key = $2`,
+        [scope, key],
+      )
+      const row = rows[0]
+      // The row vanished between insert and read (cleanup/release); retry.
+      if (!row) continue
+      // Expired reservations are ignored: the key is free again for any payload.
+      if (new Date(row.expires_at).getTime() <= nowDate.getTime()) {
+        const { rowCount: reclaimed } = await this.pool.query(
+          `UPDATE idempotency_reservations
+              SET state = 'pending', request_hash = $3, response_status = NULL, response_body = NULL,
+                  completed_at = NULL, expires_at = $4, updated_at = $5
+            WHERE scope = $1 AND idempotency_key = $2 AND expires_at <= $5`,
+          [scope, key, requestHash, expiresAt, nowIso],
+        )
+        if (reclaimed === 1) return { outcome: 'claimed' }
+        continue // a concurrent request reclaimed it first; re-read
+      }
+      if (row.request_hash !== requestHash) return { outcome: 'conflict' }
+      if (row.state === 'completed') {
+        return { outcome: 'replayed', status: row.response_status, body: row.response_body }
+      }
+      return { outcome: 'in_progress' }
+    }
+    throw new Error('Idempotency reservation could not be resolved')
+  }
+  async completeIdempotency({ scope, key, status, body, now = new Date() }) {
+    const { rowCount } = await this.pool.query(
+      `UPDATE idempotency_reservations
+          SET state = 'completed', response_status = $3, response_body = $4,
+              completed_at = $5, updated_at = $5
+        WHERE scope = $1 AND idempotency_key = $2 AND state = 'pending'`,
+      [scope, key, status, body, iso(now)],
+    )
+    return rowCount === 1
+  }
+  async releaseIdempotency({ scope, key }) {
+    const { rowCount } = await this.pool.query(
+      `DELETE FROM idempotency_reservations
+        WHERE scope = $1 AND idempotency_key = $2 AND state = 'pending'`,
+      [scope, key],
+    )
+    return rowCount === 1
+  }
+  async cleanupIdempotency({ now = new Date() } = {}) {
+    const { rowCount } = await this.pool.query(
+      'DELETE FROM idempotency_reservations WHERE expires_at <= $1',
+      [iso(now)],
+    )
+    return rowCount
   }
   async listActivity({ vaultId, limit, cursor } = {}) {
     const w = []; const p = []

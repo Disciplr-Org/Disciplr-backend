@@ -31,6 +31,18 @@ const MAX_LIST_LIMIT = 100
 
 const apiKeysJson = requireJson({ maxBytes: 16 * 1024 })
 
+const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000
+
+  expiresAt: z
+    .string()
+    .datetime({ message: 'expiresAt must be a valid ISO 8601 timestamp.' })
+    .refine((v) => new Date(v) > new Date(), {
+      message: 'expiresAt must be in the future.',
+    })
+    .refine((v) => new Date(v).getTime() - Date.now() <= ONE_YEAR_MS, {
+      message: 'expiresAt must be at most 1 year from now.',
+    })
+    .optional(),
 const orgIdParamSchema = z.object({
   orgId: z.string().trim().uuid('orgId must be a UUID.'),
 })
@@ -68,7 +80,7 @@ apiKeysRouter.post('/', apiKeysJson, apiKeyRateLimiter, async (req, res, next) =
     return
   }
 
-  const { label, scopes, orgId } = parseResult.data
+  const { label, scopes, orgId, expiresAt } = parseResult.data
 
   // Server-side ownership verification: never trust a client-supplied orgId.
   // The key may only be bound to an org the caller actually belongs to.
@@ -97,6 +109,7 @@ apiKeysRouter.post('/', apiKeysJson, apiKeyRateLimiter, async (req, res, next) =
     orgId,
     label,
     scopes,
+    expiresAt: expiresAt ?? null,
   })
 
   const { keyHash: _keyHash, previousKeyHash: _prevHash, ...publicRecord } = record
@@ -222,6 +235,7 @@ export const getApiKeyUsageHandler = async (req: Request, res: Response, next: N
     scopes: publicRecord.scopes,
     createdAt: publicRecord.createdAt,
     revokedAt: publicRecord.revokedAt,
+    expiresAt: publicRecord.expiresAt ?? null,
     lastUsedAt: publicRecord.lastUsedAt ?? null,
     requestCount: publicRecord.requestCount ?? 0,
     lastIp: publicRecord.lastIp ?? null,

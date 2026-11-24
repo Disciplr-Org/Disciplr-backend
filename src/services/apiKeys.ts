@@ -11,6 +11,7 @@ interface CreateApiKeyInput {
   orgId?: string
   label: string
   scopes: ApiScope[]
+  expiresAt?: string | null
 }
 
 interface RotateApiKeyInput {
@@ -32,6 +33,7 @@ interface ApiKeyRow {
   scopes: string[] | string | null
   created_at: string | Date
   revoked_at: string | Date | null
+  expires_at?: string | Date | null
   last_used_at?: string | Date | null
   request_count?: number | null
   last_ip?: string | null
@@ -136,6 +138,7 @@ const toRecord = (row: ApiKeyRow): ApiKeyRecord => ({
   scopes: normalizeScopeColumn(row.scopes),
   createdAt: asIsoString(row.created_at)!,
   revokedAt: asIsoString(row.revoked_at),
+  expiresAt: asIsoString(row.expires_at),
   lastUsedAt: asIsoString(row.last_used_at),
   requestCount: row.request_count ?? 0,
   lastIp: row.last_ip ?? null,
@@ -146,6 +149,7 @@ const toRecord = (row: ApiKeyRow): ApiKeyRecord => ({
 const cloneRecord = (record: ApiKeyRecord): ApiKeyRecord => ({
   ...record,
   scopes: [...record.scopes],
+  expiresAt: record.expiresAt ?? null,
   lastUsedAt: record.lastUsedAt,
   requestCount: record.requestCount,
   lastIp: record.lastIp,
@@ -224,6 +228,7 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
         record.scopes,
         record.createdAt,
         record.revokedAt,
+        record.expiresAt ?? null,
         record.lastUsedAt ?? null,
         record.requestCount ?? 0,
         record.lastIp ?? null,
@@ -275,8 +280,10 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
            scopes = $6::text[],
            created_at = $7::timestamptz,
            revoked_at = $8::timestamptz,
-           last_used_at = $9::timestamptz,
-           request_count = $10,
+           expires_at = $9::timestamptz,
+           last_used_at = $10::timestamptz,
+           request_count = $11,
+           last_ip = $12
            last_ip = $11,
            previous_key_hash = $12,
            previous_valid_until = $13::timestamptz
@@ -291,6 +298,7 @@ const createPgRepository = (pool: Pool): ApiKeyRepository => ({
         record.scopes,
         record.createdAt,
         record.revokedAt,
+        record.expiresAt ?? null,
         record.lastUsedAt ?? null,
         record.requestCount ?? 0,
         record.lastIp ?? null,
@@ -371,6 +379,7 @@ const createApiKeyRecord = async (input: CreateApiKeyInput, secret: string): Pro
     scopes: normalizeScopes(input.scopes),
     createdAt: utcNow(),
     revokedAt: null,
+    expiresAt: input.expiresAt ?? null,
   }
 }
 
@@ -630,6 +639,10 @@ export const validateApiKey = async (
 
   if (record.revokedAt) {
     return { valid: false, reason: 'revoked' }
+  }
+
+  if (record.expiresAt && new Date(record.expiresAt) <= new Date(utcNow())) {
+    return { valid: false, reason: 'expired' }
   }
 
   const normalizedRequiredScopes = normalizeScopes(requiredScopes)

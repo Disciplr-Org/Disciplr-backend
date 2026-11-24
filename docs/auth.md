@@ -45,6 +45,7 @@ Endpoint: `POST /api/auth/register`
 - Role changes are persisted to the database and later read from the same `users` row.
 - Audit log metadata excludes email addresses and other request-body PII.
 - High-impact admin actions may require a fresh step-up assertion before proceeding.
+- Step-up challenge nonces are stored in PostgreSQL and consumed atomically, so they remain single-use across service instances. The `sessions.cleanup` job also removes expired challenge nonces.
 
 ## Breached Passwords & Refresh Reuse Protections
 
