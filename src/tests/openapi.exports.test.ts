@@ -390,6 +390,42 @@ describe('OpenAPI credential operations', () => {
     })
   })
 
+  describe('OpenAPI milestone and verification routes', () => {
+    it('registers milestone lifecycle and verification operations with authentication', () => {
+      const { paths } = generateOpenApiSpec()
+      const operations = [
+        [paths?.['/api/vaults/{vaultId}/milestones']?.post, '201'],
+        [paths?.['/api/vaults/{vaultId}/milestones']?.get, '200'],
+        [paths?.['/api/vaults/{vaultId}/milestones/{id}/verify']?.patch, '200'],
+        [paths?.['/api/vaults/{vaultId}/milestones/{id}/validate']?.post, '200'],
+        [paths?.['/api/vaults/{vaultId}/milestones/{id}/approve']?.post, '201'],
+        [paths?.['/api/vaults/{vaultId}/milestones/{id}/approval-status']?.get, '200'],
+        [paths?.['/api/verifications']?.post, '201'],
+        [paths?.['/api/verifications']?.get, '200'],
+        [paths?.['/api/verifications/bulk']?.post, '200'],
+      ] as const
+
+      for (const [operation, status] of operations) {
+        expect(operation?.tags).toContain('Milestones')
+        expect(operation?.security).toEqual([{ bearerAuth: [] }])
+        expect(operation?.responses?.[status]).toBeDefined()
+      }
+
+      expect(paths?.['/api/vaults/{vaultId}/milestones']?.post?.parameters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'vaultId', in: 'path', required: true }),
+          expect.objectContaining({ name: 'x-wallet-address', in: 'header', required: true }),
+          expect.objectContaining({ name: 'x-network-id', in: 'header', required: true }),
+        ]),
+      )
+      expect(paths?.['/api/vaults/{vaultId}/milestones/{id}/approve']?.post?.parameters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'id', in: 'path', required: true }),
+        ]),
+      )
+    })
+  })
+
   it('documents token exchange credentials and OAuth error fields', () => {
     const { paths } = generateOpenApiSpec()
     const token = paths?.['/api/oauth/token']?.post

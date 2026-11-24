@@ -11,6 +11,7 @@ import {
   createApiKeySchema,
   oauthTokenRequestSchema,
 } from '../lib/apiCredentialSchemas.js'
+import { milestoneSchema } from '../services/vaultValidation.js'
 
 extendZodWithOpenApi(z)
 
@@ -66,6 +67,11 @@ const ErrorEnvelope = registry.register('ErrorEnvelope', z.object({
   }),
 }))
 
+const jsonResponse = (description: string, schema: z.ZodType) => ({
+  description,
+  content: { 'application/json': { schema } },
+})
+
 const VaultSchema = registry.register(
   'Vault',
   z.object({
@@ -84,12 +90,13 @@ const VaultSchema = registry.register(
 const MilestoneSchema = registry.register(
   'Milestone',
   z.object({
-    id: z.string().uuid(),
+    id: z.string(),
     vaultId: z.string().uuid(),
-    description: z.string(),
-    status: z.enum(['pending', 'verified']),
-    createdAt: z.string().datetime(),
-    verifiedAt: z.string().datetime().optional(),
+    title: z.string(),
+    description: z.string().optional(),
+    status: z.string(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
   })
 )
 
@@ -215,18 +222,141 @@ registry.registerPath({
 })
 
 // Milestones
+const milestonePathParameters = [
+  {
+    name: 'vaultId',
+    in: 'path' as const,
+    required: true,
+    schema: { type: 'string' as const, format: 'uuid' },
+    description: 'Vault identifier',
+  },
+]
+const milestoneIdParameter = {
+  name: 'id',
+  in: 'path' as const,
+  required: true,
+  schema: { type: 'string' as const, pattern: '^ms-[0-9]+-[a-z0-9]+$' },
+  description: 'Milestone identifier',
+}
+const walletIdentityParameters = [
+  {
+    name: 'x-wallet-address',
+    in: 'header' as const,
+    required: true,
+    schema: { type: 'string' as const, pattern: '^0x[a-fA-F0-9]{40}$' },
+  },
+  {
+    name: 'x-network-id',
+    in: 'header' as const,
+    required: true,
+    schema: { type: 'string' as const, enum: ['mainnet', 'testnet', 'devnet'] },
+  },
+]
+const milestoneSecurity = [{ bearerAuth: [] }]
+const MilestoneCreateRequestSchema = registry.register(
+  'MilestoneCreateRequest',
+  milestoneSchema.extend({
+    approvalThreshold: z.number().int().positive().optional(),
+  }),
+)
+const MilestoneRecordSchema = registry.register(
+  'MilestoneRecord',
+  z.object({
+    id: z.string(),
+    vaultId: z.string().uuid(),
+    description: z.string(),
+    verifierId: z.string().nullable().optional(),
+    approvalThreshold: z.number().int().optional(),
+    verified: z.boolean(),
+    verifiedAt: z.string().nullable(),
+    verifiedBy: z.string().nullable(),
+    evidenceHash: z.string().nullable().optional(),
+    createdAt: z.string(),
+    dueDate: z.string().nullable().optional(),
+    title: z.string().optional(),
+    amount: z.string().optional(),
+  }).passthrough(),
+)
+const MilestoneIdempotencySchema = z.object({
+  key: z.string().nullable(),
+  replayed: z.boolean(),
+})
+const MilestoneOperationResponseSchema = z.object({
+  milestone: MilestoneRecordSchema,
+  vaultCompleted: z.boolean(),
+  idempotency: MilestoneIdempotencySchema,
+})
+const MilestoneCreateResponseSchema = MilestoneRecordSchema.extend({
+  idempotency: MilestoneIdempotencySchema,
+})
+const MilestoneEvidenceRequestSchema = registry.register(
+  'MilestoneEvidenceRequest',
+  z.object({
+    evidenceHash: z.string().trim().regex(/^[0-9a-f]{32,128}$/i),
+  }),
+)
+const MilestoneApprovalRequestSchema = registry.register(
+  'MilestoneApprovalRequest',
+  z.object({
+    approvalStatus: z.enum(['approved', 'rejected']),
+  }),
+)
+const MilestoneApprovalProgressSchema = z.object({
+  approved: z.number(),
+  rejected: z.number(),
+  pending: z.number(),
+  required: z.number(),
+  isComplete: z.boolean(),
+  isRejected: z.boolean(),
+  approvalPercentage: z.number(),
+})
+const MilestoneApprovalSchema = z.object({
+  id: z.string(),
+  milestoneId: z.string(),
+  verifierUserId: z.string(),
+  approvalStatus: z.enum(['pending', 'approved', 'rejected']),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+const milestoneError = jsonResponse('Request failed', ErrorEnvelope)
+
+registry.registerPath({
+  method: 'post',
+  path: '/api/vaults/{vaultId}/milestones',
+  operationId: 'createMilestone',
+  summary: 'Create a milestone for a vault',
+  description: 'Requires an authenticated vault owner and a valid wallet identity.',
+  tags: ['Milestones'],
+  security: milestoneSecurity,
+  parameters: [...milestonePathParameters, ...walletIdentityParameters],
+  request: {
+    body: {
+      required: true,
+      content: { 'application/json': { schema: MilestoneCreateRequestSchema } },
+    },
+  },
+  responses: {
+    201: jsonResponse('Milestone created', MilestoneCreateResponseSchema),
+    400: milestoneError,
+    401: milestoneError,
+    403: milestoneError,
+    404: milestoneError,
+    409: milestoneError,
+    500: milestoneError,
+  },
+})
+
 registry.registerPath({
   method: 'get',
   path: '/api/vaults/{vaultId}/milestones',
+  operationId: 'listVaultMilestones',
   summary: 'Get milestones for a vault',
   tags: ['Milestones'],
+  security: milestoneSecurity,
   parameters: [
-    {
-      name: 'vaultId',
-      in: 'path',
-      required: true,
-      schema: { type: 'string' },
-    },
+    ...milestonePathParameters,
+    { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 } },
+    { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } },
   ],
   responses: {
     200: {
@@ -237,6 +367,259 @@ registry.registerPath({
         },
       },
     },
+    400: milestoneError,
+    401: milestoneError,
+    403: milestoneError,
+    404: milestoneError,
+    500: milestoneError,
+  },
+})
+
+registry.registerPath({
+  method: 'patch',
+  path: '/api/vaults/{vaultId}/milestones/{id}/verify',
+  operationId: 'verifyMilestone',
+  summary: 'Verify a milestone',
+  tags: ['Milestones'],
+  security: milestoneSecurity,
+  parameters: [...milestonePathParameters, milestoneIdParameter, ...walletIdentityParameters],
+  responses: {
+    200: jsonResponse('Milestone verified', MilestoneOperationResponseSchema),
+    400: milestoneError,
+    401: milestoneError,
+    403: milestoneError,
+    404: milestoneError,
+    409: milestoneError,
+    500: milestoneError,
+  },
+})
+
+registry.registerPath({
+  method: 'post',
+  path: '/api/vaults/{vaultId}/milestones/{id}/validate',
+  operationId: 'validateMilestone',
+  summary: 'Validate a milestone with evidence',
+  tags: ['Milestones'],
+  security: milestoneSecurity,
+  parameters: [...milestonePathParameters, milestoneIdParameter, ...walletIdentityParameters],
+  request: {
+    body: {
+      required: true,
+      content: { 'application/json': { schema: MilestoneEvidenceRequestSchema } },
+    },
+  },
+  responses: {
+    200: jsonResponse('Milestone validated', MilestoneOperationResponseSchema),
+    400: milestoneError,
+    401: milestoneError,
+    403: milestoneError,
+    404: milestoneError,
+    409: milestoneError,
+    500: milestoneError,
+  },
+})
+
+registry.registerPath({
+  method: 'post',
+  path: '/api/vaults/{vaultId}/milestones/{id}/approve',
+  operationId: 'approveMilestone',
+  summary: 'Record a verifier approval or rejection for a milestone',
+  tags: ['Milestones'],
+  security: milestoneSecurity,
+  parameters: [...milestonePathParameters, milestoneIdParameter, ...walletIdentityParameters],
+  request: {
+    body: {
+      required: true,
+      content: { 'application/json': { schema: MilestoneApprovalRequestSchema } },
+    },
+  },
+  responses: {
+    201: jsonResponse('Milestone approval recorded', z.object({
+      approval: MilestoneApprovalSchema,
+      approvalProgress: MilestoneApprovalProgressSchema,
+      milestone: MilestoneRecordSchema,
+      milestoneCompleted: z.boolean(),
+      vaultCompleted: z.boolean(),
+      idempotency: MilestoneIdempotencySchema,
+    })),
+    400: milestoneError,
+    401: milestoneError,
+    403: milestoneError,
+    404: milestoneError,
+    409: milestoneError,
+    500: milestoneError,
+  },
+})
+
+registry.registerPath({
+  method: 'get',
+  path: '/api/vaults/{vaultId}/milestones/{id}/approval-status',
+  operationId: 'getMilestoneApprovalStatus',
+  summary: 'Get milestone approval status',
+  tags: ['Milestones'],
+  security: milestoneSecurity,
+  parameters: [...milestonePathParameters, milestoneIdParameter],
+  responses: {
+    200: jsonResponse('Milestone and approval progress', z.object({
+      milestone: z.object({
+        id: z.string(),
+        vaultId: z.string().uuid(),
+        description: z.string(),
+        approvalThreshold: z.number(),
+      }),
+      approvalStatus: z.union([
+        MilestoneApprovalProgressSchema,
+        z.object({
+          approvedCount: z.number(),
+          approvalThreshold: z.number(),
+          isApproved: z.boolean(),
+          approvals: z.array(z.unknown()),
+        }),
+      ]),
+    })),
+    400: milestoneError,
+    401: milestoneError,
+    403: milestoneError,
+    404: milestoneError,
+    500: milestoneError,
+  },
+})
+
+const VerificationRequestSchema = registry.register(
+  'VerificationRequest',
+  z.object({
+    targetId: z.string().trim().min(1),
+    result: z.enum(['approved', 'rejected']),
+    disputed: z.boolean().optional(),
+    evidenceHash: z.string().trim().regex(/^[0-9a-f]{32,128}$/i),
+    evidenceReferenceUrl: z.string().trim().url().refine((value) => {
+      const protocol = new URL(value).protocol
+      return protocol === 'http:' || protocol === 'https:'
+    }),
+  }),
+)
+const VerificationRecordSchema = z.object({
+  id: z.string(),
+  verifierUserId: z.string(),
+  targetId: z.string(),
+  result: z.enum(['approved', 'rejected']),
+  evidenceHash: z.string().nullable(),
+  disputed: z.boolean(),
+  timestamp: z.string(),
+})
+const EvidenceReferenceSchema = z.object({
+  id: z.string(),
+  verificationId: z.string(),
+  evidenceHash: z.string(),
+  referenceUrl: z.string(),
+  expiresAt: z.string(),
+  createdAt: z.string(),
+})
+const IdempotencyResultSchema = z.object({
+  key: z.string().nullable(),
+  replayed: z.boolean(),
+})
+const VerificationResponseSchema = z.object({
+  verification: VerificationRecordSchema,
+  evidenceReference: EvidenceReferenceSchema,
+  idempotency: IdempotencyResultSchema.optional(),
+})
+const verificationSecurity = [{ bearerAuth: [] }]
+const verificationError = jsonResponse('Request failed', ErrorEnvelope)
+
+registry.registerPath({
+  method: 'post',
+  path: '/api/verifications',
+  operationId: 'createVerification',
+  summary: 'Record a verification decision',
+  tags: ['Milestones'],
+  security: verificationSecurity,
+  parameters: [{ name: 'Idempotency-Key', in: 'header', schema: { type: 'string', maxLength: 255 } }],
+  request: {
+    body: {
+      required: true,
+      content: { 'application/json': { schema: VerificationRequestSchema } },
+    },
+  },
+  responses: {
+    201: jsonResponse('Verification recorded', VerificationResponseSchema),
+    200: jsonResponse('Idempotent verification replay', VerificationResponseSchema),
+    400: verificationError,
+    401: verificationError,
+    403: verificationError,
+    409: verificationError,
+    422: verificationError,
+    500: verificationError,
+  },
+})
+
+registry.registerPath({
+  method: 'get',
+  path: '/api/verifications',
+  operationId: 'listVerifications',
+  summary: 'List verifications',
+  description: 'Admin-only list using offset pagination. Limit defaults to 100 and is capped at 500.',
+  tags: ['Milestones'],
+  security: verificationSecurity,
+  parameters: [
+    { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
+    { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, default: 0 } },
+  ],
+  responses: {
+    200: jsonResponse('Paginated verification records', z.object({
+      verifications: z.array(VerificationRecordSchema),
+      pagination: z.object({
+        limit: z.number(),
+        offset: z.number(),
+        count: z.number(),
+        hasMore: z.boolean(),
+      }),
+    })),
+    401: verificationError,
+    403: verificationError,
+    500: verificationError,
+  },
+})
+
+const BulkVerificationRequestSchema = registry.register(
+  'BulkVerificationRequest',
+  z.array(VerificationRequestSchema).min(1).max(100),
+)
+const BulkVerificationResultSchema = z.object({
+  targetId: z.string(),
+  success: z.boolean(),
+  error: z.object({ code: z.string(), message: z.string() }).optional(),
+  verification: VerificationRecordSchema.optional(),
+  evidenceReference: EvidenceReferenceSchema.optional(),
+})
+
+registry.registerPath({
+  method: 'post',
+  path: '/api/verifications/bulk',
+  operationId: 'bulkCreateVerifications',
+  summary: 'Record multiple verification decisions',
+  description: 'Accepts between 1 and 100 items and returns per-item results, including partial failures.',
+  tags: ['Milestones'],
+  security: verificationSecurity,
+  request: {
+    body: {
+      required: true,
+      content: { 'application/json': { schema: BulkVerificationRequestSchema } },
+    },
+  },
+  responses: {
+    200: jsonResponse('Bulk verification results', z.object({
+      results: z.array(BulkVerificationResultSchema),
+      summary: z.object({
+        total: z.number(),
+        succeeded: z.number(),
+        failed: z.number(),
+      }),
+    })),
+    400: verificationError,
+    401: verificationError,
+    403: verificationError,
+    500: verificationError,
   },
 })
 
@@ -1994,10 +2377,6 @@ const stepUpError = z.object({
   stepUpRequired: z.literal(true),
 })
 const oauthError = z.object({ error: z.string(), error_description: z.string() })
-const jsonResponse = (description: string, schema: z.ZodType) => ({
-  description,
-  content: { 'application/json': { schema } },
-})
 const unauthorized = jsonResponse('Missing, invalid, or expired bearer token', stringError)
 const invalidRequest = jsonResponse('Request validation failed', validationError)
 const keyNotFound = jsonResponse('API key not found', stringError)

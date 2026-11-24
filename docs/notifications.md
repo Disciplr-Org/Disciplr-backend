@@ -23,8 +23,23 @@ export interface NotificationProvider {
 
 The active provider is selected at boot via the validated `NOTIFICATION_PROVIDER` environment variable and injected through `src/index.ts` → `src/app-bootstrap.ts` → `BackgroundJobSystem`.
 Available providers:
-- `email`: Sends via Email (Stub implementation).
+- `email`: Sends via SMTP when SMTP is configured; otherwise logs the delivery locally.
 - `console`: Logs to console (Default for local development).
+
+### SMTP email configuration
+
+Set the following variables to enable real email delivery with the `email` provider:
+
+| Variable | Description |
+| --- | --- |
+| `SMTP_HOST` | SMTP server hostname. |
+| `SMTP_PORT` | SMTP server port; defaults to `587`. |
+| `SMTP_USER` | SMTP authentication username. |
+| `SMTP_PASS` | SMTP authentication password. Keep this secret out of logs and source control. |
+| `SMTP_FROM` | Sender address used in outgoing messages. |
+| `SMTP_SECURE` | Set to `true` for implicit TLS (normally port `465`); otherwise STARTTLS is used when available. |
+
+`SMTP_HOST`, `SMTP_USER`, and `SMTP_PASS` must all be configured for SMTP delivery. When any are absent, the provider emits a configuration warning and logs the delivery instead of sending it.
 
 ### Fail-fast behavior
 

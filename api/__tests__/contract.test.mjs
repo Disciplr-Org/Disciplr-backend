@@ -1,10 +1,22 @@
-import test from 'node:test'
+import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import request from 'supertest'
 import Ajv from 'ajv'
 import addFormats from 'ajv-formats'
 import app from '../index.mjs'
 import { OPENAPI } from '../../apilib/openapi.mjs'
+
+const originalWriteIpMax = process.env.RATE_LIMIT_WRITE_IP_MAX
+const originalWriteAddrMax = process.env.RATE_LIMIT_WRITE_ADDR_MAX
+process.env.RATE_LIMIT_WRITE_IP_MAX = '1000'
+process.env.RATE_LIMIT_WRITE_ADDR_MAX = '1000'
+
+after(() => {
+  if (originalWriteIpMax === undefined) delete process.env.RATE_LIMIT_WRITE_IP_MAX
+  else process.env.RATE_LIMIT_WRITE_IP_MAX = originalWriteIpMax
+  if (originalWriteAddrMax === undefined) delete process.env.RATE_LIMIT_WRITE_ADDR_MAX
+  else process.env.RATE_LIMIT_WRITE_ADDR_MAX = originalWriteAddrMax
+})
 
 const ajv = new Ajv({
   allErrors: true,
