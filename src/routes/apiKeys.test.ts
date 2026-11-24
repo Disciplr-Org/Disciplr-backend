@@ -1,37 +1,43 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { jest, describe, it, expect, beforeEach } from '@jest/globals'
 import request from 'supertest'
 import express from 'express'
 
-vi.mock('../middleware/auth.js', () => ({
-  authenticate: vi.fn((req: any, _res: any, next: any) => {
+jest.unstable_mockModule('../middleware/auth.js', () => ({
+  authenticate: jest.fn((req: any, _res: any, next: any) => {
     req.user = { userId: 'user-1', role: 'ADMIN', jmti: 'jmti-1' }
     next()
   }),
 }))
 
-vi.mock('../middleware/stepUp.js', () => ({
-  requireStepUp: vi.fn().mockReturnValue((req: any, _res: any, next: any) => next()),
+jest.unstable_mockModule('../middleware/stepUp.js', () => ({
+  requireStepUp: jest.fn().mockReturnValue((req: any, _res: any, next: any) => next()),
 }))
 
-vi.mock('../middleware/rateLimiter.js', () => ({
-  apiKeyRateLimiter: vi.fn((req: any, _res: any, next: any) => next()),
+jest.unstable_mockModule('../middleware/rateLimiter.js', () => ({
+  apiKeyRateLimiter: jest.fn((req: any, _res: any, next: any) => next()),
 }))
 
-vi.mock('../services/apiKeys.js', () => ({
-  createApiKey: vi.fn(),
-  listApiKeysForUser: vi.fn(),
-  listApiKeysForOrg: vi.fn(),
-  revokeApiKey: vi.fn(),
-  rotateApiKey: vi.fn(),
+jest.unstable_mockModule('../services/apiKeys.js', () => ({
+  createApiKey: jest.fn(),
+  listApiKeysForUser: jest.fn(),
+  listApiKeysForOrg: jest.fn(),
+  revokeApiKey: jest.fn(),
+  rotateApiKey: jest.fn(),
 }))
 
-vi.mock('../lib/audit-logs.js', () => ({
-  createAuditLog: vi.fn().mockResolvedValue({ id: 'audit-log-id' }),
+jest.unstable_mockModule('../lib/audit-logs.js', () => ({
+  createAuditLog: jest.fn().mockResolvedValue({ id: 'audit-log-id' }),
 }))
 
-import { apiKeysRouter } from './apiKeys.js'
-import { createApiKey, listApiKeysForUser, revokeApiKey, rotateApiKey } from '../services/apiKeys.js'
-import { createAuditLog } from '../lib/audit-logs.js'
+// Import after mocks (jest.unstable_mockModule is not hoisted in ESM)
+const { apiKeysRouter } = await import('./apiKeys.js')
+const { createApiKey, listApiKeysForUser, revokeApiKey, rotateApiKey } = await import('../services/apiKeys.js')
+const { createAuditLog } = await import('../lib/audit-logs.js')
+
+// The routes validate :id as a UUID (apiKeyIdParamSchema), so fixtures use real UUIDs.
+const KEY_ID = '11111111-1111-4111-8111-111111111111'
+const UNKNOWN_KEY_ID = '22222222-2222-4222-8222-222222222222'
 
 const createApp = () => {
   const app = express()
@@ -41,7 +47,7 @@ const createApp = () => {
 
 describe('api keys routes', () => {
   beforeEach(() => {
-    vi_.clearAllMocks()
+    jest.clearAllMocks()
     const keyRecord = {
       id: 'key-1',
       label: 'Test Key',
@@ -53,10 +59,10 @@ describe('api keys routes', () => {
       lastIp: null,
       keyHash: 'hash',
     }
-    vi_.mocked(listApiKeysForUser).mockResolvedValue([keyRecord])
-    vi_.mocked(createApiKey).mockResolvedValue({ apiKey: 'plain-key', record: keyRecord })
-    vi_.mocked(rotateApiKey).mockResolvedValue({ apiKey: 'rotated-key', record: keyRecord })
-    vi_.mocked(revokeApiKey).mockResolvedValue(keyRecord)
+    jest.mocked(listApiKeysForUser).mockResolvedValue([keyRecord])
+    jest.mocked(createApiKey).mockResolvedValue({ apiKey: 'plain-key', record: keyRecord })
+    jest.mocked(rotateApiKey).mockResolvedValue({ apiKey: 'rotated-key', record: keyRecord })
+    jest.mocked(revokeApiKey).mockResolvedValue(keyRecord)
   })
 
   it('lists API keys with pagination', async () => {
@@ -77,10 +83,10 @@ describe('api keys routes', () => {
 
   it('creates an API key', async () => {
     const app = createApp()
-    const res = await request(app).post('/').send({ label: 'New Key', scopes: ['read'] })
+    const res = await request(app).post('/').send({ label: 'New Key', scopes: ['read:vaults'] })
     expect(res.status).toBe(201)
     expect(res.body.apiKey).toBe('plain-key')
-    expect(createApiKey).toHaveBeenCalledWith({ label: 'New Key', scopes: ['read'], userId: 'user-1', orgId: undefined })
+    expect(createApiKey).toHaveBeenCalledWith({ label: 'New Key', scopes: ['read:vaults'], userId: 'user-1', orgId: undefined })
   })
 
   it('returns 400 for invalid scope', async () => {
@@ -97,30 +103,30 @@ describe('api keys routes', () => {
 
   it('rotates an API key', async () => {
     const app = createApp()
-    const res = await request(app).post('/key-1/rotate')
+    const res = await request(app).post(`/${KEY_ID}/rotate`)
     expect(res.status).toBe(200)
     expect(res.body.apiKey).toBe('rotated-key')
     expect(createAuditLog).toHaveBeenCalled()
   })
 
   it('returns 404 when rotating an unknown key', async () => {
-    vi_.mocked(rotateApiKey).mockResolvedValue(null)
+    jest.mocked(rotateApiKey).mockResolvedValue(null)
     const app = createApp()
-    const res = await request(app).post('/unknown/rotate')
+    const res = await request(app).post(`/${UNKNOWN_KEY_ID}/rotate`)
     expect(res.status).toBe(404)
   })
 
   it('revokes an API key', async () => {
     const app = createApp()
-    const res = await request(app).post('/key-1/revoke')
+    const res = await request(app).post(`/${KEY_ID}/revoke`)
     expect(res.status).toBe(200)
-    expect(revokeApiKey).toHaveBeenCalledWith('key-1', 'user-1')
+    expect(revokeApiKey).toHaveBeenCalledWith(KEY_ID, 'user-1')
   })
 
   it('returns 404 when revoking an unknown key', async () => {
-    vi_.mocked(revokeApiKey).mockResolvedValue(null)
+    jest.mocked(revokeApiKey).mockResolvedValue(null)
     const app = createApp()
-    const res = await request(app).post('/unknown/revoke')
+    const res = await request(app).post(`/${UNKNOWN_KEY_ID}/revoke`)
     expect(res.status).toBe(404)
   })
 })

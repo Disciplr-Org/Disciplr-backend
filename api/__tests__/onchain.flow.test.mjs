@@ -1,5 +1,6 @@
-import { jest } from '@jest/globals'
+import { after, beforeEach, describe, it, mock } from 'node:test'
 import { createRequire } from 'node:module'
+import { expect } from 'expect'
 import request from 'supertest'
 import { createApp } from '../index.mjs'
 import { MemoryStore } from '../../apilib/store.mjs'
@@ -20,6 +21,8 @@ const body = () => ({
 const sign = (x, kp = creatorKp) => { const t = TransactionBuilder.fromXDR(x, PASS); t.sign(kp); return { signedXdr: t.toXDR(), hash: t.hash().toString('hex') } }
 const errEvent = (code) => ({ event: () => ({ body: () => ({ v0: () => ({ topics: () => [], data: () => xdr.ScVal.scvError(xdr.ScError.sceContract(code)) }) }) }) })
 
+// The mock must preserve prepared transactions, broadcast their real hash once, and report a
+// deterministic terminal ledger so submitAndWait exercises the same verification/idempotency path.
 // The default store provider targets Postgres when DATABASE_URL is set (jest.setup.cjs sets one),
 // so exercise the routes against an explicit in-memory store.
 let memory
@@ -39,12 +42,12 @@ beforeEach(() => {
   server = {
     getAccount: async (k) => new Account(k, '1'),
     prepareTransaction: async (t) => t,
-    sendTransaction: jest.fn(async (t) => ({ status: 'PENDING', hash: t.hash().toString('hex') })),
-    getTransaction: jest.fn(async () => ({ status: 'SUCCESS', ledger: 4242 })),
+    sendTransaction: mock.fn(async (t) => ({ status: 'PENDING', hash: t.hash().toString('hex') })),
+    getTransaction: mock.fn(async () => ({ status: 'SUCCESS', ledger: 4242 })),
   }
   setServerForTests(server)
 })
-afterAll(() => { setServerForTests(undefined); delete process.env.SOROBAN_ENABLED })
+after(() => { setServerForTests(undefined); delete process.env.SOROBAN_ENABLED })
 
 describe('on-chain flow', () => {
   const createAndStake = async () => {
@@ -74,7 +77,7 @@ describe('on-chain flow', () => {
     const again = await request(app).post(`/api/v1/vaults/${id}/onchain/submit`).send({ signedXdr: s1.signedXdr })
     expect(again.status).toBe(200)
     expect(again.body.activity.hash).toBe(s1.hash)
-    expect(server.sendTransaction).toHaveBeenCalledTimes(1)
+    expect(server.sendTransaction.mock.callCount()).toBe(1)
 
     const st = await request(app).post(`/api/v1/vaults/${id}/onchain/stake`).send({})
     expect(st.status).toBe(200)
@@ -113,12 +116,12 @@ describe('on-chain flow', () => {
     expect(junk.status).toBe(400)
     const pass = await request(app).post(`/api/v1/vaults/${a.body.data.id}/onchain/submit`).send({ signedXdr: sign(a.body.onChain.xdr).signedXdr, networkPassphrase: 'other' })
     expect(pass.status).toBe(400)
-    expect(server.sendTransaction).not.toHaveBeenCalled()
+    expect(server.sendTransaction.mock.callCount()).toBe(0)
   })
 
   it('records a failed activity with the decoded error and keeps the vault non-active', async () => {
     const c = await request(app).post('/api/v1/vaults').send(body())
-    server.getTransaction.mockResolvedValue({ status: 'FAILED', ledger: 11, diagnosticEventsXdr: [errEvent(16)] })
+    server.getTransaction.mock.mockImplementation(async () => ({ status: 'FAILED', ledger: 11, diagnosticEventsXdr: [errEvent(16)] }))
     const s = sign(c.body.onChain.xdr)
     const r = await request(app).post(`/api/v1/vaults/${c.body.data.id}/onchain/submit`).send({ signedXdr: s.signedXdr })
     expect(r.status).toBe(422)
@@ -131,20 +134,20 @@ describe('on-chain flow', () => {
   it('leaves the op pending on a polling timeout and resumes safely', async () => {
     const c = await request(app).post('/api/v1/vaults').send(body())
     const id = c.body.data.id
-    server.getTransaction.mockResolvedValue({ status: 'NOT_FOUND' })
+    server.getTransaction.mock.mockImplementation(async () => ({ status: 'NOT_FOUND' }))
     const s = sign(c.body.onChain.xdr)
     const r = await request(app).post(`/api/v1/vaults/${id}/onchain/submit`).send({ signedXdr: s.signedXdr })
     expect(r.status).toBe(202)
     expect(r.body.activity).toMatchObject({ status: 'pending', hash: s.hash })
     expect(r.body.data.onchainStatus).toBe('pending_onchain')
 
-    server.getTransaction.mockResolvedValue({ status: 'SUCCESS', ledger: 99 })
+    server.getTransaction.mock.mockImplementation(async () => ({ status: 'SUCCESS', ledger: 99 }))
     const r2 = await request(app).post(`/api/v1/vaults/${id}/onchain/submit`).send({ signedXdr: s.signedXdr })
     expect(r2.status).toBe(200)
     expect(r2.body.activity).toMatchObject({ status: 'confirmed', ledger: 99, hash: s.hash })
     const acts = (await request(app).get(`/api/v1/transactions?vaultId=${id}`)).body.data
     expect(acts).toHaveLength(1)
-    expect(server.sendTransaction).toHaveBeenCalledTimes(1)
+    expect(server.sendTransaction.mock.callCount()).toBe(1)
   })
 
   it('with Soroban disabled, labels activity as simulated and disables onchain settlement routes', async () => {
@@ -165,7 +168,7 @@ describe('on-chain flow', () => {
   it('claim_milestone -> sign -> submit, idempotent by tx hash, completes vault when all claimed', async () => {
     const v = await createAndStake()
     const id = v.id
-    server.sendTransaction.mockClear()
+    server.sendTransaction.mock.resetCalls()
 
     const b1 = await request(app).post(`/api/v1/vaults/${id}/onchain/claim-milestone`).send({ milestoneId: v.milestones[0].id })
     expect(b1.status).toBe(200)
@@ -177,7 +180,7 @@ describe('on-chain flow', () => {
       signedXdr: s1.signedXdr, operation: 'claim_milestone', index: 1,
     })
     expect(badIdx.status).toBe(400)
-    expect(server.sendTransaction).not.toHaveBeenCalled()
+    expect(server.sendTransaction.mock.callCount()).toBe(0)
 
     const r1 = await request(app).post(`/api/v1/vaults/${id}/onchain/submit`).send({
       signedXdr: s1.signedXdr, operation: 'claim_milestone', milestoneId: v.milestones[0].id,
@@ -193,7 +196,7 @@ describe('on-chain flow', () => {
     })
     expect(replay.status).toBe(200)
     expect(replay.body.activity.hash).toBe(s1.hash)
-    expect(server.sendTransaction).toHaveBeenCalledTimes(1)
+    expect(server.sendTransaction.mock.callCount()).toBe(1)
 
     // Claim second milestone -> vault completes
     const b2 = await request(app).post(`/api/v1/vaults/${id}/onchain/claim-milestone`).send({ index: 1 })
@@ -210,7 +213,7 @@ describe('on-chain flow', () => {
   it('slash -> sign by verifier -> submit, marks vault failed and is idempotent by tx hash', async () => {
     const v = await createAndStake()
     const id = v.id
-    server.sendTransaction.mockClear()
+    server.sendTransaction.mock.resetCalls()
 
     const b = await request(app).post(`/api/v1/vaults/${id}/onchain/slash`).send({})
     expect(b.status).toBe(200)
@@ -222,7 +225,7 @@ describe('on-chain flow', () => {
       signedXdr: wrongSig.signedXdr, operation: 'slash_on_miss',
     })
     expect(bad.status).toBe(400)
-    expect(server.sendTransaction).not.toHaveBeenCalled()
+    expect(server.sendTransaction.mock.callCount()).toBe(0)
 
     const s = sign(b.body.onChain.xdr, verifierKp)
     const r = await request(app).post(`/api/v1/vaults/${id}/onchain/submit`).send({
@@ -238,13 +241,13 @@ describe('on-chain flow', () => {
       signedXdr: s.signedXdr, operation: 'slash_on_miss',
     })
     expect(replay.status).toBe(200)
-    expect(server.sendTransaction).toHaveBeenCalledTimes(1)
+    expect(server.sendTransaction.mock.callCount()).toBe(1)
   })
 
   it('withdraw -> sign by creator -> submit, marks vault completed and is idempotent by tx hash', async () => {
     const v = await createAndStake()
     const id = v.id
-    server.sendTransaction.mockClear()
+    server.sendTransaction.mock.resetCalls()
 
     const b = await request(app).post(`/api/v1/vaults/${id}/onchain/withdraw`).send({})
     expect(b.status).toBe(200)
@@ -256,7 +259,7 @@ describe('on-chain flow', () => {
       signedXdr: wrongSig.signedXdr, operation: 'withdraw',
     })
     expect(bad.status).toBe(400)
-    expect(server.sendTransaction).not.toHaveBeenCalled()
+    expect(server.sendTransaction.mock.callCount()).toBe(0)
 
     const s = sign(b.body.onChain.xdr, creatorKp)
     const r = await request(app).post(`/api/v1/vaults/${id}/onchain/submit`).send({
@@ -271,6 +274,6 @@ describe('on-chain flow', () => {
       signedXdr: s.signedXdr, operation: 'withdraw',
     })
     expect(replay.status).toBe(200)
-    expect(server.sendTransaction).toHaveBeenCalledTimes(1)
+    expect(server.sendTransaction.mock.callCount()).toBe(1)
   })
 })

@@ -1,8 +1,8 @@
-import { test, expect, describe } from 'bun:test'
-import { redact, REDACTED } from '../middleware/privacy-logger'
+import { describe, it, expect } from '@jest/globals'
+import { redact, REDACTED } from '../middleware/privacy-logger.js'
 
 describe('privacy-logger allowlist mode', () => {
-  test('unknown secret field is redacted', () => {
+  it('unknown secret field is redacted', () => {
     const input = { newlyAddedSecret: 'super-secret', otherUnknown: 123 }
     const result = redact(input, undefined, true)
     expect(result).toEqual({
@@ -11,15 +11,15 @@ describe('privacy-logger allowlist mode', () => {
     })
   })
 
-  test('nested secret is redacted', () => {
+  it('nested secret is redacted', () => {
     const input = { data: { someSecret: 'hidden' } }
     const result = redact(input, undefined, true)
     expect(result).toEqual({
       data: REDACTED,
-    }) 
+    })
   })
 
-  test('allowlisted field passes', () => {
+  it('allowlisted field passes', () => {
     const input = { requestId: '12345', status: 200 }
     const result = redact(input, undefined, true)
     expect(result).toEqual({
@@ -28,7 +28,7 @@ describe('privacy-logger allowlist mode', () => {
     })
   })
 
-  test('denylist still applies', () => {
+  it('denylist still applies', () => {
     const input = { password: 'secret', status: 200 }
     const result = redact(input, undefined, true)
     expect(result).toEqual({

@@ -20,6 +20,15 @@ This backend supports scoped API keys for server-to-server access. Keys are inte
 
 Creates a new API key for the authenticated user.
 
+Request body fields:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `label` | string | yes | Human-readable name, 1–100 characters. |
+| `scopes` | string[] | yes | One or more valid scope strings. |
+| `orgId` | UUID string | no | Bind the key to an organization the caller belongs to. |
+| `expiresAt` | ISO 8601 string | no | Key expiry time. Must be a future UTC timestamp, at most 1 year from now. |
+
 Example:
 
 ```bash
@@ -28,7 +37,8 @@ curl -X POST "http://localhost:3000/api/api-keys" \
   -H "x-user-id: user-123" \
   -d '{
     "label": "analytics integration",
-    "scopes": ["read:analytics", "read:vaults"]
+    "scopes": ["read:analytics", "read:vaults"],
+    "expiresAt": "2027-01-01T00:00:00Z"
   }'
 ```
 
@@ -36,6 +46,21 @@ Response notes:
 
 - `apiKey` is returned exactly once.
 - `apiKeyMeta` is safe to store or display because it omits the secret and hash.
+- `apiKeyMeta.expiresAt` is `null` when no expiry was set; otherwise an ISO 8601 UTC string.
+
+## Key expiry
+
+Pass an `expiresAt` ISO 8601 timestamp at creation time to set a hard expiry on a key. Once that time is reached:
+
+- `validateApiKey` returns `{ valid: false, reason: 'expired' }`.
+- Requests to API-key protected endpoints return `401` with `{ "error": "API key is expired." }`.
+- Expiry is checked **before** scope authorization, so an expired key with correct scopes still fails.
+
+Constraints:
+
+- `expiresAt` must be a future timestamp.
+- Maximum allowed value is 1 year from the time of creation.
+- Omitting `expiresAt` creates a key with no expiry (existing behaviour).
 
 ### List
 
@@ -52,17 +77,27 @@ curl "http://localhost:3000/api/api-keys" \
 
 `POST /api/api-keys/:id/rotate`
 
-Replaces the key secret while keeping the same key id and metadata.
+Replaces the key secret while keeping the same key id and metadata. Supports an optional grace window for zero-downtime secret rollover.
 
 ```bash
 curl -X POST "http://localhost:3000/api/api-keys/<api-key-id>/rotate" \
-  -H "x-user-id: user-123"
+  -H "Content-Type: application/json" \
+  -H "x-user-id: user-123" \
+  -d '{
+    "graceSeconds": 300
+  }'
 ```
+
+Request options:
+
+- `graceSeconds` (optional, integer 0–3600, default: 300): Duration in seconds during which the previous key remains valid. Set to `0` to invalidate the old key immediately.
 
 After rotation:
 
-- the old key stops working immediately
-- the new plaintext value is returned once
+- the new plaintext value is returned once in `apiKey`
+- during the grace window, both the new key and the previous key are accepted; requests authenticated via the previous key include `usingPreviousSecret: true` in validation
+- once the grace window expires (or if the key is revoked), the previous key secret is rejected
+- background jobs periodically purge expired previous secrets
 - scopes and ownership stay the same
 
 ### Revoke

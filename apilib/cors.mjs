@@ -114,6 +114,8 @@ export function buildCorsOptions(env = process.env) {
     },
     methods: ALLOWED_METHODS,
     allowedHeaders: ALLOWED_HEADERS,
+    // Let browser clients read the replay marker on an Idempotency-Key retry.
+    exposedHeaders: ['Idempotent-Replayed'],
     maxAge: 600,
     credentials: false,
   }
