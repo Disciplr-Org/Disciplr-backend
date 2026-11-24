@@ -19,6 +19,24 @@ const onchainResult = (description) => ({
   content: { 'application/json': { schema: { $ref: '#/components/schemas/OnchainResult' } } },
 })
 
+// Optional Idempotency-Key request header for the idempotent write routes.
+const idempotencyKeyParam = {
+  name: 'Idempotency-Key',
+  in: 'header',
+  required: false,
+  schema: { type: 'string', minLength: 8, maxLength: 255, pattern: '^[A-Za-z0-9_-]{8,255}$' },
+  description:
+    'Optional client-generated key. A retry with the same key, route and body replays the original response with Idempotent-Replayed: true; the same key with a different body returns 422; a duplicate while the first request is still running returns 409. Keys are scoped per route, so the same key may be reused independently on another endpoint. Invalid keys return 400. Reservations expire after 24 hours.',
+}
+
+// Response header set on a replayed (stored) response.
+const replayedHeader = {
+  'Idempotent-Replayed': {
+    description: 'Present and true when this response was replayed from a stored Idempotency-Key reservation',
+    schema: { type: 'boolean' },
+  },
+}
+
 export const OPENAPI = {
   openapi: '3.0.3',
   info: {
@@ -86,7 +104,7 @@ export const OPENAPI = {
     '/cron/expire-vaults': {
       get: {
         operationId: 'expireOverdueVaults',
-        summary: 'Protected cron endpoint to fail overdue active vaults and pending milestones',
+        summary: 'Protected cron endpoint to fail overdue active vaults and pending milestones, and purge expired idempotency reservations',
         parameters: [
           { name: 'limit', in: 'query', required: false, schema: { type: 'integer' }, description: 'Batch size limit' },
           { name: 'now', in: 'query', required: false, schema: { type: 'string', format: 'date-time' }, description: 'Simulated current timestamp' },
@@ -160,6 +178,7 @@ export const OPENAPI = {
       post: {
         operationId: 'createVault',
         summary: 'Create a vault',
+        parameters: [idempotencyKeyParam],
         requestBody: {
           required: true,
           content: {
@@ -192,7 +211,8 @@ export const OPENAPI = {
         },
         responses: {
           201: {
-            description: 'Vault created successfully',
+            description: 'Vault created successfully; an Idempotency-Key retry replays this stored response with Idempotent-Replayed: true',
+            headers: replayedHeader,
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/VaultEnvelope' },
@@ -225,6 +245,14 @@ export const OPENAPI = {
             },
           },
           400: err,
+          409: {
+            description: 'Idempotency-Key reservation still in progress; retry the same key shortly',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { error: 'Request in progress' } } },
+          },
+          422: {
+            description: 'Idempotency-Key was reused with a different request body',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { error: 'Idempotency-Key was used with a different request' } } },
+          },
           503: unavailable,
         },
       },
@@ -294,6 +322,7 @@ export const OPENAPI = {
         parameters: [
           { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Unique vault ID' },
           { name: 'mid', in: 'path', required: true, schema: { type: 'string' }, description: 'Milestone ID' },
+          idempotencyKeyParam,
         ],
         requestBody: {
           required: true,
@@ -308,7 +337,8 @@ export const OPENAPI = {
         },
         responses: {
           200: {
-            description: 'Updated vault state after milestone validation',
+            description: 'Updated vault state after milestone validation; an Idempotency-Key retry replays this stored response with Idempotent-Replayed: true instead of 409',
+            headers: replayedHeader,
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/VaultEnvelope' },
@@ -344,6 +374,10 @@ export const OPENAPI = {
           403: err,
           404: err,
           409: err,
+          422: {
+            description: 'Idempotency-Key was reused with a different request body',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { error: 'Idempotency-Key was used with a different request' } } },
+          },
           503: unavailable,
         },
       },
@@ -404,6 +438,7 @@ export const OPENAPI = {
         summary: 'Verifier fails a vault; funds redirect (body: {verifier})',
         parameters: [
           { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Unique vault ID' },
+          idempotencyKeyParam,
         ],
         requestBody: {
           required: true,
@@ -418,7 +453,8 @@ export const OPENAPI = {
         },
         responses: {
           200: {
-            description: 'Updated vault state after failure declaration',
+            description: 'Updated vault state after failure declaration; an Idempotency-Key retry replays this stored response with Idempotent-Replayed: true',
+            headers: replayedHeader,
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/VaultEnvelope' },
@@ -454,6 +490,10 @@ export const OPENAPI = {
           403: err,
           404: err,
           409: err,
+          422: {
+            description: 'Idempotency-Key was reused with a different request body',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { error: 'Idempotency-Key was used with a different request' } } },
+          },
           503: unavailable,
         },
       },
@@ -945,6 +985,7 @@ export const OPENAPI = {
         properties: {
           processed: { type: 'integer', example: 2 },
           remaining: { type: 'integer', example: 0 },
+          idempotencyPurged: { type: 'integer', example: 3, description: 'Expired idempotency reservations deleted on this tick' },
         },
       },
       CreateMilestoneRequest: {
