@@ -430,9 +430,25 @@ describe('vault route-parameter boundary', () => {
     expect(res.status).toBe(400)
   })
 
-  // TODO(drips-wave): re-enable — GET /user/:address wallet-address validation test fails on main
-  test.skip('accepts a valid wallet address on GET /user/:address', async () => {
+  test('accepts a valid wallet address on GET /user/:address when authenticated as the owner', async () => {
+    authenticatedUser = { userId: G, role: 'USER' }
+    const mockVaults = [{ id: 'vault-1', creator: G }]
+    mockGetVaultsByUser.mockResolvedValue(mockVaults)
+
     const res = await request(app).get(`/api/vaults/user/${G}`)
+
     expect(res.status).toBe(200)
+    expect(res.body).toEqual(mockVaults)
+    expect(mockGetVaultsByUser).toHaveBeenCalledWith(G)
+  })
+
+  test('returns 403 when a non-admin actor requests vaults for a different address', async () => {
+    authenticatedUser = { userId: G2, role: 'USER' }
+
+    const res = await request(app).get(`/api/vaults/user/${G}`)
+
+    expect(res.status).toBe(403)
+    expect(res.body).toEqual({ error: 'Forbidden: You do not have permission to view vaults for this address' })
+    expect(mockGetVaultsByUser).not.toHaveBeenCalled()
   })
 })
