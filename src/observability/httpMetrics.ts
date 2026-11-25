@@ -112,16 +112,12 @@ const EXCLUDED_PATHS = [
   '/ready',
 ] as const;
 
-function isExcluded(path: string): boolean {
-  return EXCLUDED_PATHS.some((p) => path.startsWith(p));
-}
-
-export const httpMetricsMiddleware = (
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): void => {
-  if (isExcluded(req.path)) {
+  // Health/readiness checks are mounted at /api/health (and versioned as
+  // /api/v1/health) — see src/app-bootstrap.ts. '/health' and '/ready' are
+  // kept for any bare-path deployments, but the real route needs the /api
+  // (and /api/v1) prefix or this exclusion silently never matches (#1263).
+  const excludedPaths = ['/api/metrics', '/api/health', '/api/v1/health', '/health', '/ready']
+  if (excludedPaths.some(path => req.path.startsWith(path))) {
     return next();
   }
 

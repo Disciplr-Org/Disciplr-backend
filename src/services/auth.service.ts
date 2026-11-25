@@ -7,37 +7,9 @@ import { UserRole } from '../types/user.js'
 import { randomUUID } from 'node:crypto'
 import { AppError } from '../middleware/errorHandler.js'
 import { recordSession, revokeAllUserSessions } from './session.js'
-import * as bcrypt from 'bcryptjs'
+import { getStepUpStore } from './stepUpStore.js'
 
 const STEP_UP_TTL_SECONDS = 5 * 60
-const STEP_UP_NONCES = new Map<string, { userId: string; action?: string; expiresAt: number; used: boolean }>()
-const BREACHED_PASSWORDS_ENV = 'AUTH_BREACHED_PASSWORDS'
-const BREACHED_PASSWORDS_ENABLED_ENV = 'AUTH_BREACHED_PASSWORDS_ENABLED'
-
-/**
- * Dummy hash used for timing equalisation when the user is not found.
- * This prevents timing attacks that distinguish between "user exists with wrong
- * password" and "user does not exist".
- */
-const DUMMY_PASSWORD_HASH = '$2b$10$X7DWJd1Pr.xO0Q8yq0Z.2.f2P0Y0Zq3Q0Z.2.f2P0Y0Zq3Q0Z.2.f'
-
-const parseBooleanEnv = (value?: string): boolean => {
-    if (!value) return false
-    return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase())
-}
-
-const getBreachedPasswordSet = (): Set<string> => {
-    const rawValue = process.env[BREACHED_PASSWORDS_ENV] ?? ''
-    return new Set(rawValue.split(',').map((entry) => entry.trim().toLowerCase()).filter(Boolean))
-}
-
-const isBreachedPasswordCheckEnabled = (): boolean => {
-    if (parseBooleanEnv(process.env[BREACHED_PASSWORDS_ENABLED_ENV])) return true
-    if (process.env[BREACHED_PASSWORDS_ENABLED_ENV] === undefined) {
-        return Boolean(process.env[BREACHED_PASSWORDS_ENV])
-    }
-    return false
-}
 
 export class AuthService {
     private static async emitSecurityAudit(action: string, targetType: string, targetId: string, metadata: Record<string, unknown>, actorUserId = 'system') {
@@ -362,47 +334,26 @@ export class AuthService {
 
     static async issueStepUpChallenge(userId: string, action?: string) {
         const nonce = randomUUID()
-        const expiresAt = Date.now() + STEP_UP_TTL_SECONDS * 1000
-        STEP_UP_NONCES.set(nonce, { userId, action, expiresAt, used: false })
+        const expiresAt = new Date(Date.now() + STEP_UP_TTL_SECONDS * 1000)
+        await getStepUpStore().issue(nonce, userId, expiresAt)
 
         return {
             nonce,
-            expiresAt,
+            expiresAt: expiresAt.getTime(),
             ttlSeconds: STEP_UP_TTL_SECONDS,
             challenge: 'webauthn-step-up',
         }
     }
 
     static async recordStepUpAssertion(nonce: string, userId: string) {
-        const entry = STEP_UP_NONCES.get(nonce)
-        if (!entry || entry.used || entry.expiresAt < Date.now() || entry.userId !== userId) {
-            return false
-        }
-
-        entry.used = true
-        STEP_UP_NONCES.delete(nonce)
-        return true
+        return (await getStepUpStore().consume(nonce, { userId })) !== null
     }
 
-    static async validateStepUpSession(sessionId: string, maxAgeSeconds = STEP_UP_TTL_SECONDS, action?: string) {
-        const entry = STEP_UP_NONCES.get(sessionId)
-        if (!entry || entry.used || entry.expiresAt < Date.now()) {
-            return null
-        }
-
-        const maxAgeMs = maxAgeSeconds * 1000
-        const isFresh = entry.expiresAt - Date.now() <= maxAgeMs
-        if (!isFresh) {
-            return null
-        }
-
-        if (action && entry.action && entry.action !== action) {
-            return null
-        }
-
-        entry.used = true
-        STEP_UP_NONCES.delete(sessionId)
-        return { userId: entry.userId, sessionId }
+    static async validateStepUpSession(sessionId: string, maxAgeSeconds = STEP_UP_TTL_SECONDS) {
+        const entry = await getStepUpStore().consume(sessionId, {
+            maxRemainingAgeMs: maxAgeSeconds * 1000,
+        })
+        return entry ? { userId: entry.userId, sessionId } : null
     }
 
     static async registerWebAuthnCredential(userId: string, credentialId: string, publicKey: string) {

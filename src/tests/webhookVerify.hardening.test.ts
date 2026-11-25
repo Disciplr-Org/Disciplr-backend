@@ -9,10 +9,9 @@ import { register } from '../observability/metricsRegistry.js'
 // ---------------------------------------------------------------------------
 // Replay-protection / verification hardening tests (issue #1532).
 //
-// Runs under the repository's primary Jest runner (the legacy vitest suite —
-// src/tests/webhookVerify.test.ts — is excluded from `npm test` because vitest
-// cannot run in this environment). These tests cover the same contract plus the
-// new bounded-memory store, payload-size bound, and telemetry.
+// Runs under the repository's primary Jest runner alongside the legacy suite
+// (src/tests/webhookVerify.test.ts). These tests cover the same contract plus
+// new bounded-memory store, payload-size bound, and telemetry behavior.
 // ---------------------------------------------------------------------------
 
 const buildEnv = (overrides: Record<string, string> = {}) =>

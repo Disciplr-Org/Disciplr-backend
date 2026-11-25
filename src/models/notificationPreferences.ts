@@ -10,6 +10,7 @@ export const ALLOWED_CATEGORIES = [
   'milestone_reminder_deferred',
   'milestone_reminder_processed',
   'milestone_digest',
+  'saved_search_match',
 ] as const
 export type NotificationCategory = (typeof ALLOWED_CATEGORIES)[number]
 

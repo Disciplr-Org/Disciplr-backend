@@ -1348,10 +1348,18 @@ Every variable is validated against the schema in `src/config/env.ts` at applica
 ls -la .env
 npm run validate:env
 
+# Verify every variable in src/config/env.ts is documented in .env.example
+npm run check:env-example
+
+# Run script unit tests (including the .env.example check)
+npm run test:scripts
+
 # Or programmatically in tests:
 import { validateEnv } from 'src/config/env';
 const { env, warnings } = validateEnv({ NODE_ENV: 'test', DATABASE_URL: '...' });
 ```
+
+`scripts/check-env-example.mjs` parses the Zod schema in `src/config/env.ts` and verifies that every declared variable appears in `.env.example` (either active or commented out as `# KEY=value`), exiting with code `1` and listing any missing keys. Variables that are intentionally undocumented can be added to `ALLOWLIST` in [`scripts/check-env-example.mjs`](../scripts/check-env-example.mjs).
 
 ---
 
