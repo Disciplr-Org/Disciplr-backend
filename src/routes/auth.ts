@@ -39,6 +39,21 @@ const logoutSchema = z.object({
   refreshToken: z.string().min(1, 'refreshToken must be a non-empty string.').max(4096, 'refreshToken is too long.').optional(),
 })
 
+const webauthnChallengeSchema = z.object({
+  action: z
+    .string()
+    .min(1, 'action must be a non-empty string.')
+    .max(200, 'action is too long.')
+    .optional(),
+})
+
+const base64Url = (max: number, label: string) =>
+  z
+    .string()
+    .min(1, `${label} is required.`)
+    .max(max, `${label} is too long.`)
+    .regex(/^[A-Za-z0-9_-]+$/, `${label} must be base64url-encoded.`)
+
 const webauthnAssertSchema = z.object({
   nonce: z.string().uuid('nonce must be a valid UUID'),
   credentialId: z
@@ -46,10 +61,9 @@ const webauthnAssertSchema = z.object({
     .min(16, 'credentialId is too short.')
     .max(1024, 'credentialId is too long.')
     .regex(/^[A-Za-z0-9_-]+$/, 'credentialId contains invalid characters.'),
-  publicKey: z
-    .string()
-    .min(1, 'publicKey is required.')
-    .max(8192, 'publicKey is too long.'),
+  clientDataJSON: base64Url(16_384, 'clientDataJSON'),
+  authenticatorData: base64Url(8_192, 'authenticatorData'),
+  signature: base64Url(2_048, 'signature'),
 })
 
 /**
@@ -247,33 +261,38 @@ authRouter.post('/webauthn/challenge', authenticate, async (req, res, next) => {
     return next(AppError.unauthorized('Unauthorized'))
   }
 
-  const challenge = await AuthService.issueStepUpChallenge(req.user.userId)
+  const bodyResult = webauthnChallengeSchema.safeParse(req.body ?? {})
+  if (!bodyResult.success) {
+    return next(AppError.validation('Validation failed', bodyResult.error.format()))
+  }
+
+  const challenge = await AuthService.issueStepUpChallenge(req.user.userId, bodyResult.data.action)
   res.status(200).json(challenge)
 })
 
 authRouter.post('/webauthn/assert', authJson, authenticate, async (req, res, next) => {
-  const { nonce, credentialId, publicKey } = req.body as { nonce?: string; credentialId?: string; publicKey?: string }
-  if (!req.user?.userId || !nonce || !credentialId || !publicKey) {
-    return next(AppError.badRequest('Missing WebAuthn assertion data'))
+  if (!req.user?.userId) {
+    return next(AppError.unauthorized('Unauthorized'))
   }
 
-  // Strict boundary validation: nonce must be a UUID, credential material must
-  // be bounded and well-formed so oversized or malformed assertions are
-  // rejected before they reach the credential store.
+  // Strict boundary validation: nonce must be a UUID and assertion payloads
+  // must be bounded, base64url-encoded values. The credential public key is
+  // never accepted from the request — it is read from storage by AuthService.
   const bodyResult = webauthnAssertSchema.safeParse(req.body)
   if (!bodyResult.success) {
     return next(AppError.validation('Validation failed', bodyResult.error.format()))
   }
 
-  const validated = bodyResult.data
+  const verified = await AuthService.verifyStepUpAssertion({
+    ...bodyResult.data,
+    userId: req.user.userId,
+  })
 
-  const recorded = await AuthService.recordStepUpAssertion(validated.nonce, req.user.userId)
-  if (!recorded) {
-    return next(AppError.unauthorized('Invalid or expired step-up assertion'))
+  if (!verified.stepUpSessionId) {
+    return next(AppError.unauthorized('Invalid or expired WebAuthn assertion'))
   }
 
-  await AuthService.registerWebAuthnCredential(req.user.userId, validated.credentialId, validated.publicKey)
-  res.status(200).json({ success: true })
+  res.status(200).json({ success: true, stepUpSessionId: verified.stepUpSessionId })
 })
 
 authRouter.post('/users/:id/role', requireJson, authenticate, requireStepUp(), async (req, res, next) => {

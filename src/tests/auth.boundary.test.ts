@@ -71,6 +71,7 @@ const mockAuthService = {
   issueStepUpChallenge: jest.fn(async () => ({ nonce: 'nonce', expiresAt: Date.now(), ttlSeconds: 300, challenge: 'webauthn-step-up' })),
   recordStepUpAssertion: jest.fn(async () => true),
   registerWebAuthnCredential: jest.fn(async () => ({})),
+  verifyStepUpAssertion: jest.fn(async () => ({ stepUpSessionId: 'step-up-session' })),
   validateStepUpSession: jest.fn(),
 }
 
@@ -218,7 +219,9 @@ describe('POST /api/auth/webauthn/assert boundary validation', () => {
   const validBody = {
     nonce: 'c0a6e0e8-4f5e-4a9c-9f4e-111111111111',
     credentialId: 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_ab',
-    publicKey: 'pqBWFZ9cm42yJYtI2+KRemoiXmpQHrpv4/Hg0E/DRvo',
+    clientDataJSON: 'eyJ0eXBlIjoid2ViYXV0aG4uZ2V0In0',
+    authenticatorData: 'YXV0aGVudGljYXRvcl9kYXRh',
+    signature: 'c2lnbmF0dXJl',
   }
 
   it('rejects a non-UUID nonce', async () => {
@@ -229,7 +232,7 @@ describe('POST /api/auth/webauthn/assert boundary validation', () => {
       .send({ ...validBody, nonce: 'not-a-uuid' })
     expect(res.status).toBe(400)
     expect(res.body.error.code).toBe('VALIDATION_ERROR')
-    expect(mockAuthService.recordStepUpAssertion).not.toHaveBeenCalled()
+    expect(mockAuthService.verifyStepUpAssertion).not.toHaveBeenCalled()
   })
 
   it('rejects credentialId shorter than the boundary', async () => {
@@ -257,22 +260,24 @@ describe('POST /api/auth/webauthn/assert boundary validation', () => {
     const res = await request(app)
       .post('/api/auth/webauthn/assert')
       .set('x-test-user-id', ADMIN_ID)
-      .send({ ...validBody, publicKey: 'A'.repeat(9000) })
+      .send({ ...validBody, clientDataJSON: 'A'.repeat(9000) })
     expect(res.status).toBe(413)
   })
 
-  it('accepts a well-formed assertion and registers the credential', async () => {
-    jest.mocked(mockAuthService.recordStepUpAssertion).mockResolvedValue(true)
-    jest.mocked(mockAuthService.registerWebAuthnCredential).mockResolvedValue({} as any)
+  it('accepts a well-formed assertion and returns the step-up session id', async () => {
+    jest.mocked(mockAuthService.verifyStepUpAssertion).mockResolvedValue({ stepUpSessionId: 'step-up-session' })
     const app = buildApp()
     const res = await request(app)
       .post('/api/auth/webauthn/assert')
       .set('x-test-user-id', ADMIN_ID)
       .send(validBody)
     expect(res.status).toBe(200)
-    expect(res.body).toEqual({ success: true })
-    expect(mockAuthService.recordStepUpAssertion).toHaveBeenCalledWith(validBody.nonce, ADMIN_ID)
-    expect(mockAuthService.registerWebAuthnCredential).toHaveBeenCalledWith(ADMIN_ID, validBody.credentialId, validBody.publicKey)
+    expect(res.body).toEqual({ success: true, stepUpSessionId: 'step-up-session' })
+    expect(mockAuthService.verifyStepUpAssertion).toHaveBeenCalledWith({
+      ...validBody,
+      userId: ADMIN_ID,
+    })
+    expect(mockAuthService.registerWebAuthnCredential).not.toHaveBeenCalled()
   })
 })
 

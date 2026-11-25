@@ -63,13 +63,18 @@ orgMembersRouter.get(
       }
 
       const result = await listOrgMemberships(req.params.orgId, { page, pageSize })
+      const totalPages = Math.ceil(result.total / result.pageSize)
       res.json({
         members: result.members,
         pagination: {
           page: result.page,
           pageSize: result.pageSize,
           total: result.total,
-          totalPages: Math.ceil(result.total / result.pageSize),
+          totalPages,
+          // Cursor-style mirrors used by the shared PaginationCursor schema.
+          limit: result.pageSize,
+          has_more: result.page < totalPages,
+          count: result.members.length,
         },
       })
     } catch {

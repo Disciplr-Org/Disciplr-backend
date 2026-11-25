@@ -13,6 +13,7 @@ const mockAuthService: Record<string, AsyncMock> = {
   issueStepUpChallenge: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
   recordStepUpAssertion: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
   registerWebAuthnCredential: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
+  verifyStepUpAssertion: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
 }
 
 const mockPrismaUser = {
@@ -79,10 +80,12 @@ jest.unstable_mockModule('../middleware/stepUp.js', () => ({
 jest.unstable_mockModule('../services/session.js', () => ({
   revokeSession: mockRevokeSession,
   revokeAllUserSessions: mockRevokeAllUserSessions,
+  recordSession: jest.fn<(...args: unknown[]) => Promise<void>>().mockResolvedValue(undefined),
 }))
 
 jest.unstable_mockModule('../middleware/rateLimiter.js', () => ({
   authRateLimiter: mockAuthRateLimiter,
+  accountLoginLimiter: mockAuthRateLimiter,
 }))
 
 const { authRouter } = await import('./auth.js')
@@ -236,51 +239,60 @@ describe('authRouter request validation and route handlers', () => {
   })
 
   describe('POST /api/auth/webauthn/assert', () => {
+    const validBody = {
+      nonce: '22222222-2222-4222-8222-222222222222',
+      credentialId: 'valid_credential_id_1234',
+      clientDataJSON: 'eyJ0eXBlIjoid2ViYXV0aG4uZ2V0In0',
+      authenticatorData: 'YXV0aGVudGljYXRvcl9kYXRh',
+      signature: 'c2lnbmF0dXJl',
+    }
+
     it('returns 400 when required WebAuthn fields are missing', async () => {
       const res = await request(app)
         .post('/api/auth/webauthn/assert')
-        .send({ nonce: '22222222-2222-4222-8222-222222222222' })
+        .send({ nonce: validBody.nonce })
 
       expect(res.status).toBe(400)
-      expect(mockAuthService.recordStepUpAssertion).not.toHaveBeenCalled()
+      expect(mockAuthService.verifyStepUpAssertion).not.toHaveBeenCalled()
     })
 
     it('returns 400 when nonce is not a valid UUID', async () => {
       const res = await request(app)
         .post('/api/auth/webauthn/assert')
-        .send({
-          nonce: 'not-a-uuid',
-          credentialId: 'valid_credential_id_1234',
-          publicKey: 'public-key-material',
-        })
+        .send({ ...validBody, nonce: 'not-a-uuid' })
 
       expect(res.status).toBe(400)
-      expect(mockAuthService.recordStepUpAssertion).not.toHaveBeenCalled()
+      expect(mockAuthService.verifyStepUpAssertion).not.toHaveBeenCalled()
     })
 
-    it('records assertion and registers credential for valid payload', async () => {
-      mockAuthService.recordStepUpAssertion.mockResolvedValue(true)
-      mockAuthService.registerWebAuthnCredential.mockResolvedValue(undefined)
+    it('verifies the assertion and returns a step-up session id', async () => {
+      mockAuthService.verifyStepUpAssertion.mockResolvedValue({ stepUpSessionId: 'step-up-session-1' })
 
       const res = await request(app)
         .post('/api/auth/webauthn/assert')
-        .send({
-          nonce: '22222222-2222-4222-8222-222222222222',
-          credentialId: 'valid_credential_id_1234',
-          publicKey: 'public-key-material',
-        })
+        .send(validBody)
 
       expect(res.status).toBe(200)
-      expect(res.body).toEqual({ success: true })
-      expect(mockAuthService.recordStepUpAssertion).toHaveBeenCalledWith(
-        '22222222-2222-4222-8222-222222222222',
-        '11111111-1111-4111-8111-111111111111',
-      )
-      expect(mockAuthService.registerWebAuthnCredential).toHaveBeenCalledWith(
-        '11111111-1111-4111-8111-111111111111',
-        'valid_credential_id_1234',
-        'public-key-material',
-      )
+      expect(res.body).toEqual({ success: true, stepUpSessionId: 'step-up-session-1' })
+      expect(mockAuthService.verifyStepUpAssertion).toHaveBeenCalledWith({
+        ...validBody,
+        userId: '11111111-1111-4111-8111-111111111111',
+      })
+      expect(mockAuthService.registerWebAuthnCredential).not.toHaveBeenCalled()
+    })
+
+    it('returns 401 when the assertion cannot be verified', async () => {
+      mockAuthService.verifyStepUpAssertion.mockResolvedValue({
+        stepUpSessionId: null,
+        reason: 'Invalid signature',
+      })
+
+      const res = await request(app)
+        .post('/api/auth/webauthn/assert')
+        .send(validBody)
+
+      expect(res.status).toBe(401)
+      expect(res.body.error.code).toBe('UNAUTHORIZED')
     })
   })
 
