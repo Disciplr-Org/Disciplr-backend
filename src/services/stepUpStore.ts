@@ -1,19 +1,32 @@
 import db from '../db/index.js'
 
+export type StepUpKind = 'challenge' | 'session'
+
 export interface StepUpNonce {
   nonce: string
   userId: string
   expiresAt: Date
+  kind: StepUpKind
+  action?: string
+}
+
+export interface StepUpIssueOptions {
+  /** Challenge nonces are consumed by assertions; sessions are consumed by requireStepUp. */
+  kind?: StepUpKind
+  /** Action the resulting step-up session is bound to. */
+  action?: string
 }
 
 export interface StepUpConsumeOptions {
   userId?: string
   now?: Date
   maxRemainingAgeMs?: number
+  kind?: StepUpKind
+  action?: string
 }
 
 export interface StepUpStore {
-  issue(nonce: string, userId: string, expiresAt: Date): Promise<void>
+  issue(nonce: string, userId: string, expiresAt: Date, options?: StepUpIssueOptions): Promise<void>
   consume(nonce: string, options?: StepUpConsumeOptions): Promise<StepUpNonce | null>
   deleteExpired(batchSize?: number, now?: Date): Promise<number>
 }
@@ -22,14 +35,23 @@ interface StepUpNonceRow {
   nonce: string
   user_id: string
   expires_at: Date | string
+  kind?: string | null
+  action?: string | null
 }
 
 export class PostgresStepUpStore implements StepUpStore {
-  async issue(nonce: string, userId: string, expiresAt: Date): Promise<void> {
+  async issue(
+    nonce: string,
+    userId: string,
+    expiresAt: Date,
+    options: StepUpIssueOptions = {},
+  ): Promise<void> {
     await db('step_up_nonces').insert({
       nonce,
       user_id: userId,
       expires_at: expiresAt,
+      kind: options.kind ?? 'challenge',
+      action: options.action ?? null,
     })
   }
 
@@ -37,7 +59,7 @@ export class PostgresStepUpStore implements StepUpStore {
     const now = options.now ?? new Date()
     const query = db('step_up_nonces')
       .where({ nonce })
-      .where('expires_at', '>', now)
+      .where('expires_at', '>=', now)
 
     if (options.userId !== undefined) {
       query.where({ user_id: options.userId })
@@ -51,7 +73,21 @@ export class PostgresStepUpStore implements StepUpStore {
       )
     }
 
-    const deleted = await query.delete().returning(['nonce', 'user_id', 'expires_at']) as StepUpNonceRow[]
+    if (options.kind !== undefined) {
+      query.where({ kind: options.kind })
+    }
+
+    if (options.action !== undefined) {
+      query.where({ action: options.action })
+    }
+
+    const deleted = await query.delete().returning([
+      'nonce',
+      'user_id',
+      'expires_at',
+      'kind',
+      'action',
+    ]) as StepUpNonceRow[]
     const row = deleted[0]
     if (!row) {
       return null
@@ -61,6 +97,8 @@ export class PostgresStepUpStore implements StepUpStore {
       nonce: row.nonce,
       userId: row.user_id,
       expiresAt: row.expires_at instanceof Date ? row.expires_at : new Date(row.expires_at),
+      kind: row.kind === 'session' ? 'session' : 'challenge',
+      ...(row.action ? { action: row.action } : {}),
     }
   }
 
@@ -77,8 +115,19 @@ export class PostgresStepUpStore implements StepUpStore {
 export class InMemoryStepUpStore implements StepUpStore {
   private readonly nonces = new Map<string, StepUpNonce>()
 
-  async issue(nonce: string, userId: string, expiresAt: Date): Promise<void> {
-    this.nonces.set(nonce, { nonce, userId, expiresAt: new Date(expiresAt) })
+  async issue(
+    nonce: string,
+    userId: string,
+    expiresAt: Date,
+    options: StepUpIssueOptions = {},
+  ): Promise<void> {
+    this.nonces.set(nonce, {
+      nonce,
+      userId,
+      expiresAt: new Date(expiresAt),
+      kind: options.kind ?? 'challenge',
+      ...(options.action !== undefined ? { action: options.action } : {}),
+    })
   }
 
   async consume(nonce: string, options: StepUpConsumeOptions = {}): Promise<StepUpNonce | null> {
@@ -87,8 +136,10 @@ export class InMemoryStepUpStore implements StepUpStore {
 
     if (
       !entry ||
-      entry.expiresAt <= now ||
+      entry.expiresAt < now ||
       (options.userId !== undefined && entry.userId !== options.userId) ||
+      (options.kind !== undefined && entry.kind !== options.kind) ||
+      (options.action !== undefined && entry.action !== options.action) ||
       (options.maxRemainingAgeMs !== undefined &&
         entry.expiresAt.getTime() > now.getTime() + options.maxRemainingAgeMs)
     ) {

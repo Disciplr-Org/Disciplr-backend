@@ -2114,6 +2114,312 @@ registry.registerPath({
   },
 })
 
+// ==================== ORG MEMBERS & INVITATIONS ====================
+// Routes from src/routes/orgMembers.ts, mounted at /api/organizations.
+
+const OrgRoleSchema = z.enum(['owner', 'admin', 'member']).openapi({
+  description: 'Organization role',
+  example: 'member',
+})
+
+const OrgMemberSchema = registry.register(
+  'OrgMember',
+  z.object({
+    id: z.string().openapi({ example: 'membership_123' }),
+    user_id: z.string().openapi({ example: 'user_123' }),
+    organization_id: z.string().openapi({ example: 'org_123' }),
+    team_id: z.string().nullable().optional(),
+    role: OrgRoleSchema,
+    created_at: z.string().datetime().optional(),
+    updated_at: z.string().datetime().optional(),
+  }),
+)
+
+const OrgMemberPaginationSchema = registry.register(
+  'OrgMemberPagination',
+  z.intersection(PaginationCursor, z.object({
+    page: z.number().int().openapi({ example: 1 }),
+    pageSize: z.number().int().openapi({ example: 20 }),
+    total: z.number().int().openapi({ example: 42 }),
+    totalPages: z.number().int().openapi({ example: 3 }),
+  })),
+)
+
+const OrgInvitationSchema = registry.register(
+  'OrgInvitation',
+  z.object({
+    id: z.string().openapi({ example: 'invitation_123' }),
+    orgId: z.string().openapi({ example: 'org_123' }),
+    email: z.string().email().openapi({ example: 'invitee@example.com' }),
+    // Included when the invitation is created; omitted by the resend response.
+    role: OrgRoleSchema.optional(),
+    expiresAt: z.string().datetime(),
+    token: z.string().openapi({ description: 'One-time invitation token, returned only once.' }),
+  }),
+)
+
+const OrgMemberMutationResponseSchema = registry.register(
+  'OrgMemberMutationResponse',
+  z.object({
+    orgId: z.string().openapi({ example: 'org_123' }),
+    userId: z.string().openapi({ example: 'user_123' }),
+    role: OrgRoleSchema,
+  }),
+)
+
+const AddOrgMemberBodySchema = z.object({
+  userId: z.string().min(1, 'userId is required.').openapi({ example: 'user_123' }),
+  // The route defaults unknown values to `member`; the enum documents the
+  // accepted roles without rejecting payloads the handler accepts.
+  role: z.string().min(1).optional().openapi({ enum: ['owner', 'admin', 'member'], example: 'member' }),
+})
+
+const InviteOrgMemberBodySchema = z.object({
+  email: z
+    .string()
+    .regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'A valid email is required.')
+    .openapi({ example: 'invitee@example.com' }),
+  role: z.string().min(1).optional().openapi({ enum: ['owner', 'admin', 'member'], example: 'member' }),
+})
+
+const AcceptInvitationBodySchema = z.object({
+  token: z.string().min(1, 'token and userId are required.').openapi({ example: 'one_time_token' }),
+  userId: z.string().min(1, 'token and userId are required.').openapi({ example: 'user_123' }),
+})
+
+const ORG_MEMBER_USER_ID_PARAM = {
+  name: 'userId',
+  in: 'path' as const,
+  required: true,
+  schema: { type: 'string' as const, minLength: 1 },
+}
+
+const INVITATION_ID_PARAM = {
+  name: 'id',
+  in: 'path' as const,
+  required: true,
+  schema: { type: 'string' as const, minLength: 1 },
+}
+
+// GET /api/organizations/:orgId/members
+registry.registerPath({
+  method: 'get',
+  path: '/api/organizations/{orgId}/members',
+  summary: 'List organization members',
+  description: 'Offset-paginated membership roster. Requires any organization role.',
+  tags: ['Org Members'],
+  security: [{ bearerAuth: [] }],
+  parameters: [ORG_ID_PARAM, PAGE_PARAM, PAGE_SIZE_PARAM],
+  responses: {
+    200: jsonResponse('Paginated organization members', z.object({
+      members: z.array(OrgMemberSchema),
+      pagination: OrgMemberPaginationSchema,
+    })),
+    400: jsonResponse('Invalid pagination parameters', ErrorEnvelope),
+    401: jsonResponse('Authentication required', ErrorEnvelope),
+    403: jsonResponse('Caller is not a member of the organization', ErrorEnvelope),
+    500: jsonResponse('Failed to list members', ErrorEnvelope),
+  },
+})
+
+// POST /api/organizations/:orgId/members
+registry.registerPath({
+  method: 'post',
+  path: '/api/organizations/{orgId}/members',
+  summary: 'Add an organization member',
+  description: 'Owners and admins may add an existing user directly. Unknown roles default to member.',
+  tags: ['Org Members'],
+  security: [{ bearerAuth: [] }],
+  parameters: [ORG_ID_PARAM],
+  request: {
+    body: {
+      required: true,
+      content: { 'application/json': { schema: AddOrgMemberBodySchema } },
+    },
+  },
+  responses: {
+    201: jsonResponse('Member added', OrgMemberMutationResponseSchema),
+    400: jsonResponse('userId is required', ErrorEnvelope),
+    401: jsonResponse('Authentication required', ErrorEnvelope),
+    403: jsonResponse('Caller cannot add members', ErrorEnvelope),
+    409: jsonResponse('Membership already exists', ErrorEnvelope),
+  },
+})
+
+// DELETE /api/organizations/:orgId/members/:userId
+registry.registerPath({
+  method: 'delete',
+  path: '/api/organizations/{orgId}/members/{userId}',
+  summary: 'Remove an organization member',
+  description: 'Owners and admins may remove a member. The last admin cannot be removed.',
+  tags: ['Org Members'],
+  security: [{ bearerAuth: [] }],
+  parameters: [ORG_ID_PARAM, ORG_MEMBER_USER_ID_PARAM],
+  responses: {
+    200: jsonResponse('Member removed', z.object({
+      message: z.string().openapi({ example: 'Member removed.' }),
+      orgId: z.string(),
+      userId: z.string(),
+    })),
+    401: jsonResponse('Authentication required', ErrorEnvelope),
+    403: jsonResponse('Caller cannot remove members', ErrorEnvelope),
+    404: jsonResponse('Membership not found', ErrorEnvelope),
+    422: jsonResponse('Last admin cannot be removed', ErrorEnvelope),
+  },
+})
+
+// PATCH /api/organizations/:orgId/members/:userId/role
+registry.registerPath({
+  method: 'patch',
+  path: '/api/organizations/{orgId}/members/{userId}/role',
+  summary: "Change an organization member's role",
+  description: 'Only owners may change roles. Demoting the last admin is rejected.',
+  tags: ['Org Members'],
+  security: [{ bearerAuth: [] }],
+  parameters: [ORG_ID_PARAM, ORG_MEMBER_USER_ID_PARAM],
+  request: {
+    body: {
+      required: true,
+      content: {
+        'application/json': {
+          schema: z.object({ role: OrgRoleSchema }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: jsonResponse('Role updated', OrgMemberMutationResponseSchema),
+    400: jsonResponse('role must be one of: owner, admin, member', ErrorEnvelope),
+    401: jsonResponse('Authentication required', ErrorEnvelope),
+    403: jsonResponse('Only owners can change roles', ErrorEnvelope),
+    404: jsonResponse('Membership not found', ErrorEnvelope),
+    422: jsonResponse('Last admin cannot be demoted', ErrorEnvelope),
+  },
+})
+
+// POST /api/organizations/:orgId/transfer-ownership
+registry.registerPath({
+  method: 'post',
+  path: '/api/organizations/{orgId}/transfer-ownership',
+  summary: 'Transfer organization ownership',
+  description: 'Transfers ownership to another member and demotes the current owner to admin.',
+  tags: ['Org Members'],
+  security: [{ bearerAuth: [] }],
+  parameters: [ORG_ID_PARAM],
+  request: {
+    body: {
+      required: true,
+      content: {
+        'application/json': {
+          schema: z.object({
+            newOwnerId: z.string().min(1, 'newOwnerId is required.').openapi({ example: 'user_123' }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: jsonResponse('Ownership transferred', z.object({
+      message: z.string().openapi({ example: 'Ownership transferred.' }),
+      orgId: z.string(),
+      newOwnerId: z.string(),
+    })),
+    400: jsonResponse('newOwnerId is required', ErrorEnvelope),
+    401: jsonResponse('Authentication required', ErrorEnvelope),
+    403: jsonResponse('Only owners can transfer ownership', ErrorEnvelope),
+    422: jsonResponse('Transfer rejected', ErrorEnvelope),
+  },
+})
+
+// POST /api/organizations/:orgId/invitations
+registry.registerPath({
+  method: 'post',
+  path: '/api/organizations/{orgId}/invitations',
+  summary: 'Create an organization invitation',
+  description: 'Owners and admins may invite an email address. The raw token is returned only once.',
+  tags: ['Org Members'],
+  security: [{ bearerAuth: [] }],
+  parameters: [ORG_ID_PARAM],
+  request: {
+    body: {
+      required: true,
+      content: { 'application/json': { schema: InviteOrgMemberBodySchema } },
+    },
+  },
+  responses: {
+    201: jsonResponse('Invitation created', OrgInvitationSchema),
+    400: jsonResponse('A valid email is required', ErrorEnvelope),
+    401: jsonResponse('Authentication required', ErrorEnvelope),
+    403: jsonResponse('Caller cannot invite members', ErrorEnvelope),
+    500: jsonResponse('Failed to create invitation', ErrorEnvelope),
+  },
+})
+
+// POST /api/organizations/:orgId/invitations/:id/resend
+registry.registerPath({
+  method: 'post',
+  path: '/api/organizations/{orgId}/invitations/{id}/resend',
+  summary: 'Resend an organization invitation',
+  description: 'Issues a fresh one-time token for a pending invitation.',
+  tags: ['Org Members'],
+  security: [{ bearerAuth: [] }],
+  parameters: [ORG_ID_PARAM, INVITATION_ID_PARAM],
+  responses: {
+    200: jsonResponse('Invitation resent with a new token', OrgInvitationSchema),
+    401: jsonResponse('Authentication required', ErrorEnvelope),
+    403: jsonResponse('Caller cannot resend invitations', ErrorEnvelope),
+    404: jsonResponse('Invitation not found', ErrorEnvelope),
+    409: jsonResponse('Accepted invitations cannot be resent', ErrorEnvelope),
+    500: jsonResponse('Failed to resend invitation', ErrorEnvelope),
+  },
+})
+
+// DELETE /api/organizations/:orgId/invitations/:id
+registry.registerPath({
+  method: 'delete',
+  path: '/api/organizations/{orgId}/invitations/{id}',
+  summary: 'Revoke an organization invitation',
+  description: 'Owners and admins may revoke a pending invitation. Accepted invitations are immutable.',
+  tags: ['Org Members'],
+  security: [{ bearerAuth: [] }],
+  parameters: [ORG_ID_PARAM, INVITATION_ID_PARAM],
+  responses: {
+    200: jsonResponse('Invitation revoked', z.object({
+      id: z.string(),
+      orgId: z.string(),
+      email: z.string().email(),
+      revokedAt: z.string().datetime().nullable(),
+    })),
+    401: jsonResponse('Authentication required', ErrorEnvelope),
+    403: jsonResponse('Caller cannot revoke invitations', ErrorEnvelope),
+    404: jsonResponse('Invitation not found', ErrorEnvelope),
+    409: jsonResponse('Accepted invitations cannot be revoked', ErrorEnvelope),
+    500: jsonResponse('Failed to revoke invitation', ErrorEnvelope),
+  },
+})
+
+// POST /api/organizations/:orgId/invitations/accept
+registry.registerPath({
+  method: 'post',
+  path: '/api/organizations/{orgId}/invitations/accept',
+  summary: 'Accept an organization invitation',
+  description: 'Unauthenticated endpoint. The role comes from the stored invitation, not the request body.',
+  tags: ['Org Members'],
+  security: [],
+  parameters: [ORG_ID_PARAM],
+  request: {
+    body: {
+      required: true,
+      content: { 'application/json': { schema: AcceptInvitationBodySchema } },
+    },
+  },
+  responses: {
+    200: jsonResponse('Invitation accepted', OrgMemberMutationResponseSchema),
+    400: jsonResponse('token and userId are required, or the token is invalid/expired', ErrorEnvelope),
+    409: jsonResponse('Membership could not be created', ErrorEnvelope),
+  },
+})
+
 // ==================== ORG ANALYTICS ====================
 // Routes from src/routes/orgAnalytics.ts, mounted at /api/orgs
 // (and at the /api/organizations alias).

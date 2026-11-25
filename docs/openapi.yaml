@@ -96,29 +96,142 @@ components:
       properties:
         id:
           type: string
+        vaultId:
+          type: string
           format: uuid
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - vaultId
+        - title
+        - status
+        - createdAt
+        - updatedAt
+    MilestoneCreateRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+          maxLength: 2000
+        dueDate:
+          type: string
+        amount:
+          type: string
+        approvalThreshold:
+          type: integer
+          exclusiveMinimum: 0
+      required:
+        - title
+        - dueDate
+        - amount
+    MilestoneRecord:
+      type: object
+      properties:
+        id:
+          type: string
         vaultId:
           type: string
           format: uuid
         description:
           type: string
-        status:
-          type: string
-          enum:
-            - pending
-            - verified
+        verifierId:
+          type:
+            - string
+            - "null"
+        approvalThreshold:
+          type: integer
+        verified:
+          type: boolean
+        verifiedAt:
+          type:
+            - string
+            - "null"
+        verifiedBy:
+          type:
+            - string
+            - "null"
+        evidenceHash:
+          type:
+            - string
+            - "null"
         createdAt:
           type: string
-          format: date-time
-        verifiedAt:
+        dueDate:
+          type:
+            - string
+            - "null"
+        title:
           type: string
-          format: date-time
+        amount:
+          type: string
       required:
         - id
         - vaultId
         - description
-        - status
+        - verified
+        - verifiedAt
+        - verifiedBy
         - createdAt
+      additionalProperties: {}
+    MilestoneEvidenceRequest:
+      type: object
+      properties:
+        evidenceHash:
+          type: string
+          pattern: ^[0-9a-f]{32,128}$/i
+      required:
+        - evidenceHash
+    MilestoneApprovalRequest:
+      type: object
+      properties:
+        approvalStatus:
+          type: string
+          enum:
+            - approved
+            - rejected
+      required:
+        - approvalStatus
+    VerificationRequest:
+      type: object
+      properties:
+        targetId:
+          type: string
+          minLength: 1
+        result:
+          type: string
+          enum:
+            - approved
+            - rejected
+        disputed:
+          type: boolean
+        evidenceHash:
+          type: string
+          pattern: ^[0-9a-f]{32,128}$/i
+        evidenceReferenceUrl:
+          type: string
+          format: uri
+      required:
+        - targetId
+        - result
+        - evidenceHash
+        - evidenceReferenceUrl
+    BulkVerificationRequest:
+      type: array
+      items:
+        $ref: "#/components/schemas/VerificationRequest"
+      minItems: 1
+      maxItems: 100
     VerifierProfile:
       type: object
       properties:
@@ -650,6 +763,117 @@ components:
         - end_date
         - created_at
         - updated_at
+    OrgMember:
+      type: object
+      properties:
+        id:
+          type: string
+          example: membership_123
+        user_id:
+          type: string
+          example: user_123
+        organization_id:
+          type: string
+          example: org_123
+        team_id:
+          type:
+            - string
+            - "null"
+        role:
+          type: string
+          enum:
+            - owner
+            - admin
+            - member
+          description: Organization role
+          example: member
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - user_id
+        - organization_id
+        - role
+    OrgMemberPagination:
+      allOf:
+        - $ref: "#/components/schemas/PaginationCursor"
+        - type: object
+          properties:
+            page:
+              type: integer
+              example: 1
+            pageSize:
+              type: integer
+              example: 20
+            total:
+              type: integer
+              example: 42
+            totalPages:
+              type: integer
+              example: 3
+          required:
+            - page
+            - pageSize
+            - total
+            - totalPages
+    OrgInvitation:
+      type: object
+      properties:
+        id:
+          type: string
+          example: invitation_123
+        orgId:
+          type: string
+          example: org_123
+        email:
+          type: string
+          format: email
+          example: invitee@example.com
+        role:
+          type: string
+          enum:
+            - owner
+            - admin
+            - member
+          description: Organization role
+          example: member
+        expiresAt:
+          type: string
+          format: date-time
+        token:
+          type: string
+          description: One-time invitation token, returned only once.
+      required:
+        - id
+        - orgId
+        - email
+        - expiresAt
+        - token
+    OrgMemberMutationResponse:
+      type: object
+      properties:
+        orgId:
+          type: string
+          example: org_123
+        userId:
+          type: string
+          example: user_123
+        role:
+          type: string
+          enum:
+            - owner
+            - admin
+            - member
+          description: Organization role
+          example: member
+      required:
+        - orgId
+        - userId
+        - role
     OrgAnalytics:
       type: object
       properties:
@@ -1113,16 +1337,132 @@ paths:
             application/json:
               schema: {}
   /api/vaults/{vaultId}/milestones:
-    get:
-      summary: Get milestones for a vault
+    post:
+      operationId: createMilestone
+      summary: Create a milestone for a vault
+      description: Requires an authenticated vault owner and a valid wallet identity.
       tags:
         - Milestones
+      security:
+        - bearerAuth: []
       parameters:
         - name: vaultId
           in: path
           required: true
           schema:
             type: string
+            format: uuid
+          description: Vault identifier
+        - name: x-wallet-address
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: ^0x[a-fA-F0-9]{40}$
+        - name: x-network-id
+          in: header
+          required: true
+          schema:
+            type: string
+            enum:
+              - mainnet
+              - testnet
+              - devnet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MilestoneCreateRequest"
+      responses:
+        "201":
+          description: Milestone created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/MilestoneRecord"
+                  - type: object
+                    properties:
+                      idempotency:
+                        type: object
+                        properties:
+                          key:
+                            type:
+                              - string
+                              - "null"
+                          replayed:
+                            type: boolean
+                        required:
+                          - key
+                          - replayed
+                    required:
+                      - idempotency
+                    additionalProperties: {}
+        "400":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+    get:
+      operationId: listVaultMilestones
+      summary: Get milestones for a vault
+      tags:
+        - Milestones
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: vaultId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Vault identifier
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
       responses:
         "200":
           description: List of milestones
@@ -1137,6 +1477,976 @@ paths:
                       $ref: "#/components/schemas/Milestone"
                 required:
                   - milestones
+        "400":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/vaults/{vaultId}/milestones/{id}/verify:
+    patch:
+      operationId: verifyMilestone
+      summary: Verify a milestone
+      tags:
+        - Milestones
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: vaultId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Vault identifier
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^ms-[0-9]+-[a-z0-9]+$
+          description: Milestone identifier
+        - name: x-wallet-address
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: ^0x[a-fA-F0-9]{40}$
+        - name: x-network-id
+          in: header
+          required: true
+          schema:
+            type: string
+            enum:
+              - mainnet
+              - testnet
+              - devnet
+      responses:
+        "200":
+          description: Milestone verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  milestone:
+                    $ref: "#/components/schemas/MilestoneRecord"
+                  vaultCompleted:
+                    type: boolean
+                  idempotency:
+                    type: object
+                    properties:
+                      key:
+                        type:
+                          - string
+                          - "null"
+                      replayed:
+                        type: boolean
+                    required:
+                      - key
+                      - replayed
+                required:
+                  - milestone
+                  - vaultCompleted
+                  - idempotency
+        "400":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/vaults/{vaultId}/milestones/{id}/validate:
+    post:
+      operationId: validateMilestone
+      summary: Validate a milestone with evidence
+      tags:
+        - Milestones
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: vaultId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Vault identifier
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^ms-[0-9]+-[a-z0-9]+$
+          description: Milestone identifier
+        - name: x-wallet-address
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: ^0x[a-fA-F0-9]{40}$
+        - name: x-network-id
+          in: header
+          required: true
+          schema:
+            type: string
+            enum:
+              - mainnet
+              - testnet
+              - devnet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MilestoneEvidenceRequest"
+      responses:
+        "200":
+          description: Milestone validated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  milestone:
+                    $ref: "#/components/schemas/MilestoneRecord"
+                  vaultCompleted:
+                    type: boolean
+                  idempotency:
+                    type: object
+                    properties:
+                      key:
+                        type:
+                          - string
+                          - "null"
+                      replayed:
+                        type: boolean
+                    required:
+                      - key
+                      - replayed
+                required:
+                  - milestone
+                  - vaultCompleted
+                  - idempotency
+        "400":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/vaults/{vaultId}/milestones/{id}/approve:
+    post:
+      operationId: approveMilestone
+      summary: Record a verifier approval or rejection for a milestone
+      tags:
+        - Milestones
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: vaultId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Vault identifier
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^ms-[0-9]+-[a-z0-9]+$
+          description: Milestone identifier
+        - name: x-wallet-address
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: ^0x[a-fA-F0-9]{40}$
+        - name: x-network-id
+          in: header
+          required: true
+          schema:
+            type: string
+            enum:
+              - mainnet
+              - testnet
+              - devnet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MilestoneApprovalRequest"
+      responses:
+        "201":
+          description: Milestone approval recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  approval:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      milestoneId:
+                        type: string
+                      verifierUserId:
+                        type: string
+                      approvalStatus:
+                        type: string
+                        enum:
+                          - pending
+                          - approved
+                          - rejected
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                    required:
+                      - id
+                      - milestoneId
+                      - verifierUserId
+                      - approvalStatus
+                      - createdAt
+                      - updatedAt
+                  approvalProgress:
+                    type: object
+                    properties:
+                      approved:
+                        type: number
+                      rejected:
+                        type: number
+                      pending:
+                        type: number
+                      required:
+                        type: number
+                      isComplete:
+                        type: boolean
+                      isRejected:
+                        type: boolean
+                      approvalPercentage:
+                        type: number
+                    required:
+                      - approved
+                      - rejected
+                      - pending
+                      - required
+                      - isComplete
+                      - isRejected
+                      - approvalPercentage
+                  milestone:
+                    $ref: "#/components/schemas/MilestoneRecord"
+                  milestoneCompleted:
+                    type: boolean
+                  vaultCompleted:
+                    type: boolean
+                  idempotency:
+                    type: object
+                    properties:
+                      key:
+                        type:
+                          - string
+                          - "null"
+                      replayed:
+                        type: boolean
+                    required:
+                      - key
+                      - replayed
+                required:
+                  - approval
+                  - approvalProgress
+                  - milestone
+                  - milestoneCompleted
+                  - vaultCompleted
+                  - idempotency
+        "400":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/vaults/{vaultId}/milestones/{id}/approval-status:
+    get:
+      operationId: getMilestoneApprovalStatus
+      summary: Get milestone approval status
+      tags:
+        - Milestones
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: vaultId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Vault identifier
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^ms-[0-9]+-[a-z0-9]+$
+          description: Milestone identifier
+      responses:
+        "200":
+          description: Milestone and approval progress
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  milestone:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      vaultId:
+                        type: string
+                        format: uuid
+                      description:
+                        type: string
+                      approvalThreshold:
+                        type: number
+                    required:
+                      - id
+                      - vaultId
+                      - description
+                      - approvalThreshold
+                  approvalStatus:
+                    anyOf:
+                      - type: object
+                        properties:
+                          approved:
+                            type: number
+                          rejected:
+                            type: number
+                          pending:
+                            type: number
+                          required:
+                            type: number
+                          isComplete:
+                            type: boolean
+                          isRejected:
+                            type: boolean
+                          approvalPercentage:
+                            type: number
+                        required:
+                          - approved
+                          - rejected
+                          - pending
+                          - required
+                          - isComplete
+                          - isRejected
+                          - approvalPercentage
+                      - type: object
+                        properties:
+                          approvedCount:
+                            type: number
+                          approvalThreshold:
+                            type: number
+                          isApproved:
+                            type: boolean
+                          approvals:
+                            type: array
+                            items: {}
+                        required:
+                          - approvedCount
+                          - approvalThreshold
+                          - isApproved
+                          - approvals
+                required:
+                  - milestone
+                  - approvalStatus
+        "400":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/verifications:
+    post:
+      operationId: createVerification
+      summary: Record a verification decision
+      tags:
+        - Milestones
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerificationRequest"
+      responses:
+        "200":
+          description: Idempotent verification replay
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verification:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      verifierUserId:
+                        type: string
+                      targetId:
+                        type: string
+                      result:
+                        type: string
+                        enum:
+                          - approved
+                          - rejected
+                      evidenceHash:
+                        type:
+                          - string
+                          - "null"
+                      disputed:
+                        type: boolean
+                      timestamp:
+                        type: string
+                    required:
+                      - id
+                      - verifierUserId
+                      - targetId
+                      - result
+                      - evidenceHash
+                      - disputed
+                      - timestamp
+                  evidenceReference:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      verificationId:
+                        type: string
+                      evidenceHash:
+                        type: string
+                      referenceUrl:
+                        type: string
+                      expiresAt:
+                        type: string
+                      createdAt:
+                        type: string
+                    required:
+                      - id
+                      - verificationId
+                      - evidenceHash
+                      - referenceUrl
+                      - expiresAt
+                      - createdAt
+                  idempotency:
+                    type: object
+                    properties:
+                      key:
+                        type:
+                          - string
+                          - "null"
+                      replayed:
+                        type: boolean
+                    required:
+                      - key
+                      - replayed
+                required:
+                  - verification
+                  - evidenceReference
+        "201":
+          description: Verification recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verification:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      verifierUserId:
+                        type: string
+                      targetId:
+                        type: string
+                      result:
+                        type: string
+                        enum:
+                          - approved
+                          - rejected
+                      evidenceHash:
+                        type:
+                          - string
+                          - "null"
+                      disputed:
+                        type: boolean
+                      timestamp:
+                        type: string
+                    required:
+                      - id
+                      - verifierUserId
+                      - targetId
+                      - result
+                      - evidenceHash
+                      - disputed
+                      - timestamp
+                  evidenceReference:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      verificationId:
+                        type: string
+                      evidenceHash:
+                        type: string
+                      referenceUrl:
+                        type: string
+                      expiresAt:
+                        type: string
+                      createdAt:
+                        type: string
+                    required:
+                      - id
+                      - verificationId
+                      - evidenceHash
+                      - referenceUrl
+                      - expiresAt
+                      - createdAt
+                  idempotency:
+                    type: object
+                    properties:
+                      key:
+                        type:
+                          - string
+                          - "null"
+                      replayed:
+                        type: boolean
+                    required:
+                      - key
+                      - replayed
+                required:
+                  - verification
+                  - evidenceReference
+        "400":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "422":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+    get:
+      operationId: listVerifications
+      summary: List verifications
+      description: Admin-only list using offset pagination. Limit defaults to 100 and
+        is capped at 500.
+      tags:
+        - Milestones
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Paginated verification records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verifications:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        verifierUserId:
+                          type: string
+                        targetId:
+                          type: string
+                        result:
+                          type: string
+                          enum:
+                            - approved
+                            - rejected
+                        evidenceHash:
+                          type:
+                            - string
+                            - "null"
+                        disputed:
+                          type: boolean
+                        timestamp:
+                          type: string
+                      required:
+                        - id
+                        - verifierUserId
+                        - targetId
+                        - result
+                        - evidenceHash
+                        - disputed
+                        - timestamp
+                  pagination:
+                    type: object
+                    properties:
+                      limit:
+                        type: number
+                      offset:
+                        type: number
+                      count:
+                        type: number
+                      hasMore:
+                        type: boolean
+                    required:
+                      - limit
+                      - offset
+                      - count
+                      - hasMore
+                required:
+                  - verifications
+                  - pagination
+        "401":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/verifications/bulk:
+    post:
+      operationId: bulkCreateVerifications
+      summary: Record multiple verification decisions
+      description: Accepts between 1 and 100 items and returns per-item results,
+        including partial failures.
+      tags:
+        - Milestones
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkVerificationRequest"
+      responses:
+        "200":
+          description: Bulk verification results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        targetId:
+                          type: string
+                        success:
+                          type: boolean
+                        error:
+                          type: object
+                          properties:
+                            code:
+                              type: string
+                            message:
+                              type: string
+                          required:
+                            - code
+                            - message
+                        verification:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            verifierUserId:
+                              type: string
+                            targetId:
+                              type: string
+                            result:
+                              type: string
+                              enum:
+                                - approved
+                                - rejected
+                            evidenceHash:
+                              type:
+                                - string
+                                - "null"
+                            disputed:
+                              type: boolean
+                            timestamp:
+                              type: string
+                          required:
+                            - id
+                            - verifierUserId
+                            - targetId
+                            - result
+                            - evidenceHash
+                            - disputed
+                            - timestamp
+                        evidenceReference:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            verificationId:
+                              type: string
+                            evidenceHash:
+                              type: string
+                            referenceUrl:
+                              type: string
+                            expiresAt:
+                              type: string
+                            createdAt:
+                              type: string
+                          required:
+                            - id
+                            - verificationId
+                            - evidenceHash
+                            - referenceUrl
+                            - expiresAt
+                            - createdAt
+                      required:
+                        - targetId
+                        - success
+                  summary:
+                    type: object
+                    properties:
+                      total:
+                        type: number
+                      succeeded:
+                        type: number
+                      failed:
+                        type: number
+                    required:
+                      - total
+                      - succeeded
+                      - failed
+                required:
+                  - results
+                  - summary
+        "400":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: Request failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
   /api/jobs/enqueue:
     post:
       summary: Enqueue a background job
@@ -3287,6 +4597,608 @@ paths:
                     example: Internal server error
                 required:
                   - error
+  /api/organizations/{orgId}/members:
+    get:
+      summary: List organization members
+      description: Offset-paginated membership roster. Requires any organization role.
+      tags:
+        - Org Members
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Paginated organization members
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgMember"
+                  pagination:
+                    $ref: "#/components/schemas/OrgMemberPagination"
+                required:
+                  - members
+                  - pagination
+        "400":
+          description: Invalid pagination parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Caller is not a member of the organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: Failed to list members
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+    post:
+      summary: Add an organization member
+      description: Owners and admins may add an existing user directly. Unknown roles
+        default to member.
+      tags:
+        - Org Members
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId:
+                  type: string
+                  minLength: 1
+                  example: user_123
+                role:
+                  type: string
+                  minLength: 1
+                  enum:
+                    - owner
+                    - admin
+                    - member
+                  example: member
+              required:
+                - userId
+      responses:
+        "201":
+          description: Member added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgMemberMutationResponse"
+        "400":
+          description: userId is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Caller cannot add members
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: Membership already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/organizations/{orgId}/members/{userId}:
+    delete:
+      summary: Remove an organization member
+      description: Owners and admins may remove a member. The last admin cannot be removed.
+      tags:
+        - Org Members
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Member removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Member removed.
+                  orgId:
+                    type: string
+                  userId:
+                    type: string
+                required:
+                  - message
+                  - orgId
+                  - userId
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Caller cannot remove members
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Membership not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "422":
+          description: Last admin cannot be removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/organizations/{orgId}/members/{userId}/role:
+    patch:
+      summary: Change an organization member's role
+      description: Only owners may change roles. Demoting the last admin is rejected.
+      tags:
+        - Org Members
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role:
+                  type: string
+                  enum:
+                    - owner
+                    - admin
+                    - member
+                  description: Organization role
+                  example: member
+              required:
+                - role
+      responses:
+        "200":
+          description: Role updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgMemberMutationResponse"
+        "400":
+          description: "role must be one of: owner, admin, member"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Only owners can change roles
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Membership not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "422":
+          description: Last admin cannot be demoted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/organizations/{orgId}/transfer-ownership:
+    post:
+      summary: Transfer organization ownership
+      description: Transfers ownership to another member and demotes the current owner
+        to admin.
+      tags:
+        - Org Members
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                newOwnerId:
+                  type: string
+                  minLength: 1
+                  example: user_123
+              required:
+                - newOwnerId
+      responses:
+        "200":
+          description: Ownership transferred
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Ownership transferred.
+                  orgId:
+                    type: string
+                  newOwnerId:
+                    type: string
+                required:
+                  - message
+                  - orgId
+                  - newOwnerId
+        "400":
+          description: newOwnerId is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Only owners can transfer ownership
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "422":
+          description: Transfer rejected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/organizations/{orgId}/invitations:
+    post:
+      summary: Create an organization invitation
+      description: Owners and admins may invite an email address. The raw token is
+        returned only once.
+      tags:
+        - Org Members
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  pattern: ^[^\s@]+@[^\s@]+\.[^\s@]+$
+                  example: invitee@example.com
+                role:
+                  type: string
+                  minLength: 1
+                  enum:
+                    - owner
+                    - admin
+                    - member
+                  example: member
+              required:
+                - email
+      responses:
+        "201":
+          description: Invitation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgInvitation"
+        "400":
+          description: A valid email is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Caller cannot invite members
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: Failed to create invitation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/organizations/{orgId}/invitations/{id}/resend:
+    post:
+      summary: Resend an organization invitation
+      description: Issues a fresh one-time token for a pending invitation.
+      tags:
+        - Org Members
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Invitation resent with a new token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgInvitation"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Caller cannot resend invitations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Invitation not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: Accepted invitations cannot be resent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: Failed to resend invitation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/organizations/{orgId}/invitations/{id}:
+    delete:
+      summary: Revoke an organization invitation
+      description: Owners and admins may revoke a pending invitation. Accepted
+        invitations are immutable.
+      tags:
+        - Org Members
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Invitation revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  orgId:
+                    type: string
+                  email:
+                    type: string
+                    format: email
+                  revokedAt:
+                    type:
+                      - string
+                      - "null"
+                    format: date-time
+                required:
+                  - id
+                  - orgId
+                  - email
+                  - revokedAt
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Caller cannot revoke invitations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Invitation not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: Accepted invitations cannot be revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: Failed to revoke invitation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/organizations/{orgId}/invitations/accept:
+    post:
+      summary: Accept an organization invitation
+      description: Unauthenticated endpoint. The role comes from the stored
+        invitation, not the request body.
+      tags:
+        - Org Members
+      security: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: org_123
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                  minLength: 1
+                  example: one_time_token
+                userId:
+                  type: string
+                  minLength: 1
+                  example: user_123
+              required:
+                - token
+                - userId
+      responses:
+        "200":
+          description: Invitation accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgMemberMutationResponse"
+        "400":
+          description: token and userId are required, or the token is invalid/expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: Membership could not be created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
   /api/orgs/{orgId}/analytics/risk:
     get:
       summary: Get org risk analytics

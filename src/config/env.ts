@@ -145,6 +145,13 @@ export const envSchema = z
           parts.length > 0 && parts.every((p) => p.trim().startsWith("http"))
         );
       }, "CORS_ORIGINS cannot be empty"),
+
+    // ── WebAuthn step-up ───────────────────────────────────────
+    // RP_ID defaults to the hostname of WEBAUTHN_ORIGIN (or the first
+    // concrete CORS origin). WEBAUTHN_ORIGIN should be the exact browser
+    // origin recorded in clientDataJSON during registration and assertion.
+    WEBAUTHN_ORIGIN: httpUrl().optional(),
+    WEBAUTHN_RP_ID: z.string().min(1).optional(),
     CONTRACT_ADDRESS: z.string().optional(),
     START_LEDGER: nonNegativeInt(0).optional(),
     RETRY_MAX_ATTEMPTS: nonNegativeInt(3),

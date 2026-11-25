@@ -47,6 +47,22 @@ Endpoint: `POST /api/auth/register`
 - High-impact admin actions may require a fresh step-up assertion before proceeding.
 - Step-up challenge nonces are stored in PostgreSQL and consumed atomically, so they remain single-use across service instances. The `sessions.cleanup` job also removes expired challenge nonces.
 
+## WebAuthn Step-Up Verification
+
+Endpoints:
+
+- `POST /api/auth/webauthn/challenge` — issues a challenge nonce, optionally bound to an `action`.
+- `POST /api/auth/webauthn/assert` — verifies an assertion and returns a step-up session id.
+
+`AuthService.verifyStepUpAssertion()` validates the complete assertion before issuing a session:
+
+1. The challenge nonce must exist for the authenticated user, be unexpired, and be of kind `challenge`. It is consumed atomically, including on failure.
+2. `clientDataJSON.type` must be `webauthn.get`, its `challenge` must match the issued nonce, and its `origin` must match the configured `WEBAUTHN_ORIGIN` (or the first concrete `CORS_ORIGINS` entry). Cross-origin assertions are rejected.
+3. `authenticatorData.rpIdHash` must equal `SHA256(WEBAUTHN_RP_ID)`, and both the user-presence (`UP`) and user-verification (`UV`) flags must be set.
+4. The signature is verified over `authenticatorData || SHA256(clientDataJSON)` using the public key read from the `webauthn_credentials` row. Request-supplied key material is never trusted. PEM SPKI, DER SPKI, and COSE_Key encodings are supported.
+5. The authenticator counter must increase. The counter is updated with an atomic compare-and-set (`counter < newCounter`), so equal counters, regressions, and concurrent replays are rejected.
+6. A new single-use session is issued and bound to the user and the challenge's action. A raw challenge nonce is never a valid step-up session id; pass the returned `stepUpSessionId` in `X-Step-Up-Session-Id`.
+
 ## Breached Passwords & Refresh Reuse Protections
 
 - **Breached password rejection:** When enabled via `AUTH_BREACHED_PASSWORDS` (comma-separated, case-insensitive list) or `AUTH_BREACHED_PASSWORDS_ENABLED`, the server rejects registration and password-change requests that match known-breached passwords. Rejections emit a security audit event but never log raw passwords.

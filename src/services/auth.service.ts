@@ -4,12 +4,178 @@ import { hashPassword, comparePassword, generateAccessToken, generateRefreshToke
 import { createAuditLog } from '../lib/audit-logs.js'
 import { RegisterInput, LoginInput } from '../lib/validation.js'
 import { UserRole } from '../types/user.js'
-import { randomUUID } from 'node:crypto'
+import {
+  randomUUID,
+  createHash,
+  createPublicKey,
+  verify as verifySignature,
+  type KeyObject,
+} from 'node:crypto'
 import { AppError } from '../middleware/errorHandler.js'
 import { recordSession, revokeAllUserSessions } from './session.js'
 import { getStepUpStore } from './stepUpStore.js'
 
 const STEP_UP_TTL_SECONDS = 5 * 60
+
+export interface VerifyStepUpAssertionInput {
+  nonce: string
+  userId: string
+  credentialId: string
+  clientDataJSON: string
+  authenticatorData: string
+  signature: string
+  /** Expected browser origin. Defaults to WebAuthn/CORS configuration. */
+  origin?: string
+}
+
+export interface VerifyStepUpAssertionResult {
+  stepUpSessionId: string | null
+  reason?: string
+}
+
+interface CborCursor {
+  offset: number
+}
+
+/**
+ * Minimal CBOR decoder for COSE_Key values emitted by WebAuthn authenticators.
+ * Only the integer/byte-string/map forms used by EC2 keys are needed here.
+ */
+function decodeCbor(buf: Buffer, cursor: CborCursor): unknown {
+  if (cursor.offset >= buf.length) throw new Error('Malformed CBOR')
+  const initial = buf[cursor.offset++]
+  const major = initial >> 5
+  const additional = initial & 0x1f
+
+  const readBytes = (count: number): number => {
+    if (count <= 0 || cursor.offset + count > buf.length) throw new Error('Malformed CBOR')
+    let value = 0
+    for (let i = 0; i < count; i += 1) {
+      value = value * 256 + buf[cursor.offset++]
+    }
+    return value
+  }
+
+  const argument = (): number => {
+    if (additional < 24) return additional
+    if (additional === 24) return readBytes(1)
+    if (additional === 25) return readBytes(2)
+    if (additional === 26) return readBytes(4)
+    throw new Error('Unsupported CBOR encoding')
+  }
+
+  switch (major) {
+    case 0:
+      return argument()
+    case 1:
+      return -1 - argument()
+    case 2: {
+      const length = argument()
+      if (cursor.offset + length > buf.length) throw new Error('Malformed CBOR')
+      const value = buf.subarray(cursor.offset, cursor.offset + length)
+      cursor.offset += length
+      return Buffer.from(value)
+    }
+    case 3: {
+      const length = argument()
+      if (cursor.offset + length > buf.length) throw new Error('Malformed CBOR')
+      const value = buf.subarray(cursor.offset, cursor.offset + length).toString('utf8')
+      cursor.offset += length
+      return value
+    }
+    case 4: {
+      const length = argument()
+      const values: unknown[] = []
+      for (let i = 0; i < length; i += 1) values.push(decodeCbor(buf, cursor))
+      return values
+    }
+    case 5: {
+      const length = argument()
+      const entries = new Map<unknown, unknown>()
+      for (let i = 0; i < length; i += 1) {
+        const key = decodeCbor(buf, cursor)
+        entries.set(key, decodeCbor(buf, cursor))
+      }
+      return entries
+    }
+    default:
+      throw new Error('Unsupported CBOR type')
+  }
+}
+
+/** Parse the credential public key from storage (PEM, DER SPKI, or COSE_Key). */
+function storedCredentialPublicKey(publicKey: string): KeyObject {
+  const stored = publicKey.trim()
+  if (!stored) throw new Error('Stored credential has no public key')
+
+  if (stored.startsWith('-----BEGIN')) {
+    return createPublicKey(stored)
+  }
+
+  const bytes = Buffer.from(stored, 'base64url')
+  try {
+    return createPublicKey({ key: bytes, format: 'der', type: 'spki' })
+  } catch {
+    // Not DER SPKI — fall through to the COSE_Key representation.
+  }
+
+  const cose = decodeCbor(bytes, { offset: 0 })
+  if (!(cose instanceof Map)) throw new Error('Unsupported stored credential public key')
+
+  const kty = cose.get(1)
+  const alg = cose.get(3)
+  const crv = cose.get(-1)
+  const x = cose.get(-2)
+  const y = cose.get(-3)
+
+  if (kty !== 2 || crv !== 1 || !Buffer.isBuffer(x) || !Buffer.isBuffer(y)) {
+    throw new Error('Unsupported stored credential public key')
+  }
+  if (alg !== undefined && alg !== -7) {
+    throw new Error('Unsupported WebAuthn signature algorithm')
+  }
+
+  return createPublicKey({
+    key: {
+      kty: 'EC',
+      crv: 'P-256',
+      x: x.toString('base64url'),
+      y: y.toString('base64url'),
+    },
+    format: 'jwk',
+  })
+}
+
+const normalizeOrigin = (origin: string): string => origin.trim().replace(/\/+$/, '')
+
+/** Resolve the exact browser origin allowed in WebAuthn clientDataJSON. */
+export function getWebAuthnOrigin(): string {
+  try {
+    const env = getEnv()
+    if (env.WEBAUTHN_ORIGIN) return normalizeOrigin(env.WEBAUTHN_ORIGIN)
+    if (env.CORS_ORIGINS && env.CORS_ORIGINS !== '*') {
+      return normalizeOrigin(env.CORS_ORIGINS.split(',')[0].trim())
+    }
+  } catch {
+    // Env may not be initialised in unit tests; fall back to process.env.
+  }
+
+  const configured = process.env.WEBAUTHN_ORIGIN ?? process.env.CORS_ORIGINS?.split(',')[0]?.trim()
+  if (!configured || configured === '*') throw new Error('WebAuthn origin is not configured')
+  return normalizeOrigin(configured)
+}
+
+/** Resolve the relying-party id whose SHA-256 hash is embedded in authenticatorData. */
+export function getWebAuthnRpId(origin = getWebAuthnOrigin()): string {
+  try {
+    const env = getEnv()
+    if (env.WEBAUTHN_RP_ID) return env.WEBAUTHN_RP_ID
+  } catch {
+    // Env may not be initialised in unit tests; fall back to process.env.
+  }
+  if (process.env.WEBAUTHN_RP_ID) return process.env.WEBAUTHN_RP_ID
+  return new URL(origin).hostname
+}
 
 export class AuthService {
     private static async emitSecurityAudit(action: string, targetType: string, targetId: string, metadata: Record<string, unknown>, actorUserId = 'system') {
@@ -335,25 +501,158 @@ export class AuthService {
     static async issueStepUpChallenge(userId: string, action?: string) {
         const nonce = randomUUID()
         const expiresAt = new Date(Date.now() + STEP_UP_TTL_SECONDS * 1000)
-        await getStepUpStore().issue(nonce, userId, expiresAt)
+        await getStepUpStore().issue(nonce, userId, expiresAt, {
+            kind: 'challenge',
+            ...(action !== undefined ? { action } : {}),
+        })
 
         return {
             nonce,
             expiresAt: expiresAt.getTime(),
             ttlSeconds: STEP_UP_TTL_SECONDS,
             challenge: 'webauthn-step-up',
+            ...(action !== undefined ? { action } : {}),
         }
     }
 
+    /**
+     * Create a verified step-up session. Only `verifyStepUpAssertion` should
+     * call this in production; it is public so binding tests can exercise
+     * session behaviour without a hardware authenticator.
+     */
+    static async createStepUpSession(userId: string, action?: string, ttlSeconds = STEP_UP_TTL_SECONDS) {
+        const sessionId = randomUUID()
+        const expiresAt = new Date(Date.now() + ttlSeconds * 1000)
+        await getStepUpStore().issue(sessionId, userId, expiresAt, {
+            kind: 'session',
+            ...(action !== undefined ? { action } : {}),
+        })
+
+        return { sessionId, expiresAt: expiresAt.getTime(), ttlSeconds }
+    }
+
+    /** Consume a challenge nonce. Kept for backwards-compatible callers/tests. */
     static async recordStepUpAssertion(nonce: string, userId: string) {
         return (await getStepUpStore().consume(nonce, { userId })) !== null
     }
 
-    static async validateStepUpSession(sessionId: string, maxAgeSeconds = STEP_UP_TTL_SECONDS) {
+    /**
+     * Consume a verified step-up session. A single extra argument may be
+     * either an expected user id or an expected action (legacy middleware
+     * calls pass the action here); when both are supplied they are treated as
+     * userId then action.
+     */
+    static async validateStepUpSession(
+        sessionId: string,
+        maxAgeSeconds = STEP_UP_TTL_SECONDS,
+        expectedUserIdOrAction?: string,
+        expectedAction?: string,
+    ) {
         const entry = await getStepUpStore().consume(sessionId, {
+            kind: 'session',
             maxRemainingAgeMs: maxAgeSeconds * 1000,
         })
-        return entry ? { userId: entry.userId, sessionId } : null
+        if (!entry) return null
+
+        if (expectedUserIdOrAction !== undefined) {
+            if (expectedAction !== undefined) {
+                if (entry.userId !== expectedUserIdOrAction || entry.action !== expectedAction) {
+                    return null
+                }
+            } else if (entry.userId !== expectedUserIdOrAction && entry.action !== expectedUserIdOrAction) {
+                return null
+            }
+        }
+
+        return { userId: entry.userId, sessionId }
+    }
+
+    /**
+     * Verify a WebAuthn assertion against the credential stored for the user
+     * and exchange it for a single-use, action-bound step-up session.
+     *
+     * The credential public key is always read from storage; request-supplied
+     * key material is neither trusted nor accepted.
+     */
+    static async verifyStepUpAssertion(
+        input: VerifyStepUpAssertionInput,
+    ): Promise<VerifyStepUpAssertionResult> {
+        const reject = (reason: string): VerifyStepUpAssertionResult => ({
+            stepUpSessionId: null,
+            reason,
+        })
+
+        try {
+            if (!input.nonce || !input.userId || !input.credentialId) {
+                return reject('Missing assertion fields')
+            }
+
+            // Consume the challenge first so a failed assertion cannot be
+            // replayed with a different signature or origin.
+            const challenge = await getStepUpStore().consume(input.nonce, {
+                userId: input.userId,
+                kind: 'challenge',
+            })
+            if (!challenge) return reject('Invalid or expired challenge')
+
+            const expectedOrigin = input.origin ?? getWebAuthnOrigin()
+            const rpId = getWebAuthnRpId(expectedOrigin)
+
+            const clientDataBytes = Buffer.from(input.clientDataJSON ?? '', 'base64url')
+            let clientData: { type?: unknown; challenge?: unknown; origin?: unknown; crossOrigin?: unknown }
+            try {
+                clientData = JSON.parse(clientDataBytes.toString('utf8'))
+            } catch {
+                return reject('Malformed clientDataJSON')
+            }
+
+            if (clientData.type !== 'webauthn.get') return reject('Unexpected clientData type')
+            const expectedChallenge = Buffer.from(challenge.nonce, 'utf8').toString('base64url')
+            if (clientData.challenge !== expectedChallenge) return reject('Challenge mismatch')
+            if (clientData.origin !== expectedOrigin) return reject('Origin mismatch')
+            if (clientData.crossOrigin === true) return reject('Cross-origin assertion rejected')
+
+            const authenticatorData = Buffer.from(input.authenticatorData ?? '', 'base64url')
+            if (authenticatorData.length < 37) return reject('Malformed authenticator data')
+            const expectedRpIdHash = createHash('sha256').update(rpId).digest()
+            if (!authenticatorData.subarray(0, 32).equals(expectedRpIdHash)) {
+                return reject('RP ID hash mismatch')
+            }
+
+            const flags = authenticatorData[32]
+            // UP (user presence) and UV (user verification) are both required
+            // for step-up; backup bits are intentionally allowed.
+            if ((flags & 0x05) !== 0x05) return reject('User presence/verification flags not set')
+
+            const counter = authenticatorData.readUInt32BE(33)
+
+            const rows = await getPrisma().$queryRaw<{ user_id: string; public_key: string }[]>`
+                SELECT "user_id", "public_key" FROM "webauthn_credentials"
+                WHERE "credential_id" = ${input.credentialId}
+                LIMIT 1
+            `
+            const credential = rows[0]
+            if (!credential || credential.user_id !== input.userId) {
+                return reject('Credential not registered for this user')
+            }
+
+            const publicKey = storedCredentialPublicKey(credential.public_key)
+            const clientDataHash = createHash('sha256').update(clientDataBytes).digest()
+            const signedData = Buffer.concat([authenticatorData, clientDataHash])
+            const signature = Buffer.from(input.signature ?? '', 'base64url')
+            if (!verifySignature('sha256', signedData, publicKey, signature)) {
+                return reject('Invalid signature')
+            }
+
+            // Atomic compare-and-set inside verifyWebAuthnAssertion rejects
+            // equal/regressed counters and concurrent replays.
+            await this.verifyWebAuthnAssertion(input.credentialId, counter)
+
+            const session = await this.createStepUpSession(input.userId, challenge.action)
+            return { stepUpSessionId: session.sessionId }
+        } catch {
+            return reject('Assertion verification failed')
+        }
     }
 
     static async registerWebAuthnCredential(userId: string, credentialId: string, publicKey: string) {
@@ -387,11 +686,15 @@ export class AuthService {
             throw new Error('Counter regression detected: possible cloned authenticator')
         }
 
-        await getPrisma().$executeRaw`
+        const updated = await getPrisma().$executeRaw`
             UPDATE "webauthn_credentials"
             SET "counter" = ${newCounter}, "last_used_at" = CURRENT_TIMESTAMP
-            WHERE "credential_id" = ${credentialId}
+            WHERE "credential_id" = ${credentialId} AND "counter" < ${newCounter}
         `
+
+        if (updated === 0) {
+            throw new Error('Counter regression detected: possible cloned authenticator')
+        }
 
         return { credentialId, counter: newCounter }
     }

@@ -17,7 +17,7 @@ export const requireStepUp = (maxAgeSeconds = 300, actionResolver?: (req: Reques
     }
 
     const action = actionResolver ? actionResolver(req) : undefined
-    const verifiedSession = await AuthService.validateStepUpSession(sessionId, maxAgeSeconds, action)
+    const verifiedSession = await AuthService.validateStepUpSession(sessionId, maxAgeSeconds, userId, action)
     if (!verifiedSession || verifiedSession.userId !== userId) {
       return res.status(401).json({
         error: 'Step-up authentication required',
