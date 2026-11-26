@@ -38,12 +38,8 @@ module.exports = {
     // bun:test / mock.module()
     "<rootDir>/api/__tests__/evidence.test.mjs",
     "<rootDir>/api/__tests__/pagination.test.mjs",
-    "<rootDir>/src/repositories/etlBatchRepository.test.ts",
-    "<rootDir>/src/tests/email.injection.test.ts",
     "<rootDir>/src/tests/privacy-logger.allowlist.test.ts",
     "<rootDir>/tests/multiVerifier.test.ts",
-    "<rootDir>/src/routes/auth.users.test.ts",
-    "<rootDir>/src/routes/vaults.timeline.test.ts",
     // node:test
     "<rootDir>/src/tests/idempotency.conflict.test.ts",
     "<rootDir>/src/tests/vaultValidation.destination.test.ts",

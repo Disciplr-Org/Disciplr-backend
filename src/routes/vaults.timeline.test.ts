@@ -1,6 +1,7 @@
+import { describe, expect, it, jest } from '@jest/globals'
 
 // 1. Force Bun to intercept the Knex DB Knex instance table calls
-mock.module("../db/index.js", () => {
+jest.unstable_mockModule("../db/index.js", () => {
   const dbMock = (table: string) => {
     if (table === 'transactions') {
       return {
@@ -26,7 +27,7 @@ mock.module("../db/index.js", () => {
 });
 
 // 2. Mock the Vault Storage service layout
-mock.module('../services/vaultStore.js', () => ({
+jest.unstable_mockModule('../services/vaultStore.js', () => ({
   getVaultById: (vaultId: string) => {
     if (vaultId === 'vault_123') {
       return Promise.resolve({ id: "vault_123", orgId: "correct_org", creator: "correct_user" });
