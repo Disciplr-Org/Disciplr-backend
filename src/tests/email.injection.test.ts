@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from "bun:test";
+import { describe, it, expect, jest } from "@jest/globals";
 import { EmailNotificationProvider } from "../services/notifications/email.provider.js";
 
 describe("EmailNotificationProvider Injection and Sanitization", () => {
@@ -21,7 +21,7 @@ describe("EmailNotificationProvider Injection and Sanitization", () => {
 
   it("should strip CRLF characters from the subject to prevent header injection", async () => {
     const provider = new EmailNotificationProvider();
-    const mockSend = mock(() => Promise.resolve(undefined));
+    const mockSend = jest.fn(() => Promise.resolve(undefined));
     // @ts-expect-error - access private performSend
     provider.performSend = mockSend;
 
@@ -32,7 +32,7 @@ describe("EmailNotificationProvider Injection and Sanitization", () => {
     );
 
     expect(mockSend).toHaveBeenCalledTimes(1);
-    const args = mockSend.mock.calls[0];
+    const args = (mockSend.mock.calls as unknown[][])[0];
     const sanitizedSubject = args[1];
     
     // Subject should have CRLF replaced with spaces
@@ -43,7 +43,7 @@ describe("EmailNotificationProvider Injection and Sanitization", () => {
 
   it("should escape HTML special characters in the body to prevent HTML/script injection", async () => {
     const provider = new EmailNotificationProvider();
-    const mockSend = mock(() => Promise.resolve(undefined));
+    const mockSend = jest.fn(() => Promise.resolve(undefined));
     // @ts-expect-error - access private performSend
     provider.performSend = mockSend;
 
@@ -51,7 +51,7 @@ describe("EmailNotificationProvider Injection and Sanitization", () => {
     await provider.send("test@example.com", "Subject", maliciousBody);
 
     expect(mockSend).toHaveBeenCalledTimes(1);
-    const args = mockSend.mock.calls[0];
+    const args = (mockSend.mock.calls as unknown[][])[0];
     const htmlBody = args[3]; // The 4th argument passed to performSend is the htmlBody
 
     // The script tags and special chars should be escaped in the HTML body
@@ -64,7 +64,7 @@ describe("EmailNotificationProvider Injection and Sanitization", () => {
 
   it("should render a benign body correctly", async () => {
     const provider = new EmailNotificationProvider();
-    const mockSend = mock(() => Promise.resolve(undefined));
+    const mockSend = jest.fn(() => Promise.resolve(undefined));
     // @ts-expect-error - access private performSend
     provider.performSend = mockSend;
 
@@ -72,7 +72,7 @@ describe("EmailNotificationProvider Injection and Sanitization", () => {
     await provider.send("test@example.com", "Subject", benignBody);
 
     expect(mockSend).toHaveBeenCalledTimes(1);
-    const args = mockSend.mock.calls[0];
+    const args = (mockSend.mock.calls as unknown[][])[0];
     const htmlBody = args[3];
 
     expect(htmlBody).toContain(benignBody);

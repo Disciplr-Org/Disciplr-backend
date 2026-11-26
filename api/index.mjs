@@ -109,6 +109,7 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
   }))
 
   router.post('/vaults', wrap(withIdempotency('vault.create', async (req, res) => {
+    const s = await getStore()
     const testNow = req._now || req.query.now || req.headers['x-test-now']
     const nowForValidation = testNow ? new Date(testNow) : new Date()
     const validation = validateCreateVault(req.body, { now: nowForValidation })
@@ -120,7 +121,6 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
     const id = 'vault-' + hex(6)
     validData.milestones.forEach((m, i) => { m.id = `${id}-m${i + 1}`; delete m._i })
     const now = new Date().toISOString()
-    const s = await getStore()
     const chain = isEnabled()
     const vault = {
       id,

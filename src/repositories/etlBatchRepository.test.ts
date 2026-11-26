@@ -1,9 +1,9 @@
 import crypto from 'node:crypto'
 import knex, { Knex } from 'knex'
-import { beforeAll, afterAll, beforeEach, describe, expect, it } from 'bun:test'
+import { beforeAll, afterAll, beforeEach, describe, expect, it } from '@jest/globals'
 import { ETLBatchRepository } from './etlBatchRepository.js'
 
-const TEST_DB_URL = process.env.DATABASE_URL
+const TEST_DB_URL = process.env.TEST_DB_URL || process.env.TEST_DATABASE_URL
 
 function uuid(seed: number): string {
   const hex = seed.toString(16).padStart(12, '0')
