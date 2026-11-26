@@ -45,7 +45,6 @@ module.exports = {
     "<rootDir>/src/routes/auth.users.test.ts",
     "<rootDir>/src/routes/vaults.timeline.test.ts",
     // node:test
-    "<rootDir>/src/tests/idempotency.conflict.test.ts",
     "<rootDir>/src/tests/vaultValidation.destination.test.ts",
     "<rootDir>/src/tests/apiKeyScopes.test.ts",
     "<rootDir>/src/tests/apiKeys.usageAnalytics.test.ts",
