@@ -437,6 +437,5 @@ curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
 | Horizon listener stalls; slash backlog builds | [horizon-stall.md](runbooks/horizon-stall.md) |
 | Persisted export jobs fail and enter the export DLQ | [export-dlq.md](runbooks/export-dlq.md) |
 | Settlement operations remain pending/submitted or fail | [settlement-stuck.md](runbooks/settlement-stuck.md) |
-| Persisted export jobs fail and enter the export DLQ | [export-dlq.md](runbooks/export-dlq.md) |
 | Background jobs dead-letter or the queue backs up | [jobs-dead-letters.md](runbooks/jobs-dead-letters.md) |
 | Webhook deliveries dead-letter or circuit breaker trips | [webhook-dead-letters.md](runbooks/webhook-dead-letters.md) |

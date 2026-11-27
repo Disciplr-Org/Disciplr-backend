@@ -2,8 +2,6 @@ node_modules/
 package-lock.json
 dist
 *.local
-.env
-.env.*
 !.env.example
 .DS_Store
 
@@ -11,5 +9,5 @@ dist
 coverage/
 .opencode
 .vercel
-.env*
 data/*.db*
+config.bat
