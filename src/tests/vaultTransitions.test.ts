@@ -16,8 +16,8 @@ import {
   resolveDispute,
   setTestVaults,
   resetTestVaults,
+  type Vault,
 } from "../services/vaultTransitions.js";
-import type { Vault } from "../routes/vaults.js";
 import { UserRole } from "../types/user.js";
 
 type VaultAction =

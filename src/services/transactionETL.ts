@@ -5,16 +5,46 @@ import { getSorobanConfig, getSorobanClient, type OnChainVaultState } from './so
 import { logVaultDriftAnomaly } from '../security/abuse-monitor.js'
 import { CheckpointStore } from './checkpointStore.js'
 
+/** Strict UUID v4 regex — also matches vault_<uuid> topic format. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+const extractVaultId = (topic: string): string | null => {
+  if (topic.startsWith('vault_')) {
+    const candidate = topic.slice('vault_'.length)
+    return UUID_RE.test(candidate) ? candidate : null
+  }
+  return UUID_RE.test(topic) ? topic : null
+}
+
+const logETL = (level: 'info' | 'warn' | 'error', event: string, data: Record<string, unknown> = {}): void => {
+  const entry = {
+    level,
+    service: 'disciplr-backend',
+    component: 'transactionETL',
+    event,
+    ts: new Date().toISOString(),
+    ...data,
+  }
+  if (level === 'error') {
+    console.error(JSON.stringify(entry))
+  } else {
+    console.log(JSON.stringify(entry))
+  }
+}
+
 const ETL_CHECKPOINT_KEY = '__TRANSACTION_ETL_GLOBAL__'
 
 export class TransactionETLService {
   private server: Horizon.Server
   private config: ETLConfig
   private readonly STELLAR_EXPLORER_BASE = 'https://stellar.expert/explorer/public/tx'
+  /** Running count of event-lookup failures for the current ETL run. */
+  eventLookupErrors = 0
 
   constructor(config: ETLConfig) {
     this.config = config
     this.server = new Horizon.Server(config.horizonUrl)
+    this.eventLookupErrors = 0
   }
 
   /**
@@ -25,6 +55,7 @@ export class TransactionETLService {
    */
   async runETL(signal?: AbortSignal, batchId?: string): Promise<void> {
     TransactionETLService.checkAbort(signal)
+    this.eventLookupErrors = 0
     console.log(
       `Starting Transaction ETL process...${batchId ? ` (batch ${batchId})` : ''}`,
     )
@@ -41,6 +72,11 @@ export class TransactionETLService {
       await this.incrementalSync(signal)
 
       console.log('ETL process completed successfully')
+      if (this.eventLookupErrors > 0) {
+        logETL('warn', 'etl.completed_with_event_lookup_errors', {
+          eventLookupErrors: this.eventLookupErrors,
+        })
+      }
     } catch (error) {
       if (TransactionETLService.isAbortError(error)) {
         console.log('ETL process aborted')
@@ -227,7 +263,15 @@ export class TransactionETLService {
   }
 
   /**
-   * Find vault ID from Soroban events in a transaction
+   * Find vault ID from Soroban events in a transaction.
+   *
+   * Topic matching is strict: a topic must be either a bare UUID or the
+   * `vault_<uuid>` form. Heuristic 36-char-with-hyphen matching previously
+   * mis-attributed non-vault topics to vaults.
+   *
+   * Lookup failures are logged (with txHash) and counted in the ETL error
+   * stats, but do not throw — the no-throw contract is preserved so a single
+   * Horizon event failure cannot abort the whole ETL run.
    */
   private async findVaultFromEvents(txHash: string): Promise<VaultReference | null> {
     try {
@@ -238,18 +282,23 @@ export class TransactionETLService {
 
       for (const event of events.records) {
         // Vault ID is usually in the first topic or in the value for vault-related events
-        // For now, look for anything that looks like a vault ID in the topics
         for (const topic of event.topic) {
-          if (topic.startsWith('vault_') || (topic.length === 36 && topic.includes('-'))) {
-             const vaultId = topic.replace('vault_', '')
-             const vault = await this.getVaultById(vaultId)
-             if (vault) return vault
-          }
+          if (typeof topic !== 'string') continue
+          const vaultId = extractVaultId(topic)
+          if (!vaultId) continue
+          const vault = await this.getVaultById(vaultId)
+          if (vault) return vault
         }
       }
       return null
     } catch (error) {
-      // Silently ignore errors in event lookup to avoid failing the whole ETL run
+      this.eventLookupErrors += 1
+      logETL('error', 'etl.events_lookup_failed', {
+        txHash,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      // Keep the no-throw contract: a single event lookup failure must not
+      // abort the ETL run, but it is now visible in logs and error counts.
       return null
     }
   }

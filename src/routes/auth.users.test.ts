@@ -1,3 +1,5 @@
+process.env.ENABLE_MOCK_LOGIN = 'true'
+import { beforeEach, describe, expect, it, jest } from '@jest/globals'
 import express from 'express'
 import request from 'supertest'
 import { UserRole } from '../types/user.js'
@@ -26,42 +28,69 @@ const cloneSelectedUser = (
   )
 }
 
+const prismaUserFindUnique = jest.fn(async ({ where, select }: { where: { id?: string; email?: string }; select?: Record<string, boolean> }) => {
+  const user = where.id
+    ? users.get(where.id)
+    : Array.from(users.values()).find((entry) => entry.email === where.email)
+  return cloneSelectedUser(user, select)
+})
+
+const prismaUserUpdate = jest.fn(async ({ where, data, select }: { where: { id: string }; data: Partial<PersistedUser>; select?: Record<string, boolean> }) => {
+  const existing = users.get(where.id)
+  if (!existing) {
+    throw new Error('User not found')
+  }
+
+  const updated: PersistedUser = {
+    ...existing,
+    ...data,
+  }
+  users.set(where.id, updated)
+  return cloneSelectedUser(updated, select)
+})
+
 const prisma = {
   user: {
-    findUnique: jest.fn(async ({ where, select }: { where: { id?: string; email?: string }; select?: Record<string, boolean> }) => {
-      const user = where.id
-        ? users.get(where.id)
-        : Array.from(users.values()).find((entry) => entry.email === where.email)
-      return cloneSelectedUser(user, select)
-    }),
-    update: jest.fn(async ({ where, data, select }: { where: { id: string }; data: Partial<PersistedUser>; select?: Record<string, boolean> }) => {
-      const existing = users.get(where.id)
-      if (!existing) {
-        throw new Error('User not found')
-      }
-
-      const updated: PersistedUser = {
-        ...existing,
-        ...data,
-      }
-      users.set(where.id, updated)
-      return cloneSelectedUser(updated, select)
-    }),
+    findUnique: prismaUserFindUnique,
+    update: prismaUserUpdate,
   },
+  $transaction: jest.fn(async (cb: (tx: any) => Promise<any>) => {
+    return cb({
+      user: {
+        findUnique: prismaUserFindUnique,
+        update: prismaUserUpdate,
+        updateMany: jest.fn(async ({ where, data }: { where: { id: string; role?: UserRole }; data: Partial<PersistedUser> }) => {
+          const existing = users.get(where.id)
+          if (!existing || (where.role && existing.role !== where.role)) {
+            return { count: 0 }
+          }
+          const updated: PersistedUser = {
+            ...existing,
+            ...data,
+          }
+          users.set(where.id, updated)
+          return { count: 1 }
+        }),
+      },
+    })
+  }),
 }
 
-mock.module('../lib/prisma.js', () => ({ prisma }))
-mock.module('../lib/audit-logs.js', () => ({ createAuditLog }))
-mock.module('../middleware/auth.js', () => ({
+jest.unstable_mockModule('../lib/prisma.js', () => ({ prisma }))
+jest.unstable_mockModule('../lib/audit-logs.js', () => ({ createAuditLog }))
+jest.unstable_mockModule('../middleware/auth.js', () => ({
   authenticate: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
     req.user = {
-      userId: req.header('x-test-user-id') ?? 'admin-user-id',
+      userId: req.header('x-test-user-id') ?? '99999999-9999-4999-a999-999999999999',
       role: (req.header('x-test-role') as UserRole | null) ?? UserRole.ADMIN,
     } as any
     next()
   },
 }))
-mock.module('../services/auth.service.js', () => ({
+jest.unstable_mockModule('../middleware/stepUp.js', () => ({
+  requireStepUp: () => (_req: any, _res: any, next: any) => next(),
+}))
+jest.unstable_mockModule('../services/auth.service.js', () => ({
   AuthService: {
     register: jest.fn(),
     login: jest.fn(),
@@ -69,7 +98,7 @@ mock.module('../services/auth.service.js', () => ({
     logout: jest.fn(),
   },
 }))
-mock.module('../services/session.js', () => ({
+jest.unstable_mockModule('../services/session.js', () => ({
   recordSession: jest.fn(async () => undefined),
   validateSession: jest.fn(async () => true),
   revokeSession: jest.fn(),
@@ -88,16 +117,20 @@ describe('auth router persisted user role paths', () => {
     return app
   }
 
+  const verifierId = '11111111-1111-4111-a111-111111111111'
+  const memberId = '22222222-2222-4222-a222-222222222222'
+  const adminId = '99999999-9999-4999-a999-999999999999'
+
   beforeEach(() => {
     users.clear()
-    users.set('11111111-1111-1111-1111-111111111111', {
-      id: '11111111-1111-1111-1111-111111111111',
+    users.set(verifierId, {
+      id: verifierId,
       email: 'verifier@example.com',
       role: UserRole.VERIFIER,
       lastLoginAt: new Date('2026-01-01T00:00:00.000Z'),
     })
-    users.set('22222222-2222-2222-2222-222222222222', {
-      id: '22222222-2222-2222-2222-222222222222',
+    users.set(memberId, {
+      id: memberId,
       email: 'member@example.com',
       role: UserRole.USER,
       lastLoginAt: null,
@@ -112,12 +145,12 @@ describe('auth router persisted user role paths', () => {
 
     const response = await request(app)
       .post('/api/auth/login')
-      .send({ userId: '11111111-1111-1111-1111-111111111111' })
+      .send({ userId: verifierId })
 
     expect(response.status).toBe(200)
     expect(response.body).toMatchObject({
       user: {
-        id: '11111111-1111-1111-1111-111111111111',
+        id: verifierId,
         role: UserRole.VERIFIER,
       },
       token: expect.any(String),
@@ -130,9 +163,9 @@ describe('auth router persisted user role paths', () => {
 
     expect(typeof response.body.user.lastLoginAt).toBe('string')
     expect(new Date(response.body.user.lastLoginAt).getTime()).toBeGreaterThan(new Date('2026-01-01T00:00:00.000Z').getTime())
-    expect(users.get('11111111-1111-1111-1111-111111111111')?.role).toBe(UserRole.VERIFIER)
+    expect(users.get(verifierId)?.role).toBe(UserRole.VERIFIER)
     expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
-      actor_user_id: '11111111-1111-1111-1111-111111111111',
+      actor_user_id: verifierId,
       action: 'auth.mock_login_used',
       metadata: expect.objectContaining({
         userAgent: 'unknown',
@@ -145,26 +178,26 @@ describe('auth router persisted user role paths', () => {
     const app = buildApp()
 
     const response = await request(app)
-      .post('/api/auth/users/22222222-2222-2222-2222-222222222222/role')
-      .set('x-test-user-id', '99999999-9999-9999-9999-999999999999')
+      .post(`/api/auth/users/${memberId}/role`)
+      .set('x-test-user-id', adminId)
       .set('x-test-role', UserRole.ADMIN)
       .send({ role: UserRole.ADMIN })
 
     expect(response.status).toBe(200)
     expect(response.body).toEqual({
       user: {
-        id: '22222222-2222-2222-2222-222222222222',
+        id: memberId,
         role: UserRole.ADMIN,
         lastLoginAt: null,
       },
       auditLogId: 'audit-1',
     })
-    expect(users.get('22222222-2222-2222-2222-222222222222')?.role).toBe(UserRole.ADMIN)
+    expect(users.get(memberId)?.role).toBe(UserRole.ADMIN)
     expect(createAuditLog).toHaveBeenCalledWith({
-      actor_user_id: '99999999-9999-9999-9999-999999999999',
+      actor_user_id: adminId,
       action: 'auth.role_changed',
       target_type: 'user',
-      target_id: '22222222-2222-2222-2222-222222222222',
+      target_id: memberId,
       metadata: {
         previousRole: UserRole.USER,
         newRole: UserRole.ADMIN,
@@ -176,13 +209,13 @@ describe('auth router persisted user role paths', () => {
     const app = buildApp()
 
     const response = await request(app)
-      .post('/api/auth/users/22222222-2222-2222-2222-222222222222/role')
+      .post(`/api/auth/users/${memberId}/role`)
       .set('x-test-role', UserRole.ADMIN)
       .send({ role: 'SUPERUSER' })
 
     expect(response.status).toBe(400)
     expect(response.body.error.code).toBe('VALIDATION_ERROR')
-    expect(users.get('22222222-2222-2222-2222-222222222222')?.role).toBe(UserRole.USER)
+    expect(users.get(memberId)?.role).toBe(UserRole.USER)
     expect(createAuditLog).not.toHaveBeenCalled()
   })
 })

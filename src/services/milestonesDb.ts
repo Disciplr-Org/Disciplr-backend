@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { MilestoneRepositoryEnhanced, MilestoneEvent } from '../repositories/milestoneRepositoryEnhanced.js';
 
 export interface Milestone {
@@ -9,18 +10,23 @@ export interface Milestone {
   createdAt: string;
 }
 
+export interface CreateMilestoneInput {
+  title: string;
+  description: string;
+}
+
 export class MilestoneService {
   constructor(private repository: MilestoneRepositoryEnhanced) {}
 
   /**
    * Create a new milestone
    */
-  async createMilestone(vaultId: string, description: string): Promise<Milestone> {
-    const id = `ms-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  async createMilestone(vaultId: string, { title, description }: CreateMilestoneInput): Promise<Milestone> {
+    const id = randomUUID();
     const milestone = {
       id,
       vault_id: vaultId,
-      title: description, // Using description as title for now
+      title,
       description,
       type: 'verifier' as const,
       criteria: {},
