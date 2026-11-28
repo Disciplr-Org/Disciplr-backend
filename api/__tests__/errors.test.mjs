@@ -144,6 +144,54 @@ describe('Error Handling Middleware and Query Validation', () => {
     assert.match(res.body.error, /Method Not Allowed/i)
   })
 
+
+  test('GET /api/vaults/:id/onchain/stake -> 405 JSON with Allow: POST', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .get('/api/vaults/v-123/onchain/stake')
+      .expect('Content-Type', /application\/json/)
+      .expect(405)
+
+    assert.equal(res.status, 405)
+    assert.equal(res.headers.allow, 'POST')
+    assert.match(res.body.error, /Method Not Allowed/i)
+  })
+
+  test('GET /api/vaults/:id/onchain/submit -> 405 JSON with Allow: POST', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .get('/api/vaults/v-123/onchain/submit')
+      .expect('Content-Type', /application\/json/)
+      .expect(405)
+
+    assert.equal(res.status, 405)
+    assert.equal(res.headers.allow, 'POST')
+    assert.match(res.body.error, /Method Not Allowed/i)
+  })
+
+  test('GET /api/vaults/:id/milestones/:mid/evidence -> 405 JSON with Allow: POST', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .get('/api/vaults/v-123/milestones/m-1/evidence')
+      .expect('Content-Type', /application\/json/)
+      .expect(405)
+
+    assert.equal(res.status, 405)
+    assert.equal(res.headers.allow, 'POST')
+    assert.match(res.body.error, /Method Not Allowed/i)
+  })
+
+  test('GET /api/vaults/:id/sign -> 404 (sign route removed from methodMap)', async () => {
+    const { app } = buildApp()
+    const res = await request(app)
+      .get('/api/vaults/v-123/sign')
+      .expect('Content-Type', /application\/json/)
+      .expect(404)
+
+    assert.equal(res.status, 404)
+    assert.match(res.body.error, /Not found/i)
+  })
+
   test('DELETE /api/transactions -> 405 JSON with an Allow header', async () => {
     const { app } = buildApp()
 

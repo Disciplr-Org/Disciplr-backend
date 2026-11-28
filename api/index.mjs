@@ -517,7 +517,12 @@ export function createApp(getStore = defaultGetStore, env = process.env) {
   const methodMap = [
     { pattern: /^\/api(?:\/v1)?\/vaults\/?$/, allow: 'GET, POST' },
     { pattern: /^\/api(?:\/v1)?\/vaults\/[^\/]+\/?$/, allow: 'GET' },
-    { pattern: /^\/api(?:\/v1)?\/vaults\/[^\/]+\/sign\/?$/, allow: 'POST' },
+    { pattern: /^\/api(?:\/v1)?\/vaults\/[^\/]+\/onchain\/stake\/?$/, allow: 'POST' },
+    { pattern: /^\/api(?:\/v1)?\/vaults\/[^\/]+\/onchain\/submit\/?$/, allow: 'POST' },
+    { pattern: /^\/api(?:\/v1)?\/vaults\/[^\/]+\/onchain\/claim-milestone\/?$/, allow: 'POST' },
+    { pattern: /^\/api(?:\/v1)?\/vaults\/[^\/]+\/onchain\/slash\/?$/, allow: 'POST' },
+    { pattern: /^\/api(?:\/v1)?\/vaults\/[^\/]+\/onchain\/withdraw\/?$/, allow: 'POST' },
+    { pattern: /^\/api(?:\/v1)?\/vaults\/[^\/]+\/milestones\/[^\/]+\/evidence\/?$/, allow: 'POST' },
     { pattern: /^\/api(?:\/v1)?\/vaults\/[^\/]+\/milestones\/[^\/]+\/validate\/?$/, allow: 'POST' },
     { pattern: /^\/api(?:\/v1)?\/vaults\/[^\/]+\/fail\/?$/, allow: 'POST' },
     { pattern: /^\/api(?:\/v1)?\/transactions\/?$/, allow: 'GET' },
